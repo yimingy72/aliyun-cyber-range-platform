@@ -1,6 +1,6 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { APPLY_PENDING_FILE, assertWorkspaceCanApply, readWorkspaceState, readPendingApplyEvidence, recordApplyPlan, completeApply, hasUnresolvedApply, assertDestroyComplete, fileExists } from './opentofu-state-evidence';
+import { APPLY_PENDING_FILE, assertWorkspaceCanApply, readWorkspaceState, readPendingApplyEvidence, recordApplyPlan, completeApply, hasUnresolvedApply, assertDestroyComplete, fileExists, type WorkspaceState } from './opentofu-state-evidence';
 import { prepareOpenTofuProviderEnv, migrateAliCloudWorkspaceProvider } from './provider-mirror-publication';
 import { createHash, createHmac, randomUUID } from 'node:crypto';
 import { requestTencentCloud } from '../admin/tencent-cloud-client';
@@ -782,10 +782,11 @@ export class OpenTofuRangeProvisioner implements RangeProvisioner {
     const planFilePath = path.join(workspaceDir, 'range.tfplan');
     const outputsFilePath = path.join(workspaceDir, 'outputs.json');
     const varsFilePath = path.join(workspaceDir, 'range.auto.tfvars.json');
+    let priorState: WorkspaceState | null = null;
 
     await assertDirectoryExists(moduleDir, 'OpenTofu module path does not exist');
     if (options.preserveWorkspaceState) {
-      await assertWorkspaceCanApply(workspaceDir, input.requirePersistedState === true);
+      priorState = await assertWorkspaceCanApply(workspaceDir, input.requirePersistedState === true);
       if (input.runtimeConfig?.provider === 'tencent_cloud') await this.assertTencentWorkspaceIdentity(workspaceDir, input);
     } else {
       if (input.requirePersistedState) throw new Error('OpenTofu state recovery is required before proceeding; persisted workspace was preserved');
@@ -802,9 +803,15 @@ export class OpenTofuRangeProvisioner implements RangeProvisioner {
       }),
     );
 
-    const variables = await this.buildVariables(input, {
+    let variables = await this.buildVariables(input, {
       requireRuntimePasswords: options.requireRuntimePasswords,
     });
+    if (priorState?.instances.some(resource => ['alicloud_instance', 'tencentcloud_instance'].includes(resource.type))) {
+      let priorVariables: unknown;
+      try { priorVariables = JSON.parse(await fs.readFile(varsFilePath, 'utf8')); }
+      catch { throw new Error('Existing host startup data cannot be verified; persisted variables were preserved'); }
+      variables = preserveDeployedRangeUserData(input, priorState, priorVariables, variables);
+    }
     await fs.writeFile(varsFilePath, `${JSON.stringify(variables, null, 2)}\n`, 'utf8');
 
     if (input.runtimeConfig?.provider === 'tencent_cloud') {
@@ -963,6 +970,9 @@ export class OpenTofuRangeProvisioner implements RangeProvisioner {
       hostImageIds?.[plan.entryHostKey] ??
       Object.values(hostImageIds ?? {})[0] ??
       (await this.resolveImageId(runtimeConfig));
+    const hostWindows = options.requireRuntimePasswords
+      ? await resolveAliyunWindowsDnsHostImages({ hosts: plan.hostDefinitions, hostImageIds: hostImageIds ?? {}, fallbackImageId: imageId, runtimeConfig })
+      : undefined;
     const hostPasswords = Object.fromEntries(
       plan.hostDefinitions.map((host) => [
         host.key,
@@ -983,6 +993,7 @@ export class OpenTofuRangeProvisioner implements RangeProvisioner {
       hostInstanceTypes,
       imageId,
       hostImageIds,
+      ...(hostWindows ? { hostWindows } : {}),
       hostPasswords,
       instancePassword,
       tags: {
@@ -1321,9 +1332,13 @@ export class OpenTofuRangeProvisioner implements RangeProvisioner {
     }));
     const images = Object.fromEntries(plan.hostDefinitions.map(host => [host.key,hints.get(host.key)?.finalImageId ?? '']));
     const imageMetadata = await assertTencentImagesAvailable(account,Object.values(images));
+    for (const host of plan.hostDefinitions) {
+      if (host.dns && options.requireRuntimePasswords && (imageMetadata[images[host.key]]?.isWindows !== true || imageMetadata[images[host.key]]?.windowsUserDataSupported !== true)) throw new Error('Tencent host DNS requires an officially identified Windows Server 2012 R2 or newer image');
+    }
     const rendered = renderTencentRangeVariables({ plan, rangeInstanceId: input.rangeInstanceId, account, hostInstanceTypes: types, hostImageIds: images,
       hostPasswords: Object.fromEntries(plan.hostDefinitions.map(host => [host.key,options.requireRuntimePasswords ? requireRuntimePassword(input.runtimeCredentials,host.key) : DESTROY_PLACEHOLDER_PASSWORD])),
-      hostWindows: Object.fromEntries(plan.hostDefinitions.map(host => [host.key,input.runtimeCredentials?.[host.key]?.username === 'Administrator'])),
+      // Preserve the existing non-DNS login validation when legacy image metadata omits its OS.
+      hostWindows: Object.fromEntries(plan.hostDefinitions.map(host => [host.key,imageMetadata[images[host.key]]?.isWindows ?? (!host.dns && input.runtimeCredentials?.[host.key]?.username === 'Administrator')])),
       expiresAt: input.expiresAt ?? '', tags: input.billingTags ?? {}, systemDiskType: this.env.TENCENTCLOUD_SYSTEM_DISK_TYPE,
       systemDiskSize: Math.max(50,...Object.values(imageMetadata).map(image => image.minimumSystemDiskSize)) });
     const oldState = await readWorkspaceState(path.join(this.workspacesRootDir,input.rangeInstanceId));
@@ -1340,6 +1355,76 @@ export class OpenTofuRangeProvisioner implements RangeProvisioner {
   private readSystemDiskCategory() {
     return normalizeOptionalEnvValue(this.env.OPENTOFU_SYSTEM_DISK_CATEGORY);
   }
+}
+
+// Provider user-data changes can replace a live VM even when only our script generator changed.
+export function preserveDeployedRangeUserData<T extends Record<string, any>>(
+  input: RangeProvisionCreateInput | RangeProvisionDestroyInput,
+  state: WorkspaceState,
+  priorVariables: unknown,
+  nextVariables: T,
+) {
+  const fail = (): never => { throw new Error('Existing host startup data or frozen ownership cannot be verified; persisted variables were preserved'); };
+  const next = nextVariables as Record<string, any>;
+  const account = input.runtimeConfig;
+  const prior = readObjectRecord(priorVariables);
+  const provider = account?.provider;
+  const type = provider === 'tencent_cloud' ? 'tencentcloud_instance' : 'alicloud_instance';
+  const resources = state.instances.filter(resource => ['alicloud_instance', 'tencentcloud_instance'].includes(resource.type));
+  if (!resources.length) return nextVariables;
+  if (!account?.accountUid || !account.cloudAccountContextId || !['alibaba_cloud', 'tencent_cloud'].includes(provider ?? '') || !prior || !Array.isArray(prior.hosts) || !Array.isArray(next.hosts)) fail();
+  const owns = (tags: any) => tags && tags.CloudProvider === provider && tags.CloudAccountUid === account!.accountUid && tags.CloudAccountContextId === account!.cloudAccountContextId && (tags.RangeInstanceId === input.rangeInstanceId || tags.range_instance_id === input.rangeInstanceId) && ['RangeInstanceId', 'range_instance_id'].every(key => tags[key] === undefined || tags[key] === input.rangeInstanceId) && tags.CreatedBy === 'cyber-range-platform' && ['PlatformScope', 'PlatformUserId'].every(key => input.billingTags?.[key] === undefined || tags[key] === input.billingTags[key]);
+  if (!owns(prior!.tags) || provider === 'tencent_cloud' && prior!.region !== account!.defaultRegion) fail();
+  const deployed = new Set<string>();
+  for (const resource of resources) {
+    const key = resourceInstanceKey(resource.address);
+    if (resource.type !== type || resource.module !== 'module.range' || resource.tainted || !resource.address.startsWith(`module.range.${type}.hosts[`) || deployed.has(key) || !owns(resource.attributes.tags)
+      || typeof resource.attributes.availability_zone !== 'string' || !resource.attributes.availability_zone.startsWith(`${account!.defaultRegion}-`) || resource.attributes.availability_zone !== prior!.zone_id
+      || typeof resource.attributes.id !== 'string' || !(provider === 'tencent_cloud' ? /^ins-[a-z0-9]+$/ : /^i-[a-z0-9]+$/).test(resource.attributes.id)) fail();
+    const oldHosts = (prior!.hosts as any[]).filter(host => host?.key === key);
+    if (oldHosts.length !== 1) fail();
+    deployed.add(key);
+  }
+  if (provider === 'tencent_cloud') {
+    next.hosts = next.hosts.map((host: any) => {
+      if (!deployed.has(host.key)) return host;
+      const old = (prior!.hosts as any[]).find(value => value.key === host.key);
+      if (typeof old.user_data !== 'string') fail();
+      return { ...host, user_data: old.user_data };
+    });
+  } else {
+    const scripts = prior!.bootstrap_scripts as any[];
+    if (!Array.isArray(scripts) || !Array.isArray(next.bootstrap_scripts) || scripts.some(script => !script || typeof script.key !== 'string' || typeof script.name !== 'string' || !['shell', 'powershell', 'cloud-init'].includes(script.type) || typeof script.content !== 'string' || !Array.isArray(script.target_host_keys) || script.target_host_keys.some((key: unknown) => typeof key !== 'string') || new Set(script.target_host_keys).size !== script.target_host_keys.length)) fail();
+    const remaining = new Set(next.hosts.map((host: any) => host.key));
+    next.bootstrap_scripts = [
+      ...next.bootstrap_scripts.flatMap((script: any) => { const keys = script.target_host_keys.filter((key: string) => !deployed.has(key)); return keys.length ? [{ ...script, target_host_keys: keys }] : []; }),
+      ...scripts.flatMap(script => { const keys = script.target_host_keys.filter((key: string) => deployed.has(key) && remaining.has(key)); return keys.length ? [{ ...script, target_host_keys: keys }] : []; }),
+    ];
+  }
+  return nextVariables;
+}
+
+export async function resolveAliyunWindowsDnsHostImages(input: {
+  hosts: Array<{ key: string; dns?: unknown }>;
+  hostImageIds: Record<string, string>;
+  fallbackImageId: string;
+  runtimeConfig: ResolvedProvisioningRuntimeConfig;
+}): Promise<Record<string, boolean> | undefined> {
+  const hosts = input.hosts.filter(host => host.dns);
+  if (!hosts.length) return undefined;
+  const windowsByImage = new Map<string, boolean>();
+  const result: Record<string, boolean> = {};
+  for (const host of hosts) {
+    const imageId = input.hostImageIds[host.key] ?? input.fallbackImageId;
+    if (!windowsByImage.has(imageId)) {
+      const payload = await performAliyunRpcRequest({ accessKeyId: input.runtimeConfig.accessKeyId, accessKeySecret: input.runtimeConfig.accessKeySecret, regionId: input.runtimeConfig.defaultRegion, action: 'DescribeImages', parameters: { ImageId: imageId, PageSize: '100', PageNumber: '1' } }) as { TotalCount?: unknown; Images?: { Image?: Array<{ ImageId?: unknown; Status?: unknown; OSType?: unknown; Platform?: unknown }> } };
+      const images = payload?.Images?.Image;
+      if (payload?.TotalCount !== 1 || !Array.isArray(images) || images.length !== 1 || images[0]?.ImageId !== imageId || images[0]?.Status !== 'Available' || images[0]?.OSType !== 'windows' || (images[0].Platform !== undefined && (typeof images[0].Platform !== 'string' || !/^(?:Microsoft\s+)?Windows\b/i.test(images[0].Platform)))) throw new Error('Alibaba host DNS requires an available officially identified Windows image');
+      windowsByImage.set(imageId, true);
+    }
+    result[host.key] = true;
+  }
+  return result;
 }
 
 async function assertDirectoryExists(targetPath: string, message: string) {

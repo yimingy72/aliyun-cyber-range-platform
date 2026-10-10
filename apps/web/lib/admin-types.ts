@@ -1,5 +1,7 @@
 import type { CompiledProvisionSpec } from './compiled-provision-spec';
 import type { ScenarioTemplateSpec } from './scenario-template-spec';
+import type { HostDnsConfig } from '@aliyun-cyber-range/scenario-runtime';
+import type { RangeNodeDnsVerification } from '../components/admin/range-instance-node-directory';
 
 export type AdminProfile = {
   id: string;
@@ -115,6 +117,7 @@ export type RangeTemplateHost = {
   role: string;
   privateIp: string;
   exposePublic?: boolean;
+  dns?: HostDnsConfig;
 };
 
 export type RangeTemplateEntryProtocol = {
@@ -362,6 +365,7 @@ export type RangeInstanceDetail = RangeInstance & {
   templateId: string;
   recoverySummary?: RangeRecoverySummary | null;
   runtimeTopologySpec?: Record<string, unknown> | null;
+  dnsVerification?: Record<string, RangeNodeDnsVerification>;
 };
 
 export type ProvisionJob = {
@@ -573,6 +577,8 @@ export type PlatformImageAsset = {
   updatedAt?: string | null;
   minimumSystemDiskSize?: number | null;
   architecture?: string | null;
+  osType?: string | null;
+  platform?: string | null;
 };
 
 export type ImageCatalogScopePayload = {
@@ -687,8 +693,9 @@ export type ImageImportUploadSession = {
 };
 
 export type RangeInstanceNodeActionResult = {
-  status: 'accepted';
-  action: 'start' | 'stop' | 'reboot' | 'open-vnc' | 'pack-image';
+  status: string;
+  action: 'start' | 'stop' | 'reboot' | 'open-vnc' | 'pack-image' | 'verify-dns';
+  dnsVerification?: RangeNodeDnsVerification;
   vncUrl?: string | null;
   webTerminalUrl?: string | null;
   imageId?: string | null;

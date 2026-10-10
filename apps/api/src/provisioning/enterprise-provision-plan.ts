@@ -1,3 +1,4 @@
+import { validateHostDnsConfig, type HostDnsConfig } from '@aliyun-cyber-range/scenario-runtime/compiled';
 import type {
   RangeTemplateCompiledSpec,
   RangeTemplateHost,
@@ -18,6 +19,7 @@ type CompiledHostResource = CompiledResource & {
     role?: string;
     privateIp?: string;
     exposePublic?: boolean;
+    dns?: HostDnsConfig;
   };
 };
 
@@ -133,6 +135,7 @@ export type EnterpriseProvisionPlan = {
     privateIp: string;
     role: string;
     exposePublic: boolean;
+    dns?: HostDnsConfig;
   }>;
   natGateways: Array<{
     key: string;
@@ -277,6 +280,7 @@ export function buildEnterpriseProvisionPlan(input: {
     buildDnatEntriesFromCompiledProvisionSpec(input.compiledProvisionSpec) ||
     buildDnatEntriesFromCompiledSpec(input.compiledSpec);
   const hostNetworkInterfaces = buildHostNetworkInterfacesFromCompiledProvisionSpec(input.compiledProvisionSpec);
+  const hostDns = buildHostDnsConfigs(input, topologySpec.hosts, hostNetworkInterfaces);
   const bootstrapScripts = buildBootstrapScriptsFromCompiledProvisionSpec(input.compiledProvisionSpec);
   const runtimeSelections = buildRuntimeSelectionsFromCompiledProvisionSpec(input.compiledProvisionSpec);
 
@@ -312,6 +316,7 @@ export function buildEnterpriseProvisionPlan(input: {
       privateIp: host.privateIp,
       role: host.role,
       exposePublic: host.key === topologySpec.publicEntry.hostKey || Boolean(host.exposePublic),
+      ...(hostDns.has(host.key) ? { dns: hostDns.get(host.key)! } : {}),
     })),
     natGateways,
     eipDefinitions,
@@ -380,6 +385,7 @@ function buildTopologySpecFromCompiledSpec(
       resource.config.privateIp,
       `compiledSpec.resources[${resource.id}].config.privateIp`,
     ),
+    ...(resource.config.dns !== undefined ? { dns: resource.config.dns } : {}),
     ...(resource.config.exposePublic !== undefined
       ? { exposePublic: resource.config.exposePublic }
       : {}),
@@ -452,6 +458,7 @@ function buildTopologySpecFromCompiledProvisionSpec(
         role: host.role,
         privateIp: host.primaryPrivateIp,
         ...(host.exposePublic === true ? { exposePublic: true } : {}),
+        ...(host.dns !== undefined ? { dns: host.dns as HostDnsConfig } : {}),
       }];
     }),
     publicEntry: {
@@ -867,6 +874,38 @@ function buildDnatEntriesFromCompiledProvisionSpec(compiledProvisionSpec: Compil
       protocol: typeof record.protocol === 'string' ? record.protocol : 'tcp',
     }];
   });
+}
+
+function buildHostDnsConfigs(
+  input: { compiledProvisionSpec?: CompiledProvisionSpecRecord | null; compiledSpec?: RangeTemplateCompiledSpec | null },
+  hosts: RangeTemplateHost[],
+  hostNetworkInterfaces: EnterpriseProvisionPlan['hostNetworkInterfaces'],
+) {
+  const result = new Map<string, HostDnsConfig>();
+  for (const host of hosts) {
+    const compiledHost = readArray(input.compiledProvisionSpec?.hosts).map(readRecord).find((entry) => entry?.key === host.key);
+    const resource = input.compiledSpec?.resources.find((entry) => entry.type === 'host' && entry.id === host.key);
+    const dns = compiledHost?.dns !== undefined ? compiledHost.dns : resource?.config.dns !== undefined ? resource.config.dns : host.dns;
+    if (dns === undefined) continue;
+    const interfaces = hostNetworkInterfaces.find((entry) => entry.hostKey === host.key)?.interfaces ?? [];
+    // Legacy resource snapshots still carry the original NIC attachment identities.
+    const resourceNics = readArray(resource?.config.nics).map(readRecord);
+    const nicIds = interfaces.flatMap((nic) => nic.nicId ? [nic.nicId] : []);
+    const switchZoneKeys = new Map(input.compiledSpec?.resources.filter((entry) => entry.type === 'switch').map((entry) => [entry.id, typeof entry.config.zoneKey === 'string' ? entry.config.zoneKey : undefined]));
+    const config = validateHostDnsConfig(dns, nicIds.length > 0 ? nicIds : resourceNics.flatMap((nic) => typeof nic?.id === 'string' ? [nic.id] : []), `hosts.${host.key}.dns`);
+    if (interfaces.length === 0 && resourceNics.length > 0) {
+      hostNetworkInterfaces.push({ hostKey: host.key, interfaces: resourceNics.map((nic, deviceIndex) => ({
+        nicId: requireValue(typeof nic?.id === 'string' ? nic.id : undefined, `hosts.${host.key}.nics.id`),
+        deviceIndex,
+        zoneKey: requireValue(typeof nic?.zoneKey === 'string' ? nic.zoneKey : switchZoneKeys.get(typeof nic?.switchId === 'string' ? nic.switchId : '') ?? (deviceIndex === 0 ? host.zoneKey : undefined), `hosts.${host.key}.nics.zoneKey`),
+        privateIp: requireValue(typeof nic?.privateIp === 'string' ? nic.privateIp : undefined, `hosts.${host.key}.nics.privateIp`),
+        ...(Array.isArray(nic?.secondaryIps) ? { secondaryIps: nic.secondaryIps.filter((ip): ip is string => typeof ip === 'string') } : {}),
+        ...(typeof nic?.description === 'string' ? { description: nic.description } : {}),
+      })) });
+    }
+    result.set(host.key, config);
+  }
+  return result;
 }
 
 function buildHostNetworkInterfacesFromCompiledProvisionSpec(

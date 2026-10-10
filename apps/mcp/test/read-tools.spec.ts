@@ -38,6 +38,27 @@ const authoringGraph: ScenarioGraphDraft = {
 };
 
 describe('resolveUniqueDnatEntryHost', () => {
+  it('exposes controlled fixed DNS readback with strict IDs and forwards the exact confirmation replay', async () => {
+    const client = createClientStub();
+    const verification = { status: 'failed', method: 'readback', expected: [{ nicId: 'nic-1', privateIp: '10.0.50.20', servers: ['10.0.50.10'] }], actual: [], resolutionStatus: 'not_requested' };
+    const action = vi.mocked(client.runRangeInstanceNodeAction);
+    action.mockRejectedValueOnce(new PlatformApiError(409, 'confirmation required', { code: 'CONFIRMATION_REQUIRED', confirmationId: 'dns-confirm', idempotencyKey: 'dns-request' }))
+      .mockResolvedValue({ status: 'failed', action: 'verify-dns', dnsVerification: verification });
+    const registry = createToolRegistry(client);
+    const tool = registry.listTools(['ranges:control']).find((item) => item.name === 'range_instance_node_verify_dns')!;
+    expect(tool.annotations?.destructiveHint).toBe(false);
+    await expect(registry.callTool(tool.name, ['ranges:read'], { rangeInstanceId: 'range-1', nodeId: 'host-1' })).rejects.toThrow('Forbidden tool');
+    for (const extra of [{ command: 'whoami' }, { instanceId: 'ins-other' }, { displayName: 'irrelevant' }]) {
+      await expect(registry.callTool(tool.name, ['ranges:control'], { rangeInstanceId: 'range-1', nodeId: 'host-1', ...extra })).rejects.toThrow('Invalid input');
+    }
+    await expect(registry.callTool(tool.name, ['ranges:control'], { rangeInstanceId: 'range-1', nodeId: 'host-1' })).resolves.toMatchObject({ isError: true, structuredContent: { result: { error: { code: 'CONFIRMATION_REQUIRED', confirmationId: 'dns-confirm' } } } });
+    await expect(registry.callTool(tool.name, ['ranges:control'], { rangeInstanceId: 'range-1', nodeId: 'host-1', confirmationId: 'dns-confirm', idempotencyKey: 'dns-request' }))
+      .resolves.toMatchObject({ structuredContent: { result: { action: 'verify-dns', dnsVerification: verification } } });
+    expect(action).toHaveBeenLastCalledWith('range-1', 'host-1', 'verify-dns', {}, { confirmationId: 'dns-confirm', idempotencyKey: 'dns-request' });
+    expect(action).toHaveBeenCalledTimes(2);
+    expect(client.retryRangeInstance).not.toHaveBeenCalled();
+    expect(client.launchRange).not.toHaveBeenCalled();
+  });
   it('preserves destroyed range pack artifacts and empty original-disk receipts through the actual SDK and MCP path', async () => {
     const fetchMock=vi.fn(async(input:string,init?:RequestInit)=>{
       expect(input).toBe('https://platform.example/admin/ranges/range%2Fsource'); expect(init?.method).toBe('GET');
@@ -1354,7 +1375,7 @@ describe('tool registry', () => {
 
     const tools = registry.listTools(scopes);
 
-    expect(tools).toHaveLength(84);
+    expect(tools).toHaveLength(86);
     expect(tools.every((tool) => tool.inputSchema)).toBe(true);
     expect(tools.every((tool) => tool.outputSchema?.safeParse({}).success === false)).toBe(true);
     expect(

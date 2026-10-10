@@ -1,4 +1,4 @@
-import { Controller, Get, Param, Query, Req, UseGuards } from '@nestjs/common';
+import { BadRequestException, Controller, Get, Param, Query, Req, UseGuards } from '@nestjs/common';
 
 import { AdminAuthGuard } from './admin-auth.guard';
 import type { SessionUserProfile } from './admin-user-auth';
@@ -19,8 +19,9 @@ export class ProvisionJobsController {
   }
 
   @Get(':id')
-  getById(@Req() request: AuthenticatedAdminRequest, @Param('id') id: string) {
-    return this.provisionJobsService.getById(id, request.adminUser);
+  getById(@Req() request: AuthenticatedAdminRequest, @Param('id') id: string, @Query('includeEvidence') includeEvidence?: string) {
+    if (includeEvidence !== undefined && includeEvidence !== 'true' && includeEvidence !== 'false') throw new BadRequestException('includeEvidence must be true or false');
+    return this.provisionJobsService.getById(id, request.adminUser, includeEvidence === 'true');
   }
 
   @Get(':id/steps')

@@ -1,3 +1,6 @@
+import type { RangeDnsVerification } from './range-dns-types';
+import type { HostDnsConfig } from '@aliyun-cyber-range/scenario-runtime/compiled';
+
 export const ADMIN_REPOSITORY = Symbol('ADMIN_REPOSITORY');
 
 export type CloudProvider = 'alibaba_cloud' | 'tencent_cloud';
@@ -55,6 +58,7 @@ export type RangeTemplateHost = {
   role: string;
   privateIp: string;
   exposePublic?: boolean;
+  dns?: HostDnsConfig;
 };
 
 export type RangeTemplateEntryProtocol = {
@@ -178,6 +182,7 @@ export type RangeResourceSummary = {
   eipAllocationId?: string | null;
   eipAllocationIds?: Record<string, string> | null;
   bootstrapHostKeys?: string[] | null;
+  dnsVerification?: Record<string, RangeDnsVerification>;
   runtimeSelections?: Record<string, unknown> | null;
   resolvedInstanceType?: string | null;
   resolvedImageId?: string | null;
@@ -1182,6 +1187,7 @@ export interface AdminRepository {
   }): Promise<RangeInstanceRecord>;
   getRangeInstanceById(id: string): Promise<RangeInstanceRecord | null>;
   updateRangeInstance(id: string, input: UpdateRangeInstanceInput): Promise<RangeInstanceRecord>;
+  updateRangeInstanceDnsState(id: string, hostKey: string, nativeId: string, expectedClaim: string | null, entry: RangeDnsVerification): Promise<boolean>;
   saveRangeInstanceDraft(
     id: string,
     expectedDraftRevision: number,

@@ -298,7 +298,7 @@ export class PlatformApiClient implements PlatformApiClientLike {
   runRangeInstanceNodeAction(
     rangeInstanceId: string,
     nodeId: string,
-    action: 'start' | 'stop' | 'reboot' | 'open-vnc' | 'pack-image',
+    action: 'start' | 'stop' | 'reboot' | 'open-vnc' | 'pack-image' | 'verify-dns' | 'apply-dns',
     payload: RangeInstanceNodeActionPayload = {},
     operation?: OperationRequest,
   ) {
@@ -308,6 +308,8 @@ export class PlatformApiClient implements PlatformApiClientLike {
         method: 'POST',
         body: JSON.stringify(payload),
         operation,
+        ...(action === 'verify-dns' ? { signal: AbortSignal.timeout(180_000) } : {}),
+        ...(action === 'apply-dns' ? { signal: AbortSignal.timeout(240_000) } : {}),
       },
     );
   }
@@ -348,8 +350,9 @@ export class PlatformApiClient implements PlatformApiClientLike {
     return this.request<ProvisionJob[]>(`/admin/provision-jobs${query}`);
   }
 
-  getProvisionJob(id: string) {
-    return this.request<ProvisionJob>(`/admin/provision-jobs/${encodeURIComponent(id)}`);
+  getProvisionJob(id: string, options?: { includeEvidence?: boolean }) {
+    const query = options?.includeEvidence === undefined ? '' : `?includeEvidence=${options.includeEvidence}`;
+    return this.request<ProvisionJob>(`/admin/provision-jobs/${encodeURIComponent(id)}${query}`);
   }
 
   fetchCloudConfig() {
@@ -595,11 +598,12 @@ export class PlatformApiClient implements PlatformApiClientLike {
     return `/admin/billing/${path}${search ? `?${search}` : ''}`;
   }
 
-  private async request<T>(path: string, init?: { method?: string; body?: string; operation?: OperationRequest }) {
+  private async request<T>(path: string, init?: { method?: string; body?: string; operation?: OperationRequest; signal?: AbortSignal }) {
     const response = await this.fetchImpl(`${this.baseUrl}${path}`, {
       method: init?.method ?? 'GET',
       headers: this.buildHeaders(init?.operation),
       body: init?.body,
+      ...(init?.signal ? { signal: init.signal } : {}),
     });
 
     if (!response.ok) {

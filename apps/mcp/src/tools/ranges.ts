@@ -14,6 +14,7 @@ import {
   rangeLaunchInputSchema,
   rangeListInputSchema,
   rangeNodeActionInputSchema,
+  rangeNodeVerifyDnsInputSchema,
   rangeNodeOpenVncInputSchema,
   rangeNodePackImageValidateInputSchema,
   rangeRetryInputSchema,
@@ -173,6 +174,32 @@ export const rangeTools: ToolDefinition[] = [
   nodeActionTool('range_instance_node_start', '开机编排节点', 'start', '对应实例详情中 ECS 节点“开机”。向阿里云提交开机指令，调用前必须取得用户确认。'),
   nodeActionTool('range_instance_node_stop', '关机编排节点', 'stop', '对应实例详情中 ECS 节点“关机”。向阿里云提交强制关机指令，调用前必须取得用户确认。'),
   nodeActionTool('range_instance_node_reboot', '重启编排节点', 'reboot', '对应实例详情中 ECS 节点“重启”。向阿里云提交强制重启指令，调用前必须取得用户确认。'),
+  {
+    name: 'range_instance_node_verify_dns',
+    title: '核验编排节点 DNS',
+    description: '读取指定 Windows 节点客体网卡的实际 DNS，并按配置核验域控 SRV 记录。仅执行平台固定只读核验，不改变 DNS、不重建实例，不接受任意命令或云资源 ID；核验状态独立于实例运行状态。调用前取得准确节点的用户确认。',
+    requiredScopes: ['ranges:control'],
+    annotations: { destructiveHint: false, idempotentHint: false },
+    inputSchema: rangeNodeVerifyDnsInputSchema,
+    outputSchema: actionOutputSchema,
+    call(context, args) {
+      const input = args as RangeOperationInput & { nodeId: string };
+      return context.client.runRangeInstanceNodeAction(input.rangeInstanceId, input.nodeId, 'verify-dns', {}, operation(input));
+    },
+  },
+  {
+    name: 'range_instance_node_apply_dns',
+    title: '重新下发编排节点 DNS',
+    description: '将已部署拓扑中的 DNS 重新设置到指定 Windows 节点选定网卡，然后读取实际 DNS 并核验已配置的域控 SRV。只接受准确平台实例和节点，不接受任意命令、DNS 参数或云资源 ID；不创建、销毁或重建实例，失败仅记录 DNS 状态。调用前取得准确节点的用户确认。',
+    requiredScopes: ['ranges:control'],
+    annotations: { destructiveHint: false, idempotentHint: false },
+    inputSchema: rangeNodeVerifyDnsInputSchema,
+    outputSchema: actionOutputSchema,
+    call(context, args) {
+      const input = args as RangeOperationInput & { nodeId: string };
+      return context.client.runRangeInstanceNodeAction(input.rangeInstanceId, input.nodeId, 'apply-dns', {}, operation(input));
+    },
+  },
   {
     name: 'range_instance_node_open_vnc',
     title: '打开编排节点 VNC',

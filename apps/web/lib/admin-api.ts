@@ -359,13 +359,14 @@ export async function runRangeInstanceNodeAction(
   token: string,
   rangeInstanceId: string,
   nodeId: string,
-  action: 'start' | 'stop' | 'reboot' | 'open-vnc' | 'pack-image',
+  action: 'start' | 'stop' | 'reboot' | 'open-vnc' | 'pack-image' | 'verify-dns',
   payload: Record<string, string>,
 ) {
-  const response = await fetch(`${apiBaseUrl}/admin/ranges/${rangeInstanceId}/nodes/${nodeId}/actions/${action}`, {
+  const response = await fetch(`${apiBaseUrl}/admin/ranges/${encodeURIComponent(rangeInstanceId)}/nodes/${encodeURIComponent(nodeId)}/actions/${action}`, {
     method: 'POST',
     headers: createAdminHeaders(token),
     body: JSON.stringify(payload),
+    ...(action === 'verify-dns' ? { signal: AbortSignal.timeout(180_000) } : {}),
   });
 
   return readJson<RangeInstanceNodeActionResult>(response);

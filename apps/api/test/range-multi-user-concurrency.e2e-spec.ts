@@ -63,6 +63,11 @@ describeWithDatabase('PostgreSQL multi-user range lifecycle isolation', () => {
     jest.spyOn(globalThis, 'fetch').mockImplementation(async url => {
       const query = new URL(String(url)).searchParams;
       cloudCalls.push({ action: query.get('Action')!, instanceId: query.get('InstanceId') });
+      if (query.get('Action') === 'DescribeVpcAttribute') {
+        // This fixture models cloud absence after its mocked destroy. A get API
+        // reports a missing exact ID via a receipt, not an empty list payload.
+        return new Response(JSON.stringify({ RequestId: 'fixture-vpc-absence', Code: 'InvalidVpcId.NotFound' }), { status: 404 });
+      }
       if (query.get('Action') === 'DescribeInstances') {
         const ids = JSON.parse(query.get('InstanceIds') ?? '[]') as string[];
         return { ok: true, json: async () => ({ RequestId: 'fixture-request', PageSize: 100, PageNumber: 1, TotalCount: ids.filter(id => cloudTags.has(id)).length, Instances: { Instance: ids.flatMap(id => cloudTags.has(id) ? [{
@@ -78,7 +83,7 @@ describeWithDatabase('PostgreSQL multi-user range lifecycle isolation', () => {
         return { ok: true, json: async () => ({ RequestId: 'fixture-disks', PageSize: 100, PageNumber: 1,
           TotalCount: disks.length, Disks: { Disk: disks } }) } as Response;
       }
-      return { ok: true, json: async () => ({ RequestId: 'fixture-request', PageSize: 100, PageNumber: 1, TotalCount: 0, Disks: { Disk: [] }, Instances: { Instance: [] }, Vpcs: { Vpc: [] }, VSwitches: { VSwitch: [] }, NatGateways: { NatGateway: [] }, EipAddresses: { EipAddress: [] }, NetworkInterfaceSets: { NetworkInterfaceSet: [] }, VncUrl: 'mock-vnc' }) } as Response;
+      return { ok: true, json: async () => ({ RequestId: 'fixture-request', PageSize: Number(query.get('PageSize') ?? 100), PageNumber: 1, TotalCount: 0, Disks: { Disk: [] }, Instances: { Instance: [] }, Vpcs: { Vpc: [] }, VSwitches: { VSwitch: [] }, NatGateways: { NatGateway: [] }, EipAddresses: { EipAddress: [] }, NetworkInterfaceSets: { NetworkInterfaceSet: [] }, VncUrl: 'mock-vnc' }) } as Response;
     });
     apply = jest.fn(async (options: { workspaceDir: string }) => {
       const vars = JSON.parse(await fs.readFile(path.join(options.workspaceDir, 'range.auto.tfvars.json'), 'utf8'));
@@ -208,7 +213,7 @@ describeWithDatabase('PostgreSQL multi-user range lifecycle isolation', () => {
     expect(cloudCalls.at(-1)).toEqual({ action: 'StopInstance', instanceId: a.resourceSummary!.hostIds!['dmz-entry'] });
     const jobs = new ProvisionJobsService(repository);
     await expect(jobs.getById(a.lastJobId!, bob)).rejects.toMatchObject({ status: 403 });
-    expect((await jobs.getById(a.lastJobId!, alice)).topologySnapshot).not.toHaveProperty('runtimeCredentials');
+    expect(JSON.stringify(await jobs.getById(a.lastJobId!, alice))).not.toContain('"runtimeCredentials"');
     const allLedgers = await repository.listBillingLedgerResources();
     expect(allLedgers.filter(row => row.rangeInstanceId === a.id && row.cloudResourceType === 'disk')).toHaveLength(4);
     expect(allLedgers.filter(row => row.rangeInstanceId === b.id && row.cloudResourceType === 'disk')).toHaveLength(4);

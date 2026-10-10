@@ -1,5 +1,6 @@
 import type { EnterpriseProvisionPlan } from '../enterprise-provision-plan';
 import type { ProvisioningAttemptedZoneSummary } from '../provisioning.types';
+import { buildWindowsDnsUserData } from './guest-dns-scripts';
 
 export type AlibabaCloudOpenTofuRenderedVariables = {
   resource_name_prefix: string;
@@ -92,7 +93,7 @@ export type AlibabaCloudOpenTofuRenderedVariables = {
   bootstrap_scripts: Array<{
     key: string;
     name: string;
-    type: 'cloud-init' | 'shell';
+    type: 'cloud-init' | 'shell' | 'powershell';
     content: string;
     target_host_keys: string[];
   }>;
@@ -132,6 +133,7 @@ export type AlibabaCloudOpenTofuRendererInput = {
   hostInstanceTypes: Record<string, string>;
   imageId: string;
   hostImageIds?: Record<string, string>;
+  hostWindows?: Record<string, boolean>;
   hostPasswords: Record<string, string>;
   instancePassword: string;
   allowedIngressCidr: string;
@@ -144,6 +146,18 @@ export type AlibabaCloudOpenTofuRendererInput = {
 export class AlibabaCloudOpenTofuRenderer {
   render(input: AlibabaCloudOpenTofuRendererInput): AlibabaCloudOpenTofuRenderedVariables {
     const { plan } = input;
+    const dnsHosts = plan.hostDefinitions.filter(host => host.dns);
+    const dnsHostKeys = new Set(dnsHosts.map(host => host.key));
+    const bootstrapScripts: AlibabaCloudOpenTofuRenderedVariables['bootstrap_scripts'] = plan.bootstrapScripts.flatMap(script => {
+      const remaining = script.targetHostKeys.filter(key => !dnsHostKeys.has(key));
+      return remaining.length ? [{ key: script.key, name: script.name, type: script.type, content: script.content, target_host_keys: remaining }] : [];
+    });
+    for (const host of dnsHosts) {
+      if (input.hostWindows?.[host.key] !== true) throw new Error('Host DNS startup configuration currently requires a verified Windows image');
+      const dns = host.dns!;
+      const interfaces = plan.hostNetworkInterfaces.find(item => item.hostKey === host.key)?.interfaces ?? [];
+      bootstrapScripts.push({ key: `host-dns-${host.key}`, name: `${host.name} DNS`, type: 'powershell', target_host_keys: [host.key], content: buildWindowsDnsUserData({ provider: 'alicloud', dns, interfaces: interfaces.filter(nic => nic.nicId).map(nic => ({ nicId: nic.nicId!, privateIp: nic.privateIp })), scripts: plan.bootstrapScripts.filter(script => script.targetHostKeys.includes(host.key)) }) });
+    }
     const attemptedZones = (input.attemptedZones ?? []).map((zone) => ({
       zone_id: zone.zoneId,
       can_create_all_hosts: zone.canCreateAllHosts,
@@ -244,13 +258,7 @@ export class AlibabaCloudOpenTofuRenderer {
         internal_port: entry.internalPort,
         protocol: entry.protocol,
       })),
-      bootstrap_scripts: plan.bootstrapScripts.map((script) => ({
-        key: script.key,
-        name: script.name,
-        type: script.type,
-        content: script.content,
-        target_host_keys: script.targetHostKeys,
-      })),
+      bootstrap_scripts: bootstrapScripts,
       runtime_selections: {
         image_policies: plan.runtimeSelections.imagePolicies,
         instance_type_policies: plan.runtimeSelections.instanceTypePolicies,

@@ -1,3 +1,6 @@
+import { assertExistingHostBootstrapUnchanged } from './range-host-bootstrap-policy';
+export { assertExistingHostBootstrapUnchanged } from './range-host-bootstrap-policy';
+import { publicDnsVerification } from './range-dns-types';
 import { randomUUID } from 'node:crypto';
 import { rangePackedImageArtifactSummaries } from './packed-image-diagnostic';
 import { readPackedImageSourceSnapshots } from './packed-image-source-observation';
@@ -119,6 +122,8 @@ export class RangeInstancesService {
 
     return {
       ...hydrated,
+      resourceSummary: hydrated.resourceSummary ? { ...hydrated.resourceSummary, dnsVerification: undefined } : hydrated.resourceSummary,
+      dnsVerification: publicDnsVerification(hydrated.resourceSummary?.dnsVerification),
       ...nodeFacts,
       sourceTemplateRevision,
       packedImageArtifacts, packSourceSnapshots,
@@ -447,6 +452,7 @@ export class RangeInstancesService {
     const draftTopologySpec = this.normalizeJsonRecord(instance.draftTopologySpec);
     const draftScenarioTemplateSpec = this.normalizeJsonRecord(instance.draftScenarioTemplateSpec);
     const draftCompiledProvisionSpec = this.normalizeJsonRecord(instance.draftCompiledProvisionSpec);
+    assertExistingHostBootstrapUnchanged(instance, draftTopologyGraph);
     const metadata = await this.resolveDraftCompilationMetadata(instance, this.readPublicEntryProtocols(draftTopologySpec));
     const compiled = validateRangeInstanceDraftPayload(
       {

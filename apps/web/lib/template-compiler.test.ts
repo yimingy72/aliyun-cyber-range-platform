@@ -7,6 +7,15 @@ import { createEnterpriseRangeSkeleton } from './template-topology-skeleton';
 import { syncTopologySpecFromNodes } from './template-topology-sync';
 
 describe('compileTopologyGraph', () => {
+  it('keeps per-host DNS and selected NICs in the compiled graph on either provider', () => {
+    const nodes = createEnterpriseRangeSkeleton();
+    const host = nodes.find((node) => node.kind === 'ecs')!;
+    if (host.kind !== 'ecs') throw new Error('Host fixture missing');
+    host.dns = { servers: ['10.0.0.10'], nicIds: [host.nics![0]!.id], domain: 'lab.example' };
+    for (const cloudProvider of ['alibaba_cloud', 'tencent_cloud'] as const) {
+      expect(compileTopologyGraph({ nodes, cloudProvider }).resources.find((resource) => resource.id === host.id)?.config.dns).toEqual(host.dns);
+    }
+  });
   it('preserves Tencent on graph and derived NAT/EIP resources', () => {
     const nodes = createEnterpriseRangeSkeleton();
     const compiled = compileTopologyGraph({ nodes, topologySpec: syncTopologySpecFromNodes({ nodes }), cloudProvider: 'tencent_cloud' });

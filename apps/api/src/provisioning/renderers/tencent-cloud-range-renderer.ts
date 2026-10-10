@@ -2,6 +2,7 @@ import { assertTencentInstanceLogin } from './tencent-cloud-opentofu-renderer';
 import { createHash } from 'node:crypto';
 import type { EnterpriseProvisionPlan } from '../enterprise-provision-plan';
 import type { ResolvedProvisioningRuntimeConfig } from '../provisioning.types';
+import { buildWindowsDnsUserData } from './guest-dns-scripts';
 
 export function tencentNicCapacity(cpu: number) {
   if (cpu === 1) return { nics: 2, ips: 6 };
@@ -59,8 +60,11 @@ export function renderTencentRangeVariables(input: { plan: EnterpriseProvisionPl
   const terminateAt = new Date(input.expiresAt).toISOString().replace(/\.\d{3}Z$/, 'Z');
   const hosts = plan.hostDefinitions.map(host => {
     const scripts = plan.bootstrapScripts.filter(script => script.targetHostKeys.includes(host.key));
-    if (new Set(scripts.map(script => script.type)).size > 1) throw new Error('Tencent user data cannot mix shell and cloud-init scripts');
-    const userData = scripts.map(script => script.content).join('\n\n');
+    const dns = host.dns;
+    if (dns && input.hostWindows?.[host.key] !== true) throw new Error('Host DNS startup configuration currently requires a verified Windows image');
+    if (!dns && new Set(scripts.map(script => script.type)).size > 1) throw new Error('Tencent user data cannot mix shell and cloud-init scripts');
+    const dnsInterfaces = plan.hostNetworkInterfaces.find(item => item.hostKey === host.key)?.interfaces ?? [];
+    const userData = dns ? buildWindowsDnsUserData({ provider: 'tencent_cloud', dns, interfaces: dnsInterfaces.filter(nic => nic.nicId).map(nic => ({ nicId: nic.nicId!, privateIp: nic.privateIp })), scripts }) : scripts.map(script => script.content).join('\n\n');
     if (Buffer.byteLength(userData) > 16 * 1024) throw new Error('Tencent user data exceeds 16 KiB');
     const primary = interfaces.find(nic => nic.host_key === host.key && nic.device_index === 0)!;
     const password = input.hostPasswords[host.key];

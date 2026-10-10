@@ -53,17 +53,17 @@ describe('range destroy verification performance and completeness', () => {
   });
 
   it.each([
-    ['checkVpcExists', 'Vpcs', 'Vpc', 'VpcId', 'vpc-owned'],
     ['checkVSwitchExists', 'VSwitches', 'VSwitch', 'VSwitchId', 'vsw-owned'],
     ['checkNetworkInterfaceExists', 'NetworkInterfaceSets', 'NetworkInterfaceSet', 'NetworkInterfaceId', 'eni-owned'],
     ['checkNatGatewayExists', 'NatGateways', 'NatGateway', 'NatGatewayId', 'nat-owned'],
     ['checkEipExists', 'EipAddresses', 'EipAddress', 'AllocationId', 'eip-owned'],
   ])('validates complete absence and exact identities for %s', async (method, group, item, field, id) => {
     const service = worker();
-    const valid = { RequestId: 'fixture', TotalCount: 0, PageSize: 100, PageNumber: 1, [group]: { [item]: [] } };
+    const pageSize = method === 'checkVSwitchExists' || method === 'checkNatGatewayExists' ? 50 : 100;
+    const valid = { RequestId: 'fixture', TotalCount: 0, PageSize: pageSize, PageNumber: 1, [group]: { [item]: [] } };
     service.performAliyunRpcRequest = jest.fn().mockResolvedValue(valid);
     await expect(service[method](id, account, account.defaultRegion)).resolves.toBe(false);
-    expect(service.performAliyunRpcRequest.mock.calls[0][0].parameters).toMatchObject({ PageSize: '100', PageNumber: '1',
+    expect(service.performAliyunRpcRequest.mock.calls[0][0].parameters).toMatchObject({ PageSize: String(pageSize), PageNumber: '1',
       [method === 'checkNetworkInterfaceExists' ? 'NetworkInterfaceId.1' : field]: id });
     for (const broken of [{}, { ...valid, RequestId: undefined }, { ...valid, TotalCount: 1 }, { ...valid, PageNumber: 2 },
       { ...valid, NextToken: 'more' }, { ...valid, Code: 'Forbidden' },

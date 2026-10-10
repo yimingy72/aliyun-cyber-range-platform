@@ -99,6 +99,7 @@ function compileNodeConfig(
         portGroups: node.portGroups,
         nics: node.nics,
         initScript: node.initScript,
+        ...(node.dns ? { dns: node.dns } : {}),
         imageStrategy: node.imageStrategy,
         instanceTypeStrategy: node.instanceTypeStrategy,
       };

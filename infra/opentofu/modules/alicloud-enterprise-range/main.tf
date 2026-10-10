@@ -348,9 +348,9 @@ check "bootstrap_script_targets_exist" {
 check "bootstrap_script_types_supported" {
   assert {
     condition = alltrue([
-      for script in var.bootstrap_scripts : contains(["shell", "cloud-init"], script.type)
+      for script in var.bootstrap_scripts : contains(["shell", "cloud-init", "powershell"], script.type)
     ])
-    error_message = "Bootstrap scripts currently support only shell and cloud-init types."
+    error_message = "Bootstrap scripts support shell, cloud-init and powershell types."
   }
 }
 

@@ -55,6 +55,7 @@ export function syncTopologySpecFromNodes(input: SyncTopologySpecInput): RangeTe
         role: node.role,
         privateIp: primaryNic?.privateIp ?? node.privateIp,
         exposePublic: node.id === entryHost?.id,
+        ...(node.dns ? { dns: node.dns } : {}),
       };
     }),
     publicEntry: {

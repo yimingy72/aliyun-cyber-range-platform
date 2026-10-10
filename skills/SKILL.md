@@ -5,7 +5,7 @@ description: 通过 aliyun-cyber-range-platform MCP Server 操作云上综合靶
 
 # 云上综合靶场平台全产品 Skill
 
-通过 `aliyun-cyber-range-platform` MCP Server 操作平台。入口负责前端模块路由和跨模块安全规则；模块内的工具、参数、状态约束和流程全部在对应产品参考中完整定义。当前产品参考覆盖 Server 已注册的 84 个 MCP 工具。
+通过 `aliyun-cyber-range-platform` MCP Server 操作平台。入口负责前端模块路由和跨模块安全规则；模块内的工具、参数、状态约束和流程全部在对应产品参考中完整定义。当前产品参考覆盖 Server 已注册的 86 个 MCP 工具。
 
 > ⚠️ **运行时 MCP `tools/list`、工具的 `inputSchema`、`outputSchema`、`annotations` 和当前 scope 是唯一事实源。** 运行时 schema 与静态参考冲突时，以 schema 为准。
 
@@ -53,9 +53,9 @@ description: 通过 aliyun-cyber-range-platform MCP Server 操作云上综合靶
 
 异步开通任务是所有模块的通用支撑能力：使用 `provision_job_get({ provisionJobId })` 跟踪开通、更新、销毁和打包任务。
 
-| 通用工具 | 必填参数 | Scope | 用途 |
-|---|---|---|---|
-| `provision_job_get` | `provisionJobId` | `jobs:read` | 查询异步任务状态与脱敏失败摘要。 |
+| 操作 | MCP 工具 | 必填参数 | 可选参数 | Scope | 用途 |
+|---|---|---|---|---|---|
+| 查询异步任务 | `provision_job_get` | `provisionJobId` | `includeEvidence: boolean` | `jobs:read` | 查询异步任务状态与脱敏失败摘要；`includeEvidence: true` 读取同来源资源库存、固定阶段状态、相关作业与计费台账释放时间。仅为平台记录，不等于独立云 API 回执或最终账单。 |
 
 ## 意图判断决策树
 
@@ -93,7 +93,7 @@ description: 通过 aliyun-cyber-range-platform MCP Server 操作云上综合靶
 | 镜像中心 | 收录、重命名、启用/停用、发布/取消发布、创建全局标签定义、替换标签关联、删除镜像、删除自定义云镜像、重试导入 |
 | 实例管理 | 创建批次、销毁单台/整批、重启、打包镜像、导出 CSV、打开 VNC |
 | 靶场编排 | 发布到平台、回退为私有、删除模板 |
-| 编排实例 | 启动、应用变更、同步模板、节点开关机/重启、打包镜像、销毁、获取访问凭据 |
+| 编排实例 | 启动、应用变更、同步模板、节点开关机/重启、DNS 核验/重新下发、打包镜像、销毁、获取访问凭据 |
 | 用户管理 | 创建用户、角色/状态变更、重置密码 |
 | 账单费用 | 同步账单、导出费用 CSV |
 | 基础配置 | 绑定/更新云账号、更新云配置 |

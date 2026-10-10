@@ -1,3 +1,4 @@
+import type { RangeDnsVerification } from '../../src/admin/range-dns-types';
 import {
   AdminRepository,
   BillingAnomalyRecord,
@@ -856,6 +857,22 @@ export function createMemoryAdminRepository(): AdminRepository {
       const record = rangeInstances.find((instance) => instance.id === id);
 
       return record ? clone(record) : null;
+    },
+    async updateRangeInstanceDnsState(id: string, hostKey: string, nativeId: string, expectedClaim: string | null, entry: RangeDnsVerification) {
+      const scope = getCurrentCloudWorkspaceScope();
+      if (!scope || 'system' in scope) throw new Error('Cloud workspace scope is required');
+      if (scope.isReadOnly) throw new Error('Historical cloud workspace is read-only');
+      if (!hostKey || !nativeId || entry.instanceId !== nativeId || !entry.claimId) return false;
+      const instance = rangeInstances.find((record) => record.id === id && record.cloudWorkspaceId === scope.cloudWorkspaceId);
+      const summary = instance?.resourceSummary;
+      if (!instance || instance.status !== 'running' || summary?.hostIds?.[hostKey] !== nativeId) return false;
+      const states = summary.dnsVerification;
+      if (states !== undefined && (!states || typeof states !== 'object' || Array.isArray(states))) return false;
+      const present = !!states && Object.prototype.hasOwnProperty.call(states, hostKey);
+      if (expectedClaim === null ? present : !present || states![hostKey]?.claimId !== expectedClaim) return false;
+      instance.resourceSummary = { ...summary, dnsVerification: { ...states, [hostKey]: clone(entry) } };
+      instance.updatedAt = now();
+      return true;
     },
     async updateRangeInstance(id: string, input: UpdateRangeInstanceInput) {
       const record = rangeInstances.find((instance) => instance.id === id)!;

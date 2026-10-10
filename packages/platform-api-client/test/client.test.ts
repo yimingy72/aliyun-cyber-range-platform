@@ -3,6 +3,19 @@ import { describe, expect, it, vi } from 'vitest';
 import { PlatformApiClient, PlatformApiError } from '../src/client';
 
 describe('PlatformApiClient', () => {
+  it('maps a bounded DNS verification to the exact node and preserves operation confirmation', async () => {
+    const proof = { status: 'verified', method: 'readback', expected: [], actual: [], resolutionStatus: 'not_requested' };
+    const fetchMock = vi.fn(async (input: string, init?: RequestInit) => {
+      expect(input).toBe('https://platform.example/admin/ranges/range%2F1/nodes/host%2F1/actions/verify-dns');
+      expect(init).toMatchObject({ method: 'POST', body: '{}', headers: { 'x-idempotency-key': 'dns-1', 'x-confirmation-id': 'confirm-dns' } });
+      expect(init?.signal).toBeInstanceOf(AbortSignal);
+      return new Response(JSON.stringify({ status: 'verified', action: 'verify-dns', dnsVerification: proof }));
+    });
+    const client = new PlatformApiClient({ baseUrl: 'https://platform.example', token: 'fixture-token', fetch: fetchMock as typeof fetch });
+    await expect(client.runRangeInstanceNodeAction('range/1', 'host/1', 'verify-dns', {}, { idempotencyKey: 'dns-1', confirmationId: 'confirm-dns' }))
+      .resolves.toMatchObject({ dnsVerification: proof });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
   it('uses a distinct dry-run validation endpoint and preserves bounded diagnostics', async () => {
     const fetchMock = vi.fn(async (input: string, init?: RequestInit) => {
       expect(input).toBe('https://platform.example/admin/ranges/range%2F1/nodes/node%2F1/pack-image-validation');

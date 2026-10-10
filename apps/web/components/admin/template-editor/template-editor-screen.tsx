@@ -35,6 +35,7 @@ import {
   isPhaseOneNodeKind as isPhaseOneNodeKindTypeGuard,
 } from '../../../lib/scenario-graph';
 import { nextAvailableSwitchCidr, normalizeManualEdgePair, reconcileHostNicConnections, validateManualEdge } from '../../../lib/scenario-graph-linking';
+import { hostDnsErrors, readHostDns } from '../../../lib/host-dns';
 import type {
   EcsTemplateNode,
   ScenarioGraphDraft,
@@ -1037,6 +1038,7 @@ function readNodesFromTemplate(template: RangeTemplate | null, fallbackTemplateI
               },
             ],
         initScript: typeof candidateRecord.initScript === 'string' ? candidateRecord.initScript : '',
+        dns: readHostDns(candidateRecord.dns),
         imageStrategy: normalizeImageStrategy(
           candidateRecord.imageStrategy,
           typeof candidateRecord.image === 'string'
@@ -1238,6 +1240,9 @@ export function TemplateEditorScreen({
     }
 
     for (const hostNode of hostNodes) {
+      hostDnsErrors(hostNode).forEach((error) => validationErrors.push(`${hostNode.label}：${error}`));
+      const imageOs = platformImageAssets.find((asset) => asset.id === hostNode.platformImageAssetId)?.osType?.toLowerCase();
+      if (hostNode.dns && imageOs && imageOs !== 'windows') validationErrors.push(`${hostNode.label} 自定义 DNS 需要 Windows 镜像`);
       if (typeof hostNode.customPassword === 'string' && hostNode.customPassword.length > 0) {
         const passwordValidationResult = validateAliyunEcsPassword(hostNode.customPassword);
 

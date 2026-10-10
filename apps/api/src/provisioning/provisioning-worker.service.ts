@@ -1,3 +1,5 @@
+import { assertExistingHostBootstrapUnchanged } from '../admin/range-host-bootstrap-policy';
+import { RangeDnsVerificationService } from '../admin/range-dns-verification.service';
 import { randomUUID } from 'node:crypto';
 import { runInSystemCloudWorkspaceScope } from '../auth/cloud-workspace-scope';
 import { listExecutionCloudWorkspaces, runInExecutionCloudWorkspace } from '../auth/background-cloud-workspace';
@@ -51,6 +53,12 @@ const DESTROY_VERIFICATION_ATTEMPTS = 12;
 const DESTROY_VERIFICATION_INTERVAL_MS = 5_000;
 const SINGLE_INSTANCE_TEMPLATE_MODULE_PATH = 'infra/opentofu/modules/alicloud-vpc-single-ecs';
 
+class AliyunVerificationRequestError extends Error {
+  constructor(readonly action: string, readonly status: number, readonly code: string | null, readonly requestId: string | null) {
+    super(`Aliyun ${action} request failed with status ${status}${code ? ` (${code})` : ''}`);
+  }
+}
+
 type SingleInstanceJobInput = {
   job: ProvisionJobRecord;
   instance: RangeInstanceRecord;
@@ -85,6 +93,7 @@ export class ProvisioningWorkerService {
     singleInstanceBatchExecutionService?: SingleInstanceBatchExecutionService,
     platformResourceReconciliationService?: PlatformResourceReconciliationService,
     @Optional() singleInstanceOpenTofuExecutionService?: SingleInstanceOpenTofuExecutionService,
+    @Optional() private readonly dnsVerification?: RangeDnsVerificationService,
   ) {
     this.singleInstanceBatchExecutionService =
       singleInstanceBatchExecutionService ??
@@ -388,6 +397,7 @@ export class ProvisioningWorkerService {
           status: 'succeeded', finishedAt: new Date(), errorSummary: null,
         }))) return;
         await this.finalizeDispatchedOperation(job, 'succeeded');
+        this.scheduleGuestDnsVerification(instance, job);
         this.nextResourceReconciliationAt = 0;
         return;
       }
@@ -554,6 +564,7 @@ export class ProvisioningWorkerService {
         status: 'succeeded', finishedAt: new Date(), errorSummary: null,
       }))) return;
       await this.finalizeDispatchedOperation(job, 'succeeded');
+      this.scheduleGuestDnsVerification(instance, job);
       this.nextResourceReconciliationAt = 0;
     } catch (error) {
       if (!(await this.ownsProvisionJobClaim(job))) {
@@ -653,8 +664,10 @@ export class ProvisioningWorkerService {
     if (!(await this.ownsProvisionJobClaim(input.job))) {
       return;
     }
-    if (topologySnapshot.operation) await this.assertRangeSnapshotImages(input.instance, topologySnapshot);
     const beforeUpdate = await this.adminRepository.getRangeInstanceById(input.instance.id);
+    if (!beforeUpdate) throw new Error('Range instance disappeared before topology update');
+    assertExistingHostBootstrapUnchanged(beforeUpdate, topologySnapshot.topologyGraph);
+    if (topologySnapshot.operation) await this.assertRangeSnapshotImages(beforeUpdate, topologySnapshot);
     const beforeResources = beforeUpdate?.resourceSummary
       ? await this.captureRangeDisks(input.job, beforeUpdate, beforeUpdate.resourceSummary, input.accountContext, true) : null;
     const result = await this.rangeProvisioner.create({
@@ -1554,7 +1567,7 @@ export class ProvisioningWorkerService {
 
     const vpcId = resourceSummary.vpcId?.trim();
     const vpcExists = vpcId
-      ? await this.checkVpcExists(vpcId, runtimeConfig, regionId)
+      ? await this.checkVpcExists(vpcId, runtimeConfig, regionId, this.isFrozenAliyunInventory(resourceSummary, runtimeConfig))
       : false;
 
     if (vpcExists && vpcId) {
@@ -1564,7 +1577,7 @@ export class ProvisioningWorkerService {
     const checks: Array<() => Promise<string[]>> = [];
     {
       for (const subnetId of new Set(Object.values(resourceSummary.subnetIds ?? {}).filter(Boolean))) {
-        checks.push(async () => await this.checkVSwitchExists(subnetId, runtimeConfig, regionId, vpcId ?? undefined) ? [`vswitch:${subnetId}`] : []);
+        checks.push(async () => await this.checkVSwitchExists(subnetId, runtimeConfig, regionId, this.isFrozenAliyunInventory(resourceSummary, runtimeConfig)) ? [`vswitch:${subnetId}`] : []);
       }
     }
     checks.push(async () => (await this.findExistingInstanceIds(Object.values(resourceSummary.hostIds ?? {}).filter(Boolean), runtimeConfig, regionId))
@@ -1635,24 +1648,93 @@ export class ProvisioningWorkerService {
       accessKeySecret: string;
     },
     regionId: string,
+    hasFrozenInventory = false,
   ) {
-    const payload = await this.performAliyunRpcRequest<{
-      Vpcs?: {
-        Vpc?: Array<{ VpcId?: string }> | { VpcId?: string };
-      };
-    }>({
+    // The get API documents exact missing-ID receipts; a list API's arbitrary
+    // HTTP 400 is not evidence that the recorded VPC was reclaimed.
+    let payload: { RequestId?: string; VpcId?: string; RegionId?: string; Code?: unknown };
+    try { payload = await this.performAliyunRpcRequest<typeof payload>({
       endpoint: `vpc.${regionId}.aliyuncs.com`,
       version: ALICLOUD_VPC_API_VERSION,
-      action: 'DescribeVpcs',
+      action: 'DescribeVpcAttribute',
       accessKeyId: runtimeConfig.accessKeyId,
       accessKeySecret: runtimeConfig.accessKeySecret,
       parameters: {
         RegionId: regionId,
-        VpcId: vpcId, PageSize: '100', PageNumber: '1',
+        VpcId: vpcId,
       },
-    });
+    }); } catch (error) {
+      // https://help.aliyun.com/en/vpc/developer-reference/api-vpc-2016-04-28-describevpcattribute
+      if (hasFrozenInventory && /^vpc-[a-zA-Z0-9]+$/.test(vpcId) && error instanceof AliyunVerificationRequestError && error.requestId
+        && error.action === 'DescribeVpcAttribute' && ((error.status === 400 && error.code === 'Forbidden.VpcNotFound')
+          || (error.status === 404 && error.code === 'InvalidVpcId.NotFound'))) return false;
+      throw error;
+    }
 
-    return this.readVerificationPage(payload, payload.Vpcs?.Vpc, 'VpcId', [vpcId]).length > 0;
+    const validReceipt = Boolean(payload) && !payload.Code && typeof payload.RequestId === 'string' && /^[a-zA-Z0-9-]{1,128}$/.test(payload.RequestId);
+    const validRegion = payload.RegionId === undefined || payload.RegionId === '' || payload.RegionId === regionId;
+    if (validReceipt && validRegion && hasFrozenInventory && /^vpc-[a-zA-Z0-9]+$/.test(vpcId)
+      && (payload.VpcId === undefined || payload.VpcId === '')) {
+      // A real missing VPC can return an empty success body. That body alone is
+      // not absence proof: independently enumerate the entire frozen region.
+      return this.findVpcInCompleteRegionalInventory(vpcId, runtimeConfig, regionId);
+    }
+    if (!validReceipt || !validRegion || payload.VpcId !== vpcId) {
+      // RegionId is optional in success receipts. The frozen regional endpoint
+      // and signed RegionId request still bind the query to the original region.
+      // Keep malformed receipts failed, exposing only bounded identity fields.
+      const safe = (value: unknown) => value === undefined ? 'missing'
+        : value === '' ? 'empty' : typeof value === 'string' && /^[a-zA-Z0-9-]{1,128}$/.test(value) ? value : 'invalid';
+      throw new Error(`Cloud VPC destroy verification returned an unexpected resource identity (expectedVpcId=${safe(vpcId)}, VpcId=${safe(payload?.VpcId)}, RegionId=${safe(payload?.RegionId)}, RequestId=${safe(payload?.RequestId)})`);
+    }
+    return true;
+  }
+
+  private async findVpcInCompleteRegionalInventory(vpcId: string,
+    runtimeConfig: { accessKeyId: string; accessKeySecret: string }, regionId: string) {
+    const snapshot = async () => {
+      const ids = new Set<string>();
+      const counts: number[] = [];
+      let queriedPages = 0;
+      // DescribeVpcs defaults IsDefault to true. Explicitly query both modes
+      // so default filtering cannot hide a recorded non-default VPC.
+      for (const isDefault of ['true', 'false']) {
+        let total: number | null = null;
+        const categoryIds = new Set<string>();
+        for (let pageNumber = 1; ; pageNumber += 1) {
+          if (++queriedPages > 50) throw new Error('Cloud VPC inventory exceeds the complete verification page limit');
+          const payload = await this.performAliyunRpcRequest<Record<string, unknown>>({
+            endpoint: `vpc.${regionId}.aliyuncs.com`, version: ALICLOUD_VPC_API_VERSION, action: 'DescribeVpcs',
+            ...runtimeConfig, parameters: { RegionId: regionId, IsDefault: isDefault, PageSize: '50', PageNumber: String(pageNumber) },
+          });
+          const group = this.readJsonObject(payload.Vpcs);
+          const rows = group?.Vpc;
+          if (payload.Code || typeof payload.RequestId !== 'string' || !/^[a-zA-Z0-9-]{1,128}$/.test(payload.RequestId)
+            || !Number.isInteger(payload.TotalCount) || Number(payload.TotalCount) < 0 || Number(payload.TotalCount) > 2500
+            || payload.PageNumber !== pageNumber || payload.PageSize !== 50 || !Array.isArray(rows)
+            || (payload.NextToken !== undefined && payload.NextToken !== '')
+            || (total !== null && total !== payload.TotalCount)) throw new Error('Cloud VPC inventory pagination is incomplete or changed during verification');
+          total = Number(payload.TotalCount);
+          const expectedRows = Math.min(50, Math.max(0, total - (pageNumber - 1) * 50));
+          if (rows.length !== expectedRows) throw new Error('Cloud VPC inventory pagination is incomplete or changed during verification');
+          for (const value of rows) {
+            const row = this.readJsonObject(value);
+            if (!row || typeof row.VpcId !== 'string' || !/^vpc-[a-zA-Z0-9]+$/.test(row.VpcId)
+              || categoryIds.has(row.VpcId) || (row.RegionId !== undefined && row.RegionId !== '' && row.RegionId !== regionId))
+              throw new Error('Cloud VPC inventory contains an invalid, duplicated or foreign-region identity');
+            categoryIds.add(row.VpcId); ids.add(row.VpcId);
+          }
+          if (categoryIds.size === total) break;
+        }
+        counts.push(total!);
+      }
+      return JSON.stringify({ counts, ids: [...ids].sort() });
+    };
+    const first = await snapshot();
+    const second = await snapshot();
+    if (first !== second) throw new Error('Cloud VPC inventory changed between complete verification reads');
+    const ids = (JSON.parse(first) as { ids: string[] }).ids;
+    return ids.includes(vpcId);
   }
 
   private async checkVSwitchExists(
@@ -1662,9 +1744,10 @@ export class ProvisioningWorkerService {
       accessKeySecret: string;
     },
     regionId: string,
-    vpcId?: string,
+    hasFrozenInventory = false,
   ) {
-    const payload = await this.performAliyunRpcRequest<{
+    let payload: { VSwitches?: { VSwitch?: Array<{ VSwitchId?: string }> | { VSwitchId?: string } } };
+    try { payload = await this.performAliyunRpcRequest<{
       VSwitches?: {
         VSwitch?: Array<{ VSwitchId?: string }> | { VSwitchId?: string };
       };
@@ -1676,10 +1759,15 @@ export class ProvisioningWorkerService {
       accessKeySecret: runtimeConfig.accessKeySecret,
       parameters: {
         RegionId: regionId,
-        ...(vpcId ? { VpcId: vpcId } : {}),
-        VSwitchId: vSwitchId, PageSize: '100', PageNumber: '1',
+        // Query the exact recorded switch independently of its deleted parent.
+        VSwitchId: vSwitchId, PageSize: '50', PageNumber: '1',
       },
-    });
+    }); } catch (error) {
+      // https://help.aliyun.com/zh/vpc/developer-reference/api-vpc-2016-04-28-describevswitches
+      if (hasFrozenInventory && /^vsw-[a-zA-Z0-9]+$/.test(vSwitchId) && error instanceof AliyunVerificationRequestError && error.requestId
+        && error.action === 'DescribeVSwitches' && error.status === 404 && error.code === 'InvalidVSwitchId.NotFound') return false;
+      throw error;
+    }
 
     return this.readVerificationPage(payload, payload.VSwitches?.VSwitch, 'VSwitchId', [vSwitchId]).length > 0;
   }
@@ -1733,7 +1821,7 @@ export class ProvisioningWorkerService {
       accessKeySecret: runtimeConfig.accessKeySecret,
       parameters: {
         RegionId: regionId,
-        NatGatewayId: natGatewayId, PageSize: '100', PageNumber: '1',
+        NatGatewayId: natGatewayId, PageSize: '50', PageNumber: '1',
       },
     });
 
@@ -1825,11 +1913,27 @@ export class ProvisioningWorkerService {
       },
     });
 
-    if (!response.ok) {
-      throw new Error(`Aliyun ${input.action} request failed with status ${response.status}`);
+    const payload: unknown = await response.json().catch(() => null);
+    const object = this.readJsonObject(payload);
+    if (!response.ok || object?.Code) {
+      // Keep only bounded machine fields. The cloud Message/URL may contain
+      // caller-provided or sensitive data and is never copied to job logs.
+      const code = typeof object?.Code === 'string' && /^[a-zA-Z0-9_.-]{1,128}$/.test(object.Code) ? object.Code : null;
+      const requestId = typeof object?.RequestId === 'string' && /^[a-zA-Z0-9-]{1,128}$/.test(object.RequestId) ? object.RequestId : null;
+      throw new AliyunVerificationRequestError(input.action, response.status, code, requestId);
     }
+    if (!object) throw new Error(`Aliyun ${input.action} returned an invalid JSON object`);
+    return payload as ResponsePayload;
+  }
 
-    return (await response.json()) as ResponsePayload;
+  private isFrozenAliyunInventory(summary: RangeResourceSummary, account: { provider?: string; accountUid?: string | null;
+    cloudAccountContextId?: string | null; defaultRegion: string; defaultZoneId?: string; accountUidResolved?: boolean }) {
+    const bound = summary.executionContext;
+    return account.provider === 'alibaba_cloud' && account.accountUidResolved === true && Boolean(bound)
+      && (!bound!.provider || bound!.provider === account.provider) && Boolean(bound!.cloudAccountUid)
+      && bound!.cloudAccountUid === account.accountUid && Boolean(bound!.cloudAccountContextId)
+      && bound!.cloudAccountContextId === account.cloudAccountContextId && bound!.regionId === account.defaultRegion
+      && Boolean(bound!.zoneId) && bound!.zoneId === account.defaultZoneId;
   }
 
   private async failJob(
@@ -2006,6 +2110,13 @@ export class ProvisioningWorkerService {
         ...payload,
       });
     };
+  }
+
+  private scheduleGuestDnsVerification(instance: RangeInstanceRecord, job: ProvisionJobRecord) {
+    if (instance.instanceMode !== 'range' || !this.dnsVerification) return;
+    try { this.dnsVerification.scheduleAll(instance.id, job.id, instance.cloudWorkspaceId); } catch {
+      this.logger.warn('Guest DNS verification unavailable; cloud resources remain running without recreation.');
+    }
   }
 
   private async runWorkerStep(

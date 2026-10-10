@@ -1,3 +1,5 @@
+import type { HostDnsConfig } from './host-dns';
+
 import type {
   ScenarioTemplateImagePolicy,
   ScenarioTemplateInstanceTypePolicy,
@@ -56,6 +58,7 @@ export type CompiledHost = {
     username?: string;
     password?: string;
   };
+  dns?: HostDnsConfig;
   networkInterfaces: Array<{
     nicId?: string;
     deviceIndex: number;

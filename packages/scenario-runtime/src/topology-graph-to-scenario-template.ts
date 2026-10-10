@@ -1,3 +1,4 @@
+import { validateHostDnsConfig } from './host-dns';
 import { resolvePreferredInstanceTypes } from './instance-type-catalog';
 import { normalizeAlibabaCloudPortRange } from './alibaba-cloud-port-range';
 import {
@@ -11,6 +12,7 @@ import type {
   ScenarioTemplateBootstrapConfig,
   ScenarioTemplateDnatMapping,
   ScenarioTemplateHost,
+  ScenarioTemplateHostNic,
   ScenarioTemplateMetadata,
   ScenarioTemplateNatConfig,
   ScenarioTemplateNetworkZone,
@@ -358,7 +360,7 @@ export function buildScenarioTemplateSpecFromTopologyGraph(input: {
       const candidate = readRecord(node);
       const nics = Array.isArray(candidate?.nics) ? (candidate.nics as HostNicDraft[]) : [];
       const legacyNetworkInterfaces = node.networkInterfaces ?? [];
-      const normalizedNetworkInterfaces =
+      const normalizedNetworkInterfaces: ScenarioTemplateHostNic[] =
         nics.length > 0
           ? nics.flatMap((nic, index) => {
               const switchNode =
@@ -443,6 +445,7 @@ export function buildScenarioTemplateSpecFromTopologyGraph(input: {
         platformImageAssetId: node.platformImageAssetId,
         imageId: node.imageId,
         networkInterfaces: normalizedNetworkInterfaces,
+        ...(node.dns !== undefined ? { dns: validateHostDnsConfig(node.dns, normalizedNetworkInterfaces.flatMap((nic) => nic.nicId ? [nic.nicId] : []), `ECS ${node.id}.dns`) } : {}),
         portGroupRefs: (node.portGroups ?? []).map((_, index) => `${node.id}-port-group-${index + 1}`),
         dnat: {
           enabled: normalizedDnatConfig.mappings.length > 0,

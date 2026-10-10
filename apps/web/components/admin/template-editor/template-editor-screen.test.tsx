@@ -415,6 +415,23 @@ afterEach(() => {
 });
 
 describe('TemplateEditorScreen', () => {
+  it('restores DNS configuration from a saved template and blocks stale NIC targets before API validation', async () => {
+    render(<TemplateEditorScreen template={{
+      id: 'template-dns', name: '域场景', slug: 'domain-range', revision: 1,
+      topologyGraph: { schemaVersion: '2.0.0', nodes: [{
+        id: 'member', kind: 'ecs', label: 'Windows 成员', imageId: 'windows-image',
+        platformImageAssetId: 'windows-asset', imageName: 'Windows Server',
+        privateIp: '10.0.50.20', nics: [{ id: 'member-primary', switchId: '', privateIp: '10.0.50.20', secondaryIps: [], securityGroupRules: [] }],
+        dns: { servers: ['10.0.50.10'], nicIds: ['deleted-nic'], domain: 'lab.example' },
+      }], edges: [] },
+    }} />);
+    fireEvent.click(await screen.findByRole('button', { name: /Windows 成员/ }));
+    expect((await screen.findByLabelText('DNS 服务器') as HTMLTextAreaElement).value).toBe('10.0.50.10');
+    expect((screen.getByLabelText('DNS 验证域名') as HTMLInputElement).value).toBe('lab.example');
+    fireEvent.click(screen.getByRole('button', { name: '检测与保存' }));
+    expect(await screen.findByText(/Windows 成员：DNS 作用网卡已不存在，请重新选择/)).toBeTruthy();
+    expect(validateAndSaveRangeTemplateMock).not.toHaveBeenCalled();
+  });
   it('does not render a standalone loading page while loading a routed template', () => {
     fetchRangeTemplateByIdMock.mockImplementation(
       () =>

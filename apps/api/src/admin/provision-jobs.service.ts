@@ -2,6 +2,7 @@ import { ForbiddenException, Inject, Injectable, NotFoundException } from '@nest
 
 import { ADMIN_REPOSITORY, AdminRepository } from './admin.repository';
 import type { SessionUserProfile } from './admin-user-auth';
+import { buildProvisionJobEvidence } from './provision-job-evidence';
 
 @Injectable()
 export class ProvisionJobsService {
@@ -24,7 +25,7 @@ export class ProvisionJobsService {
     ).map(redactJobSecrets);
   }
 
-  async getById(id: string, currentUser: SessionUserProfile) {
+  async getById(id: string, currentUser: SessionUserProfile, includeEvidence = false) {
     const job = await this.adminRepository.getProvisionJobById(id);
 
     if (!job) {
@@ -33,7 +34,14 @@ export class ProvisionJobsService {
 
     await this.assertJobAccess(job.rangeInstanceId, currentUser);
 
-    return redactJobSecrets(job);
+    if (!includeEvidence) return redactJobSecrets(job);
+    const [steps, jobs, ledgers] = await Promise.all([
+      this.adminRepository.listProvisionJobStepLogs(id), this.adminRepository.listProvisionJobs(),
+      this.adminRepository.listBillingLedgerResources({ rangeInstanceId: job.rangeInstanceId }),
+    ]);
+    return { id: job.id, rangeInstanceId: job.rangeInstanceId, jobType: job.jobType, status: job.status,
+      createdAt: job.createdAt, startedAt: job.startedAt, finishedAt: job.finishedAt, retryCount: job.retryCount,
+      evidence: buildProvisionJobEvidence(job, steps, jobs, ledgers) };
   }
 
   async listSteps(id: string, currentUser: SessionUserProfile) {

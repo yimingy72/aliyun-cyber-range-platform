@@ -1,6 +1,9 @@
 import { Type } from 'class-transformer';
+import { isHostDnsDomain, isHostDnsIpv4 } from '@aliyun-cyber-range/scenario-runtime/compiled';
 import {
+  ArrayMaxSize,
   ArrayMinSize,
+  ArrayUnique,
   IsDefined,
   IsArray,
   IsBoolean,
@@ -10,9 +13,37 @@ import {
   IsOptional,
   IsString,
   Max,
+  MaxLength,
+  Matches,
   Min,
+  ValidateBy,
+  ValidateIf,
   ValidateNested,
 } from 'class-validator';
+
+class RangeTemplateHostDnsDto {
+  @IsArray()
+  @ArrayMinSize(1)
+  @ArrayMaxSize(4)
+  @ArrayUnique()
+  @ValidateBy({ name: 'isHostDnsIpv4', validator: { validate: isHostDnsIpv4, defaultMessage: () => 'each DNS server must be a usable IPv4 address' } }, { each: true })
+  servers!: string[];
+
+  @IsArray()
+  @ArrayMinSize(1)
+  @ArrayMaxSize(16)
+  @ArrayUnique()
+  @IsString({ each: true })
+  @IsNotEmpty({ each: true })
+  @MaxLength(128, { each: true })
+  @Matches(/^[^\x00-\x1f\x7f]+$/, { each: true })
+  nicIds!: string[];
+
+  @ValidateIf((_object, value) => value !== undefined)
+  @IsDefined()
+  @ValidateBy({ name: 'isHostDnsDomain', validator: { validate: isHostDnsDomain, defaultMessage: () => 'DNS domain must be a valid ASCII domain name' } })
+  domain?: string;
+}
 
 class RangeTemplateNetworkZoneDto {
   @IsString()
@@ -65,6 +96,13 @@ class RangeTemplateHostDto {
   @IsOptional()
   @IsBoolean()
   exposePublic?: boolean;
+
+  @ValidateIf((_object, value) => value !== undefined)
+  @IsDefined()
+  @IsObject()
+  @ValidateNested()
+  @Type(() => RangeTemplateHostDnsDto)
+  dns?: RangeTemplateHostDnsDto;
 }
 
 class RangeTemplateEntryProtocolDto {

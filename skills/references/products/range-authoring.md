@@ -149,6 +149,7 @@ connections:
 | `switches` | 交换机 CIDR、逻辑 `zoneKey`、用途、ACL、SNAT、DNAT | 每个 Switch 的 `zoneKey` 全局唯一，是网络分区键而非阿里云可用区 ID；CIDR 必须落在三段固定 VPC CIDR 内且互不重叠；`aclRules`、`dnatMappings` 始终存在，可为空数组。 |
 | `ecs` | 计算规格、角色、镜像选择、主 IP、初始化需求、所有 NIC 和安全组 | 每台 ECS 至少一个 NIC；ECS 和第一张 NIC 的 `zoneKey` 必须等于所连 Switch 的 `zoneKey`；ECS `privateIp` 等于第一个 NIC 的 `privateIp`。 |
 | `nics` | NIC 键、所属交换机、IP、辅助 IP 与安全组 | 每张 NIC 都有对应 `switch -> ecs` 连接。自定义规则时显式 `securityGroupRulesMode: custom`。 |
+| `ecs[].dns`（可选） | `servers`、`nicIds` 和可选 `domain` | 仅 Windows 主机；`servers` 为按优先级排序的 1–4 个不重复可用 IPv4，`nicIds` 为本机真实 NIC `key`，至少选一个；`domain` 为合法 ASCII AD DNS 域名，用于 SRV 核验。省略整个 `dns` 表示自动 DNS，不传 `null` 或空服务器列表。 |
 | `connections` | Router 到每个 Switch、Switch 到每台 ECS 的完整连线 | 使用 `{ key, from, to }`；键、来源和目标必须唯一且可解析。 |
 
 1. 交换机 CIDR、ECS 主/辅助 IP 必须属于对应 VPC 或交换机；IP 不可重复，不能使用网络或广播地址。
@@ -158,6 +159,7 @@ connections:
 5. 安全组规则必须给出方向、协议、端口范围、来源 CIDR、策略与优先级，策略只能是 `accept` 或 `drop`。其端口范围也遵循 `1/65535 -> -1/-1` 的规则。
 6. 设计中必须有且仅有一个公网入口 ECS：该 ECS 必须设置 `exposePublic: true`，并且必须是至少一条 DNAT 的目标。它是共享 DNAT EIP 的唯一外部访问落点，不直接绑定公网 IP；没有公网入口时模板不能保存。
 7. 不输出 `customPassword`，除非用户明确要求设置该 ECS 的初始密码。
+8. 自定义 DNS 仅作用于显式选中的 NIC，转换时将设计中的 NIC `key` 原样映射到图 NIC `id` 和 `dns.nicIds`；删除已选 NIC 必须报告错误，不能自动选其它网卡。Windows 初始化在用户脚本之前设置 DNS，IP 和网关仍使用原网络配置。若还有用户启动脚本，使用 PowerShell 内容并以 `[powershell]` 开头（也接受完整 `<powershell>...</powershell>` 包装）；不能混入 shell、bat 或 cloud-config。腾讯云要求支持 Cloudbase-init 的 Windows Server 2012 R2 及以上镜像。后续客体核验失败不会自动重建云实例。
 
 ## 转换 Skill 输出与校验
 
@@ -171,6 +173,7 @@ connections:
 6. 输出 `schemaVersion: "2.0.0"` 的完整 `topologyGraph`，Router、Switch、ECS、NIC 和边的 ID 使用设计 `key`，边使用 `relationType: "manual"`。
 7. 每个 ECS 节点写入 `image: displayName`（展示字段）、`imageName: displayName`、`imageId`、`platformImageAssetId`、`imageStrategy: { mode: fixed, imageId }`、`instanceTypeStrategy: { mode: auto }`、`networkInterfaces`、`portGroups` 与 `initScript`。镜像身份只由后三个 ID 字段表达；不得把资产 ID 填入 `image`。ECS 的遗留 `dnatMappings` 不创建 NAT 规则，转换结果应省略或保持为空数组。
 8. 每个 Switch 节点必须写入完整 `aclRules` 与 `nat: { snatEnabled, dnatMappings }`；**公网 DNAT 仅以 `switch.nat.dnatMappings` 为准**，每条映射必须含 `key`、`targetHostId`、`externalPort`、`internalPort`、`protocol`。共享 NAT/EIP 实际资源由 MCP 编译器派生，不能提交派生规格。
+9. 设计显式要求 Windows 自定义 DNS 时，在对应 ECS 图节点保留 `dns: { servers: [...], nicIds: [...], domain?: ... }`，例如 `dns: { servers: ['10.0.50.10'], nicIds: ['nic-member-1'], domain: 'lab.example' }`。根据真实镜像操作系统元数据判断 Windows，不能靠显示名猜测。省略 `dns` 的节点不生成 DNS 配置；域成员的所有 DNS 服务器应能解析 AD 域。
 
 转换回执和完整图均通过后，恰好调用一次 `range_template_create`，只传 `name`、可选 `description`、可选 `publicEntryProtocols` 和完整 `topologyGraph`。不要传 VPC CIDR、地域/可用区、任何平台生成或编译派生字段；创建被拒绝时停止并报告错误，禁止猜测字段或自动重试。
 

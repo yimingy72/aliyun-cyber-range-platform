@@ -16,6 +16,7 @@ import {
   getEffectiveSecurityGroupRules,
 } from '../../../lib/scenario-graph';
 import { AdminSelectField } from '../shared/admin-select-field';
+import { hostDnsErrors } from '../../../lib/host-dns';
 export type {
   EcsTemplateNode,
   RouterTemplateNode,
@@ -74,6 +75,15 @@ function parseMultiLineList(value: string) {
 
 function formatMultiLineList(values: string[] | undefined) {
   return (values ?? []).join('\n');
+}
+
+function DnsServerField({ servers, invalid, onChange }: { servers: string[]; invalid: boolean; onChange: (servers: string[]) => void }) {
+  const [draft, setDraft] = useState(() => formatMultiLineList(servers));
+  useEffect(() => {
+    setDraft((current) => JSON.stringify(parseMultiLineList(current)) === JSON.stringify(servers) ? current : formatMultiLineList(servers));
+  }, [servers]);
+  return <textarea aria-label="DNS 服务器" aria-invalid={invalid} rows={3} placeholder={'10.0.50.10\n10.0.50.11'} value={draft}
+    onChange={(event) => { setDraft(event.target.value); onChange(parseMultiLineList(event.target.value)); }} />;
 }
 
 function parseCidrParts(cidr: string) {
@@ -147,7 +157,7 @@ function PropertySelect({
   disabled?: boolean;
   emptyOptionLabel?: string;
   onValueChange: (value: string) => void;
-  options: readonly { label: string; value: string }[];
+  options: readonly { label: string; value: string; disabled?: boolean }[];
   value: string;
 }) {
   return (
@@ -377,6 +387,9 @@ function renderHostFields(
       ? enabledPlatformImageAssets.find((item) => item.id === selectedNode.platformImageAssetId) ?? null
       : null;
   const platformImageOptions = enabledPlatformImageAssets;
+  const dnsErrors = hostDnsErrors(selectedNode);
+  const selectedImageOs = selectedPlatformImageAsset?.osType?.toLowerCase();
+  const dnsUnavailable = Boolean(selectedImageOs && selectedImageOs !== 'windows');
 
   function handleSelectPlatformImageAsset(nextPlatformImageAsset: PlatformImageAsset | null) {
     const nextNode: EcsTemplateNode = {
@@ -795,6 +808,70 @@ function renderHostFields(
             </div>
           );
         })}
+      </PropertyGroup>
+
+      <PropertyGroup title="DNS 配置" description="Windows 主机可为指定网卡设置 DNS，在初始化脚本之前执行。">
+        <PropertyField label="配置方式">
+          <PropertySelect
+            ariaLabel="DNS 配置方式"
+            value={selectedNode.dns ? 'custom' : 'automatic'}
+            options={[
+              { value: 'automatic', label: '自动获取 DNS' },
+              { value: 'custom', label: '自定义 DNS', disabled: dnsUnavailable },
+            ]}
+            onValueChange={(value) => onUpdateNode(selectedNode.id, {
+              ...selectedNode,
+              dns: value === 'custom' ? { servers: [], nicIds: nicItems[0] ? [nicItems[0].id] : [] } : undefined,
+            })}
+          />
+        </PropertyField>
+        {selectedNode.dns ? <>
+          {dnsUnavailable ? <div className="template-property-warning-note" role="alert">当前镜像不是 Windows，无法应用自定义 DNS。请选择 Windows 镜像或自动获取 DNS。</div>
+            : !selectedImageOs ? <small className="template-property-field-hint">镜像操作系统尚未确认。保存时会校验 Windows 镜像，自定义 DNS 不会应用到未知系统。</small> : null}
+          <PropertyField label="DNS 服务器" hint="每行一个 IPv4 地址，最多 4 个，按优先顺序填写。域成员应使用域控 DNS。">
+            <DnsServerField
+              key={selectedNode.id}
+              servers={selectedNode.dns.servers}
+              invalid={dnsErrors.length > 0}
+              onChange={(servers) => onUpdateNode(selectedNode.id, {
+                ...selectedNode,
+                dns: { ...selectedNode.dns!, servers },
+              })}
+            />
+          </PropertyField>
+          <fieldset className="grid min-w-0 gap-2 border-0 p-0">
+            <legend className="template-property-field-label mb-1">作用网卡</legend>
+            {nicItems.map((nic, index) => <label className="flex min-w-0 items-start gap-2 text-xs" key={nic.id}>
+              <input
+                aria-label={`DNS 作用网卡 ${index + 1}`}
+                className="mt-0.5 shrink-0"
+                type="checkbox"
+                checked={selectedNode.dns!.nicIds.includes(nic.id)}
+                onChange={(event) => onUpdateNode(selectedNode.id, {
+                  ...selectedNode,
+                  dns: {
+                    ...selectedNode.dns!,
+                    nicIds: event.target.checked
+                      ? [...selectedNode.dns!.nicIds, nic.id]
+                      : selectedNode.dns!.nicIds.filter((id) => id !== nic.id),
+                  },
+                })}
+              />
+              <span className="min-w-0 break-words">网卡 {index + 1}{index === 0 ? '（主网卡）' : ''} · {nic.privateIp || '未填写私网 IP'}{switchById.get(nic.switchId)?.label ? ` · ${switchById.get(nic.switchId)!.label}` : ''}</span>
+            </label>)}
+            <small className="template-property-field-hint">默认作用于主网卡。未选择的网卡保留原 DNS。</small>
+          </fieldset>
+          <PropertyField label="验证域名（可选）" hint="填写 AD 域名时，额外检查域控 SRV 记录，例如 lab.example。">
+            <input aria-label="DNS 验证域名" placeholder="lab.example" value={selectedNode.dns.domain ?? ''}
+              onChange={(event) => onUpdateNode(selectedNode.id, {
+                ...selectedNode,
+                dns: { ...selectedNode.dns!, domain: event.target.value.trim() || undefined },
+              })}
+            />
+          </PropertyField>
+          {dnsErrors.length > 0 ? <div className="template-property-warning-note" role="alert">{dnsErrors.join('；')}</div> : null}
+          <small className="template-property-field-hint">实例详情会单独显示 DNS 验证结果。配置失败不会自动重建实例。</small>
+        </> : <small className="template-property-field-hint">使用网络自动下发的 DNS，无需修改主机配置。</small>}
       </PropertyGroup>
 
       <PropertyGroup title="初始化脚本">

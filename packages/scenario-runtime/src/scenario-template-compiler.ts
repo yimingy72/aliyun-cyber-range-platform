@@ -1,3 +1,4 @@
+import { validateHostDnsConfig } from './host-dns';
 import type { CompiledProvisionSpec } from './compiled-provision-spec';
 import type { ScenarioTemplateSpec } from './scenario-template-spec';
 
@@ -52,6 +53,7 @@ export function compileScenarioTemplateSpec(template: ScenarioTemplateSpec): Com
       exposePublic: Boolean(host.exposePublic),
       platformImageAssetId: host.platformImageAssetId,
       imageId: host.imageId,
+      ...(host.dns !== undefined ? { dns: validateHostDnsConfig(host.dns, (host.networkInterfaces ?? []).flatMap((nic) => nic.nicId ? [nic.nicId] : []), `hosts.${host.key}.dns`) } : {}),
       accountPreset: host.accountPreset
         ? {
             username: host.accountPreset.username,

@@ -230,6 +230,41 @@ import { AdminPageCache } from './admin-page-cache';
 import { AdminScreenCacheProvider } from '../../lib/admin-screen-cache';
 
 describe('RangeInstanceDetailScreen', () => {
+  it('shows exact returned DNS proof and preserves cloud Running after a failed single readback', async () => {
+    const graph = createValidTopologyGraph('域成员');
+    const host = graph.nodes.find((node) => node.kind === 'ecs')! as Record<string, unknown>;
+    host.dns = { servers: ['10.0.50.10'], nicIds: ['host-1-nic-1'] };
+    const proof = { status: 'failed', method: 'readback', expected: [{ nicId: 'host-1-nic-1', privateIp: '10.0.10.10', servers: ['10.0.50.10'] }], actual: [{ nicId: 'host-1-nic-1', privateIp: '10.0.10.10', servers: ['10.0.50.11'] }], resolutionStatus: 'not_requested' };
+    const detail = { id: 'range-1', status: 'running', nodeStatuses: { 'host-1': 'Running' }, runtimeTopologyGraph: graph };
+    fetchRangeInstanceDetailMock.mockReset();
+    fetchRangeInstanceDetailMock.mockResolvedValueOnce(detail).mockResolvedValue({ ...detail, dnsVerification: { 'host-1': proof } });
+    runRangeInstanceNodeActionMock.mockReset();
+    let finish!: (value: unknown) => void;
+    runRangeInstanceNodeActionMock.mockReturnValue(new Promise((resolve) => { finish = resolve; }));
+    applyRangeInstanceDraftMock.mockClear();
+    render(<RangeInstanceDetailScreen rangeId="range-1" />);
+    const button = await screen.findByRole('button', { name: '核验 DNS' });
+    fireEvent.click(button);
+    fireEvent.click(button);
+    expect(runRangeInstanceNodeActionMock).toHaveBeenCalledTimes(1);
+    expect(runRangeInstanceNodeActionMock).toHaveBeenCalledWith('http://localhost:3001', 'dev-admin-token', 'range-1', 'host-1', 'verify-dns', {});
+    expect((screen.getByRole('button', { name: '核验中...' }) as HTMLButtonElement).disabled).toBe(true);
+    await act(async () => finish({ status: 'failed', action: 'verify-dns', dnsVerification: proof }));
+    expect(await screen.findByText(/DNS 核验未通过.*实例不会自动重建/)).toBeTruthy();
+    expect(screen.getByText('DNS 验证失败')).toBeTruthy();
+    expect(screen.getAllByText('运行中').length).toBeGreaterThan(0);
+    expect(applyRangeInstanceDraftMock).not.toHaveBeenCalled();
+  });
+
+  it('shows a separate DNS proof state for a configured deployed host', async () => {
+    const graph = createValidTopologyGraph('域成员');
+    const host = graph.nodes.find((node) => node.kind === 'ecs')! as Record<string, unknown>;
+    host.dns = { servers: ['10.0.50.10'], nicIds: ['ecs-1-nic-1'] };
+    fetchRangeInstanceDetailMock.mockResolvedValue({ id: 'range-1', status: 'running', nodeStatuses: { [String(host.id)]: 'Running' }, runtimeTopologyGraph: graph });
+    render(<RangeInstanceDetailScreen rangeId="range-1" />);
+    expect(await screen.findByText('DNS 未验证')).toBeTruthy();
+    expect(screen.getAllByText('运行中').length).toBeGreaterThan(0);
+  });
   beforeEach(() => {
     workspaceState.workspace = undefined;
     vi.stubGlobal('ResizeObserver', class { observe() {} unobserve() {} disconnect() {} });
