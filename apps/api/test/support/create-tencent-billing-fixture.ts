@@ -34,6 +34,15 @@ export async function createTencentBillingProof(repository: AdminRepository, opt
   const instance = await repository.createRangeInstance({ name: 'billing-proof', cloudProvider: provider,
     ownerUserId: options.ownerUserId, resourceSummary: summary });
   const job = await repository.createProvisionJob({ rangeInstanceId: instance.id, jobType: 'create', triggeredBy: options.ownerUserId ?? 'fixture-admin' });
+  if (provider === 'tencent_cloud') {
+    const resources = ([['hostIds','ecs'],['systemDiskIds','disk'],['dataDiskIds','disk'],['eipAllocationIds','eip'],['natGatewayIds','nat_gateway']] as const)
+      .flatMap(([field,cloudResourceType])=>Object.values(summary[field] ?? {}).map(cloudResourceId=>({cloudResourceId,cloudResourceType})));
+    const context=summary.executionContext;
+    await repository.createProvisionJobStepLog({jobId:job.id,stepName:'platform_billing_creation_inventory',status:'succeeded',message:JSON.stringify({version:1,
+      cloudProvider:'tencent_cloud',cloudWorkspaceId:instance.cloudWorkspaceId ?? 'legacy-unbound',rangeInstanceId:instance.id,sourceJobId:job.id,ownerUserId:instance.ownerUserId ?? null,
+      executionContext:context ? {provider:context.provider,cloudAccountContextId:context.cloudAccountContextId,cloudAccountUid:context.cloudAccountUid,regionId:context.regionId,zoneId:context.zoneId} : null,
+      resources,diskAttachments:{}}),startedAt:new Date(),finishedAt:new Date(),stdoutExcerpt:null,stderrExcerpt:null});
+  }
   const ledgers = await Promise.all(([['ins-owned', 'ecs'], ['disk-system', 'disk'], ['disk-data', 'disk'], ['eip-owned', 'eip'], ['nat-owned', 'nat_gateway']] as const)
     .map(([cloudResourceId, cloudResourceType]) => repository.createBillingLedgerResource({ cloudProvider: provider, cloudAccountUid: uid,
       regionId: 'ap-shanghai', cloudResourceId, cloudResourceType, billingScope: options.ownerUserId ? 'user' : 'platform',

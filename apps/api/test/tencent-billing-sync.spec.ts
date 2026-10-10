@@ -78,7 +78,10 @@ describe('Tencent signed official billing pipeline', () => {
       const summary = { mode: 'opentofu', executionContext: { cloudAccountContextId: 'ctx', cloudAccountUid: '100001', regionId: 'ap-shanghai', zoneId: 'ap-shanghai-1',
         ...(missing === 'context' ? {} : { provider: 'tencent_cloud' }) }, hostIds: missing === 'inventory' ? {} : { host: 'ins-owned' } } as RangeResourceSummary;
       const proof = await createTencentBillingProof(repository, { summary });
-      if (missing === 'source-job') await repository.updateBillingLedgerResource(proof.ledgers[0].id, { sourceProvisionJobId: null });
+      if (missing === 'source-job') {
+        await repository.updateBillingLedgerResource(proof.ledgers[0].id, { sourceProvisionJobId: null });
+        jest.spyOn(repository, 'listProvisionJobStepLogs').mockResolvedValue([]);
+      }
       expect((await loadPlatformBillingProof(repository)).createdLedgerIds.has(proof.ledgers[0].id)).toBe(false);
       fetchMock.mockImplementation(async () => signedTencentBillingResponse([tencentBill()]));
       await tencentBillingSync(repository).syncRange(WINDOW);
