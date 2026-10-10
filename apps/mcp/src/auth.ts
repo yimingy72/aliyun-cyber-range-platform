@@ -6,6 +6,12 @@ import type { AuthInfo } from '@modelcontextprotocol/sdk/server/auth/types.js';
 
 import { OidcJwtVerifier } from './oidc-jwt-verifier';
 
+const identityScopes = new Set(['openid', 'profile', 'email', 'address', 'phone', 'offline_access', 'roles', 'web-origins', 'acr', 'basic']);
+
+export function hasExplicitPermissionScopes(scopes?: readonly string[]) {
+  return scopes?.some(scope => !identityScopes.has(scope)) === true;
+}
+
 const prisma = new PrismaClient();
 let oidcJwtVerifier: OidcJwtVerifier | null = null;
 
@@ -84,7 +90,7 @@ async function authenticateOidcToken(token: string): Promise<AuthInfo | null> {
         cloudWorkspaceId: user.cloudWorkspaceId,
         isPlatformManager: user.isPlatformManager,
         authType: 'oidc',
-        businessScopeRestricted: claims.scopes?.some(scope => scope.includes(':')) === true,
+        businessScopeRestricted: hasExplicitPermissionScopes(claims.scopes),
         issuer: claims.issuer,
         subject: claims.subject,
       },
@@ -114,6 +120,5 @@ function looksLikeJwt(token: string) {
 export function scopesForRole(role: UserRole, tokenScopes?: string[]) {
   const roleScopes = role === 'admin' ? ADMIN_SCOPES : END_USER_SCOPES;
   // Existing Keycloak clients use identity scopes; explicit business scopes only narrow access.
-  const businessScopes = tokenScopes?.filter(scope => scope.includes(':'));
-  return businessScopes?.length ? roleScopes.filter(scope => businessScopes.includes(scope)) : [...roleScopes];
+  return hasExplicitPermissionScopes(tokenScopes) ? roleScopes.filter(scope => tokenScopes!.includes(scope)) : [...roleScopes];
 }

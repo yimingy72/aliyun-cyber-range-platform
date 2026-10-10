@@ -21,6 +21,11 @@ describe('explicit OAuth business scope intersection', () => {
   it('retains the existing identity-only client contract', () => {
     expect(scopesForRole('admin', ['openid', 'profile'])).toEqual(ADMIN_SCOPES);
   });
+  it('does not treat unknown unnamespaced scopes as identity scopes', () => {
+    expect(scopesForRole('admin', ['some-unknown-scope'])).toEqual([]);
+    expect(scopesForRole('admin', ['openid', 'some-unknown-scope'])).toEqual([]);
+    expect(scopesForRole('admin', ['openid', 'some-unknown-scope', 'images:read'])).toEqual(['images:read']);
+  });
   it('honors read-only scope and never elevates an ordinary user', () => {
     expect(scopesForRole('admin', ['images:read'])).toEqual(['images:read']);
     expect(scopesForRole('user', ['settings:write'])).toEqual([]);

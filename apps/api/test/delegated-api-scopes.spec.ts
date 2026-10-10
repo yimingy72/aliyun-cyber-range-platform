@@ -40,6 +40,8 @@ describe('delegated API permission boundary', () => {
   it('never turns unknown business scopes into the legacy full role', () => {
     expect(resolveDelegatedScopes('admin', ['openid', 'ranges:unknown']).size).toBe(0);
     expect(resolveDelegatedScopes('user', ['billing:sync']).size).toBe(0);
+    expect(resolveDelegatedScopes('admin', ['some-unknown-scope']).size).toBe(0);
+    expect(resolveDelegatedScopes('admin', ['openid', 'some-unknown-scope']).size).toBe(0);
     expect(resolveDelegatedScopes('user', ['openid', 'profile']).has('ranges:create')).toBe(true);
   });
   it.each(['mcp-gateway', 'platform-web'])('enforces verified scoped JWT for %s before controller side effects', async azp => {

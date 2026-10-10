@@ -10,8 +10,10 @@ const userScopes = [
 ];
 const adminScopes = [...userScopes, 'users:read', 'users:write', 'billing:read', 'billing:sync', 'settings:read', 'settings:write'];
 
+const identityScopes = new Set(['openid', 'profile', 'email', 'address', 'phone', 'offline_access', 'roles', 'web-origins', 'acr', 'basic']);
+
 export function hasDelegatedScopes(scopes?: readonly string[]) {
-  return scopes?.some(scope => scope.includes(':')) === true;
+  return scopes?.some(scope => !identityScopes.has(scope)) === true;
 }
 
 export function resolveDelegatedScopes(role: SessionUserProfile['role'], tokenScopes?: readonly string[]) {

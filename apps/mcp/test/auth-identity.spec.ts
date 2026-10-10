@@ -36,6 +36,10 @@ describe('MCP identity and live account authority', () => {
     verify.mockResolvedValue({ ...principal(), scopes: ['openid', 'images:read', 'settings:write'] }); lookup.mockResolvedValue(user());
     expect(await authenticateRequest(request)).toMatchObject({ scopes: ['images:read'], extra: { businessScopeRestricted: true } });
   });
+  it('marks unknown non-identity scopes restricted rather than role fallback', async () => {
+    verify.mockResolvedValue({ ...principal(), scopes: ['openid', 'unknown-scope'] }); lookup.mockResolvedValue(user('alice', 'admin'));
+    expect(await authenticateRequest(request)).toMatchObject({ scopes: [], extra: { businessScopeRestricted: true } });
+  });
   it.each(['Bearer header.payload.signature trailing', 'Bearer', 'Basic header.payload.signature'])('rejects malformed authorization %s', async authorization => {
     expect(await authenticateRequest({ headers: { authorization } } as never)).toBeNull(); expect(verify).not.toHaveBeenCalled();
   });
