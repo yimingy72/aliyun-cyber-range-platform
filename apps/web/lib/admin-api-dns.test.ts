@@ -8,9 +8,9 @@ describe('DNS verification HTTP request', () => {
     const timeout = vi.spyOn(AbortSignal, 'timeout').mockReturnValue(controller.signal);
     const fetchMock = vi.fn(async (_input: string, _init?: RequestInit) => new Response(JSON.stringify({ status: 'verified', action: 'verify-dns', dnsVerification: { status: 'verified' } })));
     vi.stubGlobal('fetch', fetchMock);
-    await expect(runRangeInstanceNodeAction('http://localhost:3001', 'fixture-token', 'range-1', 'host-1', 'verify-dns', {})).resolves.toMatchObject({ dnsVerification: { status: 'verified' } });
+    await expect(runRangeInstanceNodeAction('http://localhost:3001', 'fixture-token', 'range/1', 'host/1', 'verify-dns', {})).resolves.toMatchObject({ dnsVerification: { status: 'verified' } });
     expect(timeout).toHaveBeenCalledWith(180_000);
     expect(fetchMock).toHaveBeenCalledTimes(1);
-    expect(fetchMock.mock.calls[0]).toEqual(['http://localhost:3001/admin/ranges/range-1/nodes/host-1/actions/verify-dns', expect.objectContaining({ method: 'POST', body: '{}', signal: controller.signal })]);
+    expect(fetchMock.mock.calls[0]).toEqual(['http://localhost:3001/admin/ranges/range%2F1/nodes/host%2F1/actions/verify-dns', expect.objectContaining({ method: 'POST', body: '{}', signal: controller.signal })]);
   });
 });

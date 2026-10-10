@@ -362,7 +362,7 @@ export async function runRangeInstanceNodeAction(
   action: 'start' | 'stop' | 'reboot' | 'open-vnc' | 'pack-image' | 'verify-dns',
   payload: Record<string, string>,
 ) {
-  const response = await fetch(`${apiBaseUrl}/admin/ranges/${rangeInstanceId}/nodes/${nodeId}/actions/${action}`, {
+  const response = await fetch(`${apiBaseUrl}/admin/ranges/${encodeURIComponent(rangeInstanceId)}/nodes/${encodeURIComponent(nodeId)}/actions/${action}`, {
     method: 'POST',
     headers: createAdminHeaders(token),
     body: JSON.stringify(payload),

@@ -157,7 +157,7 @@ function PropertySelect({
   disabled?: boolean;
   emptyOptionLabel?: string;
   onValueChange: (value: string) => void;
-  options: readonly { label: string; value: string }[];
+  options: readonly { label: string; value: string; disabled?: boolean }[];
   value: string;
 }) {
   return (
@@ -817,7 +817,7 @@ function renderHostFields(
             value={selectedNode.dns ? 'custom' : 'automatic'}
             options={[
               { value: 'automatic', label: '自动获取 DNS' },
-              { value: 'custom', label: '自定义 DNS' },
+              { value: 'custom', label: '自定义 DNS', disabled: dnsUnavailable },
             ]}
             onValueChange={(value) => onUpdateNode(selectedNode.id, {
               ...selectedNode,

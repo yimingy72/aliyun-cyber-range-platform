@@ -44,6 +44,13 @@ function createEcsNodeWithPlatformDefaults(): TemplateNode {
 }
 
 describe('TemplatePropertyPanel', () => {
+  it('disables custom DNS on a known non-Windows image without guessing from its name', () => {
+    const node = { ...createEcsNodeWithPlatformDefaults(), platformImageAssetId: 'image-os' } as Extract<TemplateNode, { kind: 'ecs' }>;
+    const asset = { id: 'image-os', provider: 'alibaba_cloud' as const, accountScopeKey: 'scope', regionId: 'cn-hangzhou', sourceScope: 'public', imageId: node.imageId!, displayName: 'Windows-looking image', enabled: true, tags: [], osType: 'linux' };
+    render(<TemplatePropertyPanel selectedNode={node} allNodes={[node]} platformImageAssets={[asset]} onUpdateNode={vi.fn()} />);
+    fireEvent.click(screen.getByRole('combobox', { name: 'DNS 配置方式' }));
+    expect(screen.getByRole('option', { name: '自定义 DNS' }).getAttribute('aria-disabled')).toBe('true');
+  });
   it('uses image OS metadata rather than a Windows-looking name for DNS availability', () => {
     const node = { ...createEcsNodeWithPlatformDefaults(), platformImageAssetId: 'image-os', dns: { servers: ['10.0.0.1'], nicIds: ['ecs-1-nic-1'] } } as Extract<TemplateNode, { kind: 'ecs' }>;
     const asset = { id: 'image-os', provider: 'alibaba_cloud' as const, accountScopeKey: 'scope', regionId: 'cn-hangzhou', sourceScope: 'public', imageId: node.imageId!, displayName: 'Windows Server', enabled: true, tags: [], osType: 'linux' };
