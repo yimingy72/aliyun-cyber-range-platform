@@ -1,5 +1,3 @@
-import { isDeepStrictEqual } from 'node:util';
-
 import type { RangeInstanceNodeActionPayload } from '@aliyun-cyber-range/platform-api-client';
 import type { ScenarioGraphDraft } from '@aliyun-cyber-range/scenario-runtime';
 
@@ -14,11 +12,13 @@ import {
   rangeLaunchInputSchema,
   rangeListInputSchema,
   rangeNodeActionInputSchema,
+  rangeNodePackImageInputSchema,
   rangeNodeVerifyDnsInputSchema,
   rangeNodeOpenVncInputSchema,
   rangeNodePackImageValidateInputSchema,
   rangeRetryInputSchema,
   rangeTopologyChangeInputSchema,
+  rangeSyncTemplateInputSchema,
   rangeSaveAsTemplateInputSchema,
   rangeTopologyPreviewInputSchema,
   rangeTopologyApplyInputSchema,
@@ -121,6 +121,20 @@ export const rangeTools: ToolDefinition[] = [
     },
   },
   {
+    name: 'range_instance_topology_discard',
+    title: '放弃编排实例草稿',
+    description: '放弃指定准确版本的已保存草稿；不会应用云资源、修改运行拓扑或来源模板。草稿版本已变化时拒绝，刷新后再决定。',
+    requiredScopes: ['ranges:write'],
+    annotations: { destructiveHint: true, idempotentHint: false },
+    inputSchema: rangeTopologyPreviewInputSchema,
+    outputSchema: resourceOutputSchema,
+    async call(context, args) {
+      if (!context.client.discardRangeInstanceDraft) throw new Error('草稿放弃服务尚未配置');
+      const input = args as { rangeInstanceId: string; expectedDraftRevision: number };
+      return redactRangeInstanceSecrets(await context.client.discardRangeInstanceDraft(input.rangeInstanceId, input.expectedDraftRevision));
+    },
+  },
+  {
     name: 'range_instance_topology_preview',
     title: '预览编排实例变更',
     description: '预览准确已保存草稿的预期主机增删、网络规则和 NAT/EIP 变化；这是平台配置差异摘要，不是实际 OpenTofu plan。生成五分钟有效的当前用户/账号空间预览令牌，随后确认应用。不会调用云 API 或创建云资源。',
@@ -158,24 +172,17 @@ export const rangeTools: ToolDefinition[] = [
   },
   {
     name: 'range_instance_sync_template',
-    title: '同步实例变更到模板',
-    description: '对应编排实例详情页“更新编排拓扑”。先编译并保存完整 topologyGraph，再将当前实例配置同步回其来源模板的已保存拓扑；不会自动修改运行实例，调用前必须取得用户确认。',
+    title: '同步已保存草稿到来源模板',
+    description: '按准确草稿版本和来源模板版本，将已保存草稿同步回来源模板；先通过保存草稿工具完成编辑。本工具不接收新图、不隐式保存、不修改运行云资源。确认和重放保持相同版本，任一版本变化即拒绝。',
     requiredScopes: ['ranges:write', 'templates:write'],
-    annotations: { destructiveHint: false, idempotentHint: false },
-    inputSchema: rangeTopologyChangeInputSchema,
+    annotations: { destructiveHint: true, idempotentHint: false },
+    inputSchema: rangeSyncTemplateInputSchema,
     outputSchema: resourceOutputSchema,
     async call(context, args) {
-      const input = args as RangeTopologyChangeInput;
-      const { saved, sourceTemplateRevision } = await saveRangeInstanceTopology(context, input);
-      return withResourceId(
-        await context.client.syncRangeInstanceTemplate(
-          input.rangeInstanceId,
-          readAppliedDraftRevision(saved.draftRevision),
-          readSourceTemplateRevision(sourceTemplateRevision),
-          operation(input),
-        ),
-        'templateId',
-      );
+      const input = args as RangeOperationInput & { expectedDraftRevision: number; expectedTemplateRevision: number };
+      return withResourceId(await context.client.syncRangeInstanceTemplate(
+        input.rangeInstanceId, input.expectedDraftRevision, input.expectedTemplateRevision, operation(input),
+      ), 'templateId');
     },
   },
   {
@@ -191,9 +198,9 @@ export const rangeTools: ToolDefinition[] = [
       return context.client.retryRangeInstance(input.rangeInstanceId, operation(input));
     },
   },
-  nodeActionTool('range_instance_node_start', '开机编排节点', 'start', '对应实例详情中 ECS 节点“开机”。向阿里云提交开机指令，调用前必须取得用户确认。'),
-  nodeActionTool('range_instance_node_stop', '关机编排节点', 'stop', '对应实例详情中 ECS 节点“关机”。向阿里云提交强制关机指令，调用前必须取得用户确认。'),
-  nodeActionTool('range_instance_node_reboot', '重启编排节点', 'reboot', '对应实例详情中 ECS 节点“重启”。向阿里云提交强制重启指令，调用前必须取得用户确认。'),
+  nodeActionTool('range_instance_node_start', '开机编排节点', 'start', '对应实例详情中 ECS 节点“开机”。向实例绑定的云厂商提交开机指令，调用前必须取得用户确认。'),
+  nodeActionTool('range_instance_node_stop', '关机编排节点', 'stop', '对应实例详情中 ECS 节点“关机”。向实例绑定的云厂商提交强制关机指令，调用前必须取得用户确认。'),
+  nodeActionTool('range_instance_node_reboot', '重启编排节点', 'reboot', '对应实例详情中 ECS 节点“重启”。向实例绑定的云厂商提交强制重启指令，调用前必须取得用户确认。'),
   {
     name: 'range_instance_node_verify_dns',
     title: '核验编排节点 DNS',
@@ -212,7 +219,7 @@ export const rangeTools: ToolDefinition[] = [
     title: '重新下发编排节点 DNS',
     description: '将已部署拓扑中的 DNS 重新设置到指定 Windows 节点选定网卡，然后读取实际 DNS 并核验已配置的域控 SRV。只接受准确平台实例和节点，不接受任意命令、DNS 参数或云资源 ID；不创建、销毁或重建实例，失败仅记录 DNS 状态。调用前取得准确节点的用户确认。',
     requiredScopes: ['ranges:control'],
-    annotations: { destructiveHint: false, idempotentHint: false },
+    annotations: { destructiveHint: true, idempotentHint: false },
     inputSchema: rangeNodeVerifyDnsInputSchema,
     outputSchema: actionOutputSchema,
     call(context, args) {
@@ -225,7 +232,7 @@ export const rangeTools: ToolDefinition[] = [
     title: '打开编排节点 VNC',
     description: '对应实例详情中 ECS 节点“VNC”。返回临时 VNC 访问地址，属于敏感访问数据；仅在用户明确请求时调用。',
     requiredScopes: ['ranges:read', 'instances:credentials:read'],
-    readOnlyHint: true,
+    annotations: { idempotentHint: false },
     inputSchema: rangeNodeOpenVncInputSchema,
     outputSchema: actionOutputSchema,
     call(context, args) {
@@ -253,7 +260,7 @@ export const rangeTools: ToolDefinition[] = [
     description: '对应实例详情中 ECS 节点“打包镜像”。从节点创建私有平台镜像；可选提供镜像名称、默认主机名、默认密码和描述。该操作创建云镜像资产，调用前必须取得用户确认。',
     requiredScopes: ['ranges:control', 'images:write'],
     annotations: { destructiveHint: false, idempotentHint: false },
-    inputSchema: rangeNodeActionInputSchema,
+    inputSchema: rangeNodePackImageInputSchema,
     outputSchema: actionOutputSchema,
     async call(context, args) {
       const input = args as RangeNodeActionInput;
@@ -289,7 +296,9 @@ type RangeOperationInput = {
   confirmationId?: string;
 };
 
-type RangeTopologyChangeInput = RangeOperationInput & {
+type RangeTopologyChangeInput = {
+  rangeInstanceId: string;
+  expectedDraftRevision: number;
   topologyGraph: ScenarioGraphDraft;
   publicEntryProtocols?: TemplateAuthoringMetadata['publicEntryProtocols'];
 };
@@ -309,7 +318,7 @@ function nodeActionTool(
     title,
     description,
     requiredScopes: ['ranges:control'],
-    annotations: { destructiveHint: action === 'stop', idempotentHint: false },
+    annotations: { destructiveHint: action === 'stop' || action === 'reboot', idempotentHint: false },
     inputSchema: rangeNodeActionInputSchema,
     outputSchema: actionOutputSchema,
     call(context, args) {
@@ -318,7 +327,7 @@ function nodeActionTool(
         input.rangeInstanceId,
         input.nodeId,
         action,
-        nodeActionPayload(input),
+        {},
         operation(input),
       );
     },
@@ -330,26 +339,15 @@ async function saveRangeInstanceTopology(
   input: RangeTopologyChangeInput,
 ) {
   const instance = await context.client.getRangeInstance(input.rangeInstanceId);
+  if (readDraftRevision(instance.draftRevision) !== input.expectedDraftRevision) {
+    throw new Error('实例草稿版本已变化，请刷新后再保存；未覆盖新草稿');
+  }
   const metadata = {
     ...metadataFromRangeInstance(instance),
     ...(input.publicEntryProtocols ? { publicEntryProtocols: input.publicEntryProtocols } : {}),
   };
   const compiled = JSON.parse(JSON.stringify(compileTemplateTopology(input.topologyGraph, metadata))) as
     ReturnType<typeof compileTemplateTopology>;
-
-  if (input.confirmationId) {
-    const matchesSavedDraft =
-      isDeepStrictEqual(instance.draftTopologyGraph, compiled.topologyGraph) &&
-      isDeepStrictEqual(instance.draftTopologySpec, compiled.topologySpec) &&
-      isDeepStrictEqual(instance.draftScenarioTemplateSpec, compiled.scenarioTemplateSpec) &&
-      isDeepStrictEqual(instance.draftCompiledProvisionSpec, compiled.compiledProvisionSpec);
-
-    if (!matchesSavedDraft) {
-      throw new Error('确认请求的拓扑与已保存草稿不一致，请重新保存并取得确认');
-    }
-
-    return { saved: instance, sourceTemplateRevision: instance.sourceTemplateRevision };
-  }
 
   const saved = await context.client.saveRangeInstanceDraft(
     input.rangeInstanceId,
@@ -358,15 +356,11 @@ async function saveRangeInstanceTopology(
       draftTopologySpec: compiled.topologySpec,
       draftScenarioTemplateSpec: compiled.scenarioTemplateSpec,
       draftCompiledProvisionSpec: compiled.compiledProvisionSpec,
-      expectedDraftRevision: readDraftRevision(instance.draftRevision),
+      expectedDraftRevision: input.expectedDraftRevision,
     },
-    operation(input),
   );
 
-  return {
-    saved,
-    sourceTemplateRevision: instance.sourceTemplateRevision,
-  };
+  return { saved };
 }
 
 function metadataFromRangeInstance(instance: Record<string, unknown>): TemplateAuthoringMetadata {
@@ -410,22 +404,7 @@ function readString(value: unknown) {
 }
 
 function readDraftRevision(value: unknown) {
-  return typeof value === 'number' && Number.isInteger(value) && value >= 0 ? value : 0;
-}
-
-function readAppliedDraftRevision(value: unknown) {
-  if (typeof value !== 'number' || !Number.isInteger(value) || value < 1) {
-    throw new Error('保存编排实例草稿后未返回有效版本号，无法应用变更');
-  }
-
-  return value;
-}
-
-function readSourceTemplateRevision(value: unknown) {
-  if (typeof value !== 'number' || !Number.isInteger(value) || value < 1) {
-    throw new Error('编排实例详情未返回有效来源模板版本号，无法同步模板');
-  }
-
+  if (typeof value !== 'number' || !Number.isInteger(value) || value < 0) throw new Error('实例详情缺少有效草稿版本，无法安全保存');
   return value;
 }
 
@@ -451,7 +430,7 @@ function redactRangeInstanceSecrets<T>(value: T): T {
   return Object.fromEntries(
     Object.entries(value as Record<string, unknown>)
       .filter(([key]) => key.toLowerCase() !== 'runtimecredentials')
-      .filter(([key]) => !['password', 'custompassword', 'defaultpassword'].includes(key.toLowerCase()))
+      .filter(([key]) => !['password', 'custompassword', 'defaultpassword', 'ssh', 'vncurl', 'accesskeyid', 'accesskeysecret', 'token'].includes(key.toLowerCase()))
       .map(([key, child]) => [key, redactRangeInstanceSecrets(child)]),
   ) as T;
 }

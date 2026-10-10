@@ -96,7 +96,7 @@ export const imageImportJobSchema = resourceSchema
   .extend({
     status: z.enum(['awaiting_upload', 'importing', 'available', 'failed', 'cancelled']).describe('导入任务状态。'),
     displayName: nonEmptyString.describe('目标平台镜像显示名称。'),
-    imageId: z.string().nullable().optional().describe('阿里云镜像 ID；导入受理后可能返回。'),
+    imageId: z.string().nullable().optional().describe('当前云厂商的镜像 ID；导入受理后可能返回。'),
     errorMessage: z.string().nullable().optional().describe('失败原因；只用于诊断，不含凭据。'),
   })
   .passthrough();

@@ -3,7 +3,7 @@ import * as z from 'zod/v4';
 
 const identifier = z.string().trim().min(1);
 const optionalRecord = z.object({}).passthrough().optional();
-const operationSchema = z.object({
+const operationSchema = z.strictObject({
   idempotencyKey: identifier.optional().describe('Reuse only for an identical write request when the server requires it.'),
   confirmationId: identifier.optional().describe('Provide only after the platform returns CONFIRMATION_REQUIRED.'),
 });
@@ -49,6 +49,7 @@ const nicSchema = z.object({
   privateIp: identifier.describe('An unused IPv4 address inside the linked switch CIDR.'),
   secondaryIps: z.array(identifier).optional(),
   securityGroupRules: z.array(securityRuleSchema).optional(),
+  securityGroupRulesMode: z.enum(['default', 'custom']).optional().describe('使用平台默认规则或明确配置的完整自定义规则。'),
 }).passthrough();
 const routerNodeSchema = z.object({
   id: identifier,
@@ -69,7 +70,7 @@ const switchNodeSchema = z.object({
 }).passthrough();
 const fixedImageStrategySchema = z.object({
   mode: z.literal('fixed'),
-  imageId: identifier.describe('The Alibaba Cloud imageId resolved from the selected platform image asset.'),
+  imageId: identifier.describe('The current cloud provider imageId resolved from the selected platform image asset.'),
 }).strict();
 const autoInstanceTypeStrategySchema = z.object({
   mode: z.literal('auto'),
@@ -89,12 +90,20 @@ const ecsNodeSchema = z.object({
   exposePublic: z.boolean().optional().default(false),
   image: identifier.describe('Human-readable image displayName copied from the selected platform image asset. It is not the image identity.'),
   platformImageAssetId: identifier.describe('The unique enabled platform image asset selected by the conversion Skill.'),
-  imageId: identifier.describe('The Alibaba Cloud imageId resolved from platformImageAssetId.'),
+  imageId: identifier.describe('The current cloud provider imageId resolved from platformImageAssetId.'),
   imageStrategy: fixedImageStrategySchema,
   instanceTypeStrategy: autoInstanceTypeStrategySchema,
   nics: z.array(nicSchema).min(1),
   dns: hostDnsSchema.optional().describe('Per-host guest DNS; nicIds must name this host’s attached NICs. Optional domain enables AD SRV verification.'),
   position: positionSchema.optional(),
+  cpu: z.number().int().positive().optional().describe('CPU 核数；必须与 memory 共同满足平台支持的准确规格。'),
+  memory: z.number().int().positive().optional().describe('内存 GiB；不接受派生云机型策略。'),
+  hostName: z.string().optional(),
+  instanceName: z.string().optional(),
+  description: z.string().optional(),
+  bootPriority: z.number().int().optional(),
+  bootWaitSeconds: z.number().int().min(0).optional(),
+  initScript: z.string().optional().describe('用户启动任务脚本，省略时为空；DNS 由独立 dns 配置内部生成，不写在此字段。'),
   customPassword: z.string().optional().describe('Sensitive. Only provide when explicitly requested; it is never returned by read tools.'),
 }).passthrough().superRefine((node, context) => {
   if (node.dns) {
@@ -134,8 +143,8 @@ const templateTopologyMetadataSchema = z.object({
 });
 const templateWriteSchema = operationSchema.extend({ templateId: identifier });
 
-export const templateListInputSchema = z.object({ view: z.enum(['platform', 'mine']).optional() });
-export const templateGetInputSchema = z.object({ templateId: identifier });
+export const templateListInputSchema = z.strictObject({ view: z.enum(['platform', 'mine']).optional() });
+export const templateGetInputSchema = z.strictObject({ templateId: identifier });
 export const templateCreateInputSchema = operationSchema.extend({
   name: identifier,
   description: z.string().optional(),
@@ -146,6 +155,7 @@ export const templateCreateInputSchema = operationSchema.extend({
   defaultNetworkPolicy: optionalRecord,
 }).strict();
 export const templateUpdateInputSchema = templateWriteSchema.extend({
+  expectedRevision: z.number().int().min(1).describe('用户编辑信息时读取的准确模板 revision，防止覆盖之后的改动。'),
   updates: z.object({
     name: identifier.optional(),
     description: z.string().optional(),
@@ -153,6 +163,7 @@ export const templateUpdateInputSchema = templateWriteSchema.extend({
 });
 export const templateCloneInputSchema = templateWriteSchema;
 export const templateDetectAndSaveInputSchema = templateWriteSchema.extend({
+  expectedRevision: z.number().int().min(1).describe('调用者编辑拓扑时读取的准确模板 revision；旧版本不得覆盖当前拓扑。'),
   topologyGraph: topologyGraphSchema.describe('待保存的完整拓扑图。必须由设计转换 Skill 产出，且包含 Router、交换机、ECS、NIC 与实际连线。'),
   ...templateTopologyMetadataSchema.shape,
 }).strict();

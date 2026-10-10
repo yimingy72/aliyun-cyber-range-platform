@@ -43,9 +43,14 @@ describe('Tencent settings tools', () => {
     expect(privateAccount.accessKeySecret).toBe(payload.accessKeySecret);
   });
 
-  it.each([{ ...account, provider: 'alibaba_cloud' }, { ...account, isActive: true }])('rejects a wrong-cloud or unexpectedly activated save response %j', async result => {
+  it.each([{ ...account, provider: 'alibaba_cloud' }])('rejects a wrong-cloud save response %j', async result => {
     const registry = createToolRegistry({ saveTencentCloudAccount: async () => result } as never);
     await expect(registry.callTool('tencent_cloud_account_save', scopes, payload, 'admin')).rejects.toThrow();
+  });
+
+  it('accepts the existing active context when rebinding without claiming a workspace switch', async () => {
+    const registry = createToolRegistry({ saveTencentCloudAccount: async () => ({ ...account, isActive: true }) } as never);
+    expect((await registry.callTool('tencent_cloud_account_save', scopes, payload, 'admin')).structuredContent.result).toMatchObject({ isActive: true });
   });
 
   it.each([

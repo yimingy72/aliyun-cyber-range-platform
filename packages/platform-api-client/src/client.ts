@@ -276,6 +276,10 @@ export class PlatformApiClient implements PlatformApiClientLike {
     });
   }
 
+  discardRangeInstanceDraft(id: string, expectedDraftRevision: number) {
+    return this.request<RangeInstance>(`/admin/ranges/${encodeURIComponent(id)}/draft?expectedDraftRevision=${encodeURIComponent(expectedDraftRevision)}`, { method: 'DELETE' });
+  }
+
   previewRangeInstanceDraft(id: string, expectedDraftRevision: number) {
     return this.request<RangeInstanceChangePreview>(`/admin/ranges/${encodeURIComponent(id)}/preview`, { method: 'POST', body: JSON.stringify({ expectedDraftRevision }) });
   }

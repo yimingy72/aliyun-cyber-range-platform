@@ -438,6 +438,7 @@ export type PlatformApiClientLike = {
   getRangeInstanceAccess(id: string): Promise<RangeAccessPayload>;
   saveRangeInstanceAsTemplate(id: string, payload: SaveRangeInstanceAsTemplateInput, operation: OperationRequest & { idempotencyKey: string }): Promise<SaveRangeInstanceAsTemplateResult>;
   saveRangeInstanceDraft(id: string, payload: SaveRangeInstanceDraftInput, operation?: OperationRequest): Promise<RangeInstance>;
+  discardRangeInstanceDraft?(id: string, expectedDraftRevision: number): Promise<RangeInstance>;
   previewRangeInstanceDraft(id: string, expectedDraftRevision: number): Promise<RangeInstanceChangePreview>;
   applyRangeInstanceDraft(
     id: string,

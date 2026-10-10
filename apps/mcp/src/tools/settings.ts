@@ -24,7 +24,7 @@ const cloudContextSchema = z.object({
   regionId: z.string(), zoneId: z.string(), isActive: z.boolean(), status: z.enum(['provisioning', 'ready', 'degraded', 'disabled']),
   imageImportBucket: z.string(), bucketStatus: z.string(), lastVerifiedAt: z.string().nullable().optional(),
 });
-const tencentAccountSchema = cloudContextSchema.extend({ provider: z.literal('tencent_cloud'), isActive: z.literal(false) });
+const tencentAccountSchema = cloudContextSchema.extend({ provider: z.literal('tencent_cloud') });
 const sensitiveKey = z.string().trim().min(1).refine(value => value !== '********', 'Masked access keys cannot be reused').describe('敏感凭据，仅用于明确授权的云账号操作；不得回显。');
 const cloudWorkspaceSchema = z.object({ id: z.string(), provider: z.enum(['alibaba_cloud', 'tencent_cloud']), accountUid: z.string().nullable(),
   displayName: z.string(), isReadOnly: z.boolean(), activeCloudAccountContextId: z.string().nullable(), contexts: z.array(cloudContextSchema),
@@ -44,7 +44,7 @@ export const settingsTools: ToolDefinition[] = [
   {
     name: 'cloud_workspace_switch', title: '切换云账号数据空间',
     description: '显式切换当前登录用户默认工作空间。后续未显式指定工作空间请求头的操作使用该空间，镜像、用户、靶场、实例和账单隔离；不会创建/销毁云资源或改变已受理任务的冻结账号。',
-    requiredScopes: ['settings:read'], inputSchema: z.object({ cloudWorkspaceId: z.string().trim().min(1).max(192) }).strict(),
+    requiredScopes: ['settings:write'], inputSchema: z.object({ cloudWorkspaceId: z.string().trim().min(1).max(192) }).strict(),
     outputSchema: resultOutputSchema(cloudWorkspaceSchema), annotations: { idempotentHint: true },
     async call(context, args) { return cloudWorkspaceSchema.parse(await context.client.switchCloudWorkspace(args.cloudWorkspaceId as string)); },
   },
@@ -78,7 +78,7 @@ export const settingsTools: ToolDefinition[] = [
   },
   {
     name: 'cloud_account_context_list', title: '查询云账号',
-    description: '查询已验证的云账号、厂商和地域，不返回凭据。includeInactive=true可查看尚未启用创建的腾讯云账号。',
+    description: '查询已验证的云账号、厂商和地域，不返回凭据。includeInactive=true可查看未启用账号；具体能力由工作空间 capabilities 返回。',
     requiredScopes: ['settings:read'], adminOnly: true, readOnlyHint: true,
     inputSchema: z.object({ includeInactive: z.boolean().optional() }).strict(),
     outputSchema: resultOutputSchema(z.array(cloudContextSchema)),
@@ -86,7 +86,7 @@ export const settingsTools: ToolDefinition[] = [
   },
   {
     name: 'tencent_cloud_account_save', title: '验证并保存腾讯云账号',
-    description: '按明确指定的地域、可用区和腾讯云凭据验证账号并加密保存。账号保持未激活，当前不开放腾讯云实例创建或费用同步；写入前需要平台确认。',
+    description: '按明确指定的地域、可用区和腾讯云凭据验证账号并加密保存。保存不切换当前工作空间；创建和费用同步能力以该空间 capabilities 为准，写入前需要平台确认。',
     requiredScopes: ['settings:write'], adminOnly: true,
     inputSchema: operationSchema.extend({ provider: z.literal('tencent_cloud'), regionId: z.string().trim().min(1), zoneId: z.string().trim().min(1), accessKeyId: sensitiveKey, accessKeySecret: sensitiveKey }).strict(),
     outputSchema: resultOutputSchema(tencentAccountSchema),
@@ -146,11 +146,11 @@ export const settingsTools: ToolDefinition[] = [
     name: 'cloud_config_update',
     title: '更新云基础配置',
     description: '对应基础配置页的配置保存。只更新明确传入的默认地域、可用区或云凭据字段，影响后续资源创建，调用前必须取得用户确认。',
-    requiredScopes: ['settings:write'],
+    requiredScopes: ['settings:write'], adminOnly: true,
     inputSchema: cloudConfigUpdateInputSchema,
     outputSchema: resultOutputSchema(
       z.object({
-        provider: z.literal('alibaba_cloud').describe('当前云厂商。'),
+        provider: z.enum(['alibaba_cloud', 'tencent_cloud']).describe('当前云厂商。'),
         defaultRegion: z.string().describe('更新后的默认地域。'),
         defaultZoneId: z.string().describe('更新后的默认可用区。'),
       }).passthrough(),

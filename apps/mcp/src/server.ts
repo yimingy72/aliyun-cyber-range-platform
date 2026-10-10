@@ -9,7 +9,7 @@ import { singleInstanceTools } from './tools/single-instances';
 import { templateTools } from './tools/templates';
 import type { ToolContext, ToolDefinition } from './tools/tool-context';
 import { resultOutputSchema } from './tools/output-schemas';
-import { toToolResult } from './tools/tool-result';
+import { sanitizeToolError, toToolResult } from './tools/tool-result';
 import { billingTools } from './tools/billing';
 
 const tools = [...imageTools, ...singleInstanceTools, ...templateTools, ...rangeTools, ...adminUserTools, ...billingTools, ...settingsTools, ...jobTools];
@@ -51,7 +51,7 @@ export function createToolRegistry(client: PlatformApiClientLike) {
         if (error instanceof PlatformApiError) {
           return toToolResult(
             {
-              error: error.details ?? { status: error.status, message: error.message },
+              error: sanitizeToolError(error.details ?? { status: error.status, message: error.message }, parsed.data),
             },
             true,
           );
@@ -64,7 +64,7 @@ export function createToolRegistry(client: PlatformApiClientLike) {
 }
 
 function canAccess(tool: ToolDefinition, scopes: Set<string>, role?: 'admin' | 'user') {
-  return !(tool.adminOnly && role === 'user') && tool.requiredScopes.every((scope) => scopes.has(scope));
+  return (!tool.adminOnly || role === 'admin') && tool.requiredScopes.every((scope) => scopes.has(scope));
 }
 
 function describe(tool: ToolDefinition) {
@@ -76,7 +76,7 @@ function describe(tool: ToolDefinition) {
       readOnlyHint: tool.readOnlyHint === true,
       destructiveHint: tool.annotations?.destructiveHint ?? false,
       idempotentHint: tool.annotations?.idempotentHint ?? tool.readOnlyHint === true,
-      openWorldHint: tool.annotations?.openWorldHint ?? false,
+      openWorldHint: tool.annotations?.openWorldHint ?? true,
     },
     requiredScopes: tool.requiredScopes,
     inputSchema: tool.inputSchema,

@@ -231,7 +231,7 @@ function createClientStub(): ClientStub {
       instanceIds: [],
       checkedAt: '2026-07-29T00:00:00.000Z',
     }),
-    getSingleInstanceAccess: vi.fn().mockResolvedValue({ runtimeCredentials: {} }),
+    getSingleInstanceAccess: vi.fn().mockResolvedValue({ accessEntry: { publicIp: '1.1.1.1' }, runtimeCredentials: { 'single-ecs-1': { username: 'root', password: 'secret' } } }),
     listProvisionJobs: vi.fn().mockResolvedValue([{ id: 'job-1' }]),
     getProvisionJob: vi.fn().mockResolvedValue({ id: 'job-1' }),
     fetchCloudConfig: vi.fn().mockResolvedValue({ provider: 'alibaba_cloud' }),
@@ -307,14 +307,14 @@ describe('tool registry', () => {
     expect(registry.listTools(['images:read']).map(tool => tool.name)).not.toContain('platform_image_tag_create');
     expect(registry.listTools(['images:write']).map(tool => tool.name)).toContain('platform_image_tags_set');
     await expect(registry.callTool('platform_image_tag_list', ['images:read'], {})).resolves.toMatchObject({ structuredContent: { result: [{ id: 'tag-1', name: 'Web' }] } });
-    await registry.callTool('platform_image_tag_create', ['images:write'], { name: ' Service ', idempotencyKey: 'create-tag', confirmationId: 'confirm-tag' });
+    await registry.callTool('platform_image_tag_create', ['images:write'], { name: ' Service ', idempotencyKey: 'create-tag', confirmationId: 'confirm-tag' }, 'admin');
     expect(client.createPlatformImageTag).toHaveBeenCalledWith('Service', { idempotencyKey: 'create-tag', confirmationId: 'confirm-tag' });
     await registry.callTool('platform_image_tags_set', ['images:write'], { platformImageAssetId: 'img-1', tagIds: [], idempotencyKey: 'clear-tags', confirmationId: 'confirm-clear' });
     expect(client.setPlatformImageTags).toHaveBeenCalledWith('img-1', [], { idempotencyKey: 'clear-tags', confirmationId: 'confirm-clear' });
     const schema = registry.listTools(['images:write']).find(tool => tool.name === 'platform_image_tags_set')!.inputSchema!;
     expect(schema.safeParse({ platformImageAssetId: 'img-1', tagIds: ['tag-1', 'tag-1'] }).success).toBe(false);
     expect(schema.safeParse({ platformImageAssetId: 'img-1' }).success).toBe(false);
-    const names = registry.listTools(['images:read', 'images:write']).map(tool => tool.name);
+    const names = registry.listTools(['images:read', 'images:write'], 'admin').map(tool => tool.name);
     expect(names).not.toContain('platform_image_tag_delete');
     expect(names).not.toContain('platform_image_tag_rename');
   });
@@ -496,6 +496,7 @@ describe('tool registry', () => {
 
     await registry.callTool('range_instance_topology_save', ['ranges:write'], {
       rangeInstanceId: 'range-1',
+      expectedDraftRevision: 7,
       topologyGraph: authoringGraph,
     });
 
@@ -516,7 +517,6 @@ describe('tool registry', () => {
         draftCompiledProvisionSpec: expect.any(Object),
         expectedDraftRevision: 7,
       }),
-      { idempotencyKey: undefined, confirmationId: undefined },
     );
   });
 
@@ -527,49 +527,22 @@ describe('tool registry', () => {
     expect(client.saveRangeInstanceDraft).not.toHaveBeenCalled();
   });
 
-  it.each([
-    ['range_instance_sync_template', ['ranges:write', 'templates:write'], 'syncRangeInstanceTemplate'],
-  ] as const)('replays %s confirmation without saving a new draft revision', async (toolName, scopes, method) => {
+  it('replays sync confirmation for exactly the saved draft and source template versions without an implicit write', async () => {
     const client = createClientStub();
-    let instance: Record<string, unknown> = {
-      id: 'range-1', name: 'Web DMZ', draftRevision: 7, sourceTemplateRevision: 11,
-    };
-    (client.getRangeInstance as ReturnType<typeof vi.fn>).mockImplementation(async () => instance);
-    (client.saveRangeInstanceDraft as ReturnType<typeof vi.fn>).mockImplementation(async (_id, payload) => {
-      instance = JSON.parse(JSON.stringify({ ...instance, ...payload, draftRevision: Number(instance.draftRevision) + 1 }));
-      return instance;
-    });
-    let confirmedRevision: number | undefined;
-    (client[method] as ReturnType<typeof vi.fn>).mockImplementation(async (_id, revision, ...rest) => {
-      const metadata = rest.at(-1) as { confirmationId?: string };
-      if (!metadata.confirmationId) {
-        confirmedRevision = revision;
-        throw new PlatformApiError(409, 'confirmation required', {
-          code: 'CONFIRMATION_REQUIRED', confirmationId: 'confirm-1', idempotencyKey: 'idem-1',
-        });
-      }
-      if (revision !== confirmedRevision) {
-        throw new PlatformApiError(409, 'Operation confirmation does not match this request', null);
-      }
-      return { id: 'range-1', jobId: 'job-1' };
-    });
+    const sync = client.syncRangeInstanceTemplate as ReturnType<typeof vi.fn>;
+    sync.mockRejectedValueOnce(new PlatformApiError(409, 'confirmation required', { code: 'CONFIRMATION_REQUIRED', confirmationId: 'confirm-1', idempotencyKey: 'idem-1' }))
+      .mockResolvedValue({ templateId: 'tpl-1', rangeInstanceId: 'range-1' });
     const registry = createToolRegistry(client);
-    const args = { rangeInstanceId: 'range-1', topologyGraph: authoringGraph };
-
-    await expect(registry.callTool(toolName, [...scopes], args)).resolves.toMatchObject({ isError: true });
-    await expect(registry.callTool(toolName, [...scopes], {
-      ...args, confirmationId: 'confirm-1', idempotencyKey: 'idem-1',
-    })).resolves.toMatchObject({ structuredContent: { result: { jobId: 'job-1' } } });
-    expect(client.saveRangeInstanceDraft).toHaveBeenCalledTimes(1);
-    expect(instance.draftRevision).toBe(8);
-
-    const changedGraph = structuredClone(authoringGraph);
-    changedGraph.nodes[0]!.label = 'Changed VPC';
-    await expect(registry.callTool(toolName, [...scopes], {
-      ...args, topologyGraph: changedGraph, confirmationId: 'confirm-1', idempotencyKey: 'idem-1',
-    })).rejects.toThrow('确认请求的拓扑与已保存草稿不一致');
-    expect(client.saveRangeInstanceDraft).toHaveBeenCalledTimes(1);
-    expect(client[method]).toHaveBeenCalledTimes(2);
+    const args = { rangeInstanceId: 'range-1', expectedDraftRevision: 8, expectedTemplateRevision: 11 };
+    const scopes = ['ranges:write', 'templates:write'];
+    expect(await registry.callTool('range_instance_sync_template', scopes, args)).toMatchObject({ isError: true });
+    expect(await registry.callTool('range_instance_sync_template', scopes, { ...args, confirmationId: 'confirm-1', idempotencyKey: 'idem-1' }))
+      .toMatchObject({ structuredContent: { result: { id: 'tpl-1' } } });
+    expect(sync).toHaveBeenLastCalledWith('range-1', 8, 11, { confirmationId: 'confirm-1', idempotencyKey: 'idem-1' });
+    expect(client.saveRangeInstanceDraft).not.toHaveBeenCalled();
+    expect(client.getRangeInstance).not.toHaveBeenCalled();
+    await expect(registry.callTool('range_instance_sync_template', scopes, { ...args, topologyGraph: authoringGraph })).rejects.toThrow('Invalid input');
+    expect(sync).toHaveBeenCalledTimes(2);
   });
 
   it('derives Tencent creation metadata from the verified fixed workspace for an ordinary template author', async () => {
@@ -596,11 +569,11 @@ describe('tool registry', () => {
     const client = createClientStub();
     (client.getRangeInstance as ReturnType<typeof vi.fn>).mockResolvedValue({ id: 'tencent-range', name: 'Tencent range', cloudProvider: 'tencent_cloud', draftRevision: 1,
       draftScenarioTemplateSpec: { metadata: { cloudProvider: 'tencent_cloud' } } });
-    await createToolRegistry(client).callTool('range_instance_topology_save', ['ranges:write'], { rangeInstanceId: 'tencent-range', topologyGraph: authoringGraph });
+    await createToolRegistry(client).callTool('range_instance_topology_save', ['ranges:write'], { rangeInstanceId: 'tencent-range', expectedDraftRevision: 1, topologyGraph: authoringGraph });
     expect(client.saveRangeInstanceDraft).toHaveBeenCalledWith('tencent-range', expect.objectContaining({
       draftScenarioTemplateSpec: expect.objectContaining({ metadata: expect.objectContaining({ cloudProvider: 'tencent_cloud' }) }),
       draftCompiledProvisionSpec: expect.objectContaining({ identity: expect.objectContaining({ cloudProvider: 'tencent_cloud' }) }),
-    }), expect.anything());
+    }));
   });
 
   it.each([null, { isReadOnly: true }, { accountUid: null }, { activeCloudAccountContextId: null }, { contexts: [] },
@@ -697,6 +670,7 @@ describe('tool registry', () => {
 
     await registry.callTool('range_template_topology_detect_and_save', ['templates:write'], {
       templateId: 'tpl-1',
+      expectedRevision: 7,
       topologyGraph: authoringGraph,
     });
 
@@ -723,6 +697,7 @@ describe('tool registry', () => {
 
     await registry.callTool('range_template_topology_detect_and_save', ['templates:write'], {
       templateId: 'tpl-1',
+      expectedRevision: 7,
       topologyGraph: authoringGraph,
     });
 
@@ -1288,6 +1263,7 @@ describe('tool registry', () => {
 
     const result = await registry.callTool('range_template_topology_detect_and_save', ['templates:write'], {
       templateId: 'tpl-1',
+      expectedRevision: 7,
       topologyGraph: graph,
     });
 
@@ -1310,6 +1286,7 @@ describe('tool registry', () => {
 
     await registry.callTool('range_template_topology_detect_and_save', ['templates:write'], {
       templateId: 'tpl-1',
+      expectedRevision: 7,
       topologyGraph: structuredClone(authoringGraph),
     });
 
@@ -1357,9 +1334,9 @@ describe('tool registry', () => {
       'jobs:read', 'users:read', 'users:write', 'billing:read', 'billing:sync', 'settings:read', 'settings:write',
     ];
 
-    const tools = registry.listTools(scopes);
+    const tools = registry.listTools(scopes, 'admin');
 
-    expect(tools).toHaveLength(89);
+    expect(tools).toHaveLength(90);
     expect(tools.every((tool) => tool.inputSchema)).toBe(true);
     expect(tools.every((tool) => tool.outputSchema?.safeParse({}).success === false)).toBe(true);
     expect(
@@ -1371,7 +1348,7 @@ describe('tool registry', () => {
 
   it('exposes every safe-to-automate image-center action from the frontend', () => {
     const registry = createToolRegistry(createClientStub());
-    const tools = registry.listTools(['images:read', 'images:write']);
+    const tools = registry.listTools(['images:read', 'images:write'], 'admin');
     const expectedNames = [
       'image_catalog_list',
       'image_catalog_sync',
@@ -1396,7 +1373,7 @@ describe('tool registry', () => {
 
   it('exposes every billing page action with a scoped MCP definition', () => {
     const registry = createToolRegistry(createClientStub());
-    const tools = registry.listTools(['billing:read', 'billing:sync']);
+    const tools = registry.listTools(['billing:read', 'billing:sync'], 'admin');
     const expectedNames = [
       'billing_summary_get',
       'billing_user_list',
@@ -1443,6 +1420,7 @@ describe('tool registry', () => {
     await expect(
       registry.callTool('range_template_update', ['templates:write'], {
         templateId: 'tpl-1',
+        expectedRevision: 7,
         updates: { compiledProvisionSpec: { forged: true } },
       }),
     ).rejects.toThrow('compiledProvisionSpec');
@@ -1522,7 +1500,7 @@ describe('tool registry', () => {
     await expect(
       registry.callTool('range_instance_sync_template', ['ranges:write', 'templates:write'], {
         rangeInstanceId: 'range-2',
-        topologyGraph: authoringGraph,
+        expectedDraftRevision: 8, expectedTemplateRevision: 11,
       }),
     ).resolves.toMatchObject({
       structuredContent: { result: { id: 'tpl-2', rangeInstanceId: 'range-2' } },
@@ -1543,7 +1521,7 @@ describe('tool registry', () => {
       defaultRegion: 'cn-shanghai',
       idempotencyKey: 'config-update-1',
       confirmationId: 'confirm-1',
-    });
+    }, 'admin');
 
     expect(client.saveCloudConfig).toHaveBeenCalledWith(
       { defaultRegion: 'cn-shanghai' },
@@ -1561,7 +1539,7 @@ describe('tool registry', () => {
       role: 'user',
       idempotencyKey: 'user-create-1',
       confirmationId: 'confirm-1',
-    });
+    }, 'admin');
 
     expect(client.createAdminUser).toHaveBeenCalledWith(
       { username: 'mcp-test-user', password: 'TestPassword123!', role: 'user' },
@@ -1599,16 +1577,11 @@ describe('tool registry', () => {
     const client = createClientStub();
     const registry = createToolRegistry(client);
 
-    const result = await registry.callTool('single_instance_open_vnc', ['instances:control', 'instances:credentials:read'], {
+    const result = await registry.callTool('single_instance_open_vnc', ['instances:read', 'instances:credentials:read'], {
       singleInstanceId: 'ins-1',
     });
 
-    expect(client.openSingleInstanceVnc).toHaveBeenCalledWith('ins-1', {
-      displayName: undefined,
-      defaultHostName: undefined,
-      defaultPassword: undefined,
-      description: undefined,
-    });
+    expect(client.openSingleInstanceVnc).toHaveBeenCalledWith('ins-1');
     expect(result.structuredContent).toEqual({ result: { status: 'accepted', vncUrl: 'wss://vnc' } });
   });
 

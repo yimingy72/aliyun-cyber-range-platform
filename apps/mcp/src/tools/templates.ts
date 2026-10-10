@@ -114,12 +114,11 @@ export const templateTools: ToolDefinition[] = [
     inputSchema: templateUpdateInputSchema,
     outputSchema: resourceOutputSchema,
     async call(context, args) {
-      const input = args as TemplateWriteInput & { updates: UpdateRangeTemplateInput };
-      const current = await requireTemplate(context.client.getRangeTemplate(input.templateId), input.templateId);
+      const input = args as TemplateWriteInput & { updates: UpdateRangeTemplateInput; expectedRevision: number };
       return redactTemplateSecrets(
         await context.client.updateRangeTemplate(
           input.templateId,
-          { ...input.updates, expectedRevision: readTemplateRevision(current) },
+          { ...input.updates, expectedRevision: input.expectedRevision },
           operation(input),
         ),
       );
@@ -152,9 +151,13 @@ export const templateTools: ToolDefinition[] = [
     async call(context, args) {
       const input = args as TemplateWriteInput & {
         topologyGraph: ScenarioGraphDraft;
+        expectedRevision: number;
         publicEntryProtocols?: TemplateAuthoringMetadata['publicEntryProtocols'];
       };
       const current = await requireTemplate(context.client.getRangeTemplate(input.templateId), input.templateId);
+      if (readTemplateRevision(current) !== input.expectedRevision) {
+        throw new Error('模板版本已变化，请刷新后再保存；未覆盖新拓扑');
+      }
       const topologyGraph = preserveRedactedCustomPasswords(graphFromTemplate(current), input.topologyGraph);
       const compiled = compileTemplateTopology(topologyGraph, {
         ...withoutLegacyVpcMetadata(metadataFromTemplate(withServerOwnedMetadata(current))),
@@ -162,7 +165,7 @@ export const templateTools: ToolDefinition[] = [
       });
       const template = await context.client.saveRangeTemplateTopology(
         input.templateId,
-        { ...compiled, expectedRevision: readTemplateRevision(current) },
+        { ...compiled, expectedRevision: input.expectedRevision },
         operation(input),
       );
       return redactTemplateSecrets({ valid: true, template });

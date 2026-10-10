@@ -8,7 +8,7 @@ describe('controlled DNS reapply MCP action', () => {
    .mockResolvedValue({ status: 'verified', action: 'apply-dns' });
   const registry = createToolRegistry({ runRangeInstanceNodeAction: run } as any);
   const tool = 'range_instance_node_apply_dns'; const input = { rangeInstanceId: 'range-1', nodeId: 'host-1' };
-  expect(registry.listTools(['ranges:control']).find(item => item.name === tool)?.annotations?.destructiveHint).toBe(false);
+  expect(registry.listTools(['ranges:control']).find(item => item.name === tool)?.annotations?.destructiveHint).toBe(true);
   await expect(registry.callTool(tool, ['ranges:read'], input)).rejects.toThrow('Forbidden');
   for (const extra of [{ command: 'whoami' }, { dns: { servers: ['8.8.8.8'] } }, { instanceId: 'ins-other' }, { defaultPassword: 'private' }])
    await expect(registry.callTool(tool, ['ranges:control'], { ...input, ...extra })).rejects.toThrow('Invalid input');

@@ -1,6 +1,7 @@
 import { isDeepStrictEqual } from 'node:util';
 
 import { BadRequestException } from '@nestjs/common';
+import { preserveOmittedHostPasswords } from './topology-secret-preservation';
 import {
   compileTemplateTopology,
   type CompiledTemplatePayload,
@@ -13,7 +14,7 @@ export function validateRangeInstanceDraftPayload(input: {
   draftTopologySpec: Record<string, unknown>;
   draftScenarioTemplateSpec: Record<string, unknown>;
   draftCompiledProvisionSpec: Record<string, unknown>;
-}, metadata: TemplateAuthoringMetadata): CompiledTemplatePayload {
+}, metadata: TemplateAuthoringMetadata, sourceGraph?: Record<string, unknown> | null): CompiledTemplatePayload {
   if (!isPlainObject(input.draftTopologyGraph)) {
     throw new BadRequestException('draftTopologyGraph must be a plain object');
   }
@@ -66,6 +67,11 @@ export function validateRangeInstanceDraftPayload(input: {
     throw new BadRequestException('draftCompiledProvisionSpec does not match draftTopologyGraph');
   }
 
+  const preserved = preserveOmittedHostPasswords(sourceGraph, input.draftTopologyGraph);
+  if (preserved !== input.draftTopologyGraph) {
+    // Validate caller snapshots before restoring server-owned opaque secrets and recompiling.
+    return JSON.parse(JSON.stringify(compileTemplateTopology(preserved as ScenarioGraphDraft, metadata))) as CompiledTemplatePayload;
+  }
   return canonicalCompiled;
 }
 

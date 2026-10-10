@@ -86,10 +86,10 @@ function readSingleInstanceCredential(instance: Record<string, unknown>) {
 }
 
 export const singleInstanceTools: ToolDefinition[] = [
-  { name:'single_instance_network_list',title:'查询独立实例共享网络',description:'仅管理员可查询账号绑定的共享网络 profile，供明确回收已空闲测试网络使用。',requiredScopes:['settings:read'],readOnlyHint:true,inputSchema:z.object({}),outputSchema:resultOutputSchema(z.array(resourceSchema)),
+  { name:'single_instance_network_list',title:'查询独立实例共享网络',description:'仅管理员可查询账号绑定的共享网络 profile，供明确回收已空闲测试网络使用。',requiredScopes:['settings:read'],adminOnly:true,readOnlyHint:true,inputSchema:z.strictObject({}),outputSchema:resultOutputSchema(z.array(resourceSchema)),
     call(context) {if(!context.client.listSingleInstanceNetworks) throw new Error('Network lifecycle API unavailable');return context.client.listSingleInstanceNetworks();}},
-  {name:'single_instance_network_cleanup_register',title:'登记本轮新网络回收许可',description:'仅管理员登记本轮启动之后、由明确临时用户创建的新managed profile。登记后只有这些用户可继续使用，回收需同一runId和登记管理员。',requiredScopes:['settings:write'],inputSchema:z.object({networkProfileId:z.string().min(1),runId:z.string().min(1),createdAfter:z.string().datetime({offset:true}),ownerUserIds:z.array(z.string().min(1)).min(1).max(99)}),outputSchema:actionOutputSchema,call(context,args){const input=args as {networkProfileId:string;runId:string;createdAfter:string;ownerUserIds:string[]};if(!context.client.registerSingleInstanceNetworkCleanup)throw new Error('Network registration API unavailable');return context.client.registerSingleInstanceNetworkCleanup(input.networkProfileId,{runId:input.runId,createdAfter:input.createdAfter,ownerUserIds:input.ownerUserIds});}},
-  { name:'single_instance_network_destroy',title:'回收独立实例共享网络',description:'仅管理员明确指定 profileId 回收无实例引用、无作业、云端为空的网络。来源账号/地域固定，旧未绑定网络禁止操作。',requiredScopes:['settings:write','instances:destroy'],annotations:{destructiveHint:true,idempotentHint:false},inputSchema:singleInstanceDestroyInputSchema.omit({singleInstanceId:true}).extend({networkProfileId:z.string().min(1),cleanupRunId:z.string().min(1)}),outputSchema:actionOutputSchema,
+  {name:'single_instance_network_cleanup_register',title:'登记本轮新网络回收许可',description:'仅管理员登记本轮启动之后、由明确临时用户创建的新managed profile。登记后只有这些用户可继续使用，回收需同一runId和登记管理员。',requiredScopes:['settings:write'],adminOnly:true,inputSchema:z.strictObject({networkProfileId:z.string().min(1),runId:z.string().min(1),createdAfter:z.string().datetime({offset:true}),ownerUserIds:z.array(z.string().min(1)).min(1).max(99)}),outputSchema:actionOutputSchema,call(context,args){const input=args as {networkProfileId:string;runId:string;createdAfter:string;ownerUserIds:string[]};if(!context.client.registerSingleInstanceNetworkCleanup)throw new Error('Network registration API unavailable');return context.client.registerSingleInstanceNetworkCleanup(input.networkProfileId,{runId:input.runId,createdAfter:input.createdAfter,ownerUserIds:input.ownerUserIds});}},
+  { name:'single_instance_network_destroy',title:'回收独立实例共享网络',description:'仅管理员明确指定 profileId 回收无实例引用、无作业、云端为空的网络。来源账号/地域固定，旧未绑定网络禁止操作。',requiredScopes:['settings:write','instances:destroy'],adminOnly:true,annotations:{destructiveHint:true,idempotentHint:false},inputSchema:singleInstanceDestroyInputSchema.omit({singleInstanceId:true}).extend({networkProfileId:z.string().min(1),cleanupRunId:z.string().min(1)}),outputSchema:actionOutputSchema,
     call(context,args) {const input=args as {networkProfileId:string;cleanupRunId:string;idempotencyKey?:string;confirmationId?:string};if(!context.client.destroySingleInstanceNetwork) throw new Error('Network lifecycle API unavailable');return context.client.destroySingleInstanceNetwork(input.networkProfileId,input.cleanupRunId,operation(input));}},
   {
     name: 'single_instance_list',
@@ -149,7 +149,7 @@ export const singleInstanceTools: ToolDefinition[] = [
       '在创建独立实例前校验指定 CPU 和内存是否存在精确匹配且在默认可用区可用的实例规格。exactAvailable=false 时不得提交创建；校验成功不代表预留库存。',
     requiredScopes: ['instances:read'],
     readOnlyHint: true,
-    inputSchema: z.object({
+    inputSchema: z.strictObject({
       cpu: z.number().int().positive().describe('CPU cores'),
       memory: z.number().int().positive().describe('Memory in GiB'),
     }),
@@ -259,61 +259,33 @@ export const singleInstanceTools: ToolDefinition[] = [
   {
     name: 'single_instance_reboot',
     title: '重启独立实例',
-    description: '对应实例管理页的“重启”。仅针对运行中的独立实例提交重启指令；调用前必须取得用户确认。',
+    description: '仅向运行中的独立实例提交重启指令；调用前必须取得准确目标的用户确认。',
     requiredScopes: ['instances:control'],
-    annotations: { idempotentHint: false },
+    annotations: { destructiveHint: true, idempotentHint: false },
     inputSchema: singleInstanceRebootInputSchema,
     outputSchema: actionOutputSchema,
     call(context, args) {
-      const input = args as {
-        singleInstanceId: string;
-        displayName?: string;
-        defaultHostName?: string;
-        defaultPassword?: string;
-        description?: string;
-        idempotencyKey?: string;
-        confirmationId?: string;
-      };
-      return context.client.rebootSingleInstance(
-        input.singleInstanceId,
-        {
-          displayName: input.displayName,
-          defaultHostName: input.defaultHostName,
-          defaultPassword: input.defaultPassword,
-          description: input.description,
-        },
-        operation(input),
-      );
+      const input = args as { singleInstanceId: string; idempotencyKey?: string; confirmationId?: string };
+      return context.client.rebootSingleInstance(input.singleInstanceId, {}, operation(input));
     },
   },
   {
     name: 'single_instance_open_vnc',
     title: '打开独立实例 VNC',
-    description: '对应实例管理页的“VNC”。返回临时 VNC 访问数据，属于敏感输出；仅在用户明确请求访问时调用。',
-    requiredScopes: ['instances:control', 'instances:credentials:read'],
+    description: '返回临时 VNC 访问数据；仅在用户明确请求访问准确实例时调用，不接受镜像打包参数。',
+    requiredScopes: ['instances:read', 'instances:credentials:read'],
+    annotations: { idempotentHint: false },
     inputSchema: singleInstanceOpenVncInputSchema,
     outputSchema: actionOutputSchema,
     call(context, args) {
-      const input = args as {
-        singleInstanceId: string;
-        displayName?: string;
-        defaultHostName?: string;
-        defaultPassword?: string;
-        description?: string;
-      };
-      return context.client.openSingleInstanceVnc(input.singleInstanceId, {
-        displayName: input.displayName,
-        defaultHostName: input.defaultHostName,
-        defaultPassword: input.defaultPassword,
-        description: input.description,
-      });
+      return context.client.openSingleInstanceVnc((args as { singleInstanceId: string }).singleInstanceId);
     },
   },
   {
     name: 'single_instance_pack_image',
     title: '打包独立实例镜像',
     description: '对应实例管理页的“打包镜像”。从独立实例创建私有平台镜像资产；可能创建云镜像，调用前必须取得用户确认。',
-    requiredScopes: ['instances:control'],
+    requiredScopes: ['instances:control', 'images:write'],
     annotations: { idempotentHint: false },
     inputSchema: singleInstancePackImageInputSchema,
     outputSchema: actionOutputSchema,
@@ -336,7 +308,7 @@ export const singleInstanceTools: ToolDefinition[] = [
           description: input.description,
         },
         operation(input),
-      );
+      ).then(redactSingleInstanceCredentials);
     },
   },
   {
@@ -360,14 +332,15 @@ export const singleInstanceTools: ToolDefinition[] = [
         throw new Error('Single instance batch not found');
       }
 
-      const rows = group.instances.map((instance) => {
-        const credential = readSingleInstanceCredential(instance as Record<string, unknown>);
-        const accessEntry = (instance.accessEntry ?? null) as Record<string, unknown> | null;
+      const rows = await Promise.all(group.instances.map(async (instance) => {
+        const access = await context.client.getSingleInstanceAccess(instance.id);
+        const credential = readSingleInstanceCredential({ ...instance, ...access });
+        const accessEntry = (access.accessEntry ?? null) as Record<string, unknown> | null;
         const publicIp = typeof accessEntry?.publicIp === 'string' && accessEntry.publicIp.trim() ? accessEntry.publicIp.trim() : '暂无';
         const name = typeof instance.name === 'string' && instance.name.trim() ? instance.name.trim() : instance.id;
 
-        return [name, publicIp, credential.username, credential.password].map(escapeCsvCell).join(',');
-      });
+        return [/^[=+@-]/.test(name) ? `'${name}` : name, publicIp, credential.username, credential.password].map(escapeCsvCell).join(',');
+      }));
       const csv = [['实例名', '公网 IP', '账号', '密码'].join(','), ...rows].join('\n');
       const batchName = typeof group.batch.name === 'string' && group.batch.name.trim() ? group.batch.name.trim() : group.batch.id;
 
@@ -385,5 +358,5 @@ export const singleInstanceTools: ToolDefinition[] = [
 function redactSingleInstanceCredentials<T>(value:T):T {
   if(Array.isArray(value)) return value.map(redactSingleInstanceCredentials) as T;
   if(!value || typeof value!=='object') return value;
-  return Object.fromEntries(Object.entries(value).filter(([key])=>key.toLowerCase()!=='runtimecredentials').map(([key,child])=>[key,redactSingleInstanceCredentials(child)])) as T;
+  return Object.fromEntries(Object.entries(value).filter(([key])=>!['runtimecredentials','password','custompassword','defaultpassword','ssh','vncurl','accesskeyid','accesskeysecret','token'].includes(key.toLowerCase())).map(([key,child])=>[key,redactSingleInstanceCredentials(child)])) as T;
 }

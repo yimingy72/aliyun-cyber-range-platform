@@ -25,8 +25,8 @@ describe('billing currency and export contracts', () => {
   it('preserves pending resource identities and release times through SDK and MCP HTTP output validation', async () => {
     const fetch = vi.fn(async (_url: string, _init?: RequestInit) => new Response(JSON.stringify(pendingSummary)));
     const platformClient = new PlatformApiClient({ baseUrl: 'https://fixture.invalid', token: 'fixture-token', cloudWorkspaceId: 'workspace-ali', fetch: fetch as typeof globalThis.fetch });
-    const server = createHttpApp({ host: '127.0.0.1', port: 0, platformApiBaseUrl: 'https://fixture.invalid', }, {
-      authenticateRequest: async () => ({ token: 'fixture-inbound', clientId: 'fixture', scopes: ['billing:read'] }), client: platformClient,
+    const server = createHttpApp({ host: '127.0.0.1', port: 0, platformApiBaseUrl: 'https://fixture.invalid' }, {
+      authenticateRequest: async () => ({ token: 'fixture-inbound', clientId: 'fixture', scopes: ['billing:read'], extra: { role: 'admin' } }), client: platformClient,
     });
     const client = new Client({ name: 'billing-output-contract', version: '1.0.0' });
     try {
