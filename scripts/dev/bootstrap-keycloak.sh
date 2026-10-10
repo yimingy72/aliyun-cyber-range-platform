@@ -9,6 +9,30 @@ PLATFORM_ADMIN_USERNAME=${PLATFORM_ADMIN_USERNAME:-${ADMIN_USERNAME:-${KEYCLOAK_
 PLATFORM_ADMIN_PASSWORD=${PLATFORM_ADMIN_PASSWORD:-${ADMIN_PASSWORD:-${KEYCLOAK_ADMIN_PASSWORD}}}
 WEB_PUBLIC_URL=${WEB_PUBLIC_URL:-http://localhost:3000}
 WEB_PUBLIC_URL=${WEB_PUBLIC_URL%/}
+WEB_ALTERNATE_URL=
+web_scheme=${WEB_PUBLIC_URL%%://*}
+web_authority=${WEB_PUBLIC_URL#*://}
+web_host=${web_authority%%:*}
+web_port=${web_authority#"$web_host"}
+case "$web_scheme:$web_host" in
+  http:localhost|https:localhost) web_alternate_host=127.0.0.1 ;;
+  http:127.0.0.1|https:127.0.0.1) web_alternate_host=localhost ;;
+  *) web_alternate_host= ;;
+esac
+case "$web_port" in
+  '') ;;
+  :*) case "${web_port#:}" in ''|*[!0-9]*) web_alternate_host= ;; esac ;;
+  *) web_alternate_host= ;;
+esac
+WEB_REDIRECT_URIS="[\"${WEB_PUBLIC_URL}/admin/callback\"]"
+WEB_ORIGINS="[\"${WEB_PUBLIC_URL}\"]"
+WEB_POST_LOGOUT_URIS="${WEB_PUBLIC_URL}/admin/login"
+if [ -n "$web_alternate_host" ]; then
+  WEB_ALTERNATE_URL="${web_scheme}://${web_alternate_host}${web_port}"
+  WEB_REDIRECT_URIS="[\"${WEB_PUBLIC_URL}/admin/callback\",\"${WEB_ALTERNATE_URL}/admin/callback\"]"
+  WEB_ORIGINS="[\"${WEB_PUBLIC_URL}\",\"${WEB_ALTERNATE_URL}\"]"
+  WEB_POST_LOGOUT_URIS="${WEB_PUBLIC_URL}/admin/login##${WEB_ALTERNATE_URL}/admin/login"
+fi
 KEYCLOAK_ADMIN_CLIENT_ID=${KEYCLOAK_ADMIN_CLIENT_ID:-platform-admin}
 KEYCLOAK_ADMIN_CLIENT_SECRET=${KEYCLOAK_ADMIN_CLIENT_SECRET:-platform-admin-dev-only}
 MCP_OIDC_CLIENT_ID=${MCP_OIDC_CLIENT_ID:-mcp-gateway}
@@ -168,10 +192,10 @@ ensure_realm_roles_mapper() {
     -s 'config."userinfo.token.claim"=true' >/dev/null
 }
 
- /opt/keycloak/bin/kcadm.sh update "clients/$PLATFORM_WEB_CLIENT_ID" -r "$REALM" \
-  -s "redirectUris=[\"${WEB_PUBLIC_URL}/*\"]" \
-  -s "webOrigins=[\"${WEB_PUBLIC_URL}\"]" \
-  -s 'attributes."post.logout.redirect.uris"=+' >/dev/null
+/opt/keycloak/bin/kcadm.sh update "clients/$PLATFORM_WEB_CLIENT_ID" -r "$REALM" \
+  -s "redirectUris=$WEB_REDIRECT_URIS" \
+  -s "webOrigins=$WEB_ORIGINS" \
+  -s "attributes.\"post.logout.redirect.uris\"=$WEB_POST_LOGOUT_URIS" >/dev/null
 ensure_subject_mapper "$PLATFORM_WEB_CLIENT_ID"
 ensure_preferred_username_mapper "$PLATFORM_WEB_CLIENT_ID"
 ensure_realm_roles_mapper "$PLATFORM_WEB_CLIENT_ID"
