@@ -1019,6 +1019,7 @@ export class ProvisioningWorkerService {
         (summary as any)[field] = value;
       }
     }
+    let recoverySourceJobId: string | undefined;
     if (context.provider === 'tencent_cloud' && this.rangeProvisioner.recoverUntrackedResources) {
       // A failed first apply can have owned resources in its fenced state before
       // the initial output was persisted. Recovery must include those inspected
@@ -1037,6 +1038,7 @@ export class ProvisioningWorkerService {
       },async (recovered,sourceJobId) => {
         const sourceJob = await this.adminRepository.getProvisionJobById(sourceJobId);
         if (!sourceJob || sourceJob.rangeInstanceId !== instance.id || !['create','retry','update'].includes(sourceJob.jobType) || !sourceJob.startedAt) throw new Error('Tencent recovery has no original submitted platform job');
+        recoverySourceJobId = sourceJobId;
         for (const field of ['natGatewayIds','eipAllocationIds'] as const) summary[field] = { ...summary[field], ...recovered[field] };
         const saved = await this.updateRangeForClaim(job,{ resourceSummary: summary });
         await this.recordRangeResourceInventory(job,summary);
@@ -1048,7 +1050,7 @@ export class ProvisioningWorkerService {
     await this.recordRangeResourceInventory(job, summary);
     await syncRangeInstanceBillingLedger({ repository: this.adminRepository, instance: persisted,
       resourceSummary: summary, regionId: context.defaultRegion, cloudAccountUid: context.accountUid,
-      sourceProvisionJobId: job.id, billingStartAt: instance.createdAt });
+      sourceProvisionJobId: recoverySourceJobId ?? job.id, billingStartAt: instance.createdAt });
     return persisted;
   }
 

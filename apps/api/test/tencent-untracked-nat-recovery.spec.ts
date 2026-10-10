@@ -49,6 +49,21 @@ it('discovers the exact atomically tagged submitted NAT and persists fee evidenc
   expect(test.runner.apply).not.toHaveBeenCalled();
   expect(await fs.stat(path.join(test.dir,'.range-apply-started'))).toBeDefined();
 });
+it('records the original partial-create billing source even when all submitted NAT and EIP identities already reached state', async () => {
+  const test = await fixture();
+  const statePath = path.join(test.dir, 'terraform.tfstate');
+  const state = JSON.parse(await fs.readFile(statePath, 'utf8'));
+  state.resources.push({ mode: 'managed', module: 'module.range', type: 'tencentcloud_nat_gateway', name: 'shared',
+    instances: [{ index_key: 'shared', attributes: { id: 'nat-fixture', tags: { ...tags, CreationIntentId: intent } } }] });
+  await fs.writeFile(statePath, JSON.stringify(state));
+  await test.provisioner.recoverUntrackedResources(test.input, test.assertCurrent, test.persist);
+  expect(test.persist).toHaveBeenCalledTimes(1);
+  expect(test.persist).toHaveBeenCalledWith({ mode: 'opentofu' }, 'source-job');
+  expect(test.input.assertRecoverySourceJob).toHaveBeenCalledWith('source-job');
+  expect(test.order).toEqual(['persist']);
+  expect(test.runner.importResource).not.toHaveBeenCalled();
+  expect(test.runner.apply).not.toHaveBeenCalled();
+});
 async function updateFixture() {
   const test = await fixture();
   const pendingPath = path.join(test.dir,'.range-apply-started');

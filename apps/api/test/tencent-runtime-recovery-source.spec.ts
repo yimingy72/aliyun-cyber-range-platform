@@ -43,9 +43,10 @@ it('uses inspected partial first-apply identities when the initial output never 
   await repository.updateRangeInstance(instance.id, { lastJobId: job.id });
   const claim = (await repository.claimRangeProvisionJob(job.id, new Date()))!;
   const inspected = { mode: 'opentofu' as const, vpcId: 'vpc-owned', eipAllocationIds: { snat: 'eip-owned' }, natGatewayIds: { shared: 'nat-owned' } };
-  const recover = jest.fn(async (input: any) => {
+  const recover = jest.fn(async (input: any, _assertCurrent: unknown, persist: (summary: any, sourceJobId: string) => Promise<void>) => {
     expect(input.knownResourceSummary).toMatchObject({ ...inspected, executionContext });
     await input.assertRecoverySourceJob(birth.id);
+    await persist({ mode: 'opentofu' }, birth.id);
   });
   const provider = { mode: 'opentofu' as const, inspectResources: jest.fn(async () => inspected), recoverUntrackedResources: recover };
   const worker = new ProvisioningWorkerService(repository, provider as any, {} as any) as any;
@@ -53,9 +54,11 @@ it('uses inspected partial first-apply identities when the initial output never 
     allocatedCidr: null, runtimeConfig: account, requirePersistedState: true }, account)).resolves.toMatchObject({ resourceSummary: { ...inspected, executionContext } });
   expect(recover).toHaveBeenCalledTimes(1);
   expect(await repository.listBillingLedgerResources()).toEqual(expect.arrayContaining([
-    expect.objectContaining({ cloudResourceId: 'eip-owned', cloudProvider: account.provider, cloudAccountUid: account.accountUid }),
-    expect.objectContaining({ cloudResourceId: 'nat-owned', cloudProvider: account.provider, cloudAccountUid: account.accountUid }),
+    expect.objectContaining({ cloudResourceId: 'eip-owned', cloudProvider: account.provider, cloudAccountUid: account.accountUid, sourceProvisionJobId: birth.id }),
+    expect.objectContaining({ cloudResourceId: 'nat-owned', cloudProvider: account.provider, cloudAccountUid: account.accountUid, sourceProvisionJobId: birth.id }),
   ]));
+  expect((await repository.listProvisionJobStepLogs(birth.id)).some(log => log.stepName === 'platform_billing_creation_inventory'
+    && JSON.parse(log.message!).resources.some((resource: any) => resource.cloudResourceId === 'eip-owned'))).toBe(true);
 }));
 
 it('does not submit recovery when inspected VPC identity conflicts with the persisted original inventory', () => run(async () => {

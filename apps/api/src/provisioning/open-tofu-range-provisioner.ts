@@ -587,7 +587,14 @@ export class OpenTofuRangeProvisioner implements RangeProvisioner {
       const address = `module.range.${entry.type}.${entry.name}[${JSON.stringify(entry.value.key)}]`;
       return pending.createAddresses.includes(address) && !state.instances.some(resource => resource.address === address);
     });
-    if (!missing.length) return;
+    if (!missing.length) {
+      // A partial first apply can be fully represented in state while outputs
+      // and creation billing evidence were never persisted. Record that proven
+      // birth job even when no native resource needs state import.
+      await assertCurrent();
+      await persist({ mode: 'opentofu' }, pending.sourceProvisionJobId);
+      return;
+    }
     if (!this.runner.importResource) throw new Error('Tencent recovery requires fenced OpenTofu state import support');
     // EIPs being removed can remain in partial state. They are cleanup evidence, not inputs of the new NAT.
     const allEipIds = state.instances.filter(resource => resource.type === 'tencentcloud_eip'
