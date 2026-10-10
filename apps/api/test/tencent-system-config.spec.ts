@@ -22,7 +22,7 @@ describe('Tencent Cloud context catalog and global configuration boundary', () =
         expect.objectContaining({ instanceTypeId: 'SA3.MEDIUM4', architecture: 'X86_64' }),
         expect.objectContaining({ instanceTypeId: 'SR1.MEDIUM4', architecture: 'ARM64' }),
         expect.objectContaining({ instanceTypeId: 'U1.MEDIUM4', architecture: 'UNKNOWN' }),
-      ], warning: expect.stringContaining('暂未开放腾讯云实例创建'),
+      ], warning: expect.stringContaining('创建前会再次校验'),
     });
     expect(fetch).toHaveBeenCalledWith('https://cvm.tencentcloudapi.com/', expect.objectContaining({
       body: JSON.stringify({ Filters: [{ Name: 'zone', Values: [context.defaultZoneId] }, { Name: 'instance-charge-type', Values: ['POSTPAID_BY_HOUR'] }] }),
