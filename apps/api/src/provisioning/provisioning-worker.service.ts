@@ -1020,7 +1020,10 @@ export class ProvisioningWorkerService {
       }
     }
     if (context.provider === 'tencent_cloud' && this.rangeProvisioner.recoverUntrackedResources) {
-      await this.rangeProvisioner.recoverUntrackedResources({ ...inspectedInput, knownResourceSummary: await this.tencentCleanupLedgerInventory(current,context as SystemCloudAccountContext),
+      // A failed first apply can have owned resources in its fenced state before
+      // the initial output was persisted. Recovery must include those inspected
+      // identities, while retaining the original account and ledger fences.
+      await this.rangeProvisioner.recoverUntrackedResources({ ...inspectedInput, knownResourceSummary: await this.tencentCleanupLedgerInventory({ ...current, resourceSummary: summary },context as SystemCloudAccountContext),
         assertRecoverySourceJob: async sourceJobId => {
           const sourceJob = await this.adminRepository.getProvisionJobById(sourceJobId);
           if (!sourceJob || sourceJob.rangeInstanceId !== instance.id
