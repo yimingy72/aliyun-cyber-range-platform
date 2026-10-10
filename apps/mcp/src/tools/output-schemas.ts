@@ -1,10 +1,12 @@
 import * as z from 'zod/v4';
 
 const nonEmptyString = z.string().min(1);
+const platformErrorResultSchema = z.object({ error: z.json() }).strict();
 
 export const resultOutputSchema = (resultSchema: z.ZodType = z.unknown()) =>
   z.object({
-    result: resultSchema,
+    // Platform failures and confirmation challenges use the same envelope.
+    result: z.union([resultSchema, platformErrorResultSchema]),
   });
 
 export const resourceSchema = z
