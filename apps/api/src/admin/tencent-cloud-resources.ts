@@ -29,6 +29,8 @@ const RESOURCES = {
   nat: ['vpc', 'DescribeNatGateways', 'NatGatewaySet', 'NatGatewayId', 'NatGatewayIds', 'nat'],
   eip: ['vpc', 'DescribeAddresses', 'AddressSet', 'AddressId', 'AddressIds', 'eip'],
 } as const;
+// These individual API contracts explicitly define literal ResourceNotFound as a missing resource.
+const DOCUMENTED_NOT_FOUND_KINDS = new Set<TencentResourceKind>(['security_group', 'nat']);
 
 export function assertTencentAccount(account: SystemCloudAccountContext) {
   if (account.provider !== 'tencent_cloud' || !account.accountUidResolved || !account.accountUid
@@ -100,10 +102,11 @@ export async function describeTencentResourceInventory(account: SystemCloudAccou
       parameters: { ...(query.ids ? { [idsKey]: query.ids } : { Filters: filters }), Offset: stringPaging ? String(resources.length) : resources.length,
         Limit: stringPaging ? '100' : 100 } })); }
     catch (error) {
-      // DescribeSecurityGroups explicitly documents ResourceNotFound. It is not an empty tag search,
-      // and a multi-ID error cannot prove that every requested group is absent.
-      if (kind !== 'security_group' || !query.ids?.length || page !== 0 || resources.length
+      // Only documented known-ID absence is accepted, never an empty tag/filter search.
+      // A multi-ID error cannot prove that every requested resource is absent.
+      if (!DOCUMENTED_NOT_FOUND_KINDS.has(kind) || !query.ids?.length || page !== 0 || resources.length
         || !(error instanceof TencentCloudRequestError) || error.code !== 'ResourceNotFound'
+        || error.service && error.service !== service || error.action && error.action !== action
         || !error.requestId || !/^[A-Za-z0-9][A-Za-z0-9-]{0,127}$/.test(error.requestId)) throw error;
       const proofs: TencentResourceEvidence[] = [{ provider: 'tencent_cloud', accountUid: account.accountUid!, cloudAccountContextId: account.cloudAccountContextId!,
         regionId: account.defaultRegion, action, requestIds: [error.requestId], observedAt: new Date().toISOString(), errorCode: 'ResourceNotFound' }];

@@ -166,7 +166,9 @@ export class ProvisioningWorkerService {
     // The TC3 client already strips credentials and vendor messages from its typed code.
     const code = error instanceof TencentCloudRequestError && /^[A-Za-z][A-Za-z0-9_.]{0,100}$/.test(error.code)
       ? error.code : 'UNCLASSIFIED_RECONCILIATION_ERROR';
-    this.logger.error(JSON.stringify({ provider: space.provider, workspaceId: space.id, contextId, error: { code } }));
+    const request = error instanceof TencentCloudRequestError
+      ? { ...(error.service ? { service: error.service } : {}), ...(error.action ? { action: error.action } : {}) } : {};
+    this.logger.error(JSON.stringify({ provider: space.provider, workspaceId: space.id, contextId, error: { code, ...request } }));
   }
 
   private async reconcilePlatformResourcesIfDue(now: Date) {

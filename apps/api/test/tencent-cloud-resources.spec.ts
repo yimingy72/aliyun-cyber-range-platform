@@ -46,6 +46,32 @@ describe('Tencent frozen inventory and complete pagination', () => {
     expect(result.resources.map(row => row.id)).toEqual(['sg-kept']); expect(result.evidence).toHaveLength(3);
     expect(request.mock.calls.map(([input]) => input.parameters.SecurityGroupIds)).toEqual([['sg-gone','sg-kept'],['sg-gone'],['sg-kept']]);
   });
+  it('treats documented singleton NAT ResourceNotFound as absence with its original request receipt', async () => {
+    request.mockRejectedValue(new TencentCloudRequestError('ResourceNotFound', 'request-absent-nat', { service: 'vpc', action: 'DescribeNatGateways' }));
+    const result = await describeTencentKnownResourcesWithEvidence(account, 'nat', ['nat-gone']);
+    expect(result.resources).toEqual([]); expect(result.evidence).toMatchObject([{ action: 'DescribeNatGateways', requestIds: ['request-absent-nat'], errorCode: 'ResourceNotFound' }]);
+    expect(request).toHaveBeenCalledTimes(1);
+  });
+  it('does not hide a retained NAT after a mixed multi-ID ResourceNotFound', async () => {
+    request.mockRejectedValueOnce(new TencentCloudRequestError('ResourceNotFound', 'request-nats'))
+      .mockRejectedValueOnce(new TencentCloudRequestError('ResourceNotFound', 'request-gone-nat'))
+      .mockResolvedValueOnce(body('NatGatewaySet', [{ NatGatewayId: 'nat-kept', VpcId: 'vpc-owned', TagSet: [] }]));
+    const result = await describeTencentKnownResourcesWithEvidence(account, 'nat', ['nat-gone','nat-kept']);
+    expect(result.resources.map(row => row.id)).toEqual(['nat-kept']); expect(result.evidence).toHaveLength(3);
+    expect(request.mock.calls.map(([input]) => input.parameters.NatGatewayIds)).toEqual([['nat-gone','nat-kept'],['nat-gone'],['nat-kept']]);
+  });
+  it.each(['UnauthorizedOperation','ResourceNotFound.NatGateway','InvalidParameterValue.Malformed','InternalError'])('never treats %s as NAT absence', async code => {
+    request.mockRejectedValue(new TencentCloudRequestError(code, 'request-error'));
+    await expect(describeTencentResourceInventory(account,'nat',{ids:['nat-gone']})).rejects.toMatchObject({ code });
+  });
+  it('does not turn NAT tag/filter failure, undocumented EIP error or mismatched API metadata into absence', async () => {
+    request.mockRejectedValue(new TencentCloudRequestError('ResourceNotFound', 'request-error'));
+    await expect(describeTencentResourceInventory(account,'nat',{tags:{CreatedBy:'cyber-range-platform'}})).rejects.toThrow();
+    await expect(describeTencentResourceInventory(account,'nat',{vpcId:'vpc-owned'})).rejects.toThrow();
+    await expect(describeTencentResourceInventory(account,'eip',{ids:['eip-gone']})).rejects.toThrow();
+    request.mockRejectedValue(new TencentCloudRequestError('ResourceNotFound', 'request-error', { service: 'vpc', action: 'DescribeAddresses' }));
+    await expect(describeTencentResourceInventory(account,'nat',{ids:['nat-gone']})).rejects.toThrow();
+  });
   it.each(['UnauthorizedOperation','ResourceNotFound.SecurityGroup','InvalidParameterValue.Malformed','InternalError'])('never turns undocumented %s into security-group absence', async code => {
     request.mockRejectedValue(new TencentCloudRequestError(code, 'request-error'));
     await expect(describeTencentResourceInventory(account,'security_group',{ids:['sg-gone']})).rejects.toMatchObject({ code });

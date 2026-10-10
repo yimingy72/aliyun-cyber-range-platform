@@ -11,10 +11,15 @@ export type TencentCloudRequest = {
 };
 
 export class TencentCloudRequestError extends Error {
-  constructor(readonly code: string, readonly requestId?: string) {
+  readonly service?: string;
+  readonly action?: string;
+  constructor(readonly code: string, readonly requestId?: string, metadata?: { service?: string; action?: string }) {
     super(`腾讯云请求失败（${code}）。`);
     this.name = 'TencentCloudRequestError';
+    if (metadata?.service && /^[a-z][a-z0-9]{1,31}$/.test(metadata.service)) this.service = metadata.service;
+    if (metadata?.action && /^[A-Z][A-Za-z0-9]{1,99}$/.test(metadata.action)) this.action = metadata.action;
   }
+
 }
 
 function sha256(value: string) {
@@ -29,6 +34,11 @@ export async function requestTencentCloud<T>(input: TencentCloudRequest): Promis
     || !input.accessKeyId || !input.accessKeySecret || /[\r\n]/.test(input.accessKeyId)) {
     throw new TencentCloudRequestError('INVALID_REQUEST');
   }
+
+  const requestMetadata = {
+    service: !input.service.includes(input.accessKeyId) && !input.service.includes(input.accessKeySecret) ? input.service : undefined,
+    action: !input.action.includes(input.accessKeyId) && !input.action.includes(input.accessKeySecret) ? input.action : undefined,
+  };
 
   const host = `${input.service}.tencentcloudapi.com`;
   const contentType = 'application/json; charset=utf-8';
@@ -66,7 +76,7 @@ export async function requestTencentCloud<T>(input: TencentCloudRequest): Promis
     try { payload = await response.json(); } catch { payload = null; }
   } catch {
     // A failed request can have reached the cloud; callers must reconcile before retrying writes.
-    throw new TencentCloudRequestError('NETWORK_OR_TIMEOUT');
+    throw new TencentCloudRequestError('NETWORK_OR_TIMEOUT', undefined, requestMetadata);
   }
 
   const result = payload && typeof payload === 'object' && !Array.isArray(payload)
@@ -79,13 +89,13 @@ export async function requestTencentCloud<T>(input: TencentCloudRequest): Promis
     const rawRequestId = (result as { RequestId?: unknown }).RequestId;
     const requestId = typeof rawRequestId === 'string' && /^[A-Za-z0-9][A-Za-z0-9-]{0,127}$/.test(rawRequestId)
       && !rawRequestId.includes(input.accessKeyId) && !rawRequestId.includes(input.accessKeySecret) ? rawRequestId : undefined;
-    throw new TencentCloudRequestError(code, requestId);
+    throw new TencentCloudRequestError(code, requestId, requestMetadata);
   }
-  if (!response.ok) throw new TencentCloudRequestError(`HTTP_${response.status}`);
+  if (!response.ok) throw new TencentCloudRequestError(`HTTP_${response.status}`, undefined, requestMetadata);
   if (!result || typeof result !== 'object' || Array.isArray(result)
     || typeof (result as { RequestId?: unknown }).RequestId !== 'string'
     || !/^[A-Za-z0-9][A-Za-z0-9-]{0,127}$/.test((result as { RequestId: string }).RequestId)) {
-    throw new TencentCloudRequestError('INVALID_RESPONSE');
+    throw new TencentCloudRequestError('INVALID_RESPONSE', undefined, requestMetadata);
   }
   return result as T;
 }

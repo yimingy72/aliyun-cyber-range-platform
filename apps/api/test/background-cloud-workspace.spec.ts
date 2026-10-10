@@ -120,7 +120,7 @@ describe('Frozen source workspaces for background tasks', () => {
     const visited: string[] = [], reconcile = jest.fn(async () => {
       const id = getCurrentCloudWorkspaceId()!; visited.push(id);
       if (id === 'account-a') throw Object.assign(new Error('synthetic-private-password-and-params'), { code: 'synthetic-private-code', accessKeySecret: 'synthetic-private-key' });
-      if (id === 'account-tencent') throw new TencentCloudRequestError('InvalidParameter.FilterInvalidKey', 'safe-request-id');
+      if (id === 'account-tencent') throw new TencentCloudRequestError('InvalidParameter.FilterInvalidKey', 'safe-request-id', { service: 'vpc', action: 'DescribeNatGateways' });
       return {};
     });
     const worker = new ProvisioningWorkerService(createMemoryAdminRepository(), {} as any, config as any, {} as any, { reconcile } as any);
@@ -129,7 +129,7 @@ describe('Frozen source workspaces for background tasks', () => {
     expect(visited).toEqual(['account-a','account-b','account-tencent']);
     expect(log.mock.calls.map(([value]) => JSON.parse(String(value)))).toEqual([
       { provider: 'alibaba_cloud', workspaceId: 'account-a', contextId: 'context-account-a', error: { code: 'UNCLASSIFIED_RECONCILIATION_ERROR' } },
-      { provider: 'tencent_cloud', workspaceId: 'account-tencent', contextId: 'context-account-tencent', error: { code: 'InvalidParameter.FilterInvalidKey' } },
+      { provider: 'tencent_cloud', workspaceId: 'account-tencent', contextId: 'context-account-tencent', error: { code: 'InvalidParameter.FilterInvalidKey', service: 'vpc', action: 'DescribeNatGateways' } },
     ]);
     expect(JSON.stringify(log.mock.calls)).not.toMatch(/synthetic-private|safe-request-id|accessKeySecret|params/);
   });

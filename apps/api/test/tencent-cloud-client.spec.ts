@@ -27,6 +27,7 @@ describe('Tencent Cloud TC3 request boundary', () => {
       expect(error).toBeInstanceOf(TencentCloudRequestError);
       expect((error as TencentCloudRequestError).code).toBe('AuthFailure.SignatureFailure');
       expect((error as TencentCloudRequestError).requestId).toBe('request-2');
+      expect((error as TencentCloudRequestError).service).toBe('sts'); expect((error as TencentCloudRequestError).action).toBe('GetCallerIdentity');
       expect(String(error)).not.toContain(input.accessKeyId); expect(String(error)).not.toContain(input.accessKeySecret);
     }
     expect(fetch.mock.calls[0][1]?.headers).not.toHaveProperty('X-TC-Region');
@@ -46,8 +47,16 @@ describe('Tencent Cloud TC3 request boundary', () => {
   });
   it('does not retry write requests on an unknown network result', async () => {
     const fetch = jest.spyOn(globalThis, 'fetch').mockRejectedValue(new Error(input.accessKeySecret));
-    await expect(requestTencentCloud({ ...input, action: 'RunInstances' })).rejects.toMatchObject({ code: 'NETWORK_OR_TIMEOUT' });
+    await expect(requestTencentCloud({ ...input, action: 'RunInstances' })).rejects.toMatchObject({ code: 'NETWORK_OR_TIMEOUT', service: 'cvm', action: 'RunInstances' });
     expect(fetch).toHaveBeenCalledTimes(1);
+  });
+  it('does not retain credential-bearing or malformed service/action diagnostics', async () => {
+    jest.spyOn(globalThis, 'fetch').mockResolvedValue(json({ RequestId: 'safe-request', Error: { Code: 'ResourceNotFound' } }));
+    const error = await requestTencentCloud({ ...input, service: 'vpc', action: 'DescribeAddresses', accessKeyId: 'vpc', accessKeySecret: 'DescribeAddresses' }).catch(value => value);
+    if (!(error instanceof TencentCloudRequestError)) throw new Error('Expected typed synthetic cloud failure');
+    expect(error.service).toBeUndefined(); expect(error.action).toBeUndefined();
+    const invalid = new TencentCloudRequestError('SYNTHETIC', undefined, { service: 'private-host\nkey', action: 'private-message' });
+    expect(invalid.service).toBeUndefined(); expect(invalid.action).toBeUndefined();
   });
   it.each([{ service: '../bad' }, { service: 'cvm.evil' }, { action: 'DescribeZones\r\n' }, { regionId: 'https://evil' }, { accessKeyId: 'bad\nkey' }])('rejects invalid transport input before fetch: %j', async (patch) => {
     const fetch = jest.spyOn(globalThis, 'fetch');
