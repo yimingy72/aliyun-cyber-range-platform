@@ -1330,7 +1330,8 @@ export class OpenTofuRangeProvisioner implements RangeProvisioner {
     }
     const rendered = renderTencentRangeVariables({ plan, rangeInstanceId: input.rangeInstanceId, account, hostInstanceTypes: types, hostImageIds: images,
       hostPasswords: Object.fromEntries(plan.hostDefinitions.map(host => [host.key,options.requireRuntimePasswords ? requireRuntimePassword(input.runtimeCredentials,host.key) : DESTROY_PLACEHOLDER_PASSWORD])),
-      hostWindows: Object.fromEntries(plan.hostDefinitions.map(host => [host.key,imageMetadata[images[host.key]]?.isWindows === true])),
+      // Preserve the existing non-DNS login validation when legacy image metadata omits its OS.
+      hostWindows: Object.fromEntries(plan.hostDefinitions.map(host => [host.key,imageMetadata[images[host.key]]?.isWindows ?? (!host.dns && input.runtimeCredentials?.[host.key]?.username === 'Administrator')])),
       expiresAt: input.expiresAt ?? '', tags: input.billingTags ?? {}, systemDiskType: this.env.TENCENTCLOUD_SYSTEM_DISK_TYPE,
       systemDiskSize: Math.max(50,...Object.values(imageMetadata).map(image => image.minimumSystemDiskSize)) });
     const oldState = await readWorkspaceState(path.join(this.workspacesRootDir,input.rangeInstanceId));

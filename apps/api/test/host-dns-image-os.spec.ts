@@ -73,3 +73,18 @@ it('Tencent DNS caller renders Windows userdata from image metadata even when us
   const result = await (provisioner as any).buildTencentVariables(input,plan,account,{ requireRuntimePasswords: true });
   expect(result.hosts[0].user_data).toMatch(/^<powershell>\n/);
 });
+
+it('preserves legacy non-DNS Windows hostname validation when image OS metadata is missing', async () => {
+  const {account,provisioner,plan,input} = tencentDnsCaller();
+  delete (plan.hostDefinitions[0] as any).dns;
+  plan.hostDefinitions[0].hostName = 'windows-hostname-too-long';
+  jest.spyOn(scheduler,'assertTencentImagesAvailable').mockResolvedValue({'img-fixture':{minimumSystemDiskSize:50,architecture:'x86_64'}});
+  await expect((provisioner as any).buildTencentVariables(input,plan,account,{requireRuntimePasswords:true})).rejects.toThrow();
+});
+it('official Linux metadata remains authoritative for non-DNS login validation', async () => {
+  const {account,provisioner,plan,input} = tencentDnsCaller();
+  delete (plan.hostDefinitions[0] as any).dns;
+  plan.hostDefinitions[0].hostName = 'linux-hostname-over-fifteen';
+  jest.spyOn(scheduler,'assertTencentImagesAvailable').mockResolvedValue({'img-fixture':{minimumSystemDiskSize:50,architecture:'x86_64',isWindows:false}});
+  await expect((provisioner as any).buildTencentVariables(input,plan,account,{requireRuntimePasswords:true})).resolves.toBeDefined();
+});

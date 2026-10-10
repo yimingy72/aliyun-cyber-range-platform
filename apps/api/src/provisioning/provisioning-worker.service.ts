@@ -658,9 +658,10 @@ export class ProvisioningWorkerService {
     if (!(await this.ownsProvisionJobClaim(input.job))) {
       return;
     }
-    assertExistingHostBootstrapUnchanged(input.instance, topologySnapshot.topologyGraph);
-    if (topologySnapshot.operation) await this.assertRangeSnapshotImages(input.instance, topologySnapshot);
     const beforeUpdate = await this.adminRepository.getRangeInstanceById(input.instance.id);
+    if (!beforeUpdate) throw new Error('Range instance disappeared before topology update');
+    assertExistingHostBootstrapUnchanged(beforeUpdate, topologySnapshot.topologyGraph);
+    if (topologySnapshot.operation) await this.assertRangeSnapshotImages(beforeUpdate, topologySnapshot);
     const beforeResources = beforeUpdate?.resourceSummary
       ? await this.captureRangeDisks(input.job, beforeUpdate, beforeUpdate.resourceSummary, input.accountContext, true) : null;
     const result = await this.rangeProvisioner.create({
