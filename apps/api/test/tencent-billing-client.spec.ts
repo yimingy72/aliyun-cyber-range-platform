@@ -93,4 +93,26 @@ describe('Tencent billing source client', () => {
     await expect(new TencentBillingClient().listMonthlyBillingItems({ month: MONTH }, { ...context, accountUid: null })).rejects.toThrow('verified');
     expect(request).not.toHaveBeenCalled();
   });
+
+  it.each([
+    { value: null, shape: 'null' }, { value: undefined, shape: 'undefined' },
+    { value: '', shape: 'empty_string' }, { value: ' \t ', shape: 'blank_string' },
+    { value: 'USD', shape: 'iso_like_non_cny' }, { value: 'ZZZ', shape: 'iso_like_non_cny' },
+    { value: 'cny', shape: 'cny_noncanonical' }, { value: 'usd', shape: 'iso_like_noncanonical' },
+    { value: 'fixture-private-currency-url?secret=fixture-only', shape: 'non_iso_string' },
+    { value: 123456789, shape: 'number' }, { value: true, shape: 'boolean' },
+    { value: ['CNY'], shape: 'array' }, { value: { private: 'fixture-secret' }, shape: 'object' },
+  ])('classifies component currency safely as $shape without accepting unknown financial evidence', async ({ value, shape }) => {
+    request.mockResolvedValue(response([row({ ComponentSet: [{ RealCost: '1.123456789', Currency: value }] })]));
+    await expect(query()).rejects.toThrow(`unsupported component currency (shape=${shape}; expected=CNY; source=domestic); previous bills were retained`);
+  });
+
+  it('uses the same bounded row diagnostic and never includes arbitrary values, amounts or resource IDs', async () => {
+    const privateValue = 'fixture-private-currency-url?secret=fixture-only';
+    request.mockResolvedValue(response([row({ Currency: privateValue, ResourceId: 'ins-private-fixture', ComponentSet: [{ RealCost: '1.123456789' }] })]));
+    const error = await query().catch(error => error as Error);
+    expect(error).toBeInstanceOf(Error);
+    expect((error as Error).message).toBe('DescribeBillDetail returned an unsupported row currency (shape=non_iso_string; expected=CNY; source=domestic); previous bills were retained');
+    for (const value of [privateValue, '1.123456789', 'ins-private-fixture', 'test-secret']) expect((error as Error).message).not.toContain(value);
+  });
 });

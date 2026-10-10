@@ -32,6 +32,25 @@ type BillDetailResponse = {
 
 const BillingDecimal = Prisma.Decimal.clone({ precision: 80 });
 
+function currencyShape(value: unknown) {
+  if (value === null) return 'null';
+  if (Array.isArray(value)) return 'array';
+  if (typeof value !== 'string') return typeof value;
+  if (!value) return 'empty_string';
+  if (!value.trim()) return 'blank_string';
+  if (/^[A-Z]{3}$/.test(value)) return 'iso_like_non_cny';
+  if (value.toUpperCase() === 'CNY') return 'cny_noncanonical';
+  if (/^[A-Za-z]{3}$/.test(value)) return 'iso_like_noncanonical';
+  return 'non_iso_string';
+}
+
+function assertDomesticCurrency(row: Record<string, unknown>, location: 'component' | 'row') {
+  if ('Currency' in row && row.Currency !== 'CNY') {
+    // Only fixed type/format categories enter logs; never interpolate the currency value, amount or response.
+    throw new Error(`DescribeBillDetail returned an unsupported ${location} currency (shape=${currencyShape(row.Currency)}; expected=CNY; source=domestic); previous bills were retained`);
+  }
+}
+
 function requiredText(row: Record<string, unknown>, key: string) {
   const value = row[key];
   if (typeof value !== 'string' || !value.trim()) throw new Error(`DescribeBillDetail returned invalid ${key}`);
@@ -62,12 +81,12 @@ function normalizeItem(value: unknown, month: string, accountUid: string): Tence
   for (const value of row.ComponentSet) {
     if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('DescribeBillDetail returned an invalid bill component');
     const component = value as Record<string, unknown>;
-    if ('Currency' in component && component.Currency !== 'CNY') throw new Error('DescribeBillDetail returned an unsupported component currency');
+    assertDomesticCurrency(component, 'component');
     const cost = requiredText(component, 'RealCost');
     if (!/^-?\d+(?:\.\d+)?$/.test(cost) || cost.replace(/[.-]/g, '').length > 40) throw new Error('DescribeBillDetail returned an invalid component RealCost');
     amount = amount.plus(cost);
   }
-  if ('Currency' in row && row.Currency !== 'CNY') throw new Error('DescribeBillDetail returned an unsupported currency');
+  assertDomesticCurrency(row, 'row');
   return {
     cloudProvider: 'tencent_cloud', cloudAccountUid: accountUid, billingMonth: month, billingDate: day,
     billingRegionId: regionId, cloudResourceId: requiredText(row, 'ResourceId'), sourceId: requiredText(row, 'Id'),
