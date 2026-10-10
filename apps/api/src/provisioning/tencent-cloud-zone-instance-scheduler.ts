@@ -1,3 +1,4 @@
+import { ConflictException } from '@nestjs/common';
 import { requestTencentCloud } from '../admin/tencent-cloud-client';
 import type { ResolvedProvisioningRuntimeConfig } from './provisioning.types';
 
@@ -22,7 +23,25 @@ export async function assertTencentImagesAvailable(account: ResolvedProvisioning
   for (let offset = 0; offset < ids.length; offset += 100) {
     const requested = ids.slice(offset,offset+100);
     const result = await requestTencentCloud<{ TotalCount: number; ImageSet: Array<{ ImageId: string; ImageState: string; SnapshotSet?: unknown; ImageType?: string; Architecture?: string; ImageSize?: number }> }>({ service: 'cvm', version: '2017-03-12', action: 'DescribeImages', regionId: account.defaultRegion, accessKeyId: account.accessKeyId, accessKeySecret: account.accessKeySecret, parameters: { ImageIds: requested, Limit: 100, Offset: 0 } });
-    if (!Array.isArray(result.ImageSet) || result.TotalCount !== requested.length || result.ImageSet.length !== requested.length || result.ImageSet.some(image => !image || typeof image !== 'object') || new Set(result.ImageSet.map(image => image.ImageId)).size !== requested.length || result.ImageSet.some(image => !requested.includes(image.ImageId) || image.ImageState !== 'NORMAL' || !['PUBLIC_IMAGE','PRIVATE_IMAGE'].includes(image.ImageType ?? '') || image.Architecture !== 'x86_64' || !Number.isSafeInteger(image.ImageSize) || Number(image.ImageSize) < 1 || !Array.isArray(image.SnapshotSet) || image.SnapshotSet.some(snapshot => !snapshot || typeof snapshot !== 'object' || Array.isArray(snapshot) || (snapshot as { DiskUsage?: unknown }).DiskUsage !== 'SYSTEM_DISK'))) throw new Error('Tencent host images must be available system-only images with complete disk metadata');
+    const reject = (reason: string): never => { throw new ConflictException(`Tencent host images must be available system-only images with complete disk metadata [${reason}]`); };
+    if (!Array.isArray(result.ImageSet)) reject('ImageSet:shape');
+    if (result.TotalCount !== requested.length || result.ImageSet.length !== requested.length) reject('ImageSet:count');
+    if (result.ImageSet.some(image => !image || typeof image !== 'object' || Array.isArray(image))) reject('Image:shape');
+    if (new Set(result.ImageSet.map(image => image.ImageId)).size !== requested.length || result.ImageSet.some(image => !requested.includes(image.ImageId))) reject('ImageId:identity');
+    for (const image of result.ImageSet) {
+      if (image.ImageState !== 'NORMAL') reject('ImageState:not-normal');
+      if (!['PUBLIC_IMAGE','PRIVATE_IMAGE'].includes(image.ImageType ?? '')) reject('ImageType:unsupported');
+      if (image.Architecture !== 'x86_64') reject('Architecture:unsupported');
+      if (!Number.isSafeInteger(image.ImageSize) || Number(image.ImageSize) < 1) reject('ImageSize:missing-or-invalid');
+      // Official PUBLIC_IMAGE metadata may explicitly return null; private backing disks must remain inspectable.
+      if (image.ImageType === 'PUBLIC_IMAGE' && image.SnapshotSet === null) continue;
+      const snapshots = Array.isArray(image.SnapshotSet) ? image.SnapshotSet : reject(image.SnapshotSet === undefined ? 'SnapshotSet:missing' : image.SnapshotSet === null ? 'SnapshotSet:private-null' : 'SnapshotSet:shape');
+      for (const snapshot of snapshots) {
+        if (!snapshot || typeof snapshot !== 'object' || Array.isArray(snapshot)) reject('SnapshotSet:entry-shape');
+        if ((snapshot as { DiskUsage?: unknown }).DiskUsage === 'DATA_DISK') reject('SnapshotSet:data-disk');
+        if ((snapshot as { DiskUsage?: unknown }).DiskUsage !== 'SYSTEM_DISK') reject('SnapshotSet:unknown-disk-usage');
+      }
+    }
     for (const image of result.ImageSet) metadata[image.ImageId] = { minimumSystemDiskSize: Math.max(20,image.ImageSize!), architecture: image.Architecture! };
   }
   return metadata;

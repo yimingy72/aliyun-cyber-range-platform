@@ -53,6 +53,7 @@ it('selects only exact saleable CPU/RAM in the frozen zone and validates image c
 
 it.each([
   { ImageSize: 50, Architecture: 'x86_64', SnapshotSet: [] },
+  { ImageSize: 20, Architecture: 'x86_64', SnapshotSet: null },
   { ImageSize: 80, Architecture: 'x86_64', SnapshotSet: [{ DiskUsage: 'SYSTEM_DISK' }] },
 ])('uses official image size and snapshot fields for system-only images (%j)', async metadata => {
   jest.spyOn(rpc,'requestTencentCloud').mockResolvedValue({ TotalCount: 1, ImageSet: [{ ImageId: 'img-fixture', ImageState: 'NORMAL', ImageType: 'PUBLIC_IMAGE', ...metadata }] } as any);
@@ -70,4 +71,28 @@ it.each([
 it('rejects DNAT entry networks with SNAT disabled instead of silently enabling Tencent default egress', () => {
   const request = input(); request.plan.snatEntries = [];
   expect(() => renderTencentRangeVariables(request)).toThrow('explicitly enable SNAT');
+});
+it.each([
+  [{ ImageType: 'PRIVATE_IMAGE', SnapshotSet: null }, 'SnapshotSet:private-null'],
+  [{ SnapshotSet: undefined }, 'SnapshotSet:missing'],
+  [{ ImageType: 'PRIVATE_IMAGE', SnapshotSet: undefined }, 'SnapshotSet:missing'],
+  [{ SnapshotSet: { private: 'never-include-this-value' } }, 'SnapshotSet:shape'],
+  [{ SnapshotSet: [null] }, 'SnapshotSet:entry-shape'],
+  [{ SnapshotSet: [{}] }, 'SnapshotSet:unknown-disk-usage'],
+  [{ SnapshotSet: [{ DiskUsage: 'DATA_DISK' }] }, 'SnapshotSet:data-disk'],
+  [{ ImageType: 'PRIVATE_IMAGE', SnapshotSet: [{ DiskUsage: 'SYSTEM_DISK' }, { DiskUsage: 'DATA_DISK' }] }, 'SnapshotSet:data-disk'],
+  [{ ImageType: 'SHARED_IMAGE', SnapshotSet: null }, 'ImageType:unsupported'],
+  [{ Architecture: null, SnapshotSet: null }, 'Architecture:unsupported'],
+  [{ ImageSize: '20', SnapshotSet: null }, 'ImageSize:missing-or-invalid'],
+  [{ ImageState: 'CREATING', SnapshotSet: null }, 'ImageState:not-normal'],
+])('rejects unproven image fields with safe preflight classifications (%j)', async (fields, reason) => {
+  jest.spyOn(rpc, 'requestTencentCloud').mockResolvedValue({ TotalCount: 1, ImageSet: [{ ImageId: 'img-fixture', ImageType: 'PUBLIC_IMAGE', ImageState: 'NORMAL', Architecture: 'x86_64', ImageSize: 20, ...fields }] } as any);
+  const error = await assertTencentImagesAvailable(account, ['img-fixture']).catch(value => value);
+  expect(error.getStatus()).toBe(409);
+  expect(error.message).toContain(reason);
+  expect(error.message).not.toContain('never-include-this-value');
+});
+it('requires explicit system-only snapshot usage for private images', async () => {
+  jest.spyOn(rpc, 'requestTencentCloud').mockResolvedValue({ TotalCount: 1, ImageSet: [{ ImageId: 'img-fixture', ImageType: 'PRIVATE_IMAGE', ImageState: 'NORMAL', Architecture: 'x86_64', ImageSize: 40, SnapshotSet: [{ DiskUsage: 'SYSTEM_DISK' }] }] } as any);
+  expect(await assertTencentImagesAvailable(account, ['img-fixture'])).toEqual({ 'img-fixture': { minimumSystemDiskSize: 40, architecture: 'x86_64' } });
 });
