@@ -166,7 +166,15 @@ export type RangeNodeDnsVerification = {
   errorCode?: string;
   checkedAt?: string;
 };
-export type ProvisionJob = Record<string, unknown> & { id: string };
+export type ProvisionJobEvidence = {
+  coverage: 'platform_recorded_job_evidence';
+  inventories: Array<{ recordedAt: string; executionContext: { provider: 'alibaba_cloud' | 'tencent_cloud'; cloudAccountContextId: string; cloudAccountUid: string; regionId: string; zoneId: string }; resources: Record<string, unknown> }>;
+  invalidInventoryCount: number;
+  steps: Array<{ stepName: string; status: string; description: string; startedAt: string | null; finishedAt: string | null }>;
+  relatedJobs: Array<{ id: string; jobType: string; status: string; createdAt: string; startedAt: string | null; finishedAt: string | null }>;
+  billingResources: Array<{ cloudProvider: 'alibaba_cloud' | 'tencent_cloud'; cloudAccountUid: string | null; regionId: string; cloudResourceId: string; cloudResourceType: string; sourceProvisionJobId: string | null; billingStartAt: string; releasedAt: string | null }>;
+};
+export type ProvisionJob = Record<string, unknown> & { id: string; evidence?: ProvisionJobEvidence };
 export type CloudConfigSnapshot = Record<string, unknown>;
 export type CloudAccountContext = {
   cloudWorkspaceId?: string;
@@ -407,7 +415,7 @@ export type PlatformApiClientLike = {
   getSingleInstanceAccess(id: string): Promise<RangeAccessPayload>;
   getInstanceTypeAvailability(cpu: number, memory: number): Promise<InstanceTypeAvailabilitySnapshot>;
   listProvisionJobs(instanceMode?: InstanceMode): Promise<ProvisionJob[]>;
-  getProvisionJob(id: string): Promise<ProvisionJob>;
+  getProvisionJob(id: string, options?: { includeEvidence?: boolean }): Promise<ProvisionJob>;
   fetchCloudConfig(): Promise<CloudConfigSnapshot>;
   saveCloudConfig(payload: CloudConfigSnapshot, operation?: OperationRequest): Promise<CloudConfigSnapshot>;
   listCloudAccountContexts(includeInactive?: boolean): Promise<CloudAccountContext[]>;

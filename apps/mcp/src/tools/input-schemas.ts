@@ -180,4 +180,4 @@ export const cloudConfigUpdateInputSchema = operationSchema.extend({
   'at least one cloud configuration field is required',
 );
 
-export const provisionJobGetInputSchema = z.object({ provisionJobId: identifier });
+export const provisionJobGetInputSchema = z.object({ provisionJobId: identifier, includeEvidence: z.boolean().optional() });

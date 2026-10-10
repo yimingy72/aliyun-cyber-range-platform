@@ -349,8 +349,9 @@ export class PlatformApiClient implements PlatformApiClientLike {
     return this.request<ProvisionJob[]>(`/admin/provision-jobs${query}`);
   }
 
-  getProvisionJob(id: string) {
-    return this.request<ProvisionJob>(`/admin/provision-jobs/${encodeURIComponent(id)}`);
+  getProvisionJob(id: string, options?: { includeEvidence?: boolean }) {
+    const query = options?.includeEvidence === undefined ? '' : `?includeEvidence=${options.includeEvidence}`;
+    return this.request<ProvisionJob>(`/admin/provision-jobs/${encodeURIComponent(id)}${query}`);
   }
 
   fetchCloudConfig() {
