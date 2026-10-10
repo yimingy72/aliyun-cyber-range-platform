@@ -204,7 +204,10 @@ export async function syncRangeInstanceBillingLedger(input: SyncRangeInstanceBil
       ownerUserId: input.instance.ownerUserId ?? null,
       rangeInstanceId: input.instance.id,
       singleInstanceBatchId: input.instance.singleInstanceBatchId ?? null,
-      sourceProvisionJobId: isSuccessfulLaunchJob(existingSourceJob) ? existingSourceJob.id : sourceProvisionJobId,
+      // Tencent inventories record exact creation jobs, including update and failed partial creation.
+      // Later observation/cleanup cannot transfer that source to the first successful launch or a destroy job.
+      sourceProvisionJobId: input.instance.cloudProvider === 'tencent_cloud' ? existing.sourceProvisionJobId
+        : isSuccessfulLaunchJob(existingSourceJob) ? existingSourceJob.id : sourceProvisionJobId,
       releasedAt: null,
     });
   }
