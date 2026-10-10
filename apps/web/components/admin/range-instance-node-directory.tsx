@@ -11,7 +11,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip
 import { AdminDataTable, AdminDataTableCell, AdminDataTableState, type AdminDataColumn } from './shared/admin-data-table';
 import { TableLoadingState } from './shared/table-loading-state';
 
-type NodeActionName = 'start' | 'stop' | 'reboot' | 'open-vnc' | 'reset' | 'pack-image';
+type NodeActionName = 'start' | 'stop' | 'reboot' | 'open-vnc' | 'reset' | 'pack-image' | 'verify-dns';
 
 export type RangeNodeDnsVerification = {
   status: 'pending' | 'checking' | 'verified' | 'failed' | 'unverified';
@@ -163,7 +163,10 @@ export function RangeInstanceNodeDirectory({
               <AdminDataTableCell column={columns[5]!}>{node.expiresAt || '暂无'}</AdminDataTableCell>
               <AdminDataTableCell column={columns[6]!}>{node.createdAt || '暂无'}</AdminDataTableCell>
               <AdminDataTableCell column={columns[7]!}>
-                {allowActions ? <div className="flex items-center justify-start gap-1">
+                {allowActions ? <div className="flex flex-wrap items-center justify-start gap-1">
+                  {node.dns ? <Button size="sm" variant="outline" disabled={isPending || node.cloudStatus !== 'Running'} onClick={() => onNodeAction?.(node.id, 'verify-dns')}>
+                    {isPending && pendingAction?.action === 'verify-dns' ? '核验中...' : '核验 DNS'}
+                  </Button> : null}
                   <Button size="sm" variant="outline" disabled={isPending || isStopped} onClick={() => onNodeAction?.(node.id, 'open-vnc')}>
                     {isPending && pendingAction?.action === 'open-vnc' ? '处理中...' : '打开VNC'}
                   </Button>

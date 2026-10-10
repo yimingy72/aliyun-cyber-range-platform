@@ -125,6 +125,10 @@ const rangeNodeActionFields = {
   description: z.string().optional(),
 };
 export const rangeNodeActionInputSchema = operationSchema.extend(rangeNodeActionFields);
+export const rangeNodeVerifyDnsInputSchema = operationSchema.extend({
+  rangeInstanceId: identifier,
+  nodeId: identifier.describe('编排实例详情中配置了自定义 DNS 的 ECS 节点 ID。'),
+}).strict();
 export const rangeNodeOpenVncInputSchema = z.object({
   rangeInstanceId: identifier,
   nodeId: identifier.describe('编排实例详情中 ECS 节点的 ID。'),

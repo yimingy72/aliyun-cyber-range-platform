@@ -23,6 +23,7 @@
 | ECS 开机 | `range_instance_node_start` | `rangeInstanceId`、`nodeId` | `displayName`、`defaultHostName`、敏感 `defaultPassword`、`description`、操作元数据 | `ranges:control` |
 | ECS 关机 | `range_instance_node_stop` | `rangeInstanceId`、`nodeId` | `displayName`、`defaultHostName`、敏感 `defaultPassword`、`description`、操作元数据 | `ranges:control` |
 | ECS 重启 | `range_instance_node_reboot` | `rangeInstanceId`、`nodeId` | `displayName`、`defaultHostName`、敏感 `defaultPassword`、`description`、操作元数据 | `ranges:control` |
+| ECS DNS 核验 | `range_instance_node_verify_dns` | `rangeInstanceId`、`nodeId` | 操作元数据 | `ranges:control` |
 | ECS VNC | `range_instance_node_open_vnc` | `rangeInstanceId`、`nodeId` | — | `ranges:read`、`instances:credentials:read` |
 | ECS 打包镜像 | `range_instance_node_pack_image` | `rangeInstanceId`、`nodeId` | `displayName`、`defaultHostName`、敏感 `defaultPassword`、`description`、操作元数据 | `ranges:control`、`images:write` |
 | 腾讯镜像参数只读核验 | `range_instance_node_pack_image_validate` | `rangeInstanceId`、`nodeId`、`displayName` | `description` | `ranges:read`、`images:read` |
@@ -66,6 +67,9 @@
 
 ### 节点操作、访问与镜像
 
+- Windows 节点配置 `dns` 时，`range_instance_get` 的 `dnsVerification[nodeId]` 独立报告客体 DNS：`pending`、`checking`、`verified`、`failed`、`unverified`，以及按 NIC ID/私网 IP 的 `expected`、`actual` 和 `resolutionStatus`。云端 `Running` 不能作为 DNS 生效证明；未核验不能解释为成功。
+- 用 `range_instance_node_verify_dns` 对准确实例/节点重新核验，只调用平台固定只读脚本，不接受任意脚本、云资源 ID 或 DNS 配置参数。它不改变 DNS，不创建或重建云实例；`failed`/`unverified` 时应检查网卡、初始化工具、DNS 服务及域控 SRV 记录，不调用创建重试来修复 DNS。该动作需 `ranges:control`，并沿用平台二阶段确认。
+- 核验包含云 API 与客体执行等待，客户端应为该工具保留至少 180 秒的调用等待时间。客户端超时或断线后先读取当前 `dnsVerification`，不要重复提交，更不能重试创建实例。
 - 排查网络时，可用 `range_instance_get({ rangeInstanceId, includeNetworkDiagnostics: true })` 在原详情中读取 `networkDiagnostics`。默认查询不发起云网络诊断；诊断只读取该实例启动时绑定账号/地域的 ECS、网卡主辅 IP、安全组、ACL、NAT 和路由白名单事实，由服务端校验 owner/admin 权限，不接受任意云资源 ID，不返回凭据或原始 provider 响应，也不会创建、改变或销毁云资源。诊断状态与业务实例状态分别读取，不能将缺失/失败的诊断当作网络通过。
 - 开机、关机、重启必须提供准确 `rangeInstanceId` 与 ECS `nodeId`，并取得用户确认。
 - `range_instance_get_access` 和 `range_instance_node_open_vnc` 仅在用户明确要求访问时调用，输出遵守入口的敏感规则。

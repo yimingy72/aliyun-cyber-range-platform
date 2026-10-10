@@ -1241,6 +1241,8 @@ export function TemplateEditorScreen({
 
     for (const hostNode of hostNodes) {
       hostDnsErrors(hostNode).forEach((error) => validationErrors.push(`${hostNode.label}：${error}`));
+      const imageOs = platformImageAssets.find((asset) => asset.id === hostNode.platformImageAssetId)?.osType?.toLowerCase();
+      if (hostNode.dns && imageOs && imageOs !== 'windows') validationErrors.push(`${hostNode.label} 自定义 DNS 需要 Windows 镜像`);
       if (typeof hostNode.customPassword === 'string' && hostNode.customPassword.length > 0) {
         const passwordValidationResult = validateAliyunEcsPassword(hostNode.customPassword);
 

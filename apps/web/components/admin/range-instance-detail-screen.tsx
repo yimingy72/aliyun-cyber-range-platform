@@ -41,7 +41,7 @@ import {
 import { nextAvailableSwitchCidr, reconcileHostNicConnections } from '../../lib/scenario-graph-linking';
 import { readHostDns } from '../../lib/host-dns';
 import { buildTopologyDraftPayload } from '../../lib/topology-draft-payload';
-import { RangeInstanceNodeDirectory } from './range-instance-node-directory';
+import { RangeInstanceNodeDirectory, type RangeNodeDnsVerification } from './range-instance-node-directory';
 import { RangeInstanceDetailBodySkeleton, RangeInstanceTopologyLoading } from './range-instance-detail-loading';
 import { AsyncContentState } from './shared/async-content-state';
 import { useAdminRouteIsActive } from './admin-page-cache';
@@ -71,7 +71,7 @@ type RangeInstanceDetailScreenProps = {
 };
 
 type WorkbenchTab = 'directory' | 'topology';
-type NodeActionName = 'start' | 'stop' | 'reboot' | 'open-vnc' | 'reset' | 'pack-image';
+type NodeActionName = 'start' | 'stop' | 'reboot' | 'open-vnc' | 'reset' | 'pack-image' | 'verify-dns';
 type DraftTopologyGraph = ScenarioGraphDraft & { viewport?: TopologyViewport };
 
 const INSTANCE_TOPOLOGY_SCHEMA_VERSION = '2.0.0';
@@ -105,6 +105,7 @@ type WorkbenchNode = {
   statusLabel: string;
   cloudStatus?: string;
   dns?: EcsTemplateNode['dns'];
+  dnsVerification?: RangeNodeDnsVerification;
   ipAddresses?: string[];
   publicEntry?: { address: string; ports: string[] };
   subnetCidrs?: string[];
@@ -822,7 +823,7 @@ function readWorkbenchNodesFromGraph(
         kind,
         statusLabel,
         cloudStatus,
-        ...(kind === 'ecs' ? { dns: readHostDns(deployedNode?.dns) } : {}),
+        ...(kind === 'ecs' ? { dns: readHostDns(deployedNode?.dns), dnsVerification: detail?.dnsVerification?.[id] } : {}),
         ipAddresses,
         ...(kind === 'ecs' ? readDirectoryNetwork(id, graph, detail) : {}),
         specLabel:
@@ -1347,6 +1348,7 @@ export function RangeInstanceDetailScreen({
       };
       screenCache?.invalidate(apiBaseUrl, session.token, 'range-instances:');
       screenCache?.invalidate(apiBaseUrl, session.token, resourceKey);
+
       setDetail(nextDetail);
       replaceTopologyDraft(
         (nextDetail.draftTopologyGraph as Record<string, unknown> | null) ??
@@ -1587,6 +1589,20 @@ export function RangeInstanceDetailScreen({
       screenCache?.invalidate(apiBaseUrl, session.token, 'range-instances:');
       screenCache?.invalidate(apiBaseUrl, session.token, resourceKey);
 
+      if (action === 'verify-dns') {
+        if (result.dnsVerification) {
+          setDetail((current) => current ? { ...current, dnsVerification: { ...current.dnsVerification, [nodeId]: result.dnsVerification! } } : current);
+        }
+        if (result.dnsVerification?.status === 'verified') {
+          setSuccessMessage('DNS 核验通过，主机内的 DNS 配置已生效。');
+        } else if (result.dnsVerification?.status === 'pending' || result.dnsVerification?.status === 'checking') {
+          setSuccessMessage('DNS 核验已提交，请查看节点的独立验证状态。');
+        } else {
+          setErrorMessage('DNS 核验未通过，请检查网卡、DNS 服务与初始化状态。实例不会自动重建。');
+        }
+        await reloadDetailSnapshot();
+      }
+
       if (action === 'start') {
         setNodeStatusOverrides((current) => ({
           ...current,
@@ -1645,7 +1661,8 @@ export function RangeInstanceDetailScreen({
       }
 
       vncWindow?.close();
-      setErrorMessage(error instanceof Error ? error.message : '节点操作失败，请稍后重试。');
+      const message = error instanceof Error ? error.message : '节点操作失败，请稍后重试。';
+      setErrorMessage(action === 'verify-dns' ? `${message} 实例不会自动重建。` : message);
     } finally {
       if (scopeRef.current === scopeKey) setPendingNodeAction(null);
     }

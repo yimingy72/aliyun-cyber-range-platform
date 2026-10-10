@@ -388,6 +388,8 @@ function renderHostFields(
       : null;
   const platformImageOptions = enabledPlatformImageAssets;
   const dnsErrors = hostDnsErrors(selectedNode);
+  const selectedImageOs = selectedPlatformImageAsset?.osType?.toLowerCase();
+  const dnsUnavailable = Boolean(selectedImageOs && selectedImageOs !== 'windows');
 
   function handleSelectPlatformImageAsset(nextPlatformImageAsset: PlatformImageAsset | null) {
     const nextNode: EcsTemplateNode = {
@@ -824,6 +826,8 @@ function renderHostFields(
           />
         </PropertyField>
         {selectedNode.dns ? <>
+          {dnsUnavailable ? <div className="template-property-warning-note" role="alert">当前镜像不是 Windows，无法应用自定义 DNS。请选择 Windows 镜像或自动获取 DNS。</div>
+            : !selectedImageOs ? <small className="template-property-field-hint">镜像操作系统尚未确认。保存时会校验 Windows 镜像，自定义 DNS 不会应用到未知系统。</small> : null}
           <PropertyField label="DNS 服务器" hint="每行一个 IPv4 地址，最多 4 个，按优先顺序填写。域成员应使用域控 DNS。">
             <DnsServerField
               key={selectedNode.id}

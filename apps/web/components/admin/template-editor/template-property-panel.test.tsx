@@ -44,6 +44,16 @@ function createEcsNodeWithPlatformDefaults(): TemplateNode {
 }
 
 describe('TemplatePropertyPanel', () => {
+  it('uses image OS metadata rather than a Windows-looking name for DNS availability', () => {
+    const node = { ...createEcsNodeWithPlatformDefaults(), platformImageAssetId: 'image-os', dns: { servers: ['10.0.0.1'], nicIds: ['ecs-1-nic-1'] } } as Extract<TemplateNode, { kind: 'ecs' }>;
+    const asset = { id: 'image-os', provider: 'alibaba_cloud' as const, accountScopeKey: 'scope', regionId: 'cn-hangzhou', sourceScope: 'public', imageId: node.imageId!, displayName: 'Windows Server', enabled: true, tags: [], osType: 'linux' };
+    const { rerender } = render(<TemplatePropertyPanel selectedNode={node} allNodes={[node]} platformImageAssets={[asset]} onUpdateNode={vi.fn()} />);
+    expect(screen.getByRole('alert').textContent).toContain('当前镜像不是 Windows');
+    rerender(<TemplatePropertyPanel selectedNode={node} allNodes={[node]} platformImageAssets={[{ ...asset, osType: 'windows' }]} onUpdateNode={vi.fn()} />);
+    expect(screen.queryByText(/当前镜像不是 Windows/)).toBeNull();
+    rerender(<TemplatePropertyPanel selectedNode={node} allNodes={[node]} platformImageAssets={[{ ...asset, osType: undefined }]} onUpdateNode={vi.fn()} />);
+    expect(screen.getByText(/镜像操作系统尚未确认/)).toBeTruthy();
+  });
   it('starts custom DNS on the primary NIC and returns automatic DNS without changing NICs', () => {
     const node = createEcsNodeWithPlatformDefaults();
     const onUpdateNode = vi.fn();

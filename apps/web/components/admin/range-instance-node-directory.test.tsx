@@ -18,6 +18,18 @@ const verification: RangeNodeDnsVerification = {
 };
 
 describe('range node DNS verification', () => {
+  it('offers verification only for configured running hosts and disables another submit while pending', () => {
+    const onNodeAction = vi.fn();
+    const { rerender } = render(<RangeInstanceNodeDirectory nodes={[host]} onNodeAction={onNodeAction} />);
+    fireEvent.click(screen.getByRole('button', { name: '核验 DNS' }));
+    expect(onNodeAction).toHaveBeenCalledWith('member', 'verify-dns');
+    rerender(<RangeInstanceNodeDirectory nodes={[host]} onNodeAction={onNodeAction} pendingAction={{ nodeId: 'member', action: 'verify-dns' }} />);
+    expect((screen.getByRole('button', { name: '核验中...' }) as HTMLButtonElement).disabled).toBe(true);
+    rerender(<RangeInstanceNodeDirectory nodes={[{ ...host, cloudStatus: 'Stopped' }]} onNodeAction={onNodeAction} />);
+    expect((screen.getByRole('button', { name: '核验 DNS' }) as HTMLButtonElement).disabled).toBe(true);
+    rerender(<RangeInstanceNodeDirectory nodes={[{ ...host, dns: undefined }]} onNodeAction={onNodeAction} />);
+    expect(screen.queryByRole('button', { name: '核验 DNS' })).toBeNull();
+  });
   it('keeps cloud Running independent from missing DNS proof', () => {
     render(<RangeInstanceNodeDirectory nodes={[host]} allowActions={false} />);
     expect(screen.getByText('运行中')).toBeTruthy();

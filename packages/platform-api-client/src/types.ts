@@ -155,6 +155,16 @@ export type RangeInstance = Record<string, unknown> & {
   id: string;
   instanceMode?: 'range' | 'single';
   networkDiagnostics?: RangeInstanceNetworkDiagnostics;
+  dnsVerification?: Record<string, RangeNodeDnsVerification>;
+};
+export type RangeNodeDnsVerification = {
+  status: 'pending' | 'checking' | 'verified' | 'failed' | 'unverified';
+  method: 'readback' | 'ad_srv';
+  expected: Array<{ nicId: string; privateIp: string; servers: string[] }>;
+  actual: Array<{ nicId: string; privateIp: string; servers: string[] }>;
+  resolutionStatus: 'not_requested' | 'verified' | 'failed';
+  errorCode?: string;
+  checkedAt?: string;
 };
 export type ProvisionJob = Record<string, unknown> & { id: string };
 export type CloudConfigSnapshot = Record<string, unknown>;
@@ -384,7 +394,7 @@ export type PlatformApiClientLike = {
   runRangeInstanceNodeAction(
     rangeInstanceId: string,
     nodeId: string,
-    action: 'start' | 'stop' | 'reboot' | 'open-vnc' | 'pack-image',
+    action: 'start' | 'stop' | 'reboot' | 'open-vnc' | 'pack-image' | 'verify-dns',
     payload?: RangeInstanceNodeActionPayload,
     operation?: OperationRequest,
   ): Promise<Record<string, unknown>>;
