@@ -134,8 +134,8 @@ resource "tencentcloud_vpc_acl" "zones" {
   for_each = local.acl_zones
   vpc_id   = tencentcloud_vpc.range.id
   name     = substr("${var.resource_name_prefix}-${each.key}", 0, 60)
-  ingress  = [for key in sort([for acl in var.acls : format("%03d:%s", acl.priority, acl.key) if acl.zone_key == each.key && acl.direction == "inbound"]) : one([for acl in var.acls : "${acl.action}#${acl.cidr_block}#${acl.port}#${acl.protocol}#${acl.description}" if format("%03d:%s", acl.priority, acl.key) == key])]
-  egress   = [for key in sort([for acl in var.acls : format("%03d:%s", acl.priority, acl.key) if acl.zone_key == each.key && acl.direction == "outbound"]) : one([for acl in var.acls : "${acl.action}#${acl.cidr_block}#${acl.port}#${acl.protocol}#${acl.description}" if format("%03d:%s", acl.priority, acl.key) == key])]
+  ingress  = [for key in sort([for acl in var.acls : format("%03d:%s", acl.priority, acl.key) if acl.zone_key == each.key && acl.direction == "inbound"]) : one([for acl in var.acls : "${acl.action}#${acl.cidr_block}#${acl.port}#${acl.protocol}#${acl.description}" if acl.zone_key == each.key && acl.direction == "inbound" && format("%03d:%s", acl.priority, acl.key) == key])]
+  egress   = [for key in sort([for acl in var.acls : format("%03d:%s", acl.priority, acl.key) if acl.zone_key == each.key && acl.direction == "outbound"]) : one([for acl in var.acls : "${acl.action}#${acl.cidr_block}#${acl.port}#${acl.protocol}#${acl.description}" if acl.zone_key == each.key && acl.direction == "outbound" && format("%03d:%s", acl.priority, acl.key) == key])]
   tags     = var.tags
 }
 resource "tencentcloud_vpc_acl_attachment" "zones" {

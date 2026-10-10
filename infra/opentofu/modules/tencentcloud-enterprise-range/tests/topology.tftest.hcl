@@ -55,6 +55,29 @@ run "keeps_atomic_nat_and_eip_recovery_identity" {
   }
 }
 
+run "scopes_reused_acl_keys_to_zone_and_direction" {
+  command = plan
+  variables {
+    acls = [
+      { key = "allow-main", zone_key = "dmz", direction = "inbound", action = "ACCEPT", protocol = "ALL", port = "ALL", cidr_block = "10.0.0.0/16", priority = 10, description = "DMZ MAIN" },
+      { key = "allow-main", zone_key = "internal", direction = "inbound", action = "ACCEPT", protocol = "ALL", port = "ALL", cidr_block = "172.16.0.0/16", priority = 10, description = "INTERNAL MAIN" },
+      { key = "allow-assist", zone_key = "dmz", direction = "inbound", action = "ACCEPT", protocol = "ALL", port = "ALL", cidr_block = "172.16.0.0/16", priority = 20, description = "DMZ ASSIST" },
+      { key = "allow-assist", zone_key = "internal", direction = "inbound", action = "ACCEPT", protocol = "ALL", port = "ALL", cidr_block = "10.0.0.0/16", priority = 20, description = "INTERNAL ASSIST" },
+      { key = "allow-egress", zone_key = "dmz", direction = "outbound", action = "ACCEPT", protocol = "ALL", port = "ALL", cidr_block = "0.0.0.0/0", priority = 100, description = "DMZ OUT" },
+      { key = "allow-egress", zone_key = "internal", direction = "outbound", action = "ACCEPT", protocol = "ALL", port = "ALL", cidr_block = "0.0.0.0/0", priority = 100, description = "INTERNAL OUT" },
+      { key = "allow-egress", zone_key = "dmz", direction = "inbound", action = "ACCEPT", protocol = "ALL", port = "ALL", cidr_block = "192.168.0.0/16", priority = 100, description = "DMZ IN" },
+    ]
+  }
+  assert {
+    condition     = tencentcloud_vpc_acl.zones["dmz"].ingress == tolist(["ACCEPT#10.0.0.0/16#ALL#ALL#DMZ MAIN", "ACCEPT#172.16.0.0/16#ALL#ALL#DMZ ASSIST", "ACCEPT#192.168.0.0/16#ALL#ALL#DMZ IN"]) && tencentcloud_vpc_acl.zones["dmz"].egress == tolist(["ACCEPT#0.0.0.0/0#ALL#ALL#DMZ OUT"])
+    error_message = "ACL selection must retain only the requested zone and direction despite repeated keys and priorities."
+  }
+  assert {
+    condition     = tencentcloud_vpc_acl.zones["internal"].ingress == tolist(["ACCEPT#172.16.0.0/16#ALL#ALL#INTERNAL MAIN", "ACCEPT#10.0.0.0/16#ALL#ALL#INTERNAL ASSIST"]) && tencentcloud_vpc_acl.zones["internal"].egress == tolist(["ACCEPT#0.0.0.0/0#ALL#ALL#INTERNAL OUT"])
+    error_message = "A neighbouring subnet's identically keyed ACL must not appear in this ACL."
+  }
+}
+
 run "exports_disks_and_complete_resource_inventory" {
   command = apply
   assert {

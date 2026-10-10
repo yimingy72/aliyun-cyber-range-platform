@@ -6,7 +6,7 @@ const maps = ['hostIds', 'systemDiskIds', 'dataDiskIds', 'routeTableIds', 'subne
 // Keep replaced IDs apart from the current host map used by the detail page and node actions.
 export function retiredResourceInventory(before: RangeResourceSummary | null | undefined, current: RangeResourceSummary): RangeResourceSummary | null {
   if (!before) return null;
-  const retired: RangeResourceSummary = { mode: 'opentofu' };
+  const retired: RangeResourceSummary = { mode: 'opentofu', ...(before.executionContext ? { executionContext: before.executionContext } : {}) };
   let found = false;
   for (const field of maps) {
     const active = new Set(Object.values(current[field] ?? {}));
