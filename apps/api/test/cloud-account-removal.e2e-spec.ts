@@ -4,7 +4,7 @@ import { SystemConfigService } from '../src/admin/system-config.service';
 import { PrismaService } from '../src/database/prisma.service';
 import { runInCloudWorkspace, runInSystemCloudWorkspaceScope } from '../src/auth/cloud-workspace-scope';
 
-const url = process.env.WORKSPACE_TEST_DATABASE_URL;
+const url = process.env.CLOUD_ACCOUNT_REMOVAL_TEST_DATABASE_URL;
 const isolated = url ? describe : describe.skip;
 const manager = { id: 'removal-manager', username: 'admin', role: 'admin' as const, isPlatformManager: true, cloudWorkspaceId: null };
 const scope = { cloudWorkspaceId: 'removal-a', provider: 'alibaba_cloud' as const, accountUid: '111', isPlatformManager: true, actorUserId: manager.id };
