@@ -83,7 +83,7 @@ describeWithDatabase('PostgreSQL multi-user range lifecycle isolation', () => {
         return { ok: true, json: async () => ({ RequestId: 'fixture-disks', PageSize: 100, PageNumber: 1,
           TotalCount: disks.length, Disks: { Disk: disks } }) } as Response;
       }
-      return { ok: true, json: async () => ({ RequestId: 'fixture-request', PageSize: 100, PageNumber: 1, TotalCount: 0, Disks: { Disk: [] }, Instances: { Instance: [] }, Vpcs: { Vpc: [] }, VSwitches: { VSwitch: [] }, NatGateways: { NatGateway: [] }, EipAddresses: { EipAddress: [] }, NetworkInterfaceSets: { NetworkInterfaceSet: [] }, VncUrl: 'mock-vnc' }) } as Response;
+      return { ok: true, json: async () => ({ RequestId: 'fixture-request', PageSize: Number(query.get('PageSize') ?? 100), PageNumber: 1, TotalCount: 0, Disks: { Disk: [] }, Instances: { Instance: [] }, Vpcs: { Vpc: [] }, VSwitches: { VSwitch: [] }, NatGateways: { NatGateway: [] }, EipAddresses: { EipAddress: [] }, NetworkInterfaceSets: { NetworkInterfaceSet: [] }, VncUrl: 'mock-vnc' }) } as Response;
     });
     apply = jest.fn(async (options: { workspaceDir: string }) => {
       const vars = JSON.parse(await fs.readFile(path.join(options.workspaceDir, 'range.auto.tfvars.json'), 'utf8'));

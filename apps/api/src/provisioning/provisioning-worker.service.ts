@@ -1671,8 +1671,15 @@ export class ProvisioningWorkerService {
       throw error;
     }
 
-    if (!payload || payload.Code || typeof payload.RequestId !== 'string' || !/^[a-zA-Z0-9-]{1,128}$/.test(payload.RequestId)
-      || payload.VpcId !== vpcId || (payload.RegionId !== undefined && payload.RegionId !== regionId)) {
+    const validReceipt = Boolean(payload) && !payload.Code && typeof payload.RequestId === 'string' && /^[a-zA-Z0-9-]{1,128}$/.test(payload.RequestId);
+    const validRegion = payload.RegionId === undefined || payload.RegionId === '' || payload.RegionId === regionId;
+    if (validReceipt && validRegion && hasFrozenInventory && /^vpc-[a-zA-Z0-9]+$/.test(vpcId)
+      && (payload.VpcId === undefined || payload.VpcId === '')) {
+      // A real missing VPC can return an empty success body. That body alone is
+      // not absence proof: independently enumerate the entire frozen region.
+      return this.findVpcInCompleteRegionalInventory(vpcId, runtimeConfig, regionId);
+    }
+    if (!validReceipt || !validRegion || payload.VpcId !== vpcId) {
       // RegionId is optional in success receipts. The frozen regional endpoint
       // and signed RegionId request still bind the query to the original region.
       // Keep malformed receipts failed, exposing only bounded identity fields.
@@ -1681,6 +1688,53 @@ export class ProvisioningWorkerService {
       throw new Error(`Cloud VPC destroy verification returned an unexpected resource identity (expectedVpcId=${safe(vpcId)}, VpcId=${safe(payload?.VpcId)}, RegionId=${safe(payload?.RegionId)}, RequestId=${safe(payload?.RequestId)})`);
     }
     return true;
+  }
+
+  private async findVpcInCompleteRegionalInventory(vpcId: string,
+    runtimeConfig: { accessKeyId: string; accessKeySecret: string }, regionId: string) {
+    const snapshot = async () => {
+      const ids = new Set<string>();
+      const counts: number[] = [];
+      let queriedPages = 0;
+      // DescribeVpcs defaults IsDefault to true. Explicitly query both modes
+      // so default filtering cannot hide a recorded non-default VPC.
+      for (const isDefault of ['true', 'false']) {
+        let total: number | null = null;
+        const categoryIds = new Set<string>();
+        for (let pageNumber = 1; ; pageNumber += 1) {
+          if (++queriedPages > 50) throw new Error('Cloud VPC inventory exceeds the complete verification page limit');
+          const payload = await this.performAliyunRpcRequest<Record<string, unknown>>({
+            endpoint: `vpc.${regionId}.aliyuncs.com`, version: ALICLOUD_VPC_API_VERSION, action: 'DescribeVpcs',
+            ...runtimeConfig, parameters: { RegionId: regionId, IsDefault: isDefault, PageSize: '50', PageNumber: String(pageNumber) },
+          });
+          const group = this.readJsonObject(payload.Vpcs);
+          const rows = group?.Vpc;
+          if (payload.Code || typeof payload.RequestId !== 'string' || !/^[a-zA-Z0-9-]{1,128}$/.test(payload.RequestId)
+            || !Number.isInteger(payload.TotalCount) || Number(payload.TotalCount) < 0 || Number(payload.TotalCount) > 2500
+            || payload.PageNumber !== pageNumber || payload.PageSize !== 50 || !Array.isArray(rows)
+            || (payload.NextToken !== undefined && payload.NextToken !== '')
+            || (total !== null && total !== payload.TotalCount)) throw new Error('Cloud VPC inventory pagination is incomplete or changed during verification');
+          total = Number(payload.TotalCount);
+          const expectedRows = Math.min(50, Math.max(0, total - (pageNumber - 1) * 50));
+          if (rows.length !== expectedRows) throw new Error('Cloud VPC inventory pagination is incomplete or changed during verification');
+          for (const value of rows) {
+            const row = this.readJsonObject(value);
+            if (!row || typeof row.VpcId !== 'string' || !/^vpc-[a-zA-Z0-9]+$/.test(row.VpcId)
+              || categoryIds.has(row.VpcId) || (row.RegionId !== undefined && row.RegionId !== '' && row.RegionId !== regionId))
+              throw new Error('Cloud VPC inventory contains an invalid, duplicated or foreign-region identity');
+            categoryIds.add(row.VpcId); ids.add(row.VpcId);
+          }
+          if (categoryIds.size === total) break;
+        }
+        counts.push(total!);
+      }
+      return JSON.stringify({ counts, ids: [...ids].sort() });
+    };
+    const first = await snapshot();
+    const second = await snapshot();
+    if (first !== second) throw new Error('Cloud VPC inventory changed between complete verification reads');
+    const ids = (JSON.parse(first) as { ids: string[] }).ids;
+    return ids.includes(vpcId);
   }
 
   private async checkVSwitchExists(
@@ -1706,7 +1760,7 @@ export class ProvisioningWorkerService {
       parameters: {
         RegionId: regionId,
         // Query the exact recorded switch independently of its deleted parent.
-        VSwitchId: vSwitchId, PageSize: '100', PageNumber: '1',
+        VSwitchId: vSwitchId, PageSize: '50', PageNumber: '1',
       },
     }); } catch (error) {
       // https://help.aliyun.com/zh/vpc/developer-reference/api-vpc-2016-04-28-describevswitches
@@ -1767,7 +1821,7 @@ export class ProvisioningWorkerService {
       accessKeySecret: runtimeConfig.accessKeySecret,
       parameters: {
         RegionId: regionId,
-        NatGatewayId: natGatewayId, PageSize: '100', PageNumber: '1',
+        NatGatewayId: natGatewayId, PageSize: '50', PageNumber: '1',
       },
     });
 
