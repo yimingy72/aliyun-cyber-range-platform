@@ -53,9 +53,9 @@ description: 通过 aliyun-cyber-range-platform MCP Server 操作云上综合靶
 
 异步开通任务是所有模块的通用支撑能力：使用 `provision_job_get({ provisionJobId })` 跟踪开通、更新、销毁和打包任务。
 
-| 通用工具 | 必填参数 | Scope | 用途 |
-|---|---|---|---|
-| `provision_job_get` | `provisionJobId` | `jobs:read` | 查询异步任务状态与脱敏失败摘要；可选 `includeEvidence: true` 读取同来源资源库存、固定阶段状态、相关作业与计费台账释放时间。仅为平台记录，不等于独立云 API 回执或最终账单。 |
+| 操作 | MCP 工具 | 必填参数 | 可选参数 | Scope | 用途 |
+|---|---|---|---|---|---|
+| 查询异步任务 | `provision_job_get` | `provisionJobId` | `includeEvidence: boolean` | `jobs:read` | 查询异步任务状态与脱敏失败摘要；`includeEvidence: true` 读取同来源资源库存、固定阶段状态、相关作业与计费台账释放时间。仅为平台记录，不等于独立云 API 回执或最终账单。 |
 
 ## 意图判断决策树
 
