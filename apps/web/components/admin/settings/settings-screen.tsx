@@ -149,7 +149,7 @@ export function SettingsScreen({ apiBaseUrl = 'http://localhost:3001' }: { apiBa
         const selected = workspace.id === current?.workspace?.id;
         return <TableRow key={workspace.id}>{visibleColumns.map(column => <AdminDataTableCell column={column} key={column.id}>
           {column.id === 'account' ? <div className="grid min-w-0 gap-1">
-            <div className="flex min-w-0 items-center gap-2"><div className="min-w-0 flex-1"><AdminDataTableText className="font-medium">{workspace.displayName}</AdminDataTableText></div>{selected ? <span className="admin-pill admin-pill-success shrink-0">当前</span> : null}</div>
+            <div className="flex min-w-0 items-center gap-2"><div className="min-w-0"><AdminDataTableText className="font-medium">{workspace.displayName}</AdminDataTableText></div>{selected ? <span className="admin-pill admin-pill-success shrink-0">当前</span> : null}</div>
             <span className="break-all text-xs text-muted-foreground">{workspace.accountUid ?? '历史来源未确认'}</span>
             {context ? <span className="break-words text-xs text-muted-foreground md:hidden">{context.regionId} · {context.zoneId}</span> : null}
             {workspace.isReadOnly ? <span className="text-xs text-muted-foreground">只读历史</span> : context?.status !== 'ready' ? <span className="text-xs text-amber-700">待配置</span> : null}
