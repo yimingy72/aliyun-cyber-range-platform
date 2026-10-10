@@ -317,16 +317,8 @@ export class PlatformApiClient implements PlatformApiClientLike {
   }
 
   async getSingleInstance(id: string) {
-    const lists = await Promise.all([this.listSingleInstances('active'), this.listSingleInstances('history')]);
-    for (const list of lists) {
-      const found = [...list.standaloneInstances, ...list.batches.flatMap((entry) => entry.instances)].find((item) => item.id === id);
-
-      if (found) {
-        return found;
-      }
-    }
-
-    return null;
+    try { return await this.request<RangeInstance>(`/admin/instances/${encodeURIComponent(id)}`); }
+    catch (error) { if (error instanceof PlatformApiError && error.status === 404) return null; throw error; }
   }
 
   getSingleInstanceCloudResourceStatus(id: string): Promise<SingleInstanceCloudResourceStatus> {

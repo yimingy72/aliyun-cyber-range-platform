@@ -1,7 +1,26 @@
 import { describe, expect, it } from 'vitest';
 import { createToolRegistry } from '../src/server';
+import { PlatformApiClient } from '@aliyun-cyber-range/platform-api-client';
 const member = (id: string) => ({ id, name: id, singleInstanceConfig: { hostKey: 'ecs', imageDisplayName: 'Ubuntu' }, runtimeCredentials: { ecs: { username: 'root', password: 'synthetic-only' } } });
 describe('single instance MCP isolation', () => {
+  it('reaches the exact detail endpoint and preserves destroyed-source pack receipt evidence through MCP redaction and schema', async () => {
+    const calls: string[] = [];
+    const packedImageArtifacts = [{ id: 'original-artifact', status: 'creating', phase: 'unknown', cloudErrorCode: 'UNKNOWN', sourceDiskIds: ['disk-original'] }];
+    const packSourceSnapshots = [{ artifactId: 'original-artifact', status: 'absent', ownership: 'unconfirmed', scope: 'original_source_disks', sourceDisks: [{ sourceDiskId: 'disk-original', candidateSnapshots: [],
+      evidence: [{ action: 'DescribeSnapshots', requestIds: ['original-context-read'], observedAt: '2026-10-10T01:02:20Z' }] }] }];
+    const client = new PlatformApiClient({ baseUrl: 'https://fixture.example', token: 'fixture-token', cloudWorkspaceId: 'original-space', fetch: (async (input: string, init: RequestInit) => {
+      calls.push(input); expect(input).toBe('https://fixture.example/admin/instances/destroyed-source');
+      expect(init.headers).toMatchObject({ 'x-cloud-workspace-id': 'original-space' });
+      return new Response(JSON.stringify({ id: 'destroyed-source', status: 'destroyed', resourceSummary: null, packedImageArtifacts, packSourceSnapshots,
+        runtimeCredentials: { host: { password: 'synthetic-private-password' } } }), { status: 200 });
+    }) as typeof fetch });
+    const registry = createToolRegistry(client);
+    const output = await registry.callTool('single_instance_get', ['instances:read'], { singleInstanceId: 'destroyed-source' });
+    expect(output.structuredContent.result).toMatchObject({ packedImageArtifacts, packSourceSnapshots });
+    expect(JSON.stringify(output)).not.toContain('synthetic-private-password'); expect(calls).toHaveLength(1);
+    const tool = registry.listTools(['instances:read']).find(item => item.name === 'single_instance_get')!;
+    expect(tool.outputSchema.safeParse(output.structuredContent).success).toBe(true);
+  });
   it('keeps recorded CBS absence RequestIds in the existing read-only status tool without accepting cloud IDs', async () => {
     const result = { singleInstanceId: 'single', regionId: 'ap-shanghai', exists: false, instanceIds: [], checkedAt: '2026-10-10T00:00:00Z', recordedResourceStatus: {
       provider: 'tencent_cloud', cloudAccountContextId: 'original-context', cloudAccountUid: 'synthetic-uid', regionId: 'ap-shanghai', checkedAt: '2026-10-10T00:00:00Z', coverage: 'persisted_instance_compute_resource_ids', allKnownAbsent: true,
