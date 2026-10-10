@@ -12,6 +12,7 @@ import {
   type ProvisionJobStatus,
 } from './admin.repository';
 import { billingDayText, resolveBillingWindow } from './billing-window';
+import { getCurrentCloudWorkspaceScope } from '../auth/cloud-workspace-scope';
 import { billRegionConflict, billRegionId, isAlibabaBillingPayload, isPlatformCreatedLedger, loadPlatformBillingProof, pendingPlatformBillingEvidence, type PlatformBillingProof, isTencentBillingPayload, tencentBillRegionId, classifyTencentBillLine, pendingTencentBillingEvidence, tencentCosBillLifetimeMatches } from './billing-platform-scope';
 
 type BillingWindowInput = Partial<{
@@ -157,12 +158,12 @@ export class BillingService {
       this.adminRepository.listBillingLineItems({ startAt: window.startAt, endAt: window.endAt }),
       loadPlatformBillingProof(this.adminRepository),
     ]);
-    return platformBillingItems(items, proof);
+    return platformBillingItems(items, this.readableProof(proof));
   }
 
   async getSummary(input: BillingWindowInput) {
     const window = resolveBillingWindow(input);
-    const [lineItems, anomalies, proof] = await Promise.all([
+    const [lineItems, anomalies, fullProof] = await Promise.all([
       this.adminRepository.listBillingLineItems({
         startAt: window.startAt,
         endAt: window.endAt,
@@ -173,6 +174,7 @@ export class BillingService {
       }),
       loadPlatformBillingProof(this.adminRepository),
     ]);
+    const proof = this.readableProof(fullProof);
 
     const trackedLineItems = platformBillingItems(lineItems, proof);
     const ledgerResources = proof.ledgers.filter(ledger => isPlatformCreatedLedger(ledger, proof));
@@ -230,9 +232,11 @@ export class BillingService {
       oss: '平台导入对象仍需可核验的费用明细；配置或使用 Bucket 不代表整桶由平台独占，未将整桶金额计入平台。',
       unknown: '已找到平台创建记录，但历史云账号或归属证明尚未核实；记录继续保留，不按零费用处理。',
     };
-    const reconciliationIssues = [...pendingResources].map(([resourceType, ids]) => ({ resourceType, resourceCount: ids.size,
+    const reconciliationIssues = await Promise.all([...pendingResources].map(async ([resourceType, ids]) => ({ resourceType, resourceCount: ids.size,
       reason: deferredProducts.has(resourceType)
-        ? `本次分账未核实，暂保留上次已核验金额，等待完整账单后更新。${reasons[resourceType]}` : reasons[resourceType] }));
+        ? `本次分账未核实，暂保留上次已核验金额，等待完整账单后更新。${reasons[resourceType]}` : reasons[resourceType],
+      resources: await this.reconciliationResourceDetails(ids, proof, deferredProducts.has(resourceType)),
+    })));
     const billedResourceIds = new Set(trackedLineItems.map(item => item.matchedLedgerId));
     const resourcesWithoutBillCount = ledgerResources.filter(item => !['snat_entry', 'dnat_entry', 'unknown', 'snapshot_region'].includes(item.cloudResourceType)
       && billingDayText(item.billingStartAt) <= window.endAtText
@@ -259,6 +263,68 @@ export class BillingService {
 
   async listUsers(input: BillingWindowInput) {
     return paginate(await this.listUserSummaries(input), input);
+  }
+
+  private readableProof(proof: PlatformBillingProof): PlatformBillingProof {
+    const scope = getCurrentCloudWorkspaceScope();
+    if (!scope && process.env.NODE_ENV === 'test') return proof;
+    const visible = (record: { cloudWorkspaceId?: string; ownerUserId?: string | null }) => scope && !('system' in scope)
+      && record.cloudWorkspaceId === scope.cloudWorkspaceId && (scope.isPlatformManager === true || Boolean(scope.actorUserId) && record.ownerUserId === scope.actorUserId);
+    const ledgers = proof.ledgers.filter(visible), ids = new Set(ledgers.map(row => row.id));
+    return { ...proof, ledgers, imageImports: proof.imageImports.filter(visible), packedImages: proof.packedImages.filter(visible),
+      cosBuckets: scope && !('system' in scope) && scope.isPlatformManager === true ? proof.cosBuckets.filter(row => row.cloudWorkspaceId === scope.cloudWorkspaceId) : [],
+      createdLedgerIds: new Set([...proof.createdLedgerIds].filter(id => ids.has(id))),
+      unverifiedSourceLedgerIds: new Set([...proof.unverifiedSourceLedgerIds].filter(id => ids.has(id))) };
+  }
+
+  private async reconciliationResourceDetails(keys: Set<string>, proof: PlatformBillingProof, deferred: boolean) {
+    const scope = getCurrentCloudWorkspaceScope();
+    const inWorkspace = (record: { cloudWorkspaceId?: string }) => scope && !('system' in scope)
+      ? record.cloudWorkspaceId === scope.cloudWorkspaceId : false;
+    const jobs = new Map<string, Promise<ProvisionJobRecord | null>>();
+    const logs = new Map<string, ReturnType<AdminRepository['listProvisionJobStepLogs']>>();
+    return (await Promise.all([...keys].sort().map(async resourceKey => {
+      const ledger = proof.ledgers.find(row => resourceKey === `ledger:${row.id}` && inWorkspace(row));
+      if (ledger) {
+        let proofFailureReason = deferred ? 'BILL_SYNC_DEFERRED' : 'BILL_DETAILS_PENDING';
+        if (!proof.createdLedgerIds.has(ledger.id)) {
+          const storageSource = ['image', 'snapshot', 'oss_bucket'].includes(ledger.cloudResourceType);
+          proofFailureReason = !ledger.cloudAccountUid ? 'ACCOUNT_UID_MISSING' : storageSource ? 'IMAGE_OR_STORAGE_SOURCE_PROOF_INCOMPLETE' : !ledger.rangeInstanceId ? 'SOURCE_RANGE_MISSING'
+            : !ledger.sourceProvisionJobId ? 'SOURCE_JOB_MISSING' : 'SOURCE_PROOF_UNVERIFIED';
+          if (!storageSource && ledger.sourceProvisionJobId && ledger.cloudAccountUid && ledger.rangeInstanceId) {
+            const id = ledger.sourceProvisionJobId;
+            if (!jobs.has(id)) jobs.set(id, this.adminRepository.getProvisionJobById(id));
+            const job = await jobs.get(id)!;
+            if (!job) proofFailureReason = 'SOURCE_JOB_NOT_FOUND';
+            else if (!inWorkspace(job)) proofFailureReason = 'SOURCE_JOB_WORKSPACE_MISMATCH';
+            else if (job.rangeInstanceId !== ledger.rangeInstanceId) proofFailureReason = 'SOURCE_JOB_RANGE_MISMATCH';
+            else if (!['create', 'retry', 'update'].includes(job.jobType)) proofFailureReason = 'SOURCE_JOB_NOT_CREATION';
+            else if (ledger.cloudProvider === 'tencent_cloud') {
+              if (!logs.has(id)) logs.set(id, this.adminRepository.listProvisionJobStepLogs(id));
+              const inventories = (await logs.get(id)!).filter(log => log.jobId === id && inWorkspace(log)
+                && log.status === 'succeeded' && log.stepName === 'platform_billing_creation_inventory').flatMap(log => {
+                try { const value = JSON.parse(log.message ?? 'null'); return value && typeof value === 'object' && !Array.isArray(value) ? [value] : []; } catch { return []; }
+              });
+              proofFailureReason = !inventories.length ? 'SOURCE_JOB_CREATION_INVENTORY_MISSING'
+                : inventories.some(inventory => Array.isArray(inventory.resources) && inventory.resources.some((resource: Record<string, unknown>) =>
+                  resource?.cloudResourceId === ledger.cloudResourceId && resource.cloudResourceType === ledger.cloudResourceType))
+                  ? 'SOURCE_CREATION_PROOF_CONFLICT' : 'SOURCE_RESOURCE_NOT_IN_CREATION_INVENTORY';
+            }
+          }
+        }
+        return { resourceKey, ledgerId: ledger.id, cloudWorkspaceId: ledger.cloudWorkspaceId ?? null, cloudProvider: ledger.cloudProvider,
+          cloudResourceId: ledger.cloudResourceId, cloudResourceType: ledger.cloudResourceType, rangeInstanceId: ledger.rangeInstanceId,
+          sourceProvisionJobId: ledger.sourceProvisionJobId, ownerUserId: ledger.ownerUserId, cloudAccountUid: ledger.cloudAccountUid,
+          regionId: ledger.regionId, billingStartAt: ledger.billingStartAt.toISOString(), releasedAt: ledger.releasedAt?.toISOString() ?? null, proofFailureReason };
+      }
+      const source = [...proof.imageImports, ...proof.packedImages].find(row => inWorkspace(row)
+        && (resourceKey === `import:${row.id}` || resourceKey === `image-source:${row.id}`));
+      if (!source) return null;
+      return { resourceKey, ledgerId: null, cloudWorkspaceId: source.cloudWorkspaceId ?? null, cloudProvider: source.cloudProvider ?? 'alibaba_cloud',
+        cloudResourceId: source.imageId, cloudResourceType: 'image', rangeInstanceId: 'sourceRangeInstanceId' in source ? source.sourceRangeInstanceId : null,
+        sourceProvisionJobId: null, ownerUserId: source.ownerUserId ?? null, cloudAccountUid: source.cloudAccountUid, regionId: source.regionId,
+        billingStartAt: source.createdAt.toISOString(), releasedAt: null, proofFailureReason: 'SOURCE_SNAPSHOT_INVENTORY_OR_BILL_PROOF_INCOMPLETE' };
+    }))).filter(row => row !== null);
   }
 
   private async listUserSummaries(input: BillingWindowInput) {

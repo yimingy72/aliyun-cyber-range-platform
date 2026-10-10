@@ -6,7 +6,7 @@ import { createMemoryAdminRepository } from './support/create-memory-admin-repos
 import { createTencentBillingProof, signedTencentBillingResponse, tencentBill, tencentBillingContext, tencentBillingSync,
   TENCENT_BILLING_DAY as DAY, TENCENT_BILLING_WINDOW as WINDOW } from './support/create-tencent-billing-fixture';
 
-const scope = { cloudWorkspaceId: 'tencent-billing-fixture', provider: 'tencent_cloud' as const, accountUid: '100001' };
+const scope = { cloudWorkspaceId: 'tencent-billing-fixture', provider: 'tencent_cloud' as const, accountUid: '100001', isPlatformManager: true };
 let fetchMock: jest.SpyInstance;
 beforeEach(() => { fetchMock = jest.spyOn(global, 'fetch'); });
 afterEach(() => { fetchMock.mockRestore(); });
