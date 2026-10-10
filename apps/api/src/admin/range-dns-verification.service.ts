@@ -98,7 +98,7 @@ export class RangeDnsVerificationService {
     const claimId = randomUUID();
     const deadline = Date.now() + 120_000;
     let state: RangeDnsVerification = { status: 'checking', method: policy.dns.domain ? 'ad_srv' : 'readback', expected: policy.expected,
-      actual: [], resolutionStatus: policy.dns.domain ? 'failed' : 'not_requested', instanceId, policyHash: policy.policyHash, claimId,
+      actual: [], resolutionStatus: 'not_requested', instanceId, policyHash: policy.policyHash, claimId,
       expiresAt: new Date(Date.now() + 180_000).toISOString() };
     if (!await this.repository.updateRangeInstanceDnsState(id, hostKey, instanceId, previous?.claimId ?? null, state)) throw new ConflictException('实例已变化，请刷新后核验。');
     try {
