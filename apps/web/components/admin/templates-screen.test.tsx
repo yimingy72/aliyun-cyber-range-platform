@@ -1,5 +1,5 @@
 import React from 'react';
-import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { AdminApiError } from '../../lib/admin-api';
 import { AdminScreenCacheProvider } from '../../lib/admin-screen-cache';
@@ -68,6 +68,9 @@ vi.mock('next/navigation', () => ({
   useRouter: () => routerMock,
   useSearchParams: () => new URLSearchParams(window.location.search),
 }));
+
+const workspaceState = vi.hoisted(() => ({ value: null as null | { workspace: { id: string; provider: string; isReadOnly: boolean; capabilities: { provisioning: boolean; rangeProvisioning: boolean } } } }));
+vi.mock('./cloud-workspace-provider', () => ({ useCloudWorkspace: () => workspaceState.value }));
 
 vi.mock('./use-admin-session', () => ({
   useAdminSession: () => ({
@@ -143,6 +146,7 @@ const bootstrapPayload = {
 };
 
 beforeEach(() => {
+  workspaceState.value = null;
   fetchRangeTemplatesMock.mockReset();
   cloneRangeTemplateMock.mockReset();
   createRangeTemplateMock.mockReset();
@@ -1064,14 +1068,60 @@ describe('TemplatesScreen', () => {
     await screen.findByText(/创建结果尚未确认/);
     const firstRequest = launchRangeInstanceMock.mock.calls[0];
     expect(firstRequest[3]).toMatch(/^[0-9a-f-]{36}$/);
-    fireEvent.click(within(dialog).getByRole('button', { name: '确认生成' }));
+    fireEvent.click(within(dialog).getByRole('button', { name: '查询原请求' }));
     await waitFor(() => expect(launchRangeInstanceMock).toHaveBeenCalledTimes(2));
-    await waitFor(() => expect(within(dialog).getByRole('button', { name: '确认生成' }).hasAttribute('disabled')).toBe(false));
+    await waitFor(() => expect(within(dialog).getByRole('button', { name: '查询原请求' }).hasAttribute('disabled')).toBe(false));
     expect(launchRangeInstanceMock.mock.calls[1]).toEqual(firstRequest);
     fireEvent.change(within(dialog).getByLabelText('实例名'), { target: { value: 'another-intended-launch' } });
     fireEvent.click(within(dialog).getByRole('button', { name: '确认生成' }));
     await waitFor(() => expect(launchRangeInstanceMock).toHaveBeenCalledTimes(3));
     expect(launchRangeInstanceMock.mock.calls[2][3]).not.toEqual(firstRequest[3]);
+  });
+
+  it('queries the original Tencent launch after its expiry crosses the new-request minimum', async () => {
+    const now = vi.spyOn(Date, 'now').mockReturnValue(new Date('2026-10-11T08:00:00Z').getTime());
+    try {
+      workspaceState.value = { workspace: { id: 'tencent', provider: 'tencent_cloud', isReadOnly: false, capabilities: { provisioning: true, rangeProvisioning: true } } };
+      fetchRangeTemplatesMock.mockResolvedValue(bootstrapPayload.rangeTemplates);
+      launchRangeInstanceMock.mockRejectedValueOnce(new TypeError('Response lost')).mockResolvedValue({ id: 'original-range' });
+      render(<TemplatesScreen apiBaseUrl="http://localhost:3001" />);
+      await screen.findByText('办公网横向移动靶场');
+      openTemplateActionMenu(screen.getByRole('row', { name: /办公网横向移动靶场/ }));
+      fireEvent.click(screen.getByRole('menuitem', { name: '生成实例' }));
+      const dialog = screen.getByRole('dialog', { name: '生成实例' });
+      fireEvent.change(within(dialog).getByLabelText('实例名'), { target: { value: 'original-intent' } });
+      fireEvent.change(within(dialog).getByLabelText('到期时间'), { target: { value: '2026-10-11T08:11' } });
+      fireEvent.click(within(dialog).getByRole('button', { name: '确认生成' }));
+      await screen.findByText(/创建结果尚未确认/);
+      const original = launchRangeInstanceMock.mock.calls[0];
+      now.mockReturnValue(new Date('2026-10-11T08:02:00Z').getTime());
+      fireEvent.change(within(dialog).getByLabelText('实例名'), { target: { value: 'different-intent' } });
+      fireEvent.click(within(dialog).getByRole('button', { name: '确认生成' }));
+      await screen.findByText('腾讯云实例到期时间至少需要在 10 分钟后。');
+      expect(launchRangeInstanceMock).toHaveBeenCalledTimes(1);
+      fireEvent.change(within(dialog).getByLabelText('实例名'), { target: { value: 'original-intent' } });
+      fireEvent.click(within(dialog).getByRole('button', { name: '查询原请求' }));
+      await waitFor(() => expect(pushMock).toHaveBeenCalledWith('/admin/ranges/original-range'));
+      expect(launchRangeInstanceMock.mock.calls[1]).toEqual(original);
+    } finally { now.mockRestore(); }
+  });
+
+  it.each(['success', 'unauthorized'])('ignores a late launch %s after the workspace page unmounts', async outcome => {
+    fetchRangeTemplatesMock.mockResolvedValue(bootstrapPayload.rangeTemplates);
+    let resolve!: (value: unknown) => void; let reject!: (error: unknown) => void;
+    launchRangeInstanceMock.mockReturnValue(new Promise((done, fail) => { resolve = done; reject = fail; }));
+    const mounted = render(<TemplatesScreen apiBaseUrl="http://localhost:3001" />);
+    await screen.findByText('办公网横向移动靶场');
+    openTemplateActionMenu(screen.getByRole('row', { name: /办公网横向移动靶场/ }));
+    fireEvent.click(screen.getByRole('menuitem', { name: '生成实例' }));
+    const dialog = screen.getByRole('dialog', { name: '生成实例' });
+    fireEvent.change(within(dialog).getByLabelText('到期时间'), { target: { value: '2100-01-01T12:00' } });
+    fireEvent.click(within(dialog).getByRole('button', { name: '确认生成' }));
+    await waitFor(() => expect(launchRangeInstanceMock).toHaveBeenCalledTimes(1));
+    mounted.unmount();
+    await act(async () => { if (outcome === 'success') resolve({ id: 'old-space-range' }); else reject(new AdminApiError(401)); });
+    expect(pushMock).not.toHaveBeenCalled();
+    expect(replaceMock).not.toHaveBeenCalled();
   });
 
   it('keeps the launch dialog open while an instance request is pending', async () => {

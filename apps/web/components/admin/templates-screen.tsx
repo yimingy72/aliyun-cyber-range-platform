@@ -219,6 +219,12 @@ export function TemplatesScreen({
   const [editingTemplateId, setEditingTemplateId] = useState<string | null>(null);
   const [confirmState, setConfirmState] = useState<TemplateConfirmState>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const launchScope = JSON.stringify([apiBaseUrl, session.profile?.id, workspace?.id]);
+  const launchContextRef = useRef({ scope: launchScope, token: session.token });
+  launchContextRef.current = { scope: launchScope, token: session.token };
+  const launchMountedRef = useRef(true);
+  useEffect(() => { launchMountedRef.current = true; return () => { launchMountedRef.current = false; }; }, []);
+  const isCurrentLaunch = () => launchMountedRef.current && launchContextRef.current.scope === launchScope;
   const launchPendingRef = useRef(false);
   const launchRequestRef = useRef<{ fingerprint: string; key: string; payload: RangeInstanceLaunchInput } | null>(null);
   const [pendingEditorTemplateId, setPendingEditorTemplateId] = useState<string | null>(null);
@@ -226,6 +232,8 @@ export function TemplatesScreen({
   const [createDraft, setCreateDraft] = useState<CreateTemplateDraft>(EMPTY_CREATE_TEMPLATE_DRAFT);
   const [editDraft, setEditDraft] = useState<TemplateDraft>(EMPTY_TEMPLATE_DRAFT);
   const [launchDraft, setLaunchDraft] = useState<LaunchInstanceDraft>(EMPTY_LAUNCH_INSTANCE_DRAFT);
+  const launchFingerprint = JSON.stringify([launchScope, launchDraft.templateId, launchDraft.name.trim(), launchDraft.expiresAt.trim()]);
+  const canReplayLaunch = launchRequestRef.current?.fingerprint === launchFingerprint;
   const createNameRef = useRef<HTMLInputElement>(null);
   const editNameRef = useRef<HTMLInputElement>(null);
   const launchNameRef = useRef<HTMLInputElement>(null);
@@ -739,14 +747,13 @@ export function TemplatesScreen({
       return;
     }
 
-    const expiryError = workspace?.provider === 'tencent_cloud' ? cloudExpiryError(expiresAt, workspace.provider) : null;
-    if (expiryError) { setActionErrorMessage(expiryError); return; }
-    const payload = { templateId: launchDraft.templateId, name, expiresAt: new Date(expiresAt).toISOString() };
-    const fingerprint = JSON.stringify([apiBaseUrl, session.profile?.id, workspace?.id, payload]);
-    if (launchRequestRef.current?.fingerprint !== fingerprint) {
-      launchRequestRef.current = { fingerprint, key: crypto.randomUUID(), payload };
+    if (!canReplayLaunch) {
+      const expiryError = workspace?.provider === 'tencent_cloud' ? cloudExpiryError(expiresAt, workspace.provider) : null;
+      if (expiryError) { setActionErrorMessage(expiryError); return; }
+      const payload = { templateId: launchDraft.templateId, name, expiresAt: new Date(expiresAt).toISOString() };
+      launchRequestRef.current = { fingerprint: launchFingerprint, key: crypto.randomUUID(), payload };
     }
-    const request = launchRequestRef.current;
+    const request = launchRequestRef.current!;
     launchPendingRef.current = true;
     setActionErrorMessage(null);
     setActionSuccessMessage(null);
@@ -754,12 +761,15 @@ export function TemplatesScreen({
 
     try {
       const instance = await launchRangeInstance(apiBaseUrl, session.token, request.payload, request.key);
+      if (!isCurrentLaunch()) return;
       launchRequestRef.current = null;
       screenCache?.invalidate(apiBaseUrl, session.token, 'range-instances:');
       closeLaunchDialog();
       router.push(`/admin/ranges/${instance.id}`);
     } catch (error: unknown) {
+      if (!isCurrentLaunch()) return;
       if (isUnauthorizedAdminError(error)) {
+        if (launchContextRef.current.token !== session.token) return;
         session.logout();
         router.replace('/admin/login');
       } else {
@@ -767,7 +777,7 @@ export function TemplatesScreen({
       }
     } finally {
       launchPendingRef.current = false;
-      setIsSubmitting(false);
+      if (isCurrentLaunch()) setIsSubmitting(false);
     }
   }
 
@@ -1110,7 +1120,7 @@ export function TemplatesScreen({
               取消
             </Button>
             <Button disabled={!canLaunchRange || isSubmitting} type="button" onClick={() => void handleLaunchInstance()}>
-              确认生成
+              {canReplayLaunch && !isSubmitting ? '查询原请求' : '确认生成'}
             </Button>
           </>
         }

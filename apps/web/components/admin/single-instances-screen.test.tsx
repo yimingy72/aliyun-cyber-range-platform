@@ -1,5 +1,5 @@
 import React from 'react';
-import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const {
@@ -86,6 +86,7 @@ vi.mock('../../lib/admin-api', () => ({
   triggerSingleInstanceAction: triggerSingleInstanceActionMock,
 }));
 
+import { AdminApiError } from '../../lib/admin-api';
 import { SingleInstancesScreen } from './single-instances-screen';
 
 class ResizeObserverMock {
@@ -168,9 +169,9 @@ describe('SingleInstancesScreen', () => {
     expect(launchSingleInstancesMock).toHaveBeenCalledTimes(1);
     const firstRequest = launchSingleInstancesMock.mock.calls[0];
     expect(firstRequest[3]).toMatch(/^[0-9a-f-]{36}$/);
-    fireEvent.click(screen.getByRole('button', { name: '确认创建' }));
+    fireEvent.click(screen.getByRole('button', { name: '查询原请求' }));
     await waitFor(() => expect(launchSingleInstancesMock).toHaveBeenCalledTimes(2));
-    await waitFor(() => expect(screen.getByRole('button', { name: '确认创建' }).hasAttribute('disabled')).toBe(false));
+    await waitFor(() => expect(screen.getByRole('button', { name: '查询原请求' }).hasAttribute('disabled')).toBe(false));
     expect(launchSingleInstancesMock.mock.calls[1]).toEqual(firstRequest);
     fireEvent.change(screen.getByLabelText('实例名'), { target: { value: 'another-intended-batch' } });
     fireEvent.click(screen.getByRole('button', { name: '确认创建' }));
@@ -252,6 +253,57 @@ describe('SingleInstancesScreen', () => {
     fireEvent.change(screen.getByLabelText('到期时间'), { target: { value: localText(new Date(Date.now() + 60 * 60_000)) } });
     fireEvent.submit(document.getElementById('single-instance-create-form')!);
     await waitFor(() => expect(launchSingleInstancesMock).toHaveBeenCalledWith(expect.anything(), expect.anything(), expect.objectContaining({ platformImageAssetId: 'tencent-image', systemDiskSize: 80 }), expect.any(String)));
+  });
+
+  it('queries the original Tencent batch after two minutes without renewing its expiration or key', async () => {
+    const now = vi.spyOn(Date, 'now').mockReturnValue(new Date('2026-10-11T08:00:00Z').getTime());
+    try {
+      workspaceState.value = { workspace: { provider: 'tencent_cloud', isReadOnly: false, capabilities: { provisioning: true } } };
+      fetchSingleInstancesMock.mockResolvedValue([]); fetchProvisionJobsMock.mockResolvedValue([]);
+      fetchPlatformImagesMock.mockResolvedValue({ items: [{ id: 'tencent-image', provider: 'tencent_cloud', imageId: 'img-tencent', displayName: 'Tencent Linux', enabled: true, tags: [], architecture: 'x86_64', minimumSystemDiskSize: 80 }] });
+      fetchInstanceTypeAvailabilityMock.mockResolvedValue({ cpu: 2, memory: 2, exactAvailable: true, matches: [{ instanceTypeId: 'S5.MEDIUM2', cpu: 2, memoryGiB: 2, architecture: 'x86_64' }] });
+      launchSingleInstancesMock.mockRejectedValueOnce(new TypeError('Response lost')).mockResolvedValue({ batch: { id: 'original-batch' }, instances: [] });
+      render(<SingleInstancesScreen />);
+      fireEvent.click(await screen.findByRole('button', { name: '创建实例' }));
+      fireEvent.change(screen.getByLabelText('实例名'), { target: { value: 'original-intent' } });
+      fireEvent.change(screen.getByLabelText('到期时间'), { target: { value: '2026-10-11T08:11' } });
+      await waitFor(() => expect(fetchInstanceTypeAvailabilityMock).toHaveBeenCalled());
+      expect((screen.getByRole('button', { name: '确认创建' }) as HTMLButtonElement).formNoValidate).toBe(false);
+      fireEvent.click(screen.getByRole('button', { name: '确认创建' }));
+      await screen.findByText(/创建结果尚未确认/);
+      const original = launchSingleInstancesMock.mock.calls[0];
+      now.mockReturnValue(new Date('2026-10-11T08:02:00Z').getTime());
+      fireEvent.change(screen.getByLabelText('实例名'), { target: { value: 'different-intent' } });
+      fireEvent.click(screen.getByRole('button', { name: '确认创建' }));
+      await screen.findByText('腾讯云实例到期时间至少需要在 10 分钟后。');
+      expect(launchSingleInstancesMock).toHaveBeenCalledTimes(1);
+      fireEvent.change(screen.getByLabelText('实例名'), { target: { value: 'original-intent' } });
+      const retry = screen.getByRole('button', { name: '查询原请求' }) as HTMLButtonElement;
+      expect(retry.formNoValidate).toBe(true);
+      fireEvent.click(retry);
+      await waitFor(() => expect(screen.queryByRole('dialog', { name: '创建实例' })).toBeNull());
+      expect(launchSingleInstancesMock.mock.calls[1]).toEqual(original);
+    } finally { now.mockRestore(); }
+  });
+
+  it.each(['success', 'unauthorized'])('ignores a late batch launch %s after the workspace page unmounts', async outcome => {
+    fetchSingleInstancesMock.mockResolvedValue([]); fetchProvisionJobsMock.mockResolvedValue([]);
+    fetchPlatformImagesMock.mockResolvedValue({ items: [{ id: 'platform-image-1', imageId: 'm-123', displayName: 'Ubuntu', enabled: true }] });
+    fetchInstanceTypeAvailabilityMock.mockResolvedValue({ cpu: 2, memory: 2, exactAvailable: true, matches: [{ instanceTypeId: 'ecs.c6.large', cpu: 2, memoryGiB: 2, architecture: 'x86' }] });
+    let resolve!: (value: unknown) => void; let reject!: (error: unknown) => void;
+    launchSingleInstancesMock.mockReturnValue(new Promise((done, fail) => { resolve = done; reject = fail; }));
+    const mounted = render(<SingleInstancesScreen />);
+    fireEvent.click(await screen.findByRole('button', { name: '创建实例' }));
+    fireEvent.change(screen.getByLabelText('实例名'), { target: { value: 'original-intent' } });
+    fireEvent.change(screen.getByLabelText('到期时间'), { target: { value: '2100-01-01T12:00' } });
+    await waitFor(() => expect(fetchInstanceTypeAvailabilityMock).toHaveBeenCalled());
+    fireEvent.click(screen.getByRole('button', { name: '确认创建' }));
+    await waitFor(() => expect(launchSingleInstancesMock).toHaveBeenCalledTimes(1));
+    const reads = fetchSingleInstancesMock.mock.calls.length;
+    mounted.unmount();
+    await act(async () => { if (outcome === 'success') resolve({ batch: { id: 'old-batch' }, instances: [] }); else reject(new AdminApiError(401)); });
+    expect(fetchSingleInstancesMock).toHaveBeenCalledTimes(reads);
+    expect(replaceMock).not.toHaveBeenCalled();
   });
 
   it('renders list/history, opens create dialog, and submits the launch payload without triggeredBy', async () => {
