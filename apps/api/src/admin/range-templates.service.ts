@@ -1291,14 +1291,12 @@ export class RangeTemplatesService {
       } else if (compiledPrivateIp !== host.privateIp) {
         issues.push(`Compiled host resource privateIp mismatch for host ${host.key}`);
       }
-    }
 
-    const publicEntryHostConfig = hostResourcesById.get(topologySpec.publicEntry.hostKey);
-
-    if (!publicEntryHostConfig) {
-      issues.push(`Missing host resource for topology host: ${topologySpec.publicEntry.hostKey}`);
-    } else if (publicEntryHostConfig.exposePublic !== true) {
-      issues.push(`Compiled public entry host must expose public access: ${topologySpec.publicEntry.hostKey}`);
+      // Legacy snapshots omit the flag; an explicit false keeps the management entry private.
+      const exposePublic = host.exposePublic ?? (host.key === topologySpec.publicEntry.hostKey);
+      if ((hostConfig.exposePublic === true) !== exposePublic) {
+        issues.push(`Compiled host resource public access mismatch for host ${host.key}`);
+      }
     }
 
     for (const resource of compiledSpec.resources) {
