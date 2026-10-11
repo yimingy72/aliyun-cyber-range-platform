@@ -123,7 +123,39 @@ function readBlobAsBytes(blob: Blob) {
   });
 }
 
+async function openCreateDialog() {
+  const button = await waitFor(() => {
+    const button = screen.getByRole('button', { name: '创建实例' });
+    expect(button.hasAttribute('disabled')).toBe(false);
+    return button;
+  });
+  fireEvent.click(button);
+  return screen.findByRole('dialog', { name: '创建实例' });
+}
+
 describe('SingleInstancesScreen', () => {
+  it('opens the create dialog only after delayed images enable the button', async () => {
+    fetchSingleInstancesMock.mockResolvedValue([]);
+    fetchProvisionJobsMock.mockResolvedValue([]);
+    fetchInstanceTypeAvailabilityMock.mockResolvedValue({ cpu: 2, memory: 2, exactAvailable: true,
+      matches: [{ instanceTypeId: 'ecs.c6.large', cpu: 2, memoryGiB: 2, architecture: 'x86' }] });
+    let resolveImages!: (value: unknown) => void;
+    fetchPlatformImagesMock.mockReturnValue(new Promise(resolve => { resolveImages = resolve; }));
+    render(<SingleInstancesScreen />);
+
+    const opening = openCreateDialog();
+    await act(async () => { await Promise.resolve(); });
+    expect(screen.getByRole('button', { name: '创建实例' }).hasAttribute('disabled')).toBe(true);
+    expect(screen.queryByRole('dialog', { name: '创建实例' })).toBeNull();
+
+    await act(async () => {
+      resolveImages({ items: [{ id: 'platform-image-1', imageId: 'm-123', displayName: 'Ubuntu', enabled: true }] });
+    });
+    await opening;
+    expect(screen.getByLabelText('实例名')).toBeTruthy();
+    expect(launchSingleInstancesMock).not.toHaveBeenCalled();
+  });
+
   it('keeps a successful launch accepted when the following list refresh fails', async () => {
     fetchSingleInstancesMock.mockResolvedValue([]);
     fetchProvisionJobsMock.mockResolvedValue([]);
@@ -136,7 +168,7 @@ describe('SingleInstancesScreen', () => {
       return { batch: { id: 'accepted-batch' }, instances: [] };
     });
     render(<SingleInstancesScreen apiBaseUrl="http://localhost:3001" />);
-    fireEvent.click(await screen.findByRole('button', { name: '创建实例' }));
+    await openCreateDialog();
     fireEvent.change(screen.getByLabelText('实例名'), { target: { value: 'accepted-once' } });
     fireEvent.change(screen.getByLabelText('镜像'), { target: { value: 'Ubuntu (m-123)' } });
     fireEvent.change(screen.getByLabelText('到期时间'), { target: { value: '2100-01-01T12:00' } });
@@ -157,7 +189,7 @@ describe('SingleInstancesScreen', () => {
       matches: [{ instanceTypeId: 'ecs.c6.large', cpu: 2, memoryGiB: 2, architecture: 'x86' }] });
     launchSingleInstancesMock.mockRejectedValue(new TypeError('Network connection lost'));
     render(<SingleInstancesScreen apiBaseUrl="http://localhost:3001" />);
-    fireEvent.click(await screen.findByRole('button', { name: '创建实例' }));
+    await openCreateDialog();
     fireEvent.change(screen.getByLabelText('实例名'), { target: { value: 'batch-once' } });
     fireEvent.change(screen.getByLabelText('镜像'), { target: { value: 'Ubuntu (m-123)' } });
     fireEvent.change(screen.getByLabelText('到期时间'), { target: { value: '2100-01-01T12:00' } });
@@ -239,7 +271,7 @@ describe('SingleInstancesScreen', () => {
     fetchInstanceTypeAvailabilityMock.mockResolvedValue({ cpu: 2, memory: 2, regionId: 'ap-shanghai', zoneId: 'ap-shanghai-1', exactAvailable: true, matches: [{ instanceTypeId: 'S5.MEDIUM2', cpu: 2, memoryGiB: 2, family: 'S5', generation: 'S5', architecture: 'x86_64' }], warning: null });
     launchSingleInstancesMock.mockResolvedValue({ batch: { id: 'new-batch' }, instances: [] });
     render(<SingleInstancesScreen />);
-    fireEvent.click(await screen.findByRole('button', { name: '创建实例' }));
+    await openCreateDialog();
     expect((await screen.findByLabelText('磁盘大小') as HTMLInputElement).value).toBe('80');
     expect((screen.getByLabelText('磁盘大小') as HTMLInputElement).min).toBe('80');
     fireEvent.change(screen.getByLabelText('实例名'), { target: { value: 'Tencent instance' } });
@@ -264,7 +296,7 @@ describe('SingleInstancesScreen', () => {
       fetchInstanceTypeAvailabilityMock.mockResolvedValue({ cpu: 2, memory: 2, exactAvailable: true, matches: [{ instanceTypeId: 'S5.MEDIUM2', cpu: 2, memoryGiB: 2, architecture: 'x86_64' }] });
       launchSingleInstancesMock.mockRejectedValueOnce(new TypeError('Response lost')).mockResolvedValue({ batch: { id: 'original-batch' }, instances: [] });
       render(<SingleInstancesScreen />);
-      fireEvent.click(await screen.findByRole('button', { name: '创建实例' }));
+      await openCreateDialog();
       fireEvent.change(screen.getByLabelText('实例名'), { target: { value: 'original-intent' } });
       fireEvent.change(screen.getByLabelText('到期时间'), { target: { value: '2026-10-11T08:11' } });
       await waitFor(() => expect(fetchInstanceTypeAvailabilityMock).toHaveBeenCalled());
@@ -293,7 +325,7 @@ describe('SingleInstancesScreen', () => {
     let resolve!: (value: unknown) => void; let reject!: (error: unknown) => void;
     launchSingleInstancesMock.mockReturnValue(new Promise((done, fail) => { resolve = done; reject = fail; }));
     const mounted = render(<SingleInstancesScreen />);
-    fireEvent.click(await screen.findByRole('button', { name: '创建实例' }));
+    await openCreateDialog();
     fireEvent.change(screen.getByLabelText('实例名'), { target: { value: 'original-intent' } });
     fireEvent.change(screen.getByLabelText('到期时间'), { target: { value: '2100-01-01T12:00' } });
     await waitFor(() => expect(fetchInstanceTypeAvailabilityMock).toHaveBeenCalled());
@@ -358,7 +390,7 @@ describe('SingleInstancesScreen', () => {
     expect(screen.getByRole('button', { name: '创建实例' })).toBeTruthy();
     expect(screen.getByText('root / ******')).toBeTruthy();
 
-    fireEvent.click(screen.getByRole('button', { name: '创建实例' }));
+    await openCreateDialog();
     expect((screen.getByLabelText('密码') as HTMLInputElement).type).toBe('password');
     fireEvent.change(screen.getByLabelText('实例名'), { target: { value: 'web-lab' } });
     fireEvent.change(screen.getByLabelText('镜像'), { target: { value: 'Ubuntu 24.04 LTS (m-123)' } });
@@ -662,7 +694,7 @@ describe('SingleInstancesScreen', () => {
 
     render(<SingleInstancesScreen apiBaseUrl="http://localhost:3001" />);
 
-    fireEvent.click(await screen.findByRole('button', { name: '创建实例' }));
+    await openCreateDialog();
     expect(await screen.findByText('默认可用区暂无 2 核 / 2 G 的精确可售规格')).toBeTruthy();
     fireEvent.change(screen.getByLabelText('实例名'), { target: { value: 'blocked-lab' } });
     fireEvent.change(screen.getByLabelText('镜像'), { target: { value: 'Ubuntu 24.04 LTS (m-123)' } });
@@ -1042,7 +1074,7 @@ describe('SingleInstancesScreen', () => {
 
     render(<SingleInstancesScreen apiBaseUrl="http://localhost:3001" />);
 
-    fireEvent.click(await screen.findByRole('button', { name: '创建实例' }));
+    await openCreateDialog();
     fireEvent.change(screen.getByLabelText('实例名'), { target: { value: 'web-lab' } });
     fireEvent.change(screen.getByLabelText('镜像'), { target: { value: 'Ubuntu 24.04 LTS (m-123)' } });
     fireEvent.change(screen.getByLabelText('到期时间'), { target: { value: '2026-07-10T12:00' } });
