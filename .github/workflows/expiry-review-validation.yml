@@ -1,4 +1,4 @@
-name: Expiry review source
+name: Expiry review baseline
 on:
   push:
     branches: [codex/expiry-cost-guardrails-20261011]
