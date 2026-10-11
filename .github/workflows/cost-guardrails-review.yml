@@ -2,7 +2,7 @@ name: Cost guardrails validation
 on:
   push:
     branches: [codex/lifecycle-cost-guardrails]
-    paths: [.github/workflows/cost-guardrails-review.yml]
+    paths: [.github/workflows/cost-guardrails-review.yml, .github/guardrails-followup.patch]
 permissions:
   contents: write
 concurrency:
@@ -45,6 +45,8 @@ jobs:
           p = Path('apps/api/test/billing-lifecycle-risks.spec.ts')
           p.write_text(p.read_text().replace('does not read credential-bearing instance details', 'avoids extra per-instance detail reads'))
           PY
+          git apply --check .github/guardrails-followup.patch
+          git apply .github/guardrails-followup.patch
           git add -N apps packages infra scripts docs skills
           git diff --check
           mkdir -p "$RUNNER_TEMP/guardrails-results"
@@ -98,7 +100,7 @@ jobs:
           git fetch origin codex/lifecycle-cost-guardrails
           test "$(git rev-parse FETCH_HEAD)" = "$GITHUB_SHA"
           git add apps packages infra scripts docs skills
-          git rm .github/guardrails-patch-part1.txt .github/guardrails-patch-part2.txt .github/guardrails-patch-part3.txt .github/workflows/cost-guardrails-review.yml
+          git rm .github/guardrails-patch-part1.txt .github/guardrails-patch-part2.txt .github/guardrails-patch-part3.txt .github/guardrails-followup.patch .github/workflows/cost-guardrails-review.yml
           git config user.name 'yimingy72'
           git config user.email '50072883+yimingy72@users.noreply.github.com'
           git commit -m 'fix: add fixed ECS expiry safety, isolated reconciliation and read-only billing risk audit'
