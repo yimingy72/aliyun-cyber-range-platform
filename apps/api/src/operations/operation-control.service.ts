@@ -1,10 +1,11 @@
-import { ConflictException, HttpException, Inject, Injectable } from '@nestjs/common';
+import { BadRequestException, ConflictException, HttpException, Inject, Injectable } from '@nestjs/common';
 import { createHash, randomUUID } from 'node:crypto';
 
 import type { AuthenticatedPlatformRequest, RequestAuthContext } from '../auth/request-auth-context';
 import { ADMIN_REPOSITORY, type IdempotentOperationRecord, type OperationAuditEventInput } from '../admin/admin.repository';
 import type { AdminRepository } from '../admin/admin.repository';
 import { requireCurrentCloudWorkspaceId } from '../auth/cloud-workspace-scope';
+import { redactMcpMetadata } from '../auth/mcp-response.interceptor';
 
 const SENSITIVE_KEYS = new Set(['password', 'defaultPassword', 'token', 'accessToken', 'refreshToken', 'vncUrl', 'webTerminalUrl', 'accessKeyId', 'accessKeySecret']);
 const CONFIRMATION_TTL_MS = 5 * 60 * 1000;
@@ -26,6 +27,45 @@ export function readOperationRequestMetadata(request: AuthenticatedPlatformReque
 @Injectable()
 export class OperationControlService {
   constructor(@Inject(ADMIN_REPOSITORY) private readonly repository: AdminRepository) {}
+
+  async executeIdempotent(input: {
+    context: RequestAuthContext;
+    metadata: OperationRequestMetadata;
+    toolName: string;
+    arguments: Record<string, unknown>;
+    targetType: string;
+    execute: () => Promise<Record<string, unknown>>;
+  }) {
+    const key = input.metadata.idempotencyKey;
+    if (!key || key.length > 128) throw new BadRequestException('A stable x-idempotency-key of at most 128 characters is required');
+    const cloudWorkspaceId = requireCurrentCloudWorkspaceId();
+    const argumentsHash = hash({ cloudWorkspaceId, arguments: input.arguments });
+    const operation = await this.begin(cloudWorkspaceId, input.context.user.id, input.toolName, key, argumentsHash);
+    if ('existing' in operation && operation.existing) {
+      const previous = this.existing(operation.existing, argumentsHash, cloudWorkspaceId);
+      if (previous.result) return previous.result;
+      throw new ConflictException({ code: previous.status === 'failed' ? 'OPERATION_FAILED' : 'OPERATION_IN_PROGRESS',
+        operationId: previous.operationId, message: '创建请求已受理或结果待核验，请检查实例列表；相同请求不会再次创建资源。' });
+    }
+    const auditBase = { cloudWorkspaceId, operationId: operation.operationId, requestId: input.metadata.requestId,
+      actorUserId: input.context.user.id, source: input.context.source, oauthClientId: input.context.oauthClientId,
+      toolName: input.toolName, targetType: input.targetType, sanitizedInput: input.arguments };
+    let result: Record<string, unknown>;
+    try {
+      await this.audit({ ...auditBase, phase: 'requested' });
+      // Retried launch responses must not persist generated guest passwords in the operation ledger.
+      result = redactMcpMetadata(await input.execute()) as Record<string, unknown>;
+    } catch (error) {
+      const errorCode = errorCodeFor(error);
+      await this.repository.updateIdempotentOperation(operation.id, { status: 'failed', errorCode });
+      await this.audit({ ...auditBase, phase: 'failed', errorCode });
+      throw error;
+    }
+    // This records successful intake; the returned job/instance still carries its provisioning status.
+    await this.repository.updateIdempotentOperation(operation.id, { status: 'succeeded', result, errorCode: null });
+    await this.audit({ ...auditBase, phase: 'dispatched', jobId: typeof result.lastJobId === 'string' ? result.lastJobId : null });
+    return result;
+  }
 
   async audit(input: OperationAuditEventInput) {
     const cloudWorkspaceId = requireCurrentCloudWorkspaceId();

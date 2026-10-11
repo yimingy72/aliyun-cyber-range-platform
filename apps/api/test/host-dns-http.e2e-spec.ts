@@ -1,3 +1,4 @@
+import * as workspaceScope from '../src/auth/cloud-workspace-scope';
 import request from 'supertest';
 import { compileTemplateTopology, type ScenarioGraphDraft } from '@aliyun-cyber-range/scenario-runtime/compiled';
 import { collectRangeFixtureImage, createRangeApiFixture, futureExpiration, rangeTemplatePayload } from './support/range-api-fixture';
@@ -6,7 +7,7 @@ const dns = {servers:['10.0.10.10','10.0.10.11'],nicIds:['nic-secondary'],domain
 describe('Windows dual-NIC DNS template HTTP contract',()=>{
  let fixture: Awaited<ReturnType<typeof createRangeApiFixture>>;
  let image: Awaited<ReturnType<typeof collectRangeFixtureImage>>;
- beforeAll(async()=>{fixture=await createRangeApiFixture();image=await collectRangeFixtureImage(fixture.repository);await fixture.repository.upsertImageSnapshots({provider:'alibaba_cloud',accountUid:null,regionId:'cn-hangzhou',scope:'custom',snapshots:[{imageId:image.imageId,sourceImageName:image.displayName,status:'Available',isAvailable:true,osType:'windows',platform:'Windows Server 2019',lastSyncedAt:new Date()}]});});
+ beforeAll(async()=>{jest.spyOn(workspaceScope,'requireCurrentCloudWorkspaceId').mockReturnValue('legacy-unbound');fixture=await createRangeApiFixture();image=await collectRangeFixtureImage(fixture.repository);await fixture.repository.upsertImageSnapshots({provider:'alibaba_cloud',accountUid:null,regionId:'cn-hangzhou',scope:'custom',snapshots:[{imageId:image.imageId,sourceImageName:image.displayName,status:'Available',isAvailable:true,osType:'windows',platform:'Windows Server 2019',lastSyncedAt:new Date()}]});});
  afterAll(async()=>{await fixture.app.close();});
  function payload(name='Windows dual NIC DNS') {
   const graph=rangeTemplatePayload(image,name,'10.0.0.0/16').topologyGraph as ScenarioGraphDraft;
@@ -24,7 +25,7 @@ describe('Windows dual-NIC DNS template HTTP contract',()=>{
   const saved=await post(`/admin/scenarios/${created.body.id}/validate-and-save`,{...topology,expectedRevision:created.body.revision}).expect(200);
   expect(saved.body.topologySpec.hosts[0].dns).toEqual(dns);
   expect(saved.body.topologyGraph.nodes.find((node:any)=>node.kind==='ecs').nics).toHaveLength(2);
-  const launched=await post('/admin/ranges/launch',{templateId:created.body.id,name:'DNS launch contract',expiresAt:futureExpiration()}).expect(201);
+  const launched=await post('/admin/ranges/launch',{templateId:created.body.id,name:'DNS launch contract',expiresAt:futureExpiration()}).set('x-idempotency-key','dns-contract-launch').expect(201);
   const instance=await fixture.repository.getRangeInstanceById(launched.body.id);
   expect((instance!.runtimeTopologyGraph!.nodes as any[]).find(node=>node.kind==='ecs').dns).toEqual(dns);
   expect((instance!.runtimeTopologyGraph!.nodes as any[]).find(node=>node.kind==='ecs').nics).toHaveLength(2);
