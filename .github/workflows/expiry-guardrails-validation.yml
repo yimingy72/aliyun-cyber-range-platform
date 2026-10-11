@@ -7,14 +7,14 @@ permissions:
   contents: write
 concurrency:
   group: expiry-guardrails-validation
-  cancel-in-progress: false
+  cancel-in-progress: true
 jobs:
   review:
     runs-on: ubuntu-latest
     timeout-minutes: 45
     env:
       REVIEW_BASE: 676220162ad30065bb08cadc114a91a8a862b618
-      INTEGRATION_BASE: 37a6c65f510301897bef2d09446678a583437cf5
+      INTEGRATION_BASE: dba463f204cbe11354fba73c7d73017d13ee9cce
     steps:
       - uses: actions/checkout@v4
         with:
@@ -41,6 +41,7 @@ jobs:
           c3185332b3f9f4f3c57faa325bf64cc22ec1779d surface-apps.patch
           a6b7ee90fb8f6862950a757c76fb136b218a182f surface-infra.patch
           82b87253f020b42990751d700a9d3e7646c5272f extra1.patch
+          182b220f45beac1b44488d4d2a58c359eeebabb8 extra2.patch
           HASHES
           cd .worktrees/guardrails-validation
           git add -N apps packages infra scripts docs skills
@@ -101,7 +102,8 @@ jobs:
           set -euo pipefail
           git add apps packages infra scripts docs skills
           git commit -m 'test: isolated guardrail candidate'
-          git merge --no-edit "$INTEGRATION_BASE"
+          git merge --no-edit "$INTEGRATION_BASE" 2>&1 | tee "$RUNNER_TEMP/guardrails-results/integration-merge.log"
+          git diff --name-only "$INTEGRATION_BASE" HEAD | while read -r file; do printf '%s %s\n' "$(git hash-object "$file")" "$file"; done > "$RUNNER_TEMP/guardrails-results/integration-file-blobs.txt"
           git rev-parse HEAD > "$RUNNER_TEMP/guardrails-results/integration-commit.txt"
           printf '%s\n%s\n' "$REVIEW_BASE" "$INTEGRATION_BASE" > "$RUNNER_TEMP/guardrails-results/bases.txt"
           CI_BASE_IMAGE="cyber-range-guardrails:$GITHUB_RUN_ID" bash scripts/ci/verify-docker.sh 2>&1 | tee "$RUNNER_TEMP/guardrails-results/full-docker.log"
@@ -110,15 +112,17 @@ jobs:
         run: |
           set -euo pipefail
           test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
-          git apply --check "$RUNNER_TEMP/guardrails-results/validated.patch"
-          git apply "$RUNNER_TEMP/guardrails-results/validated.patch"
-          git rm -r .github/expiry-stage .github/workflows/expiry-guardrails-validation.yml
-          git add apps packages infra scripts docs skills
-          git diff --cached --check
-          git commit -m 'fix: guard range expiry, isolate reconciliation and expose cost recovery risks'
-          git rev-parse HEAD > "$RUNNER_TEMP/guardrails-results/published-commit.txt"
-          git diff --stat "$REVIEW_BASE" > "$RUNNER_TEMP/guardrails-results/published-stat.txt"
-          git push origin HEAD:codex/expiry-cost-guardrails
+          # Publish the exact tested integration tree, including the latest upstream fixes.
+          # Both parents are retained: this is a feature-branch update, never a master/PR merge.
+          tree=$(git -C .worktrees/guardrails-validation rev-parse 'HEAD^{tree}')
+          test -z "$(git ls-tree "$tree" -- .github/expiry-stage .github/workflows/expiry-guardrails-validation.yml)"
+          commit=$(git commit-tree "$tree" -p "$GITHUB_SHA" -p "$INTEGRATION_BASE" -m 'fix: guard range expiry, isolate reconciliation and expose cost recovery risks')
+          git update-ref refs/heads/codex/expiry-cost-guardrails "$commit" "$GITHUB_SHA"
+          printf '%s\n' "$commit" > "$RUNNER_TEMP/guardrails-results/published-commit.txt"
+          printf '%s\n' "$tree" > "$RUNNER_TEMP/guardrails-results/published-tree.txt"
+          git diff --stat "$INTEGRATION_BASE" "$commit" > "$RUNNER_TEMP/guardrails-results/published-stat.txt"
+          git diff --binary "$INTEGRATION_BASE" "$commit" > "$RUNNER_TEMP/guardrails-results/final-pr.patch"
+          git push origin refs/heads/codex/expiry-cost-guardrails
       - uses: actions/upload-artifact@v4
         if: always()
         with:
