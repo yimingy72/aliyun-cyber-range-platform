@@ -9,3 +9,56 @@
      await request(app.getHttpServer()).get(url).set('authorization', `Bearer ${userToken}`).expect(403);
      const adminToken = await loginAsRepositoryUser(repository, 'admin');
      const before = await repository.listBillingLedgerResources();
+--- a/apps/api/src/admin/single-instances.service.ts
++++ b/apps/api/src/admin/single-instances.service.ts
+@@ -266,6 +266,10 @@
+     const activeCount = (await this.adminRepository.listRangeInstances()).filter(
+       (instance) => instance.instanceMode === 'single' && !isSingleInstanceHistoryStatus(instance.status),
+     ).length;
++    // Freeze once per batch and preserve the existing earlier deadline for long-lived singles.
++    // Only short labs, which previously had no native expiry, need the fixed safety grace.
++    const autoReleaseTime = accountContext.provider === 'tencent_cloud' || new Date(input.expiresAt).getTime() - Date.now() >= 30 * 60_000
++      ? new Date(input.expiresAt).toISOString().replace(/\.\d{3}Z$/, 'Z') : alibabaAutoReleaseTime(input.expiresAt);
+     const created = [];
+     const jobIds: string[] = [];
+     const batch = await this.adminRepository.createSingleInstanceBatch({
+@@ -335,7 +339,7 @@
+             cloudAccountContextId: accountContext.cloudAccountContextId,
+             cloudAccountUid: accountContext.accountUid, regionId: profile.regionId, zoneId: profile.zoneId,
+             networkProfileId: profile.id, resolvedInstanceType: availability.matches[0].instanceTypeId,
+-            autoReleaseTime: accountContext.provider === 'tencent_cloud' ? new Date(input.expiresAt).toISOString().replace(/\.\d{3}Z$/, 'Z') : alibabaAutoReleaseTime(input.expiresAt),
++            autoReleaseTime,
+             baseName: input.name,
+             quantityIndex,
+             hostKey,
+--- a/apps/api/test/single-instances.e2e-spec.ts
++++ b/apps/api/test/single-instances.e2e-spec.ts
+@@ -1552,7 +1552,7 @@
+     let runInstancesCallCount = 0;
+     const runInstancesBodies: string[] = [];
+     const expiresAt = new Date(Date.now() + 2 * 60 * 60 * 1_000).toISOString();
+-    const encodedAutoReleaseTime = encodeURIComponent(alibabaAutoReleaseTime(expiresAt));
++    const encodedAutoReleaseTime = encodeURIComponent(expiresAt.replace(/\.\d{3}Z$/, 'Z'));
+     fetchMock.mockImplementation(async (input, init) => {
+       const url = String(input);
+       const body = typeof init?.body === 'string' ? init.body : '';
+--- a/docs/operations/lifecycle-cost-guardrails.md
++++ b/docs/operations/lifecycle-cost-guardrails.md
+@@ -1,6 +1,8 @@
+ # 靶机回收与费用风险防护
+ 
+-正常回收仍在用户指定的 `expiresAt` 开始。新建阿里云单实例及编排 ECS 在创建请求中携带固定的云端自动释放期限：`ceil_to_minute(expiresAt + 35 minutes)`。这是 worker 停机时的第二层 ECS 兜底，不修改用户到期时间、不增加可使用时长，不以重试时间重新计算或延期；分钟向上取整最多增加 59.999 秒。腾讯云沿用现有原生定时销毁合同。
++正常回收仍在用户指定的 `expiresAt` 开始。新建阿里云编排 ECS 在创建请求中携带固定的云端自动释放期限：`ceil_to_minute(expiresAt + 35 minutes)`。这是 worker 停机时的第二层 ECS 兜底，不修改用户到期时间、不增加可使用时长，不以重试时间重新计算或延期；分钟向上取整最多增加 59.999 秒。腾讯云沿用现有原生定时销毁合同。
++
++单实例保留已有更早的保护：受理时距到期至少 30 分钟，仍使用原 `expiresAt` 作为云端自动释放配置；此前不能设置原生自动释放的短时单实例，才采用上述固定宽限。每批只计算并冻结一次。已保存期限不会在恢复重试时重新计算；不通过延期绕开厂商的提交时限。
+ 
+ 阿里云要求自动释放至少晚于提交时刻 30 分钟，最远三年；35 分钟固定宽限使短时训练和接近到期的创建仍能设置合法兜底。失败重试沿用原始截止时间；已经过期的请求拒绝继续创建。超长期限在创建前拒绝，不通过删除参数绕开云端保护。
+ 
+--- a/skills/references/products/instance-management.md
++++ b/skills/references/products/instance-management.md
+@@ -47,4 +47,4 @@
+ - 仅本轮createdAfter之后由声明owner创建的managed新profile可登记回收。登记管理员须保存runId；network_destroy使用同一cleanupRunId。测试前存在的profile和legacy不得登记/销毁。
+ 打包操作只表示请求已接受：返回 `packedImageArtifactId` 后，按同一资产的 `sourceSnapshotAvailable` 跟踪可用状态。测试结束回收打包产物时，使用 `image_catalog_custom_delete({ snapshotId, deleteOwnedSnapshots: true })`，按镜像中心规则确认全部 backing snapshots 已消失；销毁源实例不会删除保留镜像和快照。
+ 
+-新建阿里云实例保留原始 `expiresAt` 作为正常回收时刻，另将固定 `expiresAt + 35 分钟`（向上取整到分钟）写入云端 ECS 自动释放；恢复重试不能顺延该期限。这只兜底 ECS，不表示共享网络、镜像、快照或官方费用已结清。已有实例不会因此被追溯修改删除计划。
++新建阿里云单实例保留原始 `expiresAt` 作为正常回收时刻：距到期至少 30 分钟时，保留原到期云端自动释放配置；短时实例此前没有原生兜底，现在设置固定 `expiresAt + 35 分钟`（向上取整到分钟）。每批冻结一次，恢复重试不能顺延期限。这只兜底 ECS，不表示共享网络、镜像、快照或官方费用已结清。已有实例不会因此被追溯修改删除计划。
