@@ -549,6 +549,8 @@ export function SingleInstancesScreen({
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [isCreateOpen, setIsCreateOpen] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const launchPendingRef = useRef(false);
+  const launchRequestRef = useRef<{ fingerprint: string; key: string; payload: SingleInstanceLaunchInput } | null>(null);
   const [menuInstanceId, setMenuInstanceId] = useState<string | null>(null);
   const [menuPlacement, setMenuPlacement] = useState<ActionMenuPlacement>('down');
   const [pendingActionInstanceId, setPendingActionInstanceId] = useState<string | null>(null);
@@ -886,6 +888,7 @@ export function SingleInstancesScreen({
     }
 
     consumedPrefillRef.current = platformImageAssetId;
+    launchRequestRef.current = null;
     setCreateForm({
       ...buildDefaultDialogState(enabledPlatformImages, workspace?.provider ?? 'alibaba_cloud'),
       hostName: selectedImage.defaultHostName?.trim() || '',
@@ -922,6 +925,7 @@ export function SingleInstancesScreen({
   }
 
   function openCreateDialog() {
+    launchRequestRef.current = null;
     setCreateForm(buildDefaultDialogState(enabledPlatformImages, workspace?.provider ?? 'alibaba_cloud'));
     setCreateFormError(null);
     setIsCreateOpen(true);
@@ -1021,7 +1025,7 @@ export function SingleInstancesScreen({
   async function handleCreateSubmit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
 
-    if (!session.token || !canProvision) {
+    if (!session.token || !canProvision || launchPendingRef.current) {
       return;
     }
 
@@ -1070,12 +1074,19 @@ export function SingleInstancesScreen({
       remark: createForm.remark.trim() || undefined,
     };
 
+    const fingerprint = JSON.stringify([apiBaseUrl, session.profile?.id, workspace?.id, payload]);
+    if (launchRequestRef.current?.fingerprint !== fingerprint) {
+      launchRequestRef.current = { fingerprint, key: crypto.randomUUID(), payload };
+    }
+    const request = launchRequestRef.current;
+    launchPendingRef.current = true;
     setIsSubmitting(true);
     setCreateFormError(null);
     setErrorMessage(null);
 
     try {
-      await launchSingleInstances(apiBaseUrl, session.token, payload);
+      await launchSingleInstances(apiBaseUrl, session.token, request.payload, request.key);
+      launchRequestRef.current = null;
       screenCache?.invalidate(apiBaseUrl, session.token, 'single-instances:');
       setIsCreateOpen(false);
       // A failed read must never turn an accepted paid launch into a retryable write.
@@ -1096,8 +1107,9 @@ export function SingleInstancesScreen({
         return;
       }
 
-      setErrorMessage('创建实例失败，请稍后重试。');
+      setErrorMessage(error instanceof AdminApiError ? error.message : '创建结果尚未确认，可重试当前提交查询原任务；请勿新建重复批次。');
     } finally {
+      launchPendingRef.current = false;
       setIsSubmitting(false);
     }
   }
@@ -1147,7 +1159,16 @@ export function SingleInstancesScreen({
           ? `镜像打包完成，已保存到我的镜像：${packImageDialog.displayName}`
           : `镜像打包任务已提交，镜像可用后会出现在我的镜像：${packImageDialog.displayName}`,
       );
-      await refreshSingleInstanceRows(session.token, listMode, true);
+      try {
+        await refreshSingleInstanceRows(session.token, listMode, true);
+      } catch (error) {
+        if (isUnauthorizedError(error)) {
+          session.logout();
+          router.replace('/admin/login');
+        } else {
+          setListErrorMessage('镜像打包任务已受理，实例列表刷新失败。请刷新列表，不要重复打包。');
+        }
+      }
     } catch (error: unknown) {
       if (isUnauthorizedError(error)) {
         session.logout();

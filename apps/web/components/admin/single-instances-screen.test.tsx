@@ -147,6 +147,37 @@ describe('SingleInstancesScreen', () => {
     expect(launchSingleInstancesMock).toHaveBeenCalledTimes(1);
   });
 
+  it('keeps batch parameters and the idempotency key when retrying a lost launch response', async () => {
+    fetchSingleInstancesMock.mockResolvedValue([]);
+    fetchProvisionJobsMock.mockResolvedValue([]);
+    fetchPlatformImagesMock.mockResolvedValue({ items: [{ id: 'platform-image-1', imageId: 'm-123', displayName: 'Ubuntu', enabled: true }] });
+    fetchInstanceTypeAvailabilityMock.mockResolvedValue({ cpu: 2, memory: 2, exactAvailable: true,
+      regionId: 'cn-hangzhou', zoneId: 'cn-hangzhou-h', warning: null,
+      matches: [{ instanceTypeId: 'ecs.c6.large', cpu: 2, memoryGiB: 2, architecture: 'x86' }] });
+    launchSingleInstancesMock.mockRejectedValue(new TypeError('Network connection lost'));
+    render(<SingleInstancesScreen apiBaseUrl="http://localhost:3001" />);
+    fireEvent.click(await screen.findByRole('button', { name: '创建实例' }));
+    fireEvent.change(screen.getByLabelText('实例名'), { target: { value: 'batch-once' } });
+    fireEvent.change(screen.getByLabelText('镜像'), { target: { value: 'Ubuntu (m-123)' } });
+    fireEvent.change(screen.getByLabelText('到期时间'), { target: { value: '2100-01-01T12:00' } });
+    await waitFor(() => expect(fetchInstanceTypeAvailabilityMock).toHaveBeenCalled());
+    const form = screen.getByRole('button', { name: '确认创建' }).closest('[role=dialog]')!.querySelector('form')!;
+    fireEvent.submit(form);
+    fireEvent.submit(form);
+    await screen.findByText(/创建结果尚未确认/);
+    expect(launchSingleInstancesMock).toHaveBeenCalledTimes(1);
+    const firstRequest = launchSingleInstancesMock.mock.calls[0];
+    expect(firstRequest[3]).toMatch(/^[0-9a-f-]{36}$/);
+    fireEvent.click(screen.getByRole('button', { name: '确认创建' }));
+    await waitFor(() => expect(launchSingleInstancesMock).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(screen.getByRole('button', { name: '确认创建' }).hasAttribute('disabled')).toBe(false));
+    expect(launchSingleInstancesMock.mock.calls[1]).toEqual(firstRequest);
+    fireEvent.change(screen.getByLabelText('实例名'), { target: { value: 'another-intended-batch' } });
+    fireEvent.click(screen.getByRole('button', { name: '确认创建' }));
+    await waitFor(() => expect(launchSingleInstancesMock).toHaveBeenCalledTimes(3));
+    expect(launchSingleInstancesMock.mock.calls[2][3]).not.toEqual(firstRequest[3]);
+  });
+
   beforeEach(() => {
     workspaceState.value = null;
     fetchSingleInstancesMock.mockReset();
@@ -220,7 +251,7 @@ describe('SingleInstancesScreen', () => {
     expect(launchSingleInstancesMock).not.toHaveBeenCalled();
     fireEvent.change(screen.getByLabelText('到期时间'), { target: { value: localText(new Date(Date.now() + 60 * 60_000)) } });
     fireEvent.submit(document.getElementById('single-instance-create-form')!);
-    await waitFor(() => expect(launchSingleInstancesMock).toHaveBeenCalledWith(expect.anything(), expect.anything(), expect.objectContaining({ platformImageAssetId: 'tencent-image', systemDiskSize: 80 })));
+    await waitFor(() => expect(launchSingleInstancesMock).toHaveBeenCalledWith(expect.anything(), expect.anything(), expect.objectContaining({ platformImageAssetId: 'tencent-image', systemDiskSize: 80 }), expect.any(String)));
   });
 
   it('renders list/history, opens create dialog, and submits the launch payload without triggeredBy', async () => {
@@ -305,6 +336,7 @@ describe('SingleInstancesScreen', () => {
           memory: 2,
           quantity: 2,
         }),
+        expect.any(String),
       ),
     );
     expect(launchSingleInstancesMock.mock.calls[0]?.[2]).not.toHaveProperty('systemDiskSize', 0);
@@ -1278,7 +1310,7 @@ describe('SingleInstancesScreen', () => {
     anchorClickSpy.mockRestore();
   });
 
-  it('opens a pack image dialog before submitting pack-image actions', async () => {
+  it.each([false, true])('keeps an accepted pack-image action when the following refresh fails: %s', async refreshFails => {
     triggerSingleInstanceActionMock.mockResolvedValue({
       status: 'accepted',
       action: 'pack-image',
@@ -1320,6 +1352,7 @@ describe('SingleInstancesScreen', () => {
     fireEvent.change(within(dialog).getByLabelText('默认主机名'), { target: { value: 'custom-host' } });
     fireEvent.change(within(dialog).getByLabelText('默认密码'), { target: { value: 'Secret123!' } });
     fireEvent.change(within(dialog).getByLabelText('镜像备注'), { target: { value: 'snapshot note' } });
+    if (refreshFails) fetchSingleInstancesMock.mockRejectedValue(new Error('read failed after accepted pack'));
     fireEvent.click(within(dialog).getByRole('button', { name: '确认打包' }));
 
     await waitFor(() =>
@@ -1336,6 +1369,11 @@ describe('SingleInstancesScreen', () => {
         },
       ),
     );
+    await screen.findByText('镜像打包任务已提交，镜像可用后会出现在我的镜像：custom-pack-image');
+    if (refreshFails) await screen.findByText('镜像打包任务已受理，实例列表刷新失败。请刷新列表，不要重复打包。');
+    expect(screen.queryByText('镜像打包失败，请稍后重试。')).toBeNull();
+    expect(screen.queryByRole('dialog', { name: '打包为镜像' })).toBeNull();
+    expect(triggerSingleInstanceActionMock).toHaveBeenCalledTimes(1);
   });
 
   it('shows masked credentials and copies only the password', async () => {

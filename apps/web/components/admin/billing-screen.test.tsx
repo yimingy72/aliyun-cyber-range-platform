@@ -515,6 +515,31 @@ describe('BillingScreen', () => {
     expect(screen.getByText(/整月对账可选择月初至月末后同步/)).toBeTruthy();
   });
 
+  it('refreshes the currently selected billing period when an older period finishes syncing', async () => {
+    vi.spyOn(adminSessionModule, 'useAdminSession').mockReturnValue(adminSession);
+    fetchBillingSummaryMock.mockImplementation(async (_url, _token, range) => ({
+      billingScope: 'platform_resources', reconciliationIssues: [], ...range,
+      totalPretaxAmount: range.startAt === '2026-09-01' ? 27 : 8, platformPretaxAmount: 0,
+      anomalyCount: 0, resourceTypeTotals: [], dailyTotals: [],
+    }));
+    fetchBillingUsersMock.mockResolvedValue([]);
+    fetchBillingUserGroupsMock.mockResolvedValue([]);
+    let finishSync: (result: unknown) => void = () => {};
+    triggerBillingSyncMock.mockImplementation(() => new Promise(resolve => { finishSync = resolve; }));
+    render(<BillingScreen apiBaseUrl="http://localhost:3001" />);
+    await screen.findByText('当前账期没有费用明细');
+    fireEvent.click(screen.getByRole('button', { name: '立即同步' }));
+    fireEvent.change(screen.getByLabelText('开始账期'), { target: { value: '2026-09-01' } });
+    fireEvent.change(screen.getByLabelText('结束账期'), { target: { value: '2026-09-30' } });
+    await screen.findByText('¥ 27.00');
+    fetchBillingSummaryMock.mockClear();
+    await act(async () => finishSync({ syncedDays: 1, importedLineItems: 3 }));
+    await screen.findByText('已同步 1 天，导入 3 条账单。');
+    await waitFor(() => expect(fetchBillingSummaryMock).toHaveBeenCalled());
+    expect(fetchBillingSummaryMock.mock.calls.every(call => call[2].startAt === '2026-09-01' && call[2].endAt === '2026-09-30')).toBe(true);
+    expect(screen.getByText('¥ 27.00')).toBeTruthy();
+  });
+
   it.each([503, 401])('handles CSV export failure %s with feedback or login redirect', async status => {
     vi.spyOn(adminSessionModule, 'useAdminSession').mockReturnValue(adminSession);
     adminSession.logout.mockClear();

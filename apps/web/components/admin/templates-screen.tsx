@@ -32,6 +32,7 @@ import { useCloudWorkspace } from './cloud-workspace-provider';
 import { isUnauthorizedAdminError } from '../../lib/admin-screen';
 import type {
   RangeTemplateView,
+  RangeInstanceLaunchInput,
   Scenario,
   ScenarioUpdateInput,
 } from '../../lib/admin-types';
@@ -218,6 +219,8 @@ export function TemplatesScreen({
   const [editingTemplateId, setEditingTemplateId] = useState<string | null>(null);
   const [confirmState, setConfirmState] = useState<TemplateConfirmState>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const launchPendingRef = useRef(false);
+  const launchRequestRef = useRef<{ fingerprint: string; key: string; payload: RangeInstanceLaunchInput } | null>(null);
   const [pendingEditorTemplateId, setPendingEditorTemplateId] = useState<string | null>(null);
   const [searchName, setSearchName] = useState('');
   const [createDraft, setCreateDraft] = useState<CreateTemplateDraft>(EMPTY_CREATE_TEMPLATE_DRAFT);
@@ -523,6 +526,7 @@ export function TemplatesScreen({
   }
 
   function openLaunchDialog(template: Scenario) {
+    launchRequestRef.current = null;
     setLaunchDraft({
       templateId: template.id,
       templateName: getScenarioDisplayName(template),
@@ -717,7 +721,7 @@ export function TemplatesScreen({
   }
 
   async function handleLaunchInstance() {
-    if (!canLaunchRange) return;
+    if (!canLaunchRange || launchPendingRef.current) return;
     if (!session.token) {
       throw new Error('admin session missing');
     }
@@ -737,22 +741,32 @@ export function TemplatesScreen({
 
     const expiryError = workspace?.provider === 'tencent_cloud' ? cloudExpiryError(expiresAt, workspace.provider) : null;
     if (expiryError) { setActionErrorMessage(expiryError); return; }
+    const payload = { templateId: launchDraft.templateId, name, expiresAt: new Date(expiresAt).toISOString() };
+    const fingerprint = JSON.stringify([apiBaseUrl, session.profile?.id, workspace?.id, payload]);
+    if (launchRequestRef.current?.fingerprint !== fingerprint) {
+      launchRequestRef.current = { fingerprint, key: crypto.randomUUID(), payload };
+    }
+    const request = launchRequestRef.current;
+    launchPendingRef.current = true;
     setActionErrorMessage(null);
     setActionSuccessMessage(null);
     setIsSubmitting(true);
 
     try {
-      const instance = await launchRangeInstance(apiBaseUrl, session.token, {
-        templateId: launchDraft.templateId,
-        name,
-        expiresAt: new Date(expiresAt).toISOString(),
-      });
+      const instance = await launchRangeInstance(apiBaseUrl, session.token, request.payload, request.key);
+      launchRequestRef.current = null;
       screenCache?.invalidate(apiBaseUrl, session.token, 'range-instances:');
       closeLaunchDialog();
       router.push(`/admin/ranges/${instance.id}`);
     } catch (error: unknown) {
-      handleProtectedActionError(error, '实例生成失败，请稍后重试。');
+      if (isUnauthorizedAdminError(error)) {
+        session.logout();
+        router.replace('/admin/login');
+      } else {
+        setActionErrorMessage(error instanceof AdminApiError ? error.message : '创建结果尚未确认，可重试当前提交查询原任务；请勿新建重复编排。');
+      }
     } finally {
+      launchPendingRef.current = false;
       setIsSubmitting(false);
     }
   }

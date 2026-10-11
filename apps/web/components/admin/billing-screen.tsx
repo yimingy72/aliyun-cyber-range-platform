@@ -495,34 +495,6 @@ export function BillingScreen({ apiBaseUrl = 'http://localhost:3001' }: BillingS
     );
   }
 
-  const refreshOverview = async (force = false) => {
-    if (!token) {
-      return;
-    }
-
-    const loadOverview = async (): Promise<BillingOverviewSnapshot> => {
-      const [summary, users, filterUsers] = await Promise.all([
-        fetchBillingSummary(apiBaseUrl, token, range),
-        fetchBillingUsers(apiBaseUrl, token, { ...range, page: usersPage, pageSize }),
-        fetchAdminUsers(apiBaseUrl, token),
-      ]);
-
-      return { summary, users, filterUsers };
-    };
-    const snapshot = screenCache
-      ? await screenCache.load(apiBaseUrl, token, overviewResource, loadOverview, { force })
-      : await loadOverview();
-
-    setSummary(snapshot.summary);
-    setUsersResult(snapshot.users);
-    setUsersPage(snapshot.users.page);
-    setFilterUsers(snapshot.filterUsers);
-    setLoadedOverviewResource(overviewResource);
-    setSelectedUserId((current) =>
-      current && snapshot.filterUsers.some((user) => user.id === current) ? current : '',
-    );
-  };
-
   const handleSync = async () => {
     if (!token) {
       return;
@@ -537,7 +509,7 @@ export function BillingScreen({ apiBaseUrl = 'http://localhost:3001' }: BillingS
       screenCache?.invalidate(apiBaseUrl, token, 'billing:');
       setGroupsPage(1);
       setGroupsLoadAttempt((current) => current + 1);
-      await refreshOverview(true);
+      setOverviewLoadAttempt((current) => current + 1);
       setSyncMessage(result.syncInProgress ? '已有账单同步进行中，请稍后刷新。'
         : `已同步 ${result.syncedDays} 天，导入 ${result.importedLineItems} 条账单。${result.deferredDates?.length ? ' 未完成的账期已延后同步，不代表费用为零。' : ''}`);
     } catch (error) {

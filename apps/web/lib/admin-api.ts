@@ -256,10 +256,11 @@ export async function launchSingleInstances(
   apiBaseUrl: string,
   token: string,
   payload: SingleInstanceLaunchInput,
+  idempotencyKey: string,
 ) {
   const response = await fetch(`${apiBaseUrl}/admin/instances/launch`, {
     method: 'POST',
-    headers: createAdminHeaders(token),
+    headers: { ...createAdminHeaders(token), 'x-idempotency-key': idempotencyKey },
     body: JSON.stringify(payload),
   });
 
@@ -410,10 +411,11 @@ export async function launchRangeInstance(
   apiBaseUrl: string,
   token: string,
   payload: RangeInstanceLaunchInput,
+  idempotencyKey: string,
 ) {
   const response = await fetch(`${apiBaseUrl}/admin/ranges/launch`, {
     method: 'POST',
-    headers: createAdminHeaders(token),
+    headers: { ...createAdminHeaders(token), 'x-idempotency-key': idempotencyKey },
     body: JSON.stringify(payload),
   });
 

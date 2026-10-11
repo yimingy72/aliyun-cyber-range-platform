@@ -1044,10 +1044,34 @@ describe('TemplatesScreen', () => {
           name: '办公网横向移动靶场-测试实例',
           expiresAt: '2026-07-09T20:30:00.000Z',
         },
+        expect.any(String),
       );
     });
 
     expect(pushMock).toHaveBeenCalledWith('/admin/ranges/range-100');
+  });
+
+  it('reuses the same launch request after an unknown result and changes its key only for edited parameters', async () => {
+    fetchRangeTemplatesMock.mockResolvedValue(bootstrapPayload.rangeTemplates);
+    launchRangeInstanceMock.mockRejectedValue(new TypeError('Network connection lost'));
+    render(<TemplatesScreen apiBaseUrl="http://localhost:3001" />);
+    await screen.findByText('办公网横向移动靶场');
+    openTemplateActionMenu(screen.getByRole('row', { name: /办公网横向移动靶场/ }));
+    fireEvent.click(screen.getByRole('menuitem', { name: '生成实例' }));
+    const dialog = screen.getByRole('dialog', { name: '生成实例' });
+    fireEvent.change(within(dialog).getByLabelText('到期时间'), { target: { value: '2100-01-01T12:00' } });
+    fireEvent.click(within(dialog).getByRole('button', { name: '确认生成' }));
+    await screen.findByText(/创建结果尚未确认/);
+    const firstRequest = launchRangeInstanceMock.mock.calls[0];
+    expect(firstRequest[3]).toMatch(/^[0-9a-f-]{36}$/);
+    fireEvent.click(within(dialog).getByRole('button', { name: '确认生成' }));
+    await waitFor(() => expect(launchRangeInstanceMock).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(within(dialog).getByRole('button', { name: '确认生成' }).hasAttribute('disabled')).toBe(false));
+    expect(launchRangeInstanceMock.mock.calls[1]).toEqual(firstRequest);
+    fireEvent.change(within(dialog).getByLabelText('实例名'), { target: { value: 'another-intended-launch' } });
+    fireEvent.click(within(dialog).getByRole('button', { name: '确认生成' }));
+    await waitFor(() => expect(launchRangeInstanceMock).toHaveBeenCalledTimes(3));
+    expect(launchRangeInstanceMock.mock.calls[2][3]).not.toEqual(firstRequest[3]);
   });
 
   it('keeps the launch dialog open while an instance request is pending', async () => {
