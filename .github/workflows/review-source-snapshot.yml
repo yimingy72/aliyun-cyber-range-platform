@@ -31,6 +31,14 @@ jobs:
           git diff --quiet "$REVIEW_BASE" -- apps packages infra scripts test docs
           git apply --check .github/lifecycle-review.patch
           git apply .github/lifecycle-review.patch
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path('apps/api/test/aliyun-reconciliation-timeout.spec.ts')
+          source = path.read_text()
+          before = "expiresAt: new Date('2026-01-01')"
+          assert source.count(before) == 1
+          path.write_text(source.replace(before, "expiresAt: '2026-01-01T00:00:00Z'"))
+          PY
           git add -N apps/api/test/aliyun-reconciliation-timeout.spec.ts apps/api/test/billing-bss-integrity.spec.ts docs/reviews/2026-10-11-lifecycle-billing.md
           git diff --check
           mkdir -p "$RUNNER_TEMP/review-results" "$RUNNER_TEMP/review-baseline"
