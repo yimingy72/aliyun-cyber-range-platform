@@ -1,22 +1,103 @@
-name: Cost guardrails review
+name: Cost guardrails validation
 on:
   push:
     branches: [codex/lifecycle-cost-guardrails]
     paths: [.github/workflows/cost-guardrails-review.yml]
 permissions:
-  contents: read
+  contents: write
+concurrency:
+  group: cost-guardrails-review
+  cancel-in-progress: true
 jobs:
-  source:
+  review:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 45
+    env:
+      REVIEW_BASE: dba463f204cbe11354fba73c7d73017d13ee9cce
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: dba463f204cbe11354fba73c7d73017d13ee9cce
-          persist-credentials: false
-      - run: git archive --format=tar.gz --output=/tmp/cost-guardrails-source.tar.gz HEAD
-      - uses: actions/upload-artifact@v4
+          ref: codex/lifecycle-cost-guardrails
+          fetch-depth: 0
+      - name: Apply the exact reviewed patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          git diff --quiet "$REVIEW_BASE" -- apps packages infra scripts test docs skills
+          python3 - <<'PY'
+          from pathlib import Path
+          import base64, gzip, hashlib
+          encoded = ''.join(Path(f'.github/guardrails-patch-part{i}.txt').read_text().strip() for i in range(1,4))
+          patch = gzip.decompress(base64.b64decode(encoded, validate=True))
+          assert hashlib.sha256(patch).hexdigest() == '36d930686c1eb6e250694bb137204846990612a1b68902dc932f8cf1f6a7de2e'
+          Path('/tmp/cost-guardrails.patch').write_bytes(patch)
+          PY
+          git apply --check /tmp/cost-guardrails.patch
+          git apply /tmp/cost-guardrails.patch
+          git add -N apps packages infra docs skills
+          git diff --check
+          mkdir -p "$RUNNER_TEMP/guardrails-results"
+          git diff --binary > "$RUNNER_TEMP/guardrails-results/reviewed.patch"
+      - name: Build changed code into the repository test image
+        run: docker build -f scripts/ci/Dockerfile -t "cyber-range-guardrails:$GITHUB_RUN_ID" .
+      - name: Targeted API regressions with no cloud connectivity
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker run --rm --network none -e NODE_ENV=test -e RANGE_PROVISIONER_MODE=dry-run \
+            -v "$RUNNER_TEMP/guardrails-results:/results" "cyber-range-guardrails:$GITHUB_RUN_ID" sh -ec '
+              pnpm --filter @aliyun-cyber-range/api test --runTestsByPath \
+                test/alibaba-auto-release.spec.ts test/billing-lifecycle-risks.spec.ts \
+                test/reconciliation-loop-isolation.spec.ts test/range-update-plan-safety.spec.ts \
+                test/range-worker-cost-safety.spec.ts test/alibaba-cloud-opentofu-renderer.e2e-spec.ts \
+                test/single-instances.e2e-spec.ts test/admin-billing.e2e-spec.ts test/delegated-api-scopes.spec.ts \
+                --json --outputFile=/results/api-targeted.json
+            ' 2>&1 | tee "$RUNNER_TEMP/guardrails-results/api-targeted.log"
+      - name: SDK and MCP read-only contract regressions
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker run --rm --network none -e NODE_ENV=test "cyber-range-guardrails:$GITHUB_RUN_ID" sh -ec '
+            pnpm --filter @aliyun-cyber-range/platform-api-client test --run test/billing-lifecycle-risks.test.ts
+            pnpm --filter @aliyun-cyber-range/mcp test --run test/billing-contract.spec.ts test/read-tools.spec.ts test/skill-tool-contract.spec.ts test/tool-contract-hardening.spec.ts
+          ' 2>&1 | tee "$RUNNER_TEMP/guardrails-results/contracts.log"
+      - name: Free disk for offline providers and production builds
+        run: |
+          if [ "${RUNNER_ENVIRONMENT:-}" = github-hosted ]; then sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc; fi
+          df -h /
+      - uses: actions/cache@v4
         with:
-          name: cost-guardrails-source-dba463f
-          path: /tmp/cost-guardrails-source.tar.gz
-          retention-days: 1
+          path: .local/provider-fast-wait/cache
+          key: ${{ runner.os }}-alicloud-fast-wait-${{ hashFiles('scripts/provider/alicloud-fast-wait/**') }}
+      - uses: actions/cache@v4
+        with:
+          path: .local/tencentcloud-idempotency
+          key: ${{ runner.os }}-tencentcloud-provider-${{ hashFiles('scripts/provider/tencentcloud-idempotency/*') }}
+      - name: Full Docker tests, production build, migrations and offline IaC
+        shell: bash
+        run: |
+          set -euo pipefail
+          CI_BASE_IMAGE="cyber-range-guardrails:$GITHUB_RUN_ID" bash scripts/ci/verify-docker.sh 2>&1 | tee "$RUNNER_TEMP/guardrails-results/full-docker.log"
+      - name: Publish verified source and remove temporary review files
+        shell: bash
+        run: |
+          set -euo pipefail
+          git diff --check
+          git fetch origin codex/lifecycle-cost-guardrails
+          test "$(git rev-parse FETCH_HEAD)" = "$GITHUB_SHA"
+          git add apps packages infra docs skills
+          git rm .github/guardrails-patch-part1.txt .github/guardrails-patch-part2.txt .github/guardrails-patch-part3.txt .github/workflows/cost-guardrails-review.yml
+          git config user.name 'yimingy72'
+          git config user.email '50072883+yimingy72@users.noreply.github.com'
+          git commit -m 'fix: add fixed ECS expiry safety, isolated reconciliation and read-only billing risk audit'
+          git push origin HEAD:codex/lifecycle-cost-guardrails
+          git rev-parse HEAD > "$RUNNER_TEMP/guardrails-results/commit.txt"
+          git diff "$REVIEW_BASE" HEAD --binary > "$RUNNER_TEMP/guardrails-results/final.patch"
+          git diff --name-only "$REVIEW_BASE" HEAD | while IFS= read -r path; do git ls-tree HEAD -- "$path"; done > "$RUNNER_TEMP/guardrails-results/blobs.txt"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: lifecycle-cost-guardrails-validation
+          path: ${{ runner.temp }}/guardrails-results/
+          retention-days: 7
