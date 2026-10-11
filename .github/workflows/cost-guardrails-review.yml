@@ -35,12 +35,23 @@ jobs:
           PY
           git apply --check /tmp/cost-guardrails.patch
           git apply /tmp/cost-guardrails.patch
-          git add -N apps packages infra docs skills
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('scripts/dev/validate-opentofu-example.sh')
+          s = p.read_text()
+          old = 'run_tofu_in_directory "infra/opentofu/modules/alicloud-vpc-single-ecs" test -no-color'
+          assert s.count(old) == 1
+          p.write_text(s.replace(old, 'run_tofu_in_directory "infra/opentofu/modules/alicloud-enterprise-range" test -no-color\n' + old))
+          p = Path('apps/api/test/billing-lifecycle-risks.spec.ts')
+          p.write_text(p.read_text().replace('does not read credential-bearing instance details', 'avoids extra per-instance detail reads'))
+          PY
+          git add -N apps packages infra scripts docs skills
           git diff --check
           mkdir -p "$RUNNER_TEMP/guardrails-results"
           git diff --binary > "$RUNNER_TEMP/guardrails-results/reviewed.patch"
       - name: Build changed code into the repository test image
-        run: docker build -f scripts/ci/Dockerfile -t "cyber-range-guardrails:$GITHUB_RUN_ID" .
+        timeout-minutes: 12
+        run: docker build --build-arg ALPINE_REPOSITORY=https://dl-cdn.alpinelinux.org/alpine --build-arg PRISMA_ENGINES_MIRROR=https://binaries.prisma.sh -f scripts/ci/Dockerfile -t "cyber-range-guardrails:$GITHUB_RUN_ID" .
       - name: Targeted API regressions with no cloud connectivity
         shell: bash
         run: |
@@ -86,7 +97,7 @@ jobs:
           git diff --check
           git fetch origin codex/lifecycle-cost-guardrails
           test "$(git rev-parse FETCH_HEAD)" = "$GITHUB_SHA"
-          git add apps packages infra docs skills
+          git add apps packages infra scripts docs skills
           git rm .github/guardrails-patch-part1.txt .github/guardrails-patch-part2.txt .github/guardrails-patch-part3.txt .github/workflows/cost-guardrails-review.yml
           git config user.name 'yimingy72'
           git config user.email '50072883+yimingy72@users.noreply.github.com'
