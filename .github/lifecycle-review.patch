@@ -1,0 +1,427 @@
+diff --git a/apps/api/src/admin/billing-bss-client.ts b/apps/api/src/admin/billing-bss-client.ts
+index 2aca694..990762c 100644
+--- a/apps/api/src/admin/billing-bss-client.ts
++++ b/apps/api/src/admin/billing-bss-client.ts
+@@ -103,6 +103,8 @@ export class BillingBssClient {
+   }
+ 
+   async listDailyBillingItems(input: { billingDate: string }, capturedContext?: SystemCloudAccountContext) {
++    if (!/^\d{4}-\d{2}-\d{2}$/.test(input.billingDate) || !Number.isFinite(Date.parse(input.billingDate))
++      || new Date(input.billingDate).toISOString().slice(0, 10) !== input.billingDate) throw new Error('Invalid daily bill query');
+     const snapshot = { ...(capturedContext ?? await this.systemConfigService.getAccountContext()) };
+     assertAlibabaBillingContext(snapshot);
+     if (!snapshot.accountUid || !snapshot.accountUidResolved) throw new Error('账单同步需要已验证的云账号。');
+@@ -133,28 +135,29 @@ export class BillingBssClient {
+       if (payload.Data.AccountID !== snapshot.accountUid || payload.Data.BillingCycle !== billingCycle) {
+         throw new Error('DescribeInstanceBill returned a different or unverified billing account/cycle; previous bills were retained');
+       }
+-      if (payload.Data.TotalCount !== undefined) {
+-        if (!Number.isSafeInteger(payload.Data.TotalCount) || payload.Data.TotalCount < 0
+-          || expectedCount !== null && payload.Data.TotalCount !== expectedCount) {
+-          throw new Error('DescribeInstanceBill returned an inconsistent row count; previous bills were retained');
+-        }
+-        expectedCount = payload.Data.TotalCount;
++      if (!Number.isSafeInteger(payload.Data.TotalCount) || payload.Data.TotalCount! < 0
++        || expectedCount !== null && payload.Data.TotalCount !== expectedCount) {
++        throw new Error('DescribeInstanceBill returned an inconsistent row count; previous bills were retained');
+       }
++      expectedCount = payload.Data.TotalCount!;
+       if (payload.Data.NextToken != null && typeof payload.Data.NextToken !== 'string') {
+         throw new Error('DescribeInstanceBill returned an invalid pagination token');
+       }
+-      items.push(...normalizeItems(payload.Data.Items ?? (payload.Data.TotalCount === 0 ? [] : undefined)));
++      const page = normalizeItems(payload.Data.Items ?? (expectedCount === 0 ? [] : undefined));
++      items.push(...page);
+       nextToken =
+         payload.Data?.NextToken && typeof payload.Data.NextToken === 'string'
+           ? payload.Data.NextToken
+           : null;
+       if (nextToken) {
+-        if (seenTokens.has(nextToken)) throw new Error('DescribeInstanceBill repeated a pagination token');
++        if (!page.length || seenTokens.has(nextToken) || items.length >= expectedCount) {
++          throw new Error('DescribeInstanceBill returned an incomplete or repeated pagination token');
++        }
+         seenTokens.add(nextToken);
+       }
+     } while (nextToken);
+ 
+-    if (expectedCount !== null && items.length !== expectedCount) {
++    if (items.length !== expectedCount) {
+       throw new Error('DescribeInstanceBill returned an incomplete bill; previous bills were retained');
+     }
+ 
+diff --git a/apps/api/src/provisioning/platform-resource-reconciliation.service.ts b/apps/api/src/provisioning/platform-resource-reconciliation.service.ts
+index 3e19d0f..656e6fe 100644
+--- a/apps/api/src/provisioning/platform-resource-reconciliation.service.ts
++++ b/apps/api/src/provisioning/platform-resource-reconciliation.service.ts
+@@ -204,7 +204,9 @@ export class AliyunEcsResourceClient {
+       },
+       input.credentials.accessKeySecret,
+     );
+-    const response = await fetch(`https://ecs.${input.credentials.regionId}.aliyuncs.com/?${query}`);
++    const response = await fetch(`https://ecs.${input.credentials.regionId}.aliyuncs.com/?${query}`, {
++      signal: AbortSignal.timeout(30_000),
++    });
+ 
+     if (!response.ok) {
+       throw new AliyunResourceRequestError(input.action, response.status, input.credentials.regionId, await response.json().catch(() => null));
+@@ -409,12 +411,22 @@ export class PlatformResourceReconciliationService {
+       const sourceJob = await this.adminRepository.getProvisionJobById(tags.PlatformCreateJobId);
+       if (!sourceJob || sourceJob.rangeInstanceId !== instance.id || !['create', 'retry'].includes(sourceJob.jobType)) return unverifiedOwnership();
+       if (instance.status !== 'running' || job.status !== 'succeeded') {
+-        // A failed job does not make the surviving cloud resource free. Record evidence without reviving its lifecycle.
++        // Tags locate a candidate; only durable physical identity proves who created it.
++        if (instance.resourceSummary?.hostIds?.[config.hostKey] !== cloudInstance.instanceId) {
++          const ledger = await this.adminRepository.findBillingLedgerResource({ cloudProvider: 'alibaba_cloud',
++            regionId: credentials.regionId, cloudResourceId: cloudInstance.instanceId, cloudResourceType: 'ecs' });
++          if (!ledger || ledger.cloudAccountUid !== config.cloudAccountUid || ledger.ownerUserId !== instance.ownerUserId
++            || ledger.rangeInstanceId !== instance.id || ledger.singleInstanceBatchId !== instance.singleInstanceBatchId
++            || ledger.sourceProvisionJobId !== sourceJob.id) {
++            return unverifiedOwnership('Tagged ECS has no matching persisted physical identity or original billing ledger; no resource was adopted.');
++          }
++        }
++        // A failed job does not make a proven surviving cloud resource free. Do not revive its lifecycle.
+         await syncRangeInstanceBillingLedger({ repository: this.adminRepository, instance,
+           regionId: credentials.regionId, cloudAccountUid: credentials.accountUid,
+           resourceSummary: { mode: 'opentofu', hostIds: { [config.hostKey]: cloudInstance.instanceId },
+-            ...(instance.resourceSummary?.systemDiskIds ? { systemDiskIds: instance.resourceSummary.systemDiskIds } : {}),
+-            ...(instance.resourceSummary?.dataDiskIds ? { dataDiskIds: instance.resourceSummary.dataDiskIds } : {}) },
++            ...(disksVerified && instance.resourceSummary?.systemDiskIds ? { systemDiskIds: instance.resourceSummary.systemDiskIds } : {}),
++            ...(disksVerified && instance.resourceSummary?.dataDiskIds ? { dataDiskIds: instance.resourceSummary.dataDiskIds } : {}) },
+           billingStartAt: instance.createdAt, sourceProvisionJobId: sourceJob.id });
+         await this.recordDrift({ cloudInstance, rangeInstanceId: instance.id, regionId: credentials.regionId, observedAt: now,
+           reason: `Platform instance is ${instance.status} but its owned ECS still exists; billing remains open until cloud deletion is verified.` });
+diff --git a/apps/api/test/aliyun-reconciliation-timeout.spec.ts b/apps/api/test/aliyun-reconciliation-timeout.spec.ts
+new file mode 100644
+index 0000000..013dcb6
+--- /dev/null
++++ b/apps/api/test/aliyun-reconciliation-timeout.spec.ts
+@@ -0,0 +1,55 @@
++import { AliyunEcsResourceClient, PlatformResourceReconciliationService } from '../src/provisioning/platform-resource-reconciliation.service';
++import type { SystemConfigService } from '../src/admin/system-config.service';
++import { createMemoryAdminRepository } from './support/create-memory-admin-repository';
++
++const credentials = { provider: 'alibaba_cloud' as const, accessKeyId: 'fixture-key', accessKeySecret: 'fixture-secret',
++  regionId: 'cn-hangzhou', accountUid: '100001', cloudAccountContextId: 'fixture-context', accountUidResolved: true };
++const config = { getExecutionAccountContext: async () => ({ ...credentials, defaultRegion: credentials.regionId }) } as unknown as SystemConfigService;
++const originalFetch = global.fetch;
++afterEach(() => { global.fetch = originalFetch; jest.restoreAllMocks(); });
++
++function hangingCloudRequest() {
++  const controller = new AbortController();
++  const timeout = jest.spyOn(AbortSignal, 'timeout').mockReturnValue(controller.signal);
++  global.fetch = jest.fn((_url: unknown, options?: RequestInit) => new Promise<Response>((_resolve, reject) => {
++    if (!options?.signal) { reject(new Error('Cloud request has no deadline')); return; }
++    options.signal.addEventListener('abort', () => reject(options.signal!.reason), { once: true });
++  })) as typeof fetch;
++  return { timeout, abort: () => controller.abort(new Error('Cloud inventory deadline exceeded')) };
++}
++
++describe('Aliyun reconciliation request deadlines', () => {
++  it.each(['describe', 'list', 'tag'] as const)('cancels a stalled %s request rather than blocking the caller indefinitely', async operation => {
++    const { timeout, abort } = hangingCloudRequest();
++    const client = new AliyunEcsResourceClient(config);
++    const pending = operation === 'describe' ? client.describeInstances(credentials, ['i-fixture'])
++      : operation === 'list' ? client.listPlatformManagedInstances(credentials)
++      : client.tagResources({ credentials, resourceType: 'disk', resourceIds: ['d-fixture'], tags: { CreatedBy: 'cyber-range-platform' } });
++    const rejected = expect(pending).rejects.toThrow('Cloud inventory deadline exceeded');
++    abort();
++    await rejected;
++    expect(timeout).toHaveBeenCalledWith(30_000);
++  });
++
++  it('propagates an interrupted inventory read without changing lifecycle, bills or drift evidence', async () => {
++    const repository = createMemoryAdminRepository();
++    const instance = await repository.createRangeInstance({ name: 'expired-but-not-verified', instanceMode: 'range', status: 'running',
++      expiresAt: new Date('2026-01-01'), resourceSummary: { mode: 'opentofu', hostIds: { entry: 'i-fixture' } } });
++    const ledger = await repository.createBillingLedgerResource({ rangeInstanceId: instance.id, cloudAccountUid: credentials.accountUid,
++      cloudResourceId: 'i-fixture', cloudResourceType: 'ecs', regionId: credentials.regionId, billingScope: 'platform', billingStartAt: instance.createdAt });
++    const drift = jest.spyOn(repository, 'upsertCloudResourceDrift');
++    const resolved = jest.spyOn(repository, 'resolveCloudResourceDrift');
++    const { abort, timeout } = hangingCloudRequest();
++    const service = new PlatformResourceReconciliationService(repository, new AliyunEcsResourceClient(config));
++    const pending = expect(service.reconcile()).rejects.toThrow('Cloud inventory deadline exceeded');
++    // Credential resolution and inventory scheduling are asynchronous; let the mocked reads start.
++    for (let turn = 0; turn < 10 && !(global.fetch as jest.Mock).mock.calls.length; turn++) await Promise.resolve();
++    abort();
++    await pending;
++    expect(timeout).toHaveBeenCalledWith(30_000);
++    expect(await repository.getRangeInstanceById(instance.id)).toEqual(instance);
++    expect(await repository.listBillingLedgerResources()).toEqual([ledger]);
++    expect(drift).not.toHaveBeenCalled();
++    expect(resolved).not.toHaveBeenCalled();
++  });
++});
+diff --git a/apps/api/test/billing-bss-integrity.spec.ts b/apps/api/test/billing-bss-integrity.spec.ts
+new file mode 100644
+index 0000000..252ceae
+--- /dev/null
++++ b/apps/api/test/billing-bss-integrity.spec.ts
+@@ -0,0 +1,84 @@
++import { BillingBssClient } from '../src/admin/billing-bss-client';
++import { BillingSyncService } from '../src/admin/billing-sync.service';
++import type { SystemCloudAccountContext, SystemConfigService } from '../src/admin/system-config.service';
++import { createProvenBillingLedger } from './support/create-billing-fixture';
++import { createMemoryAdminRepository } from './support/create-memory-admin-repository';
++
++const DAY = '2026-10-01';
++const context = { provider: 'alibaba_cloud', accountUid: '100001', accountUidResolved: true,
++  accessKeyId: 'fixture-key', accessKeySecret: 'fixture-secret' } as SystemCloudAccountContext;
++const config = { getAccountContext: async () => context } as unknown as SystemConfigService;
++const row = { OwnerID: context.accountUid, Region: 'cn-hangzhou', ProductCode: 'ecs', InstanceID: 'i-integrity',
++  BillingDate: DAY, Currency: 'CNY', PretaxAmount: 5 };
++const response = (data: Record<string, unknown>) => ({ ok: true, status: 200, json: async () => ({
++  Success: true, Code: 'Success', Data: { AccountID: context.accountUid, BillingCycle: '2026-10', ...data },
++}) }) as Response;
++const originalFetch = global.fetch;
++afterEach(() => { global.fetch = originalFetch; jest.restoreAllMocks(); });
++
++async function existingDay() {
++  const repository = createMemoryAdminRepository();
++  await createProvenBillingLedger(repository, { cloudAccountUid: context.accountUid, regionId: 'cn-hangzhou',
++    cloudResourceId: row.InstanceID, cloudResourceType: 'ecs', billingScope: 'platform', billingStartAt: new Date('2026-01-01') });
++  global.fetch = jest.fn().mockResolvedValue(response({ Items: [row], TotalCount: 1 }));
++  const service = new BillingSyncService(repository, new BillingBssClient(config), config);
++  await service.syncRange({ startAt: DAY, endAt: DAY });
++  return { repository, service, previous: await repository.listBillingLineItems() };
++}
++
++describe('daily BSS revision completeness', () => {
++  it.each([
++    { Items: [] },
++    { Items: [row] },
++    { Items: [], TotalCount: null },
++  ])('retains existing charges when the total is missing or unverified: %j', async data => {
++    const { repository, service, previous } = await existingDay();
++    const replace = jest.spyOn(repository, 'replaceBillingDay');
++    global.fetch = jest.fn().mockResolvedValue(response(data));
++    await expect(service.syncRange({ startAt: DAY, endAt: DAY })).rejects.toThrow('inconsistent row count');
++    expect(replace).not.toHaveBeenCalled();
++    expect(await repository.listBillingLineItems()).toEqual(previous);
++  });
++
++  it('requires the same verified total on every page, including the final page', async () => {
++    const { repository, service, previous } = await existingDay();
++    global.fetch = jest.fn()
++      .mockResolvedValueOnce(response({ Items: [row], TotalCount: 2, NextToken: 'second' }))
++      .mockResolvedValueOnce(response({ Items: [{ ...row, PretaxAmount: 3 }] }));
++    await expect(service.syncRange({ startAt: DAY, endAt: DAY })).rejects.toThrow('inconsistent row count');
++    expect(await repository.listBillingLineItems()).toEqual(previous);
++  });
++
++  it.each([
++    { Items: [], TotalCount: 1, NextToken: 'no-progress' },
++    { Items: [row], TotalCount: 1, NextToken: 'over-total' },
++    { Items: [], TotalCount: 0, NextToken: 'empty-continuation' },
++  ])('stops contradictory pagination before another request and retains the old day: %j', async data => {
++    const { repository, service, previous } = await existingDay();
++    global.fetch = jest.fn().mockResolvedValueOnce(response(data))
++      .mockRejectedValue(new Error('must not request another page'));
++    await expect(service.syncRange({ startAt: DAY, endAt: DAY })).rejects.toThrow('pagination token');
++    expect(global.fetch).toHaveBeenCalledTimes(1);
++    expect(await repository.listBillingLineItems()).toEqual(previous);
++  });
++
++  it('accepts a complete multi-page correction, then an explicitly verified empty day', async () => {
++    const { repository, service } = await existingDay();
++    global.fetch = jest.fn()
++      .mockResolvedValueOnce(response({ Items: [row], TotalCount: 2, NextToken: 'second' }))
++      .mockResolvedValueOnce(response({ Items: [{ ...row, Item: 'Refund', PretaxAmount: -2 }], TotalCount: 2 }));
++    await service.syncRange({ startAt: DAY, endAt: DAY });
++    expect((await repository.listBillingLineItems()).map(item => item.pretaxAmount).sort()).toEqual([-2, 5]);
++    const secondUrl = (global.fetch as jest.Mock).mock.calls[1][0];
++    expect(new URL(secondUrl).searchParams.get('NextToken')).toBe('second');
++    global.fetch = jest.fn().mockResolvedValue(response({ TotalCount: 0 }));
++    await service.syncRange({ startAt: DAY, endAt: DAY });
++    expect(await repository.listBillingLineItems()).toEqual([]);
++  });
++
++  it.each(['2026-02-30', '2026-2-01', 'not-a-date', '2026-10-01T00:00:00Z'])('rejects invalid query date %s before fetching', async billingDate => {
++    global.fetch = jest.fn();
++    await expect(new BillingBssClient(config).listDailyBillingItems({ billingDate })).rejects.toThrow('Invalid daily bill query');
++    expect(global.fetch).not.toHaveBeenCalled();
++  });
++});
+diff --git a/apps/api/test/billing-safety.spec.ts b/apps/api/test/billing-safety.spec.ts
+index 527349b..5df5b5c 100644
+--- a/apps/api/test/billing-safety.spec.ts
++++ b/apps/api/test/billing-safety.spec.ts
+@@ -45,9 +45,9 @@ describe('billing safety', () => {
+     const service = new BillingSyncService(f.repository, new BillingBssClient(config), config);
+     global.fetch = jest.fn().mockResolvedValue({ ok: true, json: async () => { throw new Error('bad JSON'); } });
+     await expect(service.syncRange({ startAt: DAY, endAt: DAY })).rejects.toThrow('invalid JSON');
+-    global.fetch = jest.fn().mockResolvedValueOnce(response({ Success: true, Code: 'Success', Data: { AccountID: CONTEXT.accountUid, BillingCycle: DAY.slice(0, 7), Items: [row()], NextToken: 'next' } })).mockRejectedValueOnce(new Error('page failed'));
++    global.fetch = jest.fn().mockResolvedValueOnce(response({ Success: true, Code: 'Success', Data: { AccountID: CONTEXT.accountUid, BillingCycle: DAY.slice(0, 7), Items: [row()], TotalCount: 2, NextToken: 'next' } })).mockRejectedValueOnce(new Error('page failed'));
+     await expect(service.syncRange({ startAt: DAY, endAt: DAY })).rejects.toThrow('page failed');
+-    global.fetch = jest.fn().mockResolvedValue(response({ Success: true, Code: 'Success', Data: { AccountID: CONTEXT.accountUid, BillingCycle: DAY.slice(0, 7), Items: [row()], NextToken: 'same' } }));
++    global.fetch = jest.fn().mockResolvedValue(response({ Success: true, Code: 'Success', Data: { AccountID: CONTEXT.accountUid, BillingCycle: DAY.slice(0, 7), Items: [row()], TotalCount: 3, NextToken: 'same' } }));
+     await expect(service.syncRange({ startAt: DAY, endAt: DAY })).rejects.toThrow('pagination token');
+     expect(await f.repository.listBillingLineItems()).toEqual(previous);
+   });
+@@ -131,7 +131,7 @@ describe('billing safety', () => {
+     const f = await fixture();
+     await f.sync([row()]).syncRange({ startAt: DAY, endAt: DAY });
+     const previous = await f.repository.listBillingLineItems();
+-    global.fetch = jest.fn().mockResolvedValue(response({ Success: true, Code: 'Success', Data: data }));
++    global.fetch = jest.fn().mockResolvedValue(response({ Success: true, Code: 'Success', Data: { AccountID: CONTEXT.accountUid, BillingCycle: DAY.slice(0, 7), ...data } }));
+     await expect(new BillingSyncService(f.repository, new BillingBssClient(config), config).syncRange({ startAt: DAY, endAt: DAY })).rejects.toThrow();
+     expect(await f.repository.listBillingLineItems()).toEqual(previous);
+   });
+diff --git a/apps/api/test/platform-resource-reconciliation.service.spec.ts b/apps/api/test/platform-resource-reconciliation.service.spec.ts
+index f871b7b..1a5827e 100644
+--- a/apps/api/test/platform-resource-reconciliation.service.spec.ts
++++ b/apps/api/test/platform-resource-reconciliation.service.spec.ts
+@@ -234,6 +234,10 @@ describe('OpenTofu member reconciliation isolation', () => {
+     const test = await fixture();
+     const instance = test.instances[0];
+     await test.repository.updateProvisionJob(test.jobs[0].id, { status: 'failed' });
++    // Destruction may clear the runtime summary, but the original physical creation ledger survives.
++    await test.repository.createBillingLedgerResource({ regionId: 'cn-hangzhou', cloudResourceId: 'i-0', cloudResourceType: 'ecs',
++      cloudAccountUid: 'account-a', billingScope: 'user', ownerUserId: 'alice', rangeInstanceId: instance.id,
++      singleInstanceBatchId: 'batch-a', sourceProvisionJobId: test.jobs[0].id, billingStartAt: instance.createdAt });
+     await test.repository.updateRangeInstance(instance.id, { status: status as never, resourceSummary: null, errorSummary: 'cleanup requires retry' });
+     test.cloud[0].diskIds.push('d-attached');
+     const update = jest.spyOn(test.repository, 'updateRangeInstance');
+@@ -248,6 +252,57 @@ describe('OpenTofu member reconciliation isolation', () => {
+     expect(drift).toHaveBeenCalledWith(expect.objectContaining({ severity: 'critical', rangeInstanceId: instance.id }));
+   });
+ 
++  it.each(['create_failed', 'destroy_failed', 'destroyed'])('does not adopt an unrecorded physical ECS with copied tags for a %s member', async status => {
++    const test = await fixture();
++    await test.repository.updateRangeInstance(test.instances[0].id, { status: status as never });
++    test.cloud[0].instanceId = 'i-unrecorded';
++    const before = await test.repository.getRangeInstanceById(test.instances[0].id);
++    const drift = jest.spyOn(test.repository, 'upsertCloudResourceDrift');
++    expect(await test.service.reconcile()).toEqual({ recovered: 0, drifts: 1, skipped: false });
++    expect(await test.repository.listBillingLedgerResources()).toEqual([]);
++    expect(await test.repository.getRangeInstanceById(test.instances[0].id)).toEqual(before);
++    expect(drift).toHaveBeenCalledWith(expect.objectContaining({ cloudResourceId: 'i-unrecorded', severity: 'critical' }));
++    expect(test.client.tagResources).not.toHaveBeenCalled();
++  });
++
++  it('requires durable creation evidence when a terminal member has lost its runtime inventory', async () => {
++    const test = await fixture();
++    await test.repository.updateRangeInstance(test.instances[0].id, { status: 'destroyed', resourceSummary: null });
++    expect(await test.service.reconcile()).toEqual({ recovered: 0, drifts: 1, skipped: false });
++    expect(await test.repository.listBillingLedgerResources()).toEqual([]);
++  });
++
++  it.each(['account', 'owner', 'instance', 'batch', 'source-job'])('does not use a historical physical-ID collision with a different %s as creation evidence', async mismatch => {
++    const test = await fixture();
++    const instance = test.instances[0];
++    await test.repository.updateRangeInstance(instance.id, { status: 'destroyed', resourceSummary: null });
++    const prior = await test.repository.createBillingLedgerResource({ regionId: 'cn-hangzhou', cloudResourceId: 'i-0', cloudResourceType: 'ecs',
++      cloudAccountUid: mismatch === 'account' ? 'other-account' : 'account-a', billingScope: 'user',
++      ownerUserId: mismatch === 'owner' ? 'bob' : 'alice', rangeInstanceId: mismatch === 'instance' ? 'other-instance' : instance.id,
++      singleInstanceBatchId: mismatch === 'batch' ? 'other-batch' : 'batch-a',
++      sourceProvisionJobId: mismatch === 'source-job' ? 'other-job' : test.jobs[0].id,
++      billingStartAt: instance.createdAt, releasedAt: new Date('2026-10-01') });
++    expect(await test.service.reconcile()).toEqual({ recovered: 0, drifts: 1, skipped: false });
++    expect(await test.repository.listBillingLedgerResources()).toEqual([prior]);
++  });
++
++  it('does not reopen unverified disk charges while recording a proven surviving failed ECS', async () => {
++    const test = await fixture();
++    const instance = test.instances[0];
++    await test.repository.updateRangeInstance(instance.id, { status: 'destroy_failed' });
++    const disk = await test.repository.createBillingLedgerResource({ regionId: 'cn-hangzhou', cloudResourceId: 'd-0', cloudResourceType: 'disk',
++      cloudAccountUid: 'account-a', billingScope: 'user', ownerUserId: 'alice', rangeInstanceId: instance.id,
++      singleInstanceBatchId: 'batch-a', sourceProvisionJobId: test.jobs[0].id, billingStartAt: instance.createdAt,
++      releasedAt: new Date('2026-10-01') });
++    test.client.verifyRecordedDisks.mockResolvedValue(false);
++    expect(await test.service.reconcile()).toEqual({ recovered: 0, drifts: 1, skipped: false });
++    const ledgers = await test.repository.listBillingLedgerResources();
++    expect(ledgers.find(row => row.id === disk.id)).toEqual(disk);
++    expect(ledgers.find(row => row.cloudResourceType === 'ecs')).toMatchObject({ cloudResourceId: 'i-0', releasedAt: null });
++    expect(ledgers).toHaveLength(2);
++    expect(await test.repository.getRangeInstanceById(instance.id)).toMatchObject({ status: 'destroy_failed' });
++  });
++
+   it.each(['missing disk','foreign disk'])('reports %s without replacing disk ownership or closing its ledger', async reason => {
+     const test = await fixture(); test.client.verifyRecordedDisks.mockResolvedValue(false);
+     expect(await test.service.reconcile()).toEqual({recovered:0,drifts:1,skipped:false});
+diff --git a/docs/reviews/2026-10-11-lifecycle-billing.md b/docs/reviews/2026-10-11-lifecycle-billing.md
+new file mode 100644
+index 0000000..442ba3e
+--- /dev/null
++++ b/docs/reviews/2026-10-11-lifecycle-billing.md
+@@ -0,0 +1,79 @@
++# 靶机生命周期与账单代码审查
++
++审查基线：`062330497978375a99fa3b12c8d2396713547348`。日期：2026-10-11。
++
++## 范围与证据边界
++
++本轮以全仓文件清点、风险检索及既有容器测试为基础，重点跟读 API 受理、单实例批次执行、worker、OpenTofu、资源对账、账单入库和持久化之间的调用链。非重点模块的文件清点、检索或测试通过，不等同于逐行完成全部语义审查。
++
++没有连接生产数据库，没有使用真实云账号创建、删除资源，也没有验证云厂商实际结算金额。模拟接口、离线 OpenTofu 和容器回归只能证明测试所覆盖的代码行为，不能证明云端不存在遗留资源。
++
++## 已确认的问题与修复
++
++### R1 / P1：终态单实例凭可复制的标签新增计费归属
++
++位置：`apps/api/src/provisioning/platform-resource-reconciliation.service.ts`，`reconcileCompletedOpenTofuMember`。
++
++正常运行分支会核对持久化 `hostIds` 和磁盘库存，但 `create_failed`、`destroy_failed`、`destroyed` 分支在该检查之前就调用 `syncRangeInstanceBillingLedger`。即使云端物理 ECS ID 从未出现在该实例的持久化库存中，只要标签指向一个存在的创建任务，也可以生成该用户的 ECS 台账。同时，该分支会将未经重新验证的历史磁盘 IDs 传给同步逻辑，后者会把 `releasedAt` 重新置空。
++
++触发条件：对账看到复制了合法平台标签但物理 ID 不匹配的 ECS；或者失败实例的历史磁盘库存已经失效。标签可用于发现候选资源，但不能单独证明资源是平台实际创建的。
++
++影响：外部资源可能被纳入用户资源台账；已释放或归属未验证的磁盘可能重新显示为未释放。这里不是云厂商重复扣款的证据，而是平台归属和释放状态错误。
++
++修复：终态分支必须匹配持久化物理 ID，或匹配同账号、同用户、同实例、同批次、同原始创建任务的既有 ECS 台账；无法证明时只记录 critical drift，不认领、不删除、不改生命周期。磁盘只有在原有库存验证通过后才参与本次台账同步。已有证据证明的真实残留 ECS 仍保持计费台账开放。
++
++回归：复制标签、清空运行库存、历史台账账号/用户/实例/批次/来源任务冲突、未验证磁盘不重新开放，以及真实已记录残留资源的正向恢复。
++
++### R2 / P2：不完整的空账单响应可以覆盖已保存的日账单
++
++位置：`apps/api/src/admin/billing-bss-client.ts`，`listDailyBillingItems`；后续写入为 `BillingSyncService.syncRange` → `PrismaAdminRepository.replaceBillingDay`。
++
++普通账单客户端把 `TotalCount` 当成可选项。带正确账号和账期但缺少总数的 `Items: []` 会被视为完整的空修订；同步逻辑随后可以执行日账单替换，删除已有费用。后续页缺少总数也会被接受。带新 token 的空页或已达到总数却仍有 token 的响应没有提前停止。
++
++修复：每页都要求非负安全整数总数且各页一致；拒绝无进展和越过总数的继续分页；末页必须满足实际行数与声明总数一致；在请求前校验日日期。只有明确验证过的零行修订才允许清空旧账单。
++
++回归：缺失/无效总数、末页缺失总数、矛盾 token、完整多页退款修订、明确零行修订、非法日期。原有三个计数测试还补齐了正确账号和账期，避免它们实际上只覆盖账号校验而未触及计数分支。
++
++官方合同：
++- https://www.alibabacloud.com/help/en/user-center/developer-reference/api-bssopenapi-2017-12-14-describeinstancebill
++- https://www.alibabacloud.com/help/en/user-center/developer-reference/api-bssopenapi-2017-12-14-describesplititembill
++
++### R3 / P2：资源对账 HTTP 请求没有应用级超时，会阻塞 worker 调度
++
++位置：`apps/api/src/provisioning/platform-resource-reconciliation.service.ts`，`AliyunEcsResourceClient.performRequest`；调用方 `ProvisioningWorkerService.runLoop`。
++
++worker 启动时和周期内都会等待资源对账结束，再继续领取任务或执行下一轮到期回收。共享 RPC 方法的 `fetch` 没有超时/取消信号，远端请求不能及时结束时，调度也无法及时继续。阿里云编排及没有原生自动释放时间的短时单实例尤其不能把平台 TTL 当作云端计费的绝对上限。
++
++修复：为共享 RPC 请求添加 30 秒 `AbortSignal.timeout`。超时按既有失败路径上报，不将未知云状态当成空库存，也不自动重建或认领资源。该修改限制单次请求等待，不代表整个多账号对账过程有 30 秒的总耗时上限。
++
++回归：DescribeInstances、标签分页查询、TagResources 的挂起请求都能被取消；对账中断不更改实例生命周期、原始台账或 drift 证据。
++
++## 重点链路中已核对的现有保护
++
++这些是基线中已有的设计，不应重复作为“本 PR 修复”：
++
++- 创建使用冻结账号与工作空间，单实例批次有数据库租约、持久化 manifest、apply marker 和目标计划检查；未知结果优先恢复，不盲目重建。
++- 创建在 worker apply 前再次检查到期时间；腾讯 CVM 模块带稳定创建意图和原生终止时间。单实例固定 IP 计算并未直接成为批次模块的实际分配参数，不据此报告 IP 冲突。
++- 回收路径保留物理库存与失败证据，并进行云端残留确认；claim 失效后不能继续宣告任务成功。共享网络不是任一单实例独占，不能随单台回收直接删除。
++- 账单按账号、工作空间、厂商隔离；每日替换在数据库事务和日粒度锁内完成。退款保留负金额，多币种分开汇总，CSV 已有公式注入防护。
++- 腾讯账单遍历不以可能滞后的 cached Total 作为提前结束条件；阿里云分账已有更严格的分页检查。
++
++## 未在本 PR 扩大的事项
++
++1. **云上故障注入与灾难恢复演练**：真实 create 超时、worker/数据库同时中断、状态卷丢失、EIP/NAT/磁盘残留及云端最终一致性，仍需要有额度限制、独立测试工作空间和立即清理的受控验证。本轮没有执行这些付费操作。
++2. **对账与到期调度的架构隔离**：单请求超时只是最小修复。多账号/多地域大量分页仍可能延迟后续调度，应进一步评估独立对账作业及总时间预算；本 PR 不引入新的任务架构。
++3. **历史归属数据修复**：R1 防止新错误认领，并不会自动删除既有台账。对可能已经产生的错误归属，应保留审计记录，根据创建任务、状态库存和官方原始账单人工核对，不能用标签批量重写历史。
++4. **原生过期兜底**：阿里云编排模块未像腾讯模块一样设置每台主机的原生终止时间；平台到期回收仍依赖 worker。是否增加云端兜底，需要单独确定最小可用 TTL、更新时是否允许延长以及相关云接口合同。
++5. **账单延迟**：`destroyed` / `releasedAt` 仅描述资源回收证据，不代表官方费用已结清。未出账不能显示为免费，分账延迟也不能通过比例分摊或零费用覆盖历史来掩盖。
++
++## 验证方式
++
++新增测试：
++- `apps/api/test/billing-bss-integrity.spec.ts`
++- `apps/api/test/aliyun-reconciliation-timeout.spec.ts`
++- 扩展 `apps/api/test/platform-resource-reconciliation.service.spec.ts`
++- 校正 `apps/api/test/billing-safety.spec.ts` 的分页与身份夹具
++
++所有测试和构建通过 Docker 执行。定向回归需要分别在修复代码与原始基线源文件上运行，以确认用例不是仅重复既有绿灯。全量验证入口保持 `bash scripts/ci/verify-docker.sh`，涵盖 workspace 测试、生产构建、数据库迁移以及离线 IaC 验证。
++
++实际运行结论、提交 SHA 和 CI 链接以 PR 描述及 GitHub Actions 记录为准；本文件不将“添加测试”视为“测试已通过”。
