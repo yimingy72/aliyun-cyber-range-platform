@@ -1,0 +1,11 @@
+--- a/apps/api/test/admin-billing.e2e-spec.ts
++++ b/apps/api/test/admin-billing.e2e-spec.ts
+@@ -147,7 +147,7 @@
+   it('exposes lifecycle risks only as an authenticated admin read and validates the billing window', async () => {
+     const url = '/admin/billing/lifecycle-risks?startAt=2026-07-16&endAt=2026-07-16';
+     await request(app.getHttpServer()).get(url).expect(401);
+-    const userToken = await loginAsRepositoryUser(repository, 'user-1');
++    const userToken = await loginAsRepositoryUser(repository, 'alice');
+     await request(app.getHttpServer()).get(url).set('authorization', `Bearer ${userToken}`).expect(403);
+     const adminToken = await loginAsRepositoryUser(repository, 'admin');
+     const before = await repository.listBillingLedgerResources();
