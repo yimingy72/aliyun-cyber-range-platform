@@ -1,0 +1,22 @@
+name: Cost guardrails review
+on:
+  push:
+    branches: [codex/lifecycle-cost-guardrails]
+    paths: [.github/workflows/cost-guardrails-review.yml]
+permissions:
+  contents: read
+jobs:
+  source:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: dba463f204cbe11354fba73c7d73017d13ee9cce
+          persist-credentials: false
+      - run: git archive --format=tar.gz --output=/tmp/cost-guardrails-source.tar.gz HEAD
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cost-guardrails-source-dba463f
+          path: /tmp/cost-guardrails-source.tar.gz
+          retention-days: 1
