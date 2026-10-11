@@ -2043,7 +2043,7 @@ function CloudImageCenterScreen({
             }
             action={
               <div className="flex flex-wrap items-center gap-2">
-                {session.isAdmin ? <Button disabled={workspace?.isReadOnly} onClick={() => { setTagManagerError(''); setTagManagerOpen(true); }} size="sm" type="button" variant="outline">管理标签</Button> : null}
+                {session.isAdmin ? <Button disabled={workspace?.isReadOnly || pendingActionKeys.length > 0} onClick={() => { setTagManagerError(''); setTagManagerOpen(true); }} size="sm" type="button" variant="outline">管理标签</Button> : null}
               {activeTab === 'platform' || activeTab === 'mine' ? (
                 <Button
                   disabled={!canImportImages || pendingActionKeys.includes('create:image-import')}

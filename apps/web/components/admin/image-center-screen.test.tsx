@@ -639,6 +639,28 @@ describe('ImageCenterScreen', () => {
     expect(deleteCustomImageSnapshotMock).not.toHaveBeenCalled();
   });
 
+  it('waits for an in-flight tag save before allowing tag management', async () => {
+    let finishSave!: (asset: PlatformImageAsset) => void;
+    setPlatformImageTagsMock.mockReturnValue(new Promise(resolve => { finishSave = resolve; }));
+    render(<ImageCenterScreen />);
+    const row = (await screen.findByText('Alibaba Cloud Linux 3')).closest('tr') as HTMLElement;
+    fireEvent.keyDown(within(row).getByRole('button', { name: '编辑标签 Alibaba Cloud Linux 3' }), { key: 'ArrowDown' });
+    const menu = screen.getByRole('menu');
+    fireEvent.click(await within(menu).findByRole('menuitemcheckbox', { name: '关键资产' }));
+    fireEvent.click(within(menu).getByRole('menuitem', { name: '保存标签' }));
+    await waitFor(() => expect(setPlatformImageTagsMock).toHaveBeenCalledTimes(1));
+    fireEvent.keyDown(menu, { key: 'Escape' });
+    const manageTags = screen.getByRole('button', { name: '管理标签' });
+    expect(manageTags).toHaveProperty('disabled', true);
+    fireEvent.click(manageTags);
+    expect(screen.queryByRole('dialog', { name: '管理镜像标签' })).toBeNull();
+    expect(deletePlatformImageTagMock).not.toHaveBeenCalled();
+    await act(async () => finishSave(createPlatformImageAsset({ id: 'platform-image-1', imageId: 'aliyun-linux-3', displayName: 'Alibaba Cloud Linux 3', tags: [{ id: 'tag-critical', name: '关键资产' }] })));
+    await waitFor(() => expect(manageTags).toHaveProperty('disabled', false));
+    fireEvent.click(manageTags);
+    expect(await screen.findByRole('button', { name: '删除标签 关键资产' })).toBeTruthy();
+  });
+
   it('keeps the tag and confirmation open when deletion fails', async () => {
     deletePlatformImageTagMock.mockRejectedValueOnce(new Error('服务暂不可用'));
     render(<ImageCenterScreen />);
