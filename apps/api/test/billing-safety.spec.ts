@@ -45,9 +45,9 @@ describe('billing safety', () => {
     const service = new BillingSyncService(f.repository, new BillingBssClient(config), config);
     global.fetch = jest.fn().mockResolvedValue({ ok: true, json: async () => { throw new Error('bad JSON'); } });
     await expect(service.syncRange({ startAt: DAY, endAt: DAY })).rejects.toThrow('invalid JSON');
-    global.fetch = jest.fn().mockResolvedValueOnce(response({ Success: true, Code: 'Success', Data: { AccountID: CONTEXT.accountUid, BillingCycle: DAY.slice(0, 7), Items: [row()], NextToken: 'next' } })).mockRejectedValueOnce(new Error('page failed'));
+    global.fetch = jest.fn().mockResolvedValueOnce(response({ Success: true, Code: 'Success', Data: { AccountID: CONTEXT.accountUid, BillingCycle: DAY.slice(0, 7), Items: [row()], TotalCount: 2, NextToken: 'next' } })).mockRejectedValueOnce(new Error('page failed'));
     await expect(service.syncRange({ startAt: DAY, endAt: DAY })).rejects.toThrow('page failed');
-    global.fetch = jest.fn().mockResolvedValue(response({ Success: true, Code: 'Success', Data: { AccountID: CONTEXT.accountUid, BillingCycle: DAY.slice(0, 7), Items: [row()], NextToken: 'same' } }));
+    global.fetch = jest.fn().mockResolvedValue(response({ Success: true, Code: 'Success', Data: { AccountID: CONTEXT.accountUid, BillingCycle: DAY.slice(0, 7), Items: [row()], TotalCount: 3, NextToken: 'same' } }));
     await expect(service.syncRange({ startAt: DAY, endAt: DAY })).rejects.toThrow('pagination token');
     expect(await f.repository.listBillingLineItems()).toEqual(previous);
   });
@@ -155,7 +155,7 @@ describe('billing safety', () => {
     const f = await fixture();
     await f.sync([row()]).syncRange({ startAt: DAY, endAt: DAY });
     const previous = await f.repository.listBillingLineItems();
-    global.fetch = jest.fn().mockResolvedValue(response({ Success: true, Code: 'Success', Data: data }));
+    global.fetch = jest.fn().mockResolvedValue(response({ Success: true, Code: 'Success', Data: { AccountID: CONTEXT.accountUid, BillingCycle: DAY.slice(0, 7), ...data } }));
     await expect(new BillingSyncService(f.repository, new BillingBssClient(config), config).syncRange({ startAt: DAY, endAt: DAY })).rejects.toThrow();
     expect(await f.repository.listBillingLineItems()).toEqual(previous);
   });

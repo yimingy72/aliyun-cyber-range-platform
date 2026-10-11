@@ -103,6 +103,8 @@ export class BillingBssClient {
   }
 
   async listDailyBillingItems(input: { billingDate: string }, capturedContext?: SystemCloudAccountContext) {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(input.billingDate) || !Number.isFinite(Date.parse(input.billingDate))
+      || new Date(input.billingDate).toISOString().slice(0, 10) !== input.billingDate) throw new Error('Invalid daily bill query');
     const snapshot = { ...(capturedContext ?? await this.systemConfigService.getAccountContext()) };
     assertAlibabaBillingContext(snapshot);
     if (!snapshot.accountUid || !snapshot.accountUidResolved) throw new Error('账单同步需要已验证的云账号。');
@@ -133,28 +135,29 @@ export class BillingBssClient {
       if (payload.Data.AccountID !== snapshot.accountUid || payload.Data.BillingCycle !== billingCycle) {
         throw new Error('DescribeInstanceBill returned a different or unverified billing account/cycle; previous bills were retained');
       }
-      if (payload.Data.TotalCount !== undefined) {
-        if (!Number.isSafeInteger(payload.Data.TotalCount) || payload.Data.TotalCount < 0
-          || expectedCount !== null && payload.Data.TotalCount !== expectedCount) {
-          throw new Error('DescribeInstanceBill returned an inconsistent row count; previous bills were retained');
-        }
-        expectedCount = payload.Data.TotalCount;
+      if (!Number.isSafeInteger(payload.Data.TotalCount) || payload.Data.TotalCount! < 0
+        || expectedCount !== null && payload.Data.TotalCount !== expectedCount) {
+        throw new Error('DescribeInstanceBill returned an inconsistent row count; previous bills were retained');
       }
+      expectedCount = payload.Data.TotalCount!;
       if (payload.Data.NextToken != null && typeof payload.Data.NextToken !== 'string') {
         throw new Error('DescribeInstanceBill returned an invalid pagination token');
       }
-      items.push(...normalizeItems(payload.Data.Items ?? (payload.Data.TotalCount === 0 ? [] : undefined)));
+      const page = normalizeItems(payload.Data.Items ?? (expectedCount === 0 ? [] : undefined));
+      items.push(...page);
       nextToken =
         payload.Data?.NextToken && typeof payload.Data.NextToken === 'string'
           ? payload.Data.NextToken
           : null;
       if (nextToken) {
-        if (seenTokens.has(nextToken)) throw new Error('DescribeInstanceBill repeated a pagination token');
+        if (!page.length || seenTokens.has(nextToken) || items.length >= expectedCount) {
+          throw new Error('DescribeInstanceBill returned an incomplete or repeated pagination token');
+        }
         seenTokens.add(nextToken);
       }
     } while (nextToken);
 
-    if (expectedCount !== null && items.length !== expectedCount) {
+    if (items.length !== expectedCount) {
       throw new Error('DescribeInstanceBill returned an incomplete bill; previous bills were retained');
     }
 

@@ -204,7 +204,9 @@ export class AliyunEcsResourceClient {
       },
       input.credentials.accessKeySecret,
     );
-    const response = await fetch(`https://ecs.${input.credentials.regionId}.aliyuncs.com/?${query}`);
+    const response = await fetch(`https://ecs.${input.credentials.regionId}.aliyuncs.com/?${query}`, {
+      signal: AbortSignal.timeout(30_000),
+    });
 
     if (!response.ok) {
       throw new AliyunResourceRequestError(input.action, response.status, input.credentials.regionId, await response.json().catch(() => null));
@@ -408,13 +410,26 @@ export class PlatformResourceReconciliationService {
         || tags.PlatformResourceType !== 'ecs' || tags.PlatformHostKey !== config.hostKey || !tags.PlatformCreateJobId) return unverifiedOwnership();
       const sourceJob = await this.adminRepository.getProvisionJobById(tags.PlatformCreateJobId);
       if (!sourceJob || sourceJob.rangeInstanceId !== instance.id || !['create', 'retry'].includes(sourceJob.jobType)) return unverifiedOwnership();
+      // Recovery inventory can contain several physical ECS; this observation proves only one host and its disks.
+      const diskIds = new Set(disksVerified ? recordedHostDiskIds(instance, cloudInstance.instanceId) : []);
+      const observedSummary = { mode: 'opentofu' as const, hostIds: { [config.hostKey]: cloudInstance.instanceId },
+        systemDiskIds: Object.fromEntries(Object.entries(instance.resourceSummary?.systemDiskIds ?? {}).filter(([, id]) => diskIds.has(id))),
+        dataDiskIds: Object.fromEntries(Object.entries(instance.resourceSummary?.dataDiskIds ?? {}).filter(([, id]) => diskIds.has(id))) };
       if (instance.status !== 'running' || job.status !== 'succeeded') {
-        // A failed job does not make the surviving cloud resource free. Record evidence without reviving its lifecycle.
+        // Tags locate a candidate; only durable physical identity proves who created it.
+        if (instance.resourceSummary?.hostIds?.[config.hostKey] !== cloudInstance.instanceId) {
+          const ledger = await this.adminRepository.findBillingLedgerResource({ cloudProvider: 'alibaba_cloud',
+            regionId: credentials.regionId, cloudResourceId: cloudInstance.instanceId, cloudResourceType: 'ecs' });
+          if (!ledger || ledger.cloudAccountUid !== config.cloudAccountUid || ledger.ownerUserId !== instance.ownerUserId
+            || ledger.rangeInstanceId !== instance.id || ledger.singleInstanceBatchId !== instance.singleInstanceBatchId
+            || ledger.sourceProvisionJobId !== sourceJob.id) {
+            return unverifiedOwnership('Tagged ECS has no matching persisted physical identity or original billing ledger; no resource was adopted.');
+          }
+        }
+        // A failed job does not make a proven surviving cloud resource free. Do not revive its lifecycle.
         await syncRangeInstanceBillingLedger({ repository: this.adminRepository, instance,
           regionId: credentials.regionId, cloudAccountUid: credentials.accountUid,
-          resourceSummary: { mode: 'opentofu', hostIds: { [config.hostKey]: cloudInstance.instanceId },
-            ...(instance.resourceSummary?.systemDiskIds ? { systemDiskIds: instance.resourceSummary.systemDiskIds } : {}),
-            ...(instance.resourceSummary?.dataDiskIds ? { dataDiskIds: instance.resourceSummary.dataDiskIds } : {}) },
+          resourceSummary: observedSummary,
           billingStartAt: instance.createdAt, sourceProvisionJobId: sourceJob.id });
         await this.recordDrift({ cloudInstance, rangeInstanceId: instance.id, regionId: credentials.regionId, observedAt: now,
           reason: `Platform instance is ${instance.status} but its owned ECS still exists; billing remains open until cloud deletion is verified.` });
@@ -422,11 +437,10 @@ export class PlatformResourceReconciliationService {
       }
       if (instance.resourceSummary?.hostIds?.[config.hostKey] !== cloudInstance.instanceId || !disksVerified)
         return unverifiedOwnership('Persisted disk inventory is missing, incomplete or conflicts with cloud evidence; no unrecorded attached disk was adopted.');
-      const reconciled = instance;
       // OpenTofu owns volume_tags; this path performs no cloud mutations while holding the intake lock.
-      await syncRangeInstanceBillingLedger({ repository: this.adminRepository, instance: reconciled,
+      await syncRangeInstanceBillingLedger({ repository: this.adminRepository, instance,
         regionId: credentials.regionId, cloudAccountUid: credentials.accountUid,
-        resourceSummary: reconciled.resourceSummary, billingStartAt: instance.createdAt,
+        resourceSummary: observedSummary, billingStartAt: instance.createdAt,
         sourceProvisionJobId: ['create', 'retry'].includes(job.jobType) ? job.id : null });
       await this.adminRepository.resolveCloudResourceDrift({ regionId: credentials.regionId, cloudResourceType: 'ecs',
         cloudResourceId: cloudInstance.instanceId, resolvedAt: now });
