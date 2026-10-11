@@ -56,12 +56,18 @@ jobs:
           mkdir -p "$GITHUB_WORKSPACE/.local"
           ln -s "$GITHUB_WORKSPACE/.local" .local
           docker build --build-arg ALPINE_REPOSITORY=https://dl-cdn.alpinelinux.org/alpine --build-arg PRISMA_ENGINES_MIRROR=https://binaries.prisma.sh -f scripts/ci/Dockerfile -t "cyber-range-guardrails:$GITHUB_RUN_ID" .
+          # Exercise the native migration engine while downloads are allowed, without a database.
+          docker build -t "cyber-range-guardrails:$GITHUB_RUN_ID" -f - . <<EOF
+          FROM cyber-range-guardrails:$GITHUB_RUN_ID
+          RUN DATABASE_URL=postgresql://postgres:postgres@127.0.0.1:5432/offline_check timeout 180 pnpm --filter @aliyun-cyber-range/database exec prisma migrate diff --from-empty --to-schema-datamodel prisma/schema.prisma --script --output /tmp/schema-preflight.sql && rm /tmp/schema-preflight.sql
+          EOF
       - name: Run targeted regression tests in Docker
         shell: bash
         run: |
           set -euo pipefail
           docker run --rm --network none -e NODE_ENV=test -e RANGE_PROVISIONER_MODE=dry-run \
             -v "$RUNNER_TEMP/guardrails-results:/results" "cyber-range-guardrails:$GITHUB_RUN_ID" sh -ec '
+              DATABASE_URL=postgresql://postgres:postgres@127.0.0.1:5432/offline_check timeout 45 pnpm --filter @aliyun-cyber-range/database exec prisma migrate diff --from-empty --to-schema-datamodel prisma/schema.prisma --script --output /results/offline-schema.sql
               pnpm --filter @aliyun-cyber-range/api test --runTestsByPath \
                 test/alibaba-range-expiry.spec.ts test/reconciliation-scheduling-budget.spec.ts \
                 test/billing-lifecycle-risks.spec.ts test/background-cloud-workspace.spec.ts \
@@ -102,7 +108,17 @@ jobs:
           set -euo pipefail
           git add apps packages infra scripts docs skills
           git commit -m 'test: isolated guardrail candidate'
-          git merge --no-edit "$INTEGRATION_BASE" 2>&1 | tee "$RUNNER_TEMP/guardrails-results/integration-merge.log"
+          file=apps/api/src/provisioning/platform-resource-reconciliation.service.ts
+          test "$(git rev-parse "$INTEGRATION_BASE:$file")" = ef0312787cc29eac3f104f73cf5f67eccda3c0a2
+          test "$(git hash-object "$file")" = f3de3bc4ebead023a22ecfec18aab0405615cb0b
+          if ! git merge --no-edit "$INTEGRATION_BASE" 2>&1 | tee "$RUNNER_TEMP/guardrails-results/integration-merge.log"; then
+            test "$(git diff --name-only --diff-filter=U)" = "$file"
+            # This exact reviewed candidate is upstream ef03127 plus the cancellation guards.
+            git checkout --ours -- "$file"
+            test "$(git hash-object "$file")" = f3de3bc4ebead023a22ecfec18aab0405615cb0b
+            git add "$file"
+            git commit --no-edit
+          fi
           git diff --name-only "$INTEGRATION_BASE" HEAD | while read -r file; do printf '%s %s\n' "$(git hash-object "$file")" "$file"; done > "$RUNNER_TEMP/guardrails-results/integration-file-blobs.txt"
           git rev-parse HEAD > "$RUNNER_TEMP/guardrails-results/integration-commit.txt"
           printf '%s\n%s\n' "$REVIEW_BASE" "$INTEGRATION_BASE" > "$RUNNER_TEMP/guardrails-results/bases.txt"
