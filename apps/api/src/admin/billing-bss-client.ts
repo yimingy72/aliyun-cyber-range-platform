@@ -130,6 +130,9 @@ export class BillingBssClient {
       });
 
       if (!payload.Data) throw new Error('DescribeInstanceBill returned no billing data');
+      if (payload.Data.AccountID !== snapshot.accountUid || payload.Data.BillingCycle !== billingCycle) {
+        throw new Error('DescribeInstanceBill returned a different or unverified billing account/cycle; previous bills were retained');
+      }
       if (payload.Data.TotalCount !== undefined) {
         if (!Number.isSafeInteger(payload.Data.TotalCount) || payload.Data.TotalCount < 0
           || expectedCount !== null && payload.Data.TotalCount !== expectedCount) {

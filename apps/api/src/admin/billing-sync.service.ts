@@ -45,10 +45,17 @@ function readString(line: RawBillLine, key: string) {
 
 function readNumber(line: RawBillLine, key: string) {
   const value = line[key];
-  if ((typeof value !== 'number' && typeof value !== 'string') || value === '' || !Number.isFinite(Number(value))) {
+  if ((typeof value !== 'number' && typeof value !== 'string')
+    || !/^-?\d+(?:\.\d+)?(?:e[+-]?\d+)?$/i.test(String(value))) {
     throw new Error(`BSS returned an invalid ${key}; previous bills were retained`);
   }
-  return Number(value);
+  const amount = new Prisma.Decimal(value);
+  // The numeric API and Decimal(20, 9) storage must both preserve the official amount.
+  if (!amount.isFinite() || amount.decimalPlaces() > 9 || amount.abs().gte('100000000000')
+    || !new Prisma.Decimal(amount.toNumber()).equals(amount)) {
+    throw new Error(`BSS ${key} exceeds ledger precision; previous bills were retained`);
+  }
+  return amount.toNumber();
 }
 
 function stableJson(value: unknown): unknown {
