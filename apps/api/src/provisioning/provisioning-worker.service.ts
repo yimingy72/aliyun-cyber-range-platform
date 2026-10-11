@@ -1798,17 +1798,53 @@ export class ProvisioningWorkerService {
             || typeof row.Name !== 'string' || row.RegionId !== undefined && row.RegionId !== account.defaultRegion)
             throw new Error('Alibaba regional EIP recovery returned malformed or foreign identities');
           seen.add(row.AllocationId);
-          const tags = this.readJsonObject(row.Tags)?.Tag;
-          if (tags !== undefined && !Array.isArray(tags)) throw new Error('Alibaba regional EIP recovery tags are malformed');
-          // Names also catch an EIP whose create succeeded but tagging/state persistence failed.
-          if (eipIds.has(row.AllocationId) || intent.eipNames.includes(row.Name)
-            || Array.isArray(tags) && tags.some(tag => this.readJsonObject(tag)?.Key === 'RangeInstanceId' && this.readJsonObject(tag)?.Value === instance.id))
+          const rawTags = this.readJsonObject(row.Tags)?.Tag;
+          if (rawTags !== undefined && !Array.isArray(rawTags)) throw new Error('Alibaba regional EIP recovery tags are malformed');
+          const tags: Record<string, string> = Object.create(null);
+          for (const rawTag of rawTags ?? []) {
+            const tag = this.readJsonObject(rawTag);
+            if (!tag || typeof tag.Key !== 'string' || !tag.Key || typeof tag.Value !== 'string' || Object.hasOwn(tags, tag.Key))
+              throw new Error('Alibaba regional EIP recovery tags are malformed');
+            tags[tag.Key] = tag.Value;
+          }
+          // Shared display names are not ownership. Unknown namesakes still require recovery.
+          if (eipIds.has(row.AllocationId) || tags.RangeInstanceId === instance.id || tags.range_instance_id === instance.id
+            || intent.eipNames.includes(row.Name) && !await this.isEipRecordedForAnotherRange(row.AllocationId, tags, instance, account))
             throw new Error('Alibaba original EIP candidate remains; preserve unknown apply evidence');
         }
         if (seen.size === total) break;
       }
     }
     await current();
+  }
+
+  private async isEipRecordedForAnotherRange(id: string, tags: Record<string, string>, current: RangeInstanceRecord,
+    account: ResolvedProvisioningRuntimeConfig) {
+    const rangeId = tags.RangeInstanceId;
+    if (!rangeId || rangeId === current.id || tags.range_instance_id && tags.range_instance_id !== rangeId) return false;
+    const other = await this.adminRepository.getRangeInstanceById(rangeId);
+    const bound = other?.resourceSummary?.executionContext;
+    if (!other || other.cloudWorkspaceId !== current.cloudWorkspaceId || other.cloudProvider !== account.provider
+      || !bound || bound.provider !== account.provider || bound.cloudAccountUid !== account.accountUid
+      || bound.regionId !== account.defaultRegion || !bound.cloudAccountContextId || !bound.zoneId) return false;
+    const expected = { CreatedBy: 'cyber-range-platform', PlatformManaged: 'true', CloudProvider: 'alibaba_cloud',
+      CloudAccountUid: account.accountUid, CloudAccountContextId: bound.cloudAccountContextId, PlatformResourceType: 'eip',
+      PlatformScope: other.ownerUserId ? 'user' : 'platform', ...(other.ownerUserId ? { PlatformUserId: other.ownerUserId } : {}) };
+    if (Object.entries(expected).some(([key, value]) => tags[key] !== value) || !other.ownerUserId && tags.PlatformUserId) return false;
+    const rows = await this.adminRepository.listBillingLedgerResources({ rangeInstanceId: other.id });
+    const ledger = rows.find(row => row.cloudWorkspaceId === current.cloudWorkspaceId && row.rangeInstanceId === other.id
+      && row.cloudProvider === account.provider && row.cloudAccountUid === account.accountUid && row.regionId === account.defaultRegion
+      && row.cloudResourceType === 'eip' && row.cloudResourceId === id && !row.releasedAt
+      && row.ownerUserId === other.ownerUserId && row.billingScope === expected.PlatformScope);
+    if (!ledger?.sourceProvisionJobId || !tags.PlatformCreateJobId) return false;
+    // Cloud tags can advance on an update; the ledger retains the original creation job.
+    for (const jobId of new Set([ledger.sourceProvisionJobId, tags.PlatformCreateJobId])) {
+      const source = await this.adminRepository.getProvisionJobById(jobId);
+      if (!source || source.rangeInstanceId !== other.id || source.cloudWorkspaceId !== current.cloudWorkspaceId
+        || !source.startedAt || !['create', 'retry', 'update'].includes(source.jobType)
+        || source.jobType === 'update' && source.topologySnapshot?.operation !== 'update') return false;
+    }
+    return true;
   }
 
   private async findExistingInstanceIds(
