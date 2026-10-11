@@ -1,4 +1,4 @@
-export type RangeTemplateView = 'platform' | 'mine';
+export type RangeTemplateView = 'platform' | 'mine' | 'all';
 export type PlatformImageView = 'platform' | 'mine';
 export type InstanceView = 'active' | 'history';
 export type InstanceMode = 'single' | 'range';
@@ -419,6 +419,7 @@ export type PlatformApiClientLike = {
   listPlatformImages(view?: PlatformImageView): Promise<PlatformImageAsset[]>;
   listPlatformImageTags(): Promise<PlatformImageTag[]>;
   createPlatformImageTag(name: string, operation?: OperationRequest): Promise<PlatformImageTag>;
+  deletePlatformImageTag(id: string, operation?: OperationRequest): Promise<{ removed: boolean; platformImageTagId: string }>;
   setPlatformImageTags(id: string, tagIds: string[], operation?: OperationRequest): Promise<PlatformImageAsset>;
   collectPlatformImage(payload: CollectPlatformImageInput, operation?: OperationRequest): Promise<PlatformImageAsset>;
   renamePlatformImage(id: string, displayName: string, operation?: OperationRequest): Promise<PlatformImageAsset>;

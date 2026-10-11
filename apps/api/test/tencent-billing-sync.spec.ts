@@ -106,7 +106,7 @@ describe('Tencent signed official billing pipeline', () => {
     });
   });
 
-  it.each(['0.0000000001', '100000000000', '99999999999.123456789'])('retains prior bills when a component exceeds the persisted/display precision: %s', async cost => {
+  it.each(['0.0000000000000000001', '0.123456789123456789', '100000000000', '99999999999.123456789'])('retains prior bills when a component exceeds the persisted/display precision: %s', async cost => {
     const repository = createMemoryAdminRepository();
     await runInCloudWorkspace(scope, async () => {
       await createTencentBillingProof(repository);
@@ -116,6 +116,20 @@ describe('Tencent signed official billing pipeline', () => {
       fetchMock.mockImplementation(async () => signedTencentBillingResponse([tencentBill({ ComponentSet: [{ RealCost: cost }] })]));
       await expect(tencentBillingSync(repository).syncRange(WINDOW)).rejects.toThrow('precision');
       expect(await repository.listBillingLineItems()).toEqual(before);
+    });
+  });
+
+  it('preserves higher-precision components and refunds while ignoring unsupported external amounts', async () => {
+    const repository = createMemoryAdminRepository();
+    await runInCloudWorkspace(scope, async () => {
+      await createTencentBillingProof(repository);
+      fetchMock.mockImplementation(async () => signedTencentBillingResponse([
+        tencentBill({ ComponentSet: [{ RealCost: '0.1325781504' }, { RealCost: '-0.0000000001' }] }),
+        tencentBill({ Id: 'external', ResourceId: 'ins-external', ComponentSet: [{ RealCost: '0.0000000000000000001' }] }),
+      ]));
+      await tencentBillingSync(repository).syncRange(WINDOW);
+      expect((await repository.listBillingLineItems()).map(item => item.pretaxAmount).sort((a, b) => a - b)).toEqual([-0.0000000001, 0.1325781504]);
+      expect((await new BillingService(repository).getSummary(WINDOW)).totalPretaxAmount).toBe(0.1325781503);
     });
   });
 

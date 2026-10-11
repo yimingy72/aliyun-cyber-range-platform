@@ -5,6 +5,7 @@ import { BillingSyncService } from '../src/admin/billing-sync.service';
 import type { BillingBssClient } from '../src/admin/billing-bss-client';
 import type { SystemConfigService } from '../src/admin/system-config.service';
 import type { CreateBillingLineItemInput } from '../src/admin/admin.repository';
+import { createProvenBillingLedger } from './support/create-billing-fixture';
 
 const url = process.env.BILLING_TEST_DATABASE_URL;
 if (url) {
@@ -45,6 +46,26 @@ describeDb('billing atomic replacement in isolated PostgreSQL', () => {
     await expect(repository.replaceBillingDay({ cloudAccountUid: '100001', billingDate: DAY, lineItems: [{ ...record('100001', 'after', 20), currency: null } as unknown as CreateBillingLineItemInput], anomalies: [] })).rejects.toThrow();
     expect(await repository.listBillingLineItems()).toEqual(previousLines);
     expect(await repository.listBillingAnomalies()).toEqual(previousAnomalies);
+  });
+
+  it('preserves official ten-to-eighteen-decimal amounts through PostgreSQL, summaries and exports', async () => {
+    await createProvenBillingLedger(repository, { cloudAccountUid: '100001', regionId: 'cn-hangzhou', cloudResourceId: 'i-precision',
+      cloudResourceType: 'ecs', billingScope: 'platform', billingStartAt: new Date(DAY) });
+    const config = { getAccountContext: async () => ({ provider: 'alibaba_cloud', accountUid: '100001', accountUidResolved: true }) } as unknown as SystemConfigService;
+    const bill = { OwnerID: '100001', ProductCode: 'ecs', InstanceID: 'i-precision', BillingItem: 'CPU', Currency: 'CNY', Region: 'cn-hangzhou' };
+    const items = [{ ...bill, PretaxAmount: 0.1325781504 }, { ...bill, Item: 'Refund', PretaxAmount: '-0.0000000001' },
+      { ...bill, Currency: 'USD', PretaxAmount: '1e-18' }, { ...bill, Region: 'cn-beijing', PretaxAmount: 0.13257815049 }];
+    await new BillingSyncService(repository, { listDailyBillingItems: async () => items } as unknown as BillingBssClient, config).syncRange({ startAt: DAY, endAt: DAY });
+    expect((await prisma.billingLineItem.findMany()).map(item => item.pretaxAmount.toFixed())).toEqual(expect.arrayContaining(['0.1325781504', '-0.0000000001', '0.000000000000000001']));
+    expect((await prisma.billingAnomaly.findFirst())!.pretaxAmount.toFixed()).toBe('0.13257815049');
+    const service = new BillingService(repository);
+    expect((await service.getSummary({ startAt: DAY, endAt: DAY })).currencyTotals).toEqual([
+      { currency: 'CNY', totalPretaxAmount: 0.1325781503, platformPretaxAmount: 0.1325781503 },
+      { currency: 'USD', totalPretaxAmount: 1e-18, platformPretaxAmount: 1e-18 },
+    ]);
+    const csv = await service.exportPlatformCsv({ startAt: DAY, endAt: DAY });
+    expect(csv).toContain('CNY,0.1325781503,0.1325781503\n');
+    expect(csv).toContain('USD,1e-18,1e-18\n');
   });
 
   it('serializes simultaneous whole-day versions while retaining another account and unknown history', async () => {

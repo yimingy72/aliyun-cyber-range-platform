@@ -27,7 +27,7 @@ import {
 
 type ExistingRangeTemplate = NonNullable<Awaited<ReturnType<AdminRepository['getRangeTemplateById']>>>;
 type AuthenticatedUser = Pick<SessionUserProfile, 'id' | 'role'>;
-type RangeTemplateView = 'platform' | 'mine';
+type RangeTemplateView = 'platform' | 'mine' | 'all';
 type EcsImageSelection = {
   platformImageAssetId: string;
   imageId: string;
@@ -67,7 +67,12 @@ export class RangeTemplatesService {
     }
 
     const view = this.normalizeView(viewText);
+    if (view === 'all' && currentUser.role !== 'admin') {
+      throw new ForbiddenException('Only administrators can list all templates');
+    }
     const visibleTemplates = templates.filter((template) => {
+      if (view === 'all') return true;
+
       if (view === 'mine') {
         return template.ownerUserId === currentUser.id;
       }
@@ -448,11 +453,11 @@ export class RangeTemplatesService {
       return 'mine';
     }
 
-    if (viewText === 'platform') {
+    if (viewText === 'platform' || viewText === 'all') {
       return viewText;
     }
 
-    throw new BadRequestException('view must be one of: platform, mine');
+    throw new BadRequestException('view must be one of: platform, mine, all');
   }
 
   private assertTemplateReadable(template: ExistingRangeTemplate, currentUser: AuthenticatedUser) {

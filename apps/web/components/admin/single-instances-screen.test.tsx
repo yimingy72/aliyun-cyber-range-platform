@@ -388,7 +388,7 @@ describe('SingleInstancesScreen', () => {
     expect(within(table).getByRole('columnheader', { name: '公网 IP' })).toBeTruthy();
     expect(within(table).getByRole('columnheader', { name: '账号 / 密码' })).toBeTruthy();
     expect(screen.getByRole('button', { name: '创建实例' })).toBeTruthy();
-    expect(screen.getByText('root / ******')).toBeTruthy();
+    expect(await screen.findByText('root / ******')).toBeTruthy();
 
     await openCreateDialog();
     expect((screen.getByLabelText('密码') as HTMLInputElement).type).toBe('password');

@@ -33,6 +33,7 @@
 - 概览 `billingScope=platform_resources` 确认统计范围仅为平台创建资源；缺失时范围未知，不能把旧接口的账号级金额重新标为平台支出。`billingStatus=provisional` 表示金额仍可能随 BSS 出账、退款或调整变化；`unallocatedCurrencyTotals` 和 `anomalyCount` 仅包含已证明属于平台但尚未完成分配的精确费用，不加到用户或平台公共金额。`resourcesWithoutBillCount` 仅统计选定时间范围内平台创建台账尚未匹配账单的可能计费资源；`reconciliationIssues` 按快照或 OSS 类型列出已知平台资源的待核对数量与原因；`unknown` 表示平台创建链已知但历史账号或归属来源待核验，均不包含账号聚合金额。字段缺失表示未知，待出账不代表免费。应付费用采用 BSS `PretaxAmount`，不把现金支付、优惠券抵扣或原价重复相加。
 - 账期采用 UTC+8（上海）。今天和未来日期不会替换已有账单，响应会返回 `deferredDates`。阿里云 BSS 数据有延迟，初次查询新资源没有账单不能判定费用为零；费用验证应优先选择至少两天前的完整账期，并与实际 BSS 资源 ID、账号、用户、批次/实例归属逐项核对。
 - 多币种费用不换算、不相加。`currencyTotals`/`amounts` 按币种返回金额；单币种保留数字汇总并附 `currency`，多币种的总金额为 `null`。用户列表先按币种、再在同币种内按费用排序。CSV 同样按币种分列。
+- 官方资源金额原样保留至 18 位小数，不将合法的 10 位费用或负退款截断为 9 位；金额必须满足现有数字接口的无损往返及绝对值小于 `1e11`（原币）的范围。平台相关金额超出支持范围时保留旧账；无平台归属的外部费用不因存储精度阻塞平台同步。OSS/快照源总额与所有分账金额仍完整核对，不先剔除外部分账凑齐差额。参见 [阿里云金额字段](https://help.aliyun.com/zh/user-center/developer-reference/api-bssopenapi-2017-12-14-describeinstancebill)。
 - CSV 仅在用户明确要求导出时生成；只报告文件名、行数和非敏感摘要。
 
 ## 腾讯云费用明细

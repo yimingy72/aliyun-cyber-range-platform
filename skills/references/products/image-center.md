@@ -11,6 +11,7 @@
 | 查询平台镜像 | `platform_image_list` | — | `view: platform\|mine`，默认 `platform` | `images:read` |
 | 查询标签字典 | `platform_image_tag_list` | — | — | `images:read`，已认证用户 |
 | 创建标签定义 | `platform_image_tag_create` | `name`（1–32字符） | 操作元数据 | `images:write`，仅管理员 |
+| 删除标签定义 | `platform_image_tag_delete` | `platformImageTagId` | 操作元数据 | `images:write`，仅管理员 |
 | 替换资产标签关联 | `platform_image_tags_set` | `platformImageAssetId`、完整 `tagIds` | 操作元数据 | `images:write`，owner或管理员 |
 | 收录云快照 | `platform_image_collect` | `snapshotId`、`displayName` | 操作元数据 | `images:write`，仅管理员 |
 | 重命名 | `platform_image_rename` | `platformImageAssetId`、`displayName` | 操作元数据 | `images:write` |
@@ -55,6 +56,8 @@
 
 腾讯云新打包在 CreateImage 前保存全部源盘的完整快照基线和官方 RequestId，基线绑定原空间、UID、配置、地域及 owner，创建后不可补写或替换。只接管不在该基线中的私有、非复制、无共享快照，且必须精确对应源盘并仅绑定原带原子来源标签的平台镜像。厂商未注明时区的 CreateTime 保留原文，不靠猜测 UTC 或 UTC+8 判断新旧。旧或未知打包没有基线时继续隔离核验，不能补基线后重建或将外部快照归属平台。
 
-标签字典当前只有查询和创建，没有全局标签重命名或删除能力。资产标签关联采用完整集合替换：先用 `platform_image_tag_list` 取得已有定义ID，再传完整目标 `tagIds`；`[]` 仅清空该资产关联，标签定义继续保留。普通用户只可修改自己的当前账号/地域资产关联；公开可见的他人资产仍不可修改。全局创建与关联替换按MCP二阶段确认，执行时重新验证角色/owner和标签存在性；不修改阿里云资源标签。
+标签定义属于当前云账号工作空间，支持查询、管理员创建与删除，暂不支持重命名。`platform_image_tag_delete` 删除准确 ID 的定义及当前空间全部镜像的该标签关联，保留镜像、快照和云资源；不影响其他空间同名标签。调用前确认这个完整范围并完成 MCP 二阶段确认，相同确认与幂等键可恢复原结果。
 
-受控测试复用正式字典已有标签并在结束时恢复原关联。新标签创建的成功、重复、并发唯一性测试放在Docker独立PG；当前平台仅验证已有名称重复拒绝，不创建无法通过现有接口删除的临时定义。
+资产标签关联采用完整集合替换：先用 `platform_image_tag_list` 取得已有定义 ID，再传完整目标 `tagIds`；`[]` 仅清空该资产关联，标签定义继续保留。普通用户只可修改自己的当前账号/地域资产关联，不能创建或删除标签定义。公开可见的他人资产仍不可修改。创建、删除与关联替换执行时重新验证角色/owner 和标签存在性；不修改云厂商资源标签。若并发删除导致标签不存在，刷新标签字典再提交，不重复创建同名定义。
+
+受控测试复用正式字典已有标签并在结束时恢复原关联。标签定义创建、删除、关联回收、并发和跨空间隔离测试优先放在 Docker 独立 PostgreSQL；不删除未经用户指定的业务标签。

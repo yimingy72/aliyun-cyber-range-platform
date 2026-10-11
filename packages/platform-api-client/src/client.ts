@@ -155,6 +155,10 @@ export class PlatformApiClient implements PlatformApiClientLike {
     return this.request<PlatformImageTag>('/admin/platform-image-tags', { method: 'POST', body: JSON.stringify({ name }), operation });
   }
 
+  deletePlatformImageTag(id: string, operation?: OperationRequest) {
+    return this.request<{ removed: boolean; platformImageTagId: string }>(`/admin/platform-image-tags/${encodeURIComponent(id)}`, { method: 'DELETE', operation });
+  }
+
   setPlatformImageTags(id: string, tagIds: string[], operation?: OperationRequest) {
     return this.request<PlatformImageAsset>(`/admin/platform-images/${encodeURIComponent(id)}/tags`, { method: 'PUT', body: JSON.stringify({ tagIds }), operation });
   }

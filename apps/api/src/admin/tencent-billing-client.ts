@@ -1,7 +1,7 @@
-import { Prisma } from '@aliyun-cyber-range/database/generated/client';
 import { Injectable } from '@nestjs/common';
 
 import { requestTencentCloud } from './tencent-cloud-client';
+import { BillingDecimal } from './billing-amount';
 
 export type TencentBillingContext = {
   provider: string;
@@ -29,8 +29,6 @@ type BillDetailResponse = {
   Total?: number | null;
   Context?: string | null;
 };
-
-const BillingDecimal = Prisma.Decimal.clone({ precision: 80 });
 
 function currencyShape(value: unknown) {
   if (value === null) return 'null';

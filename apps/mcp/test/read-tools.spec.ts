@@ -199,6 +199,7 @@ function createClientStub(): ClientStub {
     listPlatformImages: vi.fn().mockResolvedValue([{ id: 'img-1' }]),
     listPlatformImageTags: vi.fn().mockResolvedValue([{ id: 'tag-1', name: 'Web' }]),
     createPlatformImageTag: vi.fn().mockResolvedValue({ id: 'tag-2', name: 'Service' }),
+    deletePlatformImageTag: vi.fn().mockResolvedValue({ removed: true, platformImageTagId: 'tag-1' }),
     setPlatformImageTags: vi.fn().mockResolvedValue({ id: 'img-1', tags: [] }),
     collectPlatformImage: vi.fn().mockResolvedValue({ id: 'img-2' }),
     renamePlatformImage: vi.fn().mockResolvedValue({ id: 'img-1', displayName: 'renamed' }),
@@ -293,7 +294,7 @@ describe('tool registry', () => {
   it('filters admin-only image tools using the authenticated role without granting new scopes', async () => {
     const client = createClientStub(); const registry = createToolRegistry(client);
     const names = registry.listTools(['images:read', 'images:write'], 'user').map(tool => tool.name);
-    for (const name of ['platform_image_collect', 'platform_image_publish', 'platform_image_unpublish', 'platform_image_tag_create']) expect(names).not.toContain(name);
+    for (const name of ['platform_image_collect', 'platform_image_publish', 'platform_image_unpublish', 'platform_image_tag_create', 'platform_image_tag_delete']) expect(names).not.toContain(name);
     expect(names).toContain('platform_image_tag_list'); expect(names).toContain('platform_image_tags_set');
     await expect(registry.callTool('platform_image_tag_create', ['images:write'], { name: 'blocked' }, 'user')).rejects.toThrow('Forbidden tool');
     expect(client.createPlatformImageTag).not.toHaveBeenCalled();
@@ -315,7 +316,11 @@ describe('tool registry', () => {
     expect(schema.safeParse({ platformImageAssetId: 'img-1', tagIds: ['tag-1', 'tag-1'] }).success).toBe(false);
     expect(schema.safeParse({ platformImageAssetId: 'img-1' }).success).toBe(false);
     const names = registry.listTools(['images:read', 'images:write'], 'admin').map(tool => tool.name);
-    expect(names).not.toContain('platform_image_tag_delete');
+    expect(names).toContain('platform_image_tag_delete');
+    await registry.callTool('platform_image_tag_delete', ['images:write'], { platformImageTagId: 'tag-1', idempotencyKey: 'delete-tag', confirmationId: 'delete-confirm' }, 'admin');
+    expect(client.deletePlatformImageTag).toHaveBeenCalledWith('tag-1', { idempotencyKey: 'delete-tag', confirmationId: 'delete-confirm' });
+    await expect(registry.callTool('platform_image_tag_delete', ['images:write'], { platformImageTagId: 'tag-1' }, 'user')).rejects.toThrow('Forbidden tool');
+    expect(registry.listTools(['images:read'], 'admin').map(tool => tool.name)).not.toContain('platform_image_tag_delete');
     expect(names).not.toContain('platform_image_tag_rename');
   });
 
@@ -1336,7 +1341,7 @@ describe('tool registry', () => {
 
     const tools = registry.listTools(scopes, 'admin');
 
-    expect(tools).toHaveLength(90);
+    expect(tools).toHaveLength(91);
     expect(tools.every((tool) => tool.inputSchema)).toBe(true);
     expect(tools.every((tool) => tool.outputSchema?.safeParse({}).success === false)).toBe(true);
     expect(

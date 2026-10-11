@@ -114,7 +114,7 @@ const TEMPLATE_COLUMNS: readonly AdminDataColumn[] = [
 ];
 
 function readTemplateView(value: string | null): RangeTemplateView {
-  return value === 'platform' ? 'platform' : 'mine';
+  return value === 'platform' || value === 'all' ? value : 'mine';
 }
 
 function createNewTemplateDraftId() {
@@ -194,20 +194,25 @@ export function TemplatesScreen({
   const canProvision = !workspace || (!workspace.isReadOnly && workspace.capabilities.provisioning);
   const canLaunchRange = canProvision && (!workspace || (workspace.capabilities.rangeProvisioning ?? workspace.provider === 'alibaba_cloud'));
   const isPageActive = useAdminRouteIsActive('/admin/scenarios');
-  const [activeView, setActiveView] = useState<RangeTemplateView>(() => readTemplateView(searchParams.get('view')));
+  const [selectedView, setActiveView] = useState<RangeTemplateView>(() => readTemplateView(searchParams.get('view')));
+  const activeView = selectedView === 'all' && !session.isAdmin ? 'mine' : selectedView;
   const screenCache = useAdminScreenCache();
   const cachedPlatformTemplates = screenCache?.read<Scenario[]>(apiBaseUrl, session.token, 'templates:platform');
   const cachedMyTemplates = screenCache?.read<Scenario[]>(apiBaseUrl, session.token, 'templates:mine');
-  const cachedActiveTemplates = activeView === 'platform' ? cachedPlatformTemplates : cachedMyTemplates;
+  const cachedAllTemplates = session.isAdmin ? screenCache?.read<Scenario[]>(apiBaseUrl, session.token, 'templates:all') : undefined;
+  const cachedActiveTemplates = activeView === 'all' ? cachedAllTemplates : activeView === 'platform' ? cachedPlatformTemplates : cachedMyTemplates;
   const [platformTemplates, setPlatformTemplates] = useState<Scenario[]>(() => cachedPlatformTemplates?.data ?? []);
+  const [allTemplates, setAllTemplates] = useState<Scenario[]>(() => cachedAllTemplates?.data ?? []);
   const [myTemplates, setMyTemplates] = useState<Scenario[]>(() => cachedMyTemplates?.data ?? []);
   const [loadedViews, setLoadedViews] = useState<Record<RangeTemplateView, boolean>>(() => ({
     platform: cachedPlatformTemplates !== null && cachedPlatformTemplates !== undefined,
     mine: cachedMyTemplates !== null && cachedMyTemplates !== undefined,
+    all: cachedAllTemplates !== null && cachedAllTemplates !== undefined,
   }));
   const [tableContentVersions, setTableContentVersions] = useState<Record<RangeTemplateView, number>>({
     platform: 0,
     mine: 0,
+    all: 0,
   });
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [revalidationErrorMessage, setRevalidationErrorMessage] = useState<string | null>(null);
@@ -237,7 +242,7 @@ export function TemplatesScreen({
   const createNameRef = useRef<HTMLInputElement>(null);
   const editNameRef = useRef<HTMLInputElement>(null);
   const launchNameRef = useRef<HTMLInputElement>(null);
-  const [viewPages, setViewPages] = useState<Record<RangeTemplateView, number>>({ platform: 1, mine: 1 });
+  const [viewPages, setViewPages] = useState<Record<RangeTemplateView, number>>({ platform: 1, mine: 1, all: 1 });
   const [jumpPageValue, setJumpPageValue] = useState('1');
   const { pageSize, setPageSize } = useAdminPageSize();
 
@@ -262,8 +267,9 @@ export function TemplatesScreen({
     if (!session.token) {
       setPlatformTemplates([]);
       setMyTemplates([]);
-      setLoadedViews({ platform: false, mine: false });
-      setTableContentVersions({ platform: 0, mine: 0 });
+      setAllTemplates([]);
+      setLoadedViews({ platform: false, mine: false, all: false });
+      setTableContentVersions({ platform: 0, mine: 0, all: 0 });
       setErrorMessage(null);
       setRevalidationErrorMessage(null);
       setActionErrorMessage(null);
@@ -315,7 +321,9 @@ export function TemplatesScreen({
           return;
         }
 
-        if (activeView === 'platform') {
+        if (activeView === 'all') {
+          setAllTemplates(nextTemplates);
+        } else if (activeView === 'platform') {
           setPlatformTemplates(nextTemplates);
         } else {
           setMyTemplates(nextTemplates);
@@ -365,6 +373,7 @@ export function TemplatesScreen({
     apiBaseUrl,
     isPageActive,
     loadAttempt,
+    loadedViews.all,
     loadedViews.mine,
     loadedViews.platform,
     router,
@@ -373,7 +382,7 @@ export function TemplatesScreen({
     session.token,
   ]);
 
-  const scenarios = activeView === 'platform' ? platformTemplates : myTemplates;
+  const scenarios = activeView === 'all' ? allTemplates : activeView === 'platform' ? platformTemplates : myTemplates;
 
   const filteredTemplates = useMemo(() => {
     return scenarios.filter((scenario) => {
@@ -408,7 +417,7 @@ export function TemplatesScreen({
 
   function handlePageSizeChange(nextValue: 20 | 50 | 100) {
     setPageSize(nextValue);
-    setViewPages({ platform: 1, mine: 1 });
+    setViewPages({ platform: 1, mine: 1, all: 1 });
   }
 
   function setActiveViewWithUrl(nextView: RangeTemplateView) {
@@ -417,8 +426,8 @@ export function TemplatesScreen({
     setActiveView(nextView);
 
     const nextSearchParams = new URLSearchParams(searchParams.toString());
-    if (nextView === 'platform') {
-      nextSearchParams.set('view', 'platform');
+    if (nextView !== 'mine') {
+      nextSearchParams.set('view', nextView);
     } else {
       nextSearchParams.delete('view');
     }
@@ -457,14 +466,17 @@ export function TemplatesScreen({
     }
 
     return (
+      scenarios.find((scenario) => scenario.id === editingTemplateId) ??
+      allTemplates.find((scenario) => scenario.id === editingTemplateId) ??
       myTemplates.find((scenario) => scenario.id === editingTemplateId) ??
       platformTemplates.find((scenario) => scenario.id === editingTemplateId) ??
       null
     );
-  }, [editingTemplateId, myTemplates, platformTemplates]);
+  }, [editingTemplateId, scenarios, allTemplates, myTemplates, platformTemplates]);
 
   function syncOwnedTemplate(savedScenario: Scenario, options: { addToMyTemplates?: boolean } = {}) {
     screenCache?.invalidate(apiBaseUrl, session.token, 'templates:');
+    setAllTemplates((previous) => upsertScenario(previous, savedScenario));
     setMyTemplates((previous) =>
       previous.some((scenario) => scenario.id === savedScenario.id) || options.addToMyTemplates
         ? upsertScenario(previous, savedScenario)
@@ -477,6 +489,7 @@ export function TemplatesScreen({
 
   function removeTemplateFromViews(id: string) {
     screenCache?.invalidate(apiBaseUrl, session.token, 'templates:');
+    setAllTemplates((previous) => removeScenario(previous, id));
     setMyTemplates((previous) => removeScenario(previous, id));
     setPlatformTemplates((previous) => removeScenario(previous, id));
   }
@@ -816,7 +829,7 @@ export function TemplatesScreen({
             activeView={activeView}
             onSearchChange={setSearchName}
             onViewChange={(nextView) => {
-              if (nextView === 'mine' || nextView === 'platform') {
+              if (nextView === 'mine' || nextView === 'platform' || (nextView === 'all' && session.isAdmin)) {
                 setActiveViewWithUrl(nextView);
               }
             }}
@@ -826,6 +839,7 @@ export function TemplatesScreen({
             views={[
               { label: '我的拓扑', value: 'mine' },
               { label: '平台拓扑', value: 'platform' },
+              ...(session.isAdmin ? [{ label: '全部拓扑', value: 'all' }] : []),
             ]}
             action={
               <Button disabled={!canProvision} onClick={() => setIsCreateDialogOpen(true)} type="button">
@@ -912,7 +926,7 @@ export function TemplatesScreen({
                           description={
                             activeView === 'mine'
                               ? '你可以新建一个靶场并开始编排。'
-                              : '平台暂时没有可用的已发布拓扑。'
+                              : activeView === 'all' ? '当前云账号工作空间暂无拓扑。' : '平台暂时没有可用的已发布拓扑。'
                           }
                           title="当前筛选条件下没有靶场"
                           variant="empty"

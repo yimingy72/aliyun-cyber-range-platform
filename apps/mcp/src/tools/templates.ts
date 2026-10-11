@@ -54,13 +54,13 @@ export const templateTools: ToolDefinition[] = [
   {
     name: 'range_template_list',
     title: '查询靶场模板',
-    description: '查询当前有权限查看的靶场模板。view=platform 仅返回已发布到平台且可供使用的模板；view=mine 返回当前用户拥有的可编辑模板。',
+    description: '查询当前有权限查看的靶场模板。view=platform 仅返回已发布到平台且可供使用的模板；view=mine 返回当前用户拥有的可编辑模板；view=all 仅管理员可用，返回当前云账号工作空间内所有模板（含其他用户私有草稿）。',
     requiredScopes: ['templates:read'],
     readOnlyHint: true,
     inputSchema: templateListInputSchema,
     outputSchema: resourceListOutputSchema,
     async call(context, args) {
-      const templates = await context.client.listRangeTemplates((args as { view?: 'platform' | 'mine' }).view ?? 'platform');
+      const templates = await context.client.listRangeTemplates((args as { view?: 'platform' | 'mine' | 'all' }).view ?? 'platform');
       return templates.map(redactTemplateSecrets);
     },
   },

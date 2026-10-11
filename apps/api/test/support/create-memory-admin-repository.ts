@@ -1470,6 +1470,13 @@ export function createMemoryAdminRepository(): AdminRepository {
 
       return clone(record);
     },
+    async deletePlatformImageTag(id: string) {
+      const index = platformImageTags.findIndex((tag) => tag.id === id);
+      if (index < 0) return false;
+      platformImageTags.splice(index, 1);
+      for (const asset of platformImageAssets) asset.tags = asset.tags.filter((tag) => tag.id !== id);
+      return true;
+    },
     async listPlatformImageAssets(filter: ListPlatformImageAssetsFilter = {}) {
       return cloneList(
         platformImageAssets

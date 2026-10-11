@@ -190,6 +190,42 @@ function selectTemplateView(view: 'mine' | 'platform') {
 }
 
 describe('TemplatesScreen', () => {
+  it('shows all workspace drafts to administrators and opens another owner template for management', async () => {
+    const draft = { ...bootstrapPayload.rangeTemplates[1], id: 'other-owner-draft', name: 'test1-test1', ownerUserId: 'other-user', createdBy: 'other-user', canManage: true };
+    fetchRangeTemplatesMock.mockImplementation(async (_url: string, _token: string, view: string) => view === 'all' ? [draft] : []);
+    updateRangeTemplateMock.mockResolvedValue({ ...draft, name: 'updated-test1', revision: 6 });
+    render(<TemplatesScreen />);
+    await waitFor(() => expect(fetchRangeTemplatesMock).toHaveBeenCalledWith('http://localhost:3001', 'dev-admin-token', 'mine'));
+    fireEvent.mouseDown(screen.getByRole('tab', { name: '全部拓扑' }), { button: 0, ctrlKey: false });
+    const row = await screen.findByRole('row', { name: /test1-test1/ });
+    expect(fetchRangeTemplatesMock).toHaveBeenLastCalledWith('http://localhost:3001', 'dev-admin-token', 'all');
+    expect(window.location.search).toBe('?view=all');
+    openTemplateActionMenu(row);
+    expect(screen.getByRole('menuitem', { name: '删除模板' })).toBeTruthy();
+    fireEvent.click(screen.getByRole('menuitem', { name: '编辑信息' }));
+    expect(screen.getByRole('textbox', { name: '靶场名' })).toHaveProperty('value', 'test1-test1');
+    fireEvent.change(screen.getByRole('textbox', { name: '靶场名' }), { target: { value: 'updated-test1' } });
+    fireEvent.click(screen.getByRole('button', { name: '保存信息' }));
+    await screen.findByRole('row', { name: /updated-test1/ });
+    expect(updateRangeTemplateMock).toHaveBeenCalledWith('http://localhost:3001', 'dev-admin-token', draft.id, expect.objectContaining({ name: 'updated-test1', expectedRevision: 5 }));
+    fireEvent.mouseDown(screen.getByRole('tab', { name: '我的拓扑' }), { button: 0, ctrlKey: false });
+    await waitFor(() => expect(screen.queryByRole('row', { name: /updated-test1/ })).toBeNull());
+  });
+
+  it('restores the administrator all view from its URL while ordinary users cannot request it', async () => {
+    window.history.replaceState(null, '', '/admin/scenarios?view=all');
+    fetchRangeTemplatesMock.mockResolvedValue([]);
+    const mounted = render(<TemplatesScreen />);
+    await waitFor(() => expect(fetchRangeTemplatesMock).toHaveBeenCalledWith('http://localhost:3001', 'dev-admin-token', 'all'));
+    mounted.unmount();
+    fetchRangeTemplatesMock.mockClear();
+    sessionState.profile = { id: 'ordinary', username: 'ordinary', role: 'user' };
+    render(<TemplatesScreen />);
+    await waitFor(() => expect(fetchRangeTemplatesMock).toHaveBeenCalledWith('http://localhost:3001', 'dev-admin-token', 'mine'));
+    expect(screen.queryByRole('tab', { name: '全部拓扑' })).toBeNull();
+    expect(fetchRangeTemplatesMock).not.toHaveBeenCalledWith(expect.anything(), expect.anything(), 'all');
+  });
+
   it('restores a fresh cached view after returning to the page', async () => {
     fetchRangeTemplatesMock.mockResolvedValue([bootstrapPayload.rangeTemplates[0]]);
 

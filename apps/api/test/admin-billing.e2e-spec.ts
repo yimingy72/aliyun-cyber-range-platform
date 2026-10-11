@@ -289,4 +289,21 @@ describe('Admin billing', () => {
       .set('authorization', `Bearer ${userToken}`)
       .expect(403);
   });
+
+  it('explains an unsupported upstream amount without leaking the cloud response', async () => {
+    const adminToken = await loginAsRepositoryUser(repository, 'admin');
+    (app.get(BillingBssClient).listDailyBillingItems as jest.Mock).mockRejectedValueOnce(
+      new Error('BSS PretaxAmount exceeds ledger precision; upstream-private-detail'),
+    );
+    const response = await request(app.getHttpServer())
+      .post('/admin/billing/sync')
+      .set('authorization', `Bearer ${adminToken}`)
+      .send({ startAt: '2026-07-16', endAt: '2026-07-16' })
+      .expect(502);
+    expect(response.body).toEqual({
+      code: 'BILLING_AMOUNT_PRECISION',
+      message: '云厂商账单金额超出平台可无损保存的精度，失败账期的原有数据已保留，请联系管理员检查。',
+    });
+    expect(response.text).not.toContain('upstream-private-detail');
+  });
 });

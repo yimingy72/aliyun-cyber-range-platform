@@ -76,4 +76,35 @@ describe('Image tag MCP confirmation and owner protection', () => {
     await expect(assets.setTags(confirmed(req(other), info), assetId, { tagIds: [tag.id] })).rejects.toThrow('does not match');
     expect((await repository.getPlatformImageAssetById(assetId))!.tags).toEqual([]);
   }));
+  it('deletes only after admin confirmation, removes associations, audits and replays once', async () => runInCloudWorkspace(workspace, async () => {
+    const tag = await service.createPlatformImageTag({ name: 'Web' }, admin);
+    await service.setPlatformAssetTags(assetId, { tagIds: [tag.id] }, owner);
+    const remove = jest.spyOn(repository, 'deletePlatformImageTag');
+    const audit = jest.spyOn(repository, 'appendOperationAuditEvent');
+    await expect(definitions.remove(req(owner), tag.id)).rejects.toThrow('Admin access');
+    const info = await required(() => definitions.remove(req(admin), tag.id));
+    expect(remove).not.toHaveBeenCalled();
+    await expect(runInCloudWorkspace({ ...workspace, cloudWorkspaceId: 'other-space' }, () => definitions.remove(confirmed(req(admin), info), tag.id))).rejects.toThrow('does not match');
+    const replay = confirmed(req(admin), info);
+    await expect(definitions.remove(replay, 'different-tag')).rejects.toThrow('does not match');
+    await expect(definitions.remove(replay, tag.id)).resolves.toMatchObject({ result: { removed: true, platformImageTagId: tag.id } });
+    await definitions.remove(replay, tag.id);
+    expect(remove).toHaveBeenCalledTimes(1);
+    expect((await repository.getPlatformImageAssetById(assetId))!.tags).toEqual([]);
+    expect(await repository.listImageSnapshots({ imageId: 'm-owned' })).toHaveLength(1);
+    expect(audit).toHaveBeenCalledWith(expect.objectContaining({ toolName: 'platform_image_tag_delete', phase: 'succeeded', targetId: tag.id }));
+  }));
+  it('revalidates admin rights and tag existence at execution', async () => runInCloudWorkspace(workspace, async () => {
+    const tag = await service.createPlatformImageTag({ name: 'Web' }, admin);
+    const info = await required(() => definitions.remove(req(admin), tag.id));
+    await expect(definitions.remove(confirmed(req({ ...admin, role: 'user' }), info), tag.id)).rejects.toThrow('Admin access');
+    expect(await repository.listPlatformImageTags()).toHaveLength(1);
+    await expect(service.deletePlatformImageTag('unknown', admin)).rejects.toBeInstanceOf(NotFoundException);
+  }));
+  it('returns a conflict when deletion races with an association write', async () => runInCloudWorkspace(workspace, async () => {
+    const tag = await service.createPlatformImageTag({ name: 'Web' }, admin);
+    jest.spyOn(repository, 'replacePlatformImageAssetTags').mockRejectedValueOnce({ code: 'P2025' });
+    await expect(service.setPlatformAssetTags(assetId, { tagIds: [tag.id] }, owner)).rejects.toThrow('已被删除');
+  }));
+
 });
