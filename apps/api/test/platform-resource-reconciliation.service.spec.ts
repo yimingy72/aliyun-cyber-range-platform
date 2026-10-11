@@ -234,6 +234,10 @@ describe('OpenTofu member reconciliation isolation', () => {
     const test = await fixture();
     const instance = test.instances[0];
     await test.repository.updateProvisionJob(test.jobs[0].id, { status: 'failed' });
+    // Destruction may clear the runtime summary, but the original physical creation ledger survives.
+    await test.repository.createBillingLedgerResource({ regionId: 'cn-hangzhou', cloudResourceId: 'i-0', cloudResourceType: 'ecs',
+      cloudAccountUid: 'account-a', billingScope: 'user', ownerUserId: 'alice', rangeInstanceId: instance.id,
+      singleInstanceBatchId: 'batch-a', sourceProvisionJobId: test.jobs[0].id, billingStartAt: instance.createdAt });
     await test.repository.updateRangeInstance(instance.id, { status: status as never, resourceSummary: null, errorSummary: 'cleanup requires retry' });
     test.cloud[0].diskIds.push('d-attached');
     const update = jest.spyOn(test.repository, 'updateRangeInstance');
@@ -246,6 +250,57 @@ describe('OpenTofu member reconciliation isolation', () => {
     expect((await test.repository.listBillingLedgerResources()).every(row => row.cloudAccountUid === 'account-a'
       && row.sourceProvisionJobId === test.jobs[0].id && row.ownerUserId === 'alice' && row.releasedAt === null)).toBe(true);
     expect(drift).toHaveBeenCalledWith(expect.objectContaining({ severity: 'critical', rangeInstanceId: instance.id }));
+  });
+
+  it.each(['create_failed', 'destroy_failed', 'destroyed'])('does not adopt an unrecorded physical ECS with copied tags for a %s member', async status => {
+    const test = await fixture();
+    await test.repository.updateRangeInstance(test.instances[0].id, { status: status as never });
+    test.cloud[0].instanceId = 'i-unrecorded';
+    const before = await test.repository.getRangeInstanceById(test.instances[0].id);
+    const drift = jest.spyOn(test.repository, 'upsertCloudResourceDrift');
+    expect(await test.service.reconcile()).toEqual({ recovered: 0, drifts: 1, skipped: false });
+    expect(await test.repository.listBillingLedgerResources()).toEqual([]);
+    expect(await test.repository.getRangeInstanceById(test.instances[0].id)).toEqual(before);
+    expect(drift).toHaveBeenCalledWith(expect.objectContaining({ cloudResourceId: 'i-unrecorded', severity: 'critical' }));
+    expect(test.client.tagResources).not.toHaveBeenCalled();
+  });
+
+  it('requires durable creation evidence when a terminal member has lost its runtime inventory', async () => {
+    const test = await fixture();
+    await test.repository.updateRangeInstance(test.instances[0].id, { status: 'destroyed', resourceSummary: null });
+    expect(await test.service.reconcile()).toEqual({ recovered: 0, drifts: 1, skipped: false });
+    expect(await test.repository.listBillingLedgerResources()).toEqual([]);
+  });
+
+  it.each(['account', 'owner', 'instance', 'batch', 'source-job'])('does not use a historical physical-ID collision with a different %s as creation evidence', async mismatch => {
+    const test = await fixture();
+    const instance = test.instances[0];
+    await test.repository.updateRangeInstance(instance.id, { status: 'destroyed', resourceSummary: null });
+    const prior = await test.repository.createBillingLedgerResource({ regionId: 'cn-hangzhou', cloudResourceId: 'i-0', cloudResourceType: 'ecs',
+      cloudAccountUid: mismatch === 'account' ? 'other-account' : 'account-a', billingScope: 'user',
+      ownerUserId: mismatch === 'owner' ? 'bob' : 'alice', rangeInstanceId: mismatch === 'instance' ? 'other-instance' : instance.id,
+      singleInstanceBatchId: mismatch === 'batch' ? 'other-batch' : 'batch-a',
+      sourceProvisionJobId: mismatch === 'source-job' ? 'other-job' : test.jobs[0].id,
+      billingStartAt: instance.createdAt, releasedAt: new Date('2026-10-01') });
+    expect(await test.service.reconcile()).toEqual({ recovered: 0, drifts: 1, skipped: false });
+    expect(await test.repository.listBillingLedgerResources()).toEqual([prior]);
+  });
+
+  it('does not reopen unverified disk charges while recording a proven surviving failed ECS', async () => {
+    const test = await fixture();
+    const instance = test.instances[0];
+    await test.repository.updateRangeInstance(instance.id, { status: 'destroy_failed' });
+    const disk = await test.repository.createBillingLedgerResource({ regionId: 'cn-hangzhou', cloudResourceId: 'd-0', cloudResourceType: 'disk',
+      cloudAccountUid: 'account-a', billingScope: 'user', ownerUserId: 'alice', rangeInstanceId: instance.id,
+      singleInstanceBatchId: 'batch-a', sourceProvisionJobId: test.jobs[0].id, billingStartAt: instance.createdAt,
+      releasedAt: new Date('2026-10-01') });
+    test.client.verifyRecordedDisks.mockResolvedValue(false);
+    expect(await test.service.reconcile()).toEqual({ recovered: 0, drifts: 1, skipped: false });
+    const ledgers = await test.repository.listBillingLedgerResources();
+    expect(ledgers.find(row => row.id === disk.id)).toEqual(disk);
+    expect(ledgers.find(row => row.cloudResourceType === 'ecs')).toMatchObject({ cloudResourceId: 'i-0', releasedAt: null });
+    expect(ledgers).toHaveLength(2);
+    expect(await test.repository.getRangeInstanceById(instance.id)).toMatchObject({ status: 'destroy_failed' });
   });
 
   it.each(['missing disk','foreign disk'])('reports %s without replacing disk ownership or closing its ledger', async reason => {
