@@ -40,6 +40,7 @@ jobs:
           c61785270cccaecb6ca4c77802e1b0b9f4125ecd billing-tests.patch
           c3185332b3f9f4f3c57faa325bf64cc22ec1779d surface-apps.patch
           a6b7ee90fb8f6862950a757c76fb136b218a182f surface-infra.patch
+          82b87253f020b42990751d700a9d3e7646c5272f extra1.patch
           HASHES
           cd .worktrees/guardrails-validation
           git add -N apps packages infra scripts docs skills
@@ -48,22 +49,12 @@ jobs:
           git diff --name-only | while read -r file; do printf '%s %s\n' "$(git hash-object "$file")" "$file"; done > "$RUNNER_TEMP/guardrails-results/file-blobs.txt"
           git show "$REVIEW_BASE:apps/api/src/admin/range-instances.service.ts" > "$RUNNER_TEMP/guardrails-baseline/range-instances.service.ts"
           git show "$REVIEW_BASE:apps/api/src/provisioning/open-tofu-range-provisioner.ts" > "$RUNNER_TEMP/guardrails-baseline/open-tofu-range-provisioner.ts"
-      - name: Free runner disk
-        run: sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc
-      - uses: actions/cache@v4
-        with:
-          path: .local/provider-fast-wait/cache
-          key: ${{ runner.os }}-alicloud-fast-wait-${{ hashFiles('scripts/provider/alicloud-fast-wait/**') }}
-      - uses: actions/cache@v4
-        with:
-          path: .local/tencentcloud-idempotency
-          key: ${{ runner.os }}-tencentcloud-provider-${{ hashFiles('scripts/provider/tencentcloud-idempotency/*') }}
       - name: Build the changed-source Docker image
         working-directory: .worktrees/guardrails-validation
         run: |
           mkdir -p "$GITHUB_WORKSPACE/.local"
           ln -s "$GITHUB_WORKSPACE/.local" .local
-          docker build -f scripts/ci/Dockerfile -t "cyber-range-guardrails:$GITHUB_RUN_ID" .
+          docker build --build-arg ALPINE_REPOSITORY=https://dl-cdn.alpinelinux.org/alpine --build-arg PRISMA_ENGINES_MIRROR=https://binaries.prisma.sh -f scripts/ci/Dockerfile -t "cyber-range-guardrails:$GITHUB_RUN_ID" .
       - name: Run targeted regression tests in Docker
         shell: bash
         run: |
@@ -73,7 +64,7 @@ jobs:
               pnpm --filter @aliyun-cyber-range/api test --runTestsByPath \
                 test/alibaba-range-expiry.spec.ts test/reconciliation-scheduling-budget.spec.ts \
                 test/billing-lifecycle-risks.spec.ts test/background-cloud-workspace.spec.ts \
-                test/platform-resource-reconciliation.service.spec.ts \
+                test/platform-resource-reconciliation.service.spec.ts test/range-worker-cost-safety.spec.ts \
                 --json --outputFile=/results/fixed.json
             ' 2>&1 | tee "$RUNNER_TEMP/guardrails-results/fixed.log"
       - name: Prove original admission and provisioning sources fail the new wiring tests
@@ -93,6 +84,16 @@ jobs:
           set -e
           test "$result" -ne 0
           python3 -c 'import json,os; d=json.load(open(os.environ["RUNNER_TEMP"]+"/guardrails-results/baseline.json")); assert d["numFailedTests"] >= 3 and d["numRuntimeErrorTestSuites"] == 0, d'
+      - name: Free runner disk
+        run: sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc
+      - uses: actions/cache@v4
+        with:
+          path: .local/provider-fast-wait/cache
+          key: ${{ runner.os }}-alicloud-fast-wait-${{ hashFiles('scripts/provider/alicloud-fast-wait/**') }}
+      - uses: actions/cache@v4
+        with:
+          path: .local/tencentcloud-idempotency
+          key: ${{ runner.os }}-tencentcloud-provider-${{ hashFiles('scripts/provider/tencentcloud-idempotency/*') }}
       - name: Build and test compatibility with pinned master in Docker
         working-directory: .worktrees/guardrails-validation
         shell: bash

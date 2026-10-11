@@ -1,0 +1,78 @@
+diff --git a/infra/opentofu/modules/alicloud-enterprise-range/main.tf b/infra/opentofu/modules/alicloud-enterprise-range/main.tf
+--- a/infra/opentofu/modules/alicloud-enterprise-range/main.tf
++++ b/infra/opentofu/modules/alicloud-enterprise-range/main.tf
+@@ -507,6 +507,8 @@
+   secondary_private_ips = lookup(local.primary_secondary_ips_by_host, each.key, null)
+   user_data             = try(local.host_user_data_map[each.key], null)
+   auto_release_time     = try(each.value.auto_release_time, null)
++  instance_charge_type  = "PostPaid"
++  deletion_protection   = false
+   system_disk_category  = var.system_disk_category
+   system_disk_size      = coalesce(try(each.value.system_disk_size, null), var.system_disk_size)
+ 
+diff --git a/apps/api/test/range-worker-cost-safety.spec.ts b/apps/api/test/range-worker-cost-safety.spec.ts
+--- a/apps/api/test/range-worker-cost-safety.spec.ts
++++ b/apps/api/test/range-worker-cost-safety.spec.ts
+@@ -41,6 +41,44 @@
+ }
+ 
+ describe('range worker durable cost safety', () => {
++  it('recovers remaining EIPs after native ECS expiry without recreating the host or declaring early settlement', async () => {
++    jest.useFakeTimers();
++    try {
++      const f = await fixture('create');
++      await f.worker.process(f.job.id);
++      const created = await f.repository.getRangeInstanceById(f.instance.id);
++      expect(created?.resourceSummary?.diskInventoryHostIds).toEqual({ entry: 'i-owned' });
++      await f.repository.updateRangeInstance(f.instance.id, { expiresAt: new Date(Date.now() - 60_000) });
++      let eipReads = 0;
++      f.query.mockImplementation(async (input: any) => {
++        const common = { RequestId: 'native-expiry-fixture', TotalCount: 0, PageSize: 100, PageNumber: 1 };
++        if (input.action === 'DescribeInstances') return { ...common, Instances: { Instance: [] } };
++        if (input.action === 'DescribeDisks') return { ...common, Disks: { Disk: [] } };
++        if (input.action === 'DescribeEipAddresses') {
++          eipReads++;
++          expect(input.parameters.AllocationId).toBe('eip-owned');
++          expect((await f.repository.listBillingLedgerResources()).every(row => !row.releasedAt)).toBe(true);
++          expect((await f.repository.getRangeInstanceById(f.instance.id))?.status).toBe('destroying');
++          return { ...common, TotalCount: eipReads === 1 ? 1 : 0,
++            EipAddresses: { EipAddress: eipReads === 1 ? [{ AllocationId: 'eip-owned' }] : [] } };
++        }
++        throw new Error(`Unexpected recovery query ${input.action}`);
++      });
++      await f.worker.processExpiredInstances(new Date());
++      const expired = await f.repository.getRangeInstanceById(f.instance.id);
++      const job = await f.repository.getProvisionJobById(expired!.lastJobId!);
++      expect(job).toMatchObject({ jobType: 'destroy', triggeredBy: 'system:auto-expire' });
++      const running = f.worker.process(job!.id);
++      await jest.advanceTimersByTimeAsync(6_000);
++      await running;
++      expect(eipReads).toBe(2);
++      expect(f.provisioner.create).toHaveBeenCalledTimes(1);
++      expect(f.provisioner.destroy).toHaveBeenCalledTimes(1);
++      expect((await f.repository.getRangeInstanceById(f.instance.id))?.status).toBe('destroyed');
++      expect((await f.repository.listBillingLedgerResources()).every(row => row.releasedAt)).toBe(true);
++    } finally { jest.useRealTimers(); }
++  });
++
+   it('guest verification failure cannot destroy or recreate successful cloud resources', async () => {
+     const dns = { scheduleAll: jest.fn().mockImplementation(() => { throw new Error('DNS verification unavailable'); }) };
+     const f = await fixture('create', dns);
+diff --git a/apps/api/test/reconciliation-scheduling-budget.spec.ts b/apps/api/test/reconciliation-scheduling-budget.spec.ts
+--- a/apps/api/test/reconciliation-scheduling-budget.spec.ts
++++ b/apps/api/test/reconciliation-scheduling-budget.spec.ts
+@@ -78,9 +78,12 @@
+     await flush();
+     controller.abort(new Error('fixture-budget-exhausted'));
+     await pending;
+-    expect(global.fetch).toHaveBeenCalledTimes(1);
++    // Alibaba discovers both current and legacy tags in parallel; both requests must be canceled.
++    const expectedRequests = provider === 'alibaba' ? 2 : 1;
++    expect(global.fetch).toHaveBeenCalledTimes(expectedRequests);
++    for (const [, init] of (global.fetch as jest.Mock).mock.calls) expect(init.signal.aborted).toBe(true);
+     await expect(runWithReconciliationBudget(controller.signal, read)).rejects.toThrow();
+-    expect(global.fetch).toHaveBeenCalledTimes(1);
++    expect(global.fetch).toHaveBeenCalledTimes(expectedRequests);
+   });
+ 
+   it('rejects a late inventory result after cancellation without recording drift or closing a ledger', async () => {
