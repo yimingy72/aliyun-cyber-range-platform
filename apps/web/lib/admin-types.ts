@@ -21,7 +21,7 @@ export type AdminSessionPayload = {
 
 export type AdminUserRole = AdminProfile['role'];
 export type ResourceVisibility = 'private' | 'platform';
-export type RangeTemplateView = 'platform' | 'mine';
+export type RangeTemplateView = 'platform' | 'mine' | 'all';
 export type PlatformImageView = 'platform' | 'mine';
 
 export type AdminUserStatus = 'active' | 'disabled';

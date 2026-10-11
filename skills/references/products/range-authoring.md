@@ -10,7 +10,7 @@
 
 | 操作 | MCP 工具 | 必填参数 | 可选参数 | Scope |
 |---|---|---|---|---|
-| 查看模板列表 | `range_template_list` | — | `view: platform\|mine`，默认 `platform` | `templates:read` |
+| 查看模板列表 | `range_template_list` | — | `view: platform\|mine\|all`，默认 `platform`；all 仅管理员可用 | `templates:read` |
 | 查看模板详情 | `range_template_get` | `templateId` | — | `templates:read` |
 | 新建模板 | `range_template_create` | `name`、完整 `topologyGraph` | `description`、`publicEntryProtocols`、`variableSchema`、`outputSchema`、`defaultNetworkPolicy`、操作元数据 | `templates:write` |
 | 编辑信息 | `range_template_update` | `templateId`、`expectedRevision`、`updates` | 更新对象内须提供名称或描述中的至少一项；操作元数据 | `templates:write` |
@@ -205,6 +205,8 @@ connections:
 ```
 
 ## 模板操作
+
+管理员排查镜像引用时使用 `range_template_list(view: all)` 查看当前云账号工作空间内所有模板，包括其他用户的私有草稿，再按准确模板 ID 查看或修改。普通用户仅可查看自己的模板或已发布的平台模板；`all` 不跨工作空间。管理员删除镜像同样受模板及实例引用保护，先替换当前草稿/发布版本中的镜像或处理运行实例，不能强制绕过保护。
 
 1. 首次创建：由转换流程 输出完整图，调用 `range_template_create`。
 2. 修改名称或描述也必须传入读取的 `revision` 为 `expectedRevision`；版本冲突先刷新，不覆盖其它编辑。

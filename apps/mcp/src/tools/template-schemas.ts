@@ -143,7 +143,7 @@ const templateTopologyMetadataSchema = z.object({
 });
 const templateWriteSchema = operationSchema.extend({ templateId: identifier });
 
-export const templateListInputSchema = z.strictObject({ view: z.enum(['platform', 'mine']).optional() });
+export const templateListInputSchema = z.strictObject({ view: z.enum(['platform', 'mine', 'all']).optional() });
 export const templateGetInputSchema = z.strictObject({ templateId: identifier });
 export const templateCreateInputSchema = operationSchema.extend({
   name: identifier,

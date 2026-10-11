@@ -1,4 +1,4 @@
-export type RangeTemplateView = 'platform' | 'mine';
+export type RangeTemplateView = 'platform' | 'mine' | 'all';
 export type PlatformImageView = 'platform' | 'mine';
 export type InstanceView = 'active' | 'history';
 export type InstanceMode = 'single' | 'range';
