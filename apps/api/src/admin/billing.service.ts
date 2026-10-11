@@ -1,6 +1,7 @@
 import { Prisma } from '@aliyun-cyber-range/database/generated/client';
 
 import { Inject, Injectable } from '@nestjs/common';
+import { BillingDecimal } from './billing-amount';
 
 import {
   ADMIN_REPOSITORY,
@@ -60,7 +61,7 @@ function toIsoDate(value: Date) {
 }
 
 function sumPretax(items: Array<{ pretaxAmount: number }>) {
-  return items.reduce((total, item) => total.plus(item.pretaxAmount), new Prisma.Decimal(0)).toDecimalPlaces(9).toNumber();
+  return items.reduce((total, item) => total.plus(item.pretaxAmount), new BillingDecimal(0)).toNumber();
 }
 
 function currencyAmounts(items: Array<{ currency: string; pretaxAmount: number }>) {

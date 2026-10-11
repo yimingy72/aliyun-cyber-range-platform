@@ -831,7 +831,7 @@ model BillingLineItem {
   billItem          String
   cloudResourceId   String
   cloudResourceType BillingLedgerResourceType
-  pretaxAmount      Decimal                   @db.Decimal(20, 9)
+  pretaxAmount      Decimal                   @db.Decimal(30, 18)
   currency          String
   billingScope      BillingScope
   ownerUserId       String?
@@ -862,7 +862,7 @@ model BillingAnomaly {
   billingDate       DateTime
   cloudResourceId   String
   cloudResourceType BillingLedgerResourceType
-  pretaxAmount      Decimal                   @db.Decimal(20, 9)
+  pretaxAmount      Decimal                   @db.Decimal(30, 18)
   currency          String
   reason            String
   rawPayload        Json                      @default("{}")

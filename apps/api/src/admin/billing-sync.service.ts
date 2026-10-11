@@ -12,6 +12,7 @@ import {
   type BillingLineItemRecord,
 } from './admin.repository';
 import { assertAlibabaBillingContext, BillingBssClient } from './billing-bss-client';
+import { BillingDecimal, isSupportedBillingAmount } from './billing-amount';
 import { billRegionId, billRegionConflict, classifyPlatformBillLine, isAlibabaBillingPayload, isPlatformCreatedLedger, loadPlatformBillingProof, type PlatformBillingProof, ledgerBillingDateMatches, pendingPlatformBillingEvidence } from './billing-platform-scope';
 import { TencentBillingClient, type TencentBillingContext } from './tencent-billing-client';
 import { classifyTencentBillLine, isTencentBillingPayload, pendingTencentBillingEvidence, tencentBillRegionId, tencentCosBillLifetimeMatches } from './billing-platform-scope';
@@ -49,10 +50,8 @@ function readNumber(line: RawBillLine, key: string) {
     || !/^-?\d+(?:\.\d+)?(?:e[+-]?\d+)?$/i.test(String(value))) {
     throw new Error(`BSS returned an invalid ${key}; previous bills were retained`);
   }
-  const amount = new Prisma.Decimal(value);
-  // The numeric API and Decimal(20, 9) storage must both preserve the official amount.
-  if (!amount.isFinite() || amount.decimalPlaces() > 9 || amount.abs().gte('100000000000')
-    || !new Prisma.Decimal(amount.toNumber()).equals(amount)) {
+  const amount = new BillingDecimal(value);
+  if (!isSupportedBillingAmount(amount)) {
     throw new Error(`BSS ${key} exceeds ledger precision; previous bills were retained`);
   }
   return amount.toNumber();
@@ -183,7 +182,6 @@ export class BillingSyncService implements OnModuleInit, OnModuleDestroy {
         const items = await this.billingBssClient.listDailyBillingItems({ billingDate }, cloudConfig);
         for (const line of items) {
           if (!isAlibabaBillingPayload(line)) throw new Error('BSS returned a bill for a different cloud provider; previous bills were retained');
-          readNumber(line, 'PretaxAmount');
           if (!/^[A-Z]{3}$/.test(readString(line, 'Currency'))) throw new Error('BSS returned an invalid currency; previous bills were retained');
           if (line.OwnerID !== undefined && String(line.OwnerID) !== cloudAccountUid) throw new Error('BSS returned a bill for a different resource account');
           if (line.BillingDate !== undefined && readString(line, 'BillingDate') !== billingDate) throw new Error('BSS returned a bill for a different billing date; previous bills were retained');
@@ -311,8 +309,8 @@ export class BillingSyncService implements OnModuleInit, OnModuleDestroy {
           for (const [index, component] of components.entries()) {
             const cost = component?.RealCost;
             if (typeof cost !== 'string' || !/^-?\d+(?:\.\d+)?$/.test(cost)) throw new Error('Tencent billing returned an invalid component amount; prior bills were retained');
-            const amount = new Prisma.Decimal(cost);
-            if (!amount.isFinite() || amount.decimalPlaces() > 9 || amount.abs().gte('100000000000') || !new Prisma.Decimal(amount.toNumber()).equals(amount)) throw new Error('Tencent billing amount exceeds ledger precision; prior bills were retained');
+            const amount = new BillingDecimal(cost);
+            if (!isSupportedBillingAmount(amount)) throw new Error('Tencent billing amount exceeds ledger precision; prior bills were retained');
             const rawPayload = { ...item.rawPayload, __platformBillingComponentIndex: index,
               __platformBillingAmountBasis: 'ComponentSet.RealCost:CNY:yuan',
               ...(ledger?.releasedAt && day > billingDayText(ledger.releasedAt) ? { __platformPostReleaseCharge: true } : {}),
@@ -406,14 +404,14 @@ export class BillingSyncService implements OnModuleInit, OnModuleDestroy {
         if (!/^[A-Z]{3}$/.test(currency)) return null;
         const key = JSON.stringify([readString(line, 'ProductCode'), currency, billRegionId(line), readString(line, 'InstanceID'), readString(line, 'CommodityCode'),
           readString(line, 'BillingItemCode') || readString(line, 'BillingItem'), readString(line, 'Item')]);
-        totals.set(key, (totals.get(key) ?? new Prisma.Decimal(0)).plus(readNumber(line, 'PretaxAmount')));
+        totals.set(key, (totals.get(key) ?? new BillingDecimal(0)).plus(readNumber(line, 'PretaxAmount')));
       }
       return totals;
     };
     const sourceTotals = group(original);
     const splitTotals = group(split);
     return Boolean(sourceTotals && splitTotals && sourceTotals.size === splitTotals.size
-      && [...sourceTotals].every(([key, value]) => splitTotals.has(key) && value.toDecimalPlaces(9).equals(splitTotals.get(key)!.toDecimalPlaces(9))));
+      && [...sourceTotals].every(([key, value]) => splitTotals.has(key) && value.equals(splitTotals.get(key)!)));
   }
 
   private async repairImageLedgerOrigins(proof: PlatformBillingProof, cloudAccountUid: string) {

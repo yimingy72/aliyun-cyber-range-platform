@@ -34,6 +34,24 @@ describe('platform-only split reconciliation', () => {
     expect(await f.repository.listBillingAnomalies()).toEqual([]);
   });
 
+  it('reconciles all high-precision splits but imports only the platform snapshot amount', async () => {
+    const f = await fixture();
+    await f.service([line({ PretaxAmount: 0.1325781504 })], [line({ SplitItemID: 's-owned', PretaxAmount: 0.0325781504 }),
+      line({ SplitItemID: 's-external', PretaxAmount: 0.1 })]).syncRange({ startAt: DAY, endAt: DAY });
+    expect(await f.repository.listBillingLineItems()).toEqual([expect.objectContaining({ cloudResourceId: 's-owned', pretaxAmount: 0.0325781504 })]);
+    expect(await f.repository.listBillingAnomalies()).toEqual([]);
+  });
+
+  it.each([0.13257815049, '0.0000000000000000001'])('retains prior splits when an external remainder differs beyond nine decimals or cannot be represented: %s', async remainder => {
+    const f = await fixture();
+    await f.service([line({ PretaxAmount: 0.1325781504 })], [line({ SplitItemID: 's-owned', PretaxAmount: 0.1325781504 })]).syncRange({ startAt: DAY, endAt: DAY });
+    const previous = await f.repository.listBillingLineItems();
+    await f.service([line({ PretaxAmount: 0.1325781504 })], [line({ SplitItemID: 's-owned', PretaxAmount: 0 }),
+      line({ SplitItemID: 's-external', PretaxAmount: remainder })]).syncRange({ startAt: DAY, endAt: DAY });
+    expect((await f.repository.listBillingLineItems()).map(item => item.sourceFingerprint)).toEqual(previous.map(item => item.sourceFingerprint));
+    expect(await f.repository.listBillingAnomalies()).toHaveLength(1);
+  });
+
   it('does not claim an ECS-wide snapshot split that might include console-created snapshots', async () => {
     const f = await fixture();
     await f.service([line()], [line({ SplitItemID: 'i-source', PretaxAmount: 1 }), line({ SplitItemID: 'i-external', PretaxAmount: 2 })]).syncRange({ startAt: DAY, endAt: DAY });

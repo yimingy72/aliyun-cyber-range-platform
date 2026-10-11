@@ -52,7 +52,7 @@ describe('billing safety', () => {
     expect(await f.repository.listBillingLineItems()).toEqual(previous);
   });
 
-  it.each([' ', '0x10', '0.0000000001', '99999999999.123456789', '100000000000', '-100000000000'])('retains the previous day instead of rounding or coercing BSS amount %s', async amount => {
+  it.each([' ', '0x10', 'NaN', 'Infinity', '0.0000000000000000001', '0.123456789123456789', '99999999999.123456789', '100000000000', '-100000000000'])('retains the previous day instead of rounding or coercing BSS amount %s', async amount => {
     const f = await fixture();
     await f.sync([row()]).syncRange({ startAt: DAY, endAt: DAY });
     const previous = await f.repository.listBillingLineItems();
@@ -64,6 +64,30 @@ describe('billing safety', () => {
     const f = await fixture();
     await f.sync([row({ PretaxAmount: '0.000000001' }), row({ Item: 'Refund', PretaxAmount: '-0.123456789' })]).syncRange({ startAt: DAY, endAt: DAY });
     expect((await f.repository.listBillingLineItems()).map(item => item.pretaxAmount).sort()).toEqual([-0.123456789, 0.000000001].sort());
+  });
+
+  it.each([0.1325781504, '-0.1325781504', '1.325781504e-1', '1e-18', 0.30000000000000004])('preserves official higher-precision amount %s in rows, summaries and CSV', async amount => {
+    const f = await fixture();
+    await f.sync([row({ PretaxAmount: amount })]).syncRange({ startAt: DAY, endAt: DAY });
+    const service = new BillingService(f.repository);
+    expect((await f.repository.listBillingLineItems())[0]).toMatchObject({ pretaxAmount: Number(amount), rawPayload: { PretaxAmount: amount } });
+    expect((await service.getSummary({ startAt: DAY, endAt: DAY })).totalPretaxAmount).toBe(Number(amount));
+    expect(await service.exportPlatformCsv({ startAt: DAY, endAt: DAY })).toContain(`totalPretaxAmount,${Number(amount)}\n`);
+  });
+
+  it('does not lose tiny charges while adding and refunding a large amount', async () => {
+    const f = await fixture();
+    await f.sync([row({ PretaxAmount: 99999999999 }), row({ BillingItem: 'RAM', PretaxAmount: '1e-18' }),
+      row({ Item: 'Refund', PretaxAmount: -99999999999 })]).syncRange({ startAt: DAY, endAt: DAY });
+    expect((await new BillingService(f.repository).getSummary({ startAt: DAY, endAt: DAY })).totalPretaxAmount).toBe(1e-18);
+  });
+
+  it('ignores unsupported external amounts without blocking proven platform bills', async () => {
+    const f = await fixture();
+    await f.sync([row({ PretaxAmount: 0.1325781504 }), row({ InstanceID: 'i-external', PretaxAmount: '1e-19' }),
+      row({ ProductCode: 'snapshot', InstanceID: 'cn-hangzhou', PretaxAmount: '99999999999.123456789' })]).syncRange({ startAt: DAY, endAt: DAY });
+    expect(await f.repository.listBillingLineItems()).toEqual([expect.objectContaining({ cloudResourceId: 'i-test', pretaxAmount: 0.1325781504 })]);
+    expect(await f.repository.listBillingAnomalies()).toEqual([]);
   });
 
   it.each([
