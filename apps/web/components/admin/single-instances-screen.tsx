@@ -549,12 +549,22 @@ export function SingleInstancesScreen({
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [isCreateOpen, setIsCreateOpen] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const launchScope = JSON.stringify([apiBaseUrl, session.profile?.id, workspace?.id]);
+  const launchContextRef = useRef({ scope: launchScope, token: session.token });
+  launchContextRef.current = { scope: launchScope, token: session.token };
+  const launchMountedRef = useRef(true);
+  useEffect(() => { launchMountedRef.current = true; return () => { launchMountedRef.current = false; }; }, []);
+  const isCurrentLaunch = () => launchMountedRef.current && launchContextRef.current.scope === launchScope;
+  const launchPendingRef = useRef(false);
+  const launchRequestRef = useRef<{ fingerprint: string; key: string; payload: SingleInstanceLaunchInput } | null>(null);
   const [menuInstanceId, setMenuInstanceId] = useState<string | null>(null);
   const [menuPlacement, setMenuPlacement] = useState<ActionMenuPlacement>('down');
   const [pendingActionInstanceId, setPendingActionInstanceId] = useState<string | null>(null);
   const [expandedBatchIds, setExpandedBatchIds] = useState<string[]>([]);
   const [copiedPasswordInstanceId, setCopiedPasswordInstanceId] = useState<string | null>(null);
   const [createForm, setCreateForm] = useState<CreateDialogState>(buildDefaultDialogState([], workspace?.provider ?? 'alibaba_cloud'));
+  const launchFingerprint = JSON.stringify([launchScope, createForm]);
+  const canReplayLaunch = launchRequestRef.current?.fingerprint === launchFingerprint;
   const [instanceTypeAvailability, setInstanceTypeAvailability] = useState<InstanceTypeAvailabilitySnapshot | null>(null);
   const [createFormError, setCreateFormError] = useState<string | null>(null);
   const [packImageDialog, setPackImageDialog] = useState<PackImageDialogState | null>(null);
@@ -886,6 +896,7 @@ export function SingleInstancesScreen({
     }
 
     consumedPrefillRef.current = platformImageAssetId;
+    launchRequestRef.current = null;
     setCreateForm({
       ...buildDefaultDialogState(enabledPlatformImages, workspace?.provider ?? 'alibaba_cloud'),
       hostName: selectedImage.defaultHostName?.trim() || '',
@@ -922,6 +933,7 @@ export function SingleInstancesScreen({
   }
 
   function openCreateDialog() {
+    launchRequestRef.current = null;
     setCreateForm(buildDefaultDialogState(enabledPlatformImages, workspace?.provider ?? 'alibaba_cloud'));
     setCreateFormError(null);
     setIsCreateOpen(true);
@@ -1021,68 +1033,76 @@ export function SingleInstancesScreen({
   async function handleCreateSubmit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
 
-    if (!session.token || !canProvision) {
+    if (!session.token || !canProvision || launchPendingRef.current) {
       return;
     }
 
-    const selectedPlatformImage = findPlatformImageAsset(createForm.platformImageQuery, enabledPlatformImages);
-    const cpu = Number(createForm.cpu);
-    const memory = Number(createForm.memory);
+    if (!canReplayLaunch) {
+      const selectedPlatformImage = findPlatformImageAsset(createForm.platformImageQuery, enabledPlatformImages);
+      const cpu = Number(createForm.cpu);
+      const memory = Number(createForm.memory);
 
-    if (!selectedPlatformImage) {
-      setCreateFormError('请先选择一个可用的平台镜像。');
-      return;
+      if (!selectedPlatformImage) {
+        setCreateFormError('请先选择一个可用的平台镜像。');
+        return;
+      }
+
+      if (
+        !instanceTypeAvailability ||
+        instanceTypeAvailability.cpu !== cpu ||
+        instanceTypeAvailability.memory !== memory ||
+        !instanceTypeAvailability.exactAvailable
+      ) {
+        setCreateFormError('当前规格未通过可售校验，请调整 CPU / 内存或稍后重试。');
+        return;
+      }
+
+      if (workspace?.provider === 'tencent_cloud') {
+        try { verifiedTencentInstanceTypes(instanceTypeAvailability, cpu, memory); }
+        catch (error) { setCreateFormError(error instanceof Error ? error.message : '腾讯云规格校验失败。'); return; }
+      }
+      const provider = workspace?.provider ?? 'alibaba_cloud';
+      const expiryError = provider === 'tencent_cloud' ? cloudExpiryError(createForm.expiresAt, provider) : null;
+      const imageError = provider === 'tencent_cloud' ? tencentImageError(selectedPlatformImage) : null;
+      const diskSize = Number(createForm.systemDiskSize);
+      if (expiryError || imageError || provider === 'tencent_cloud' && (!Number.isInteger(diskSize) || diskSize < minimumSystemDiskSize(provider, selectedPlatformImage))) {
+        setCreateFormError(expiryError ?? imageError ?? `系统盘至少需要 ${minimumSystemDiskSize(provider, selectedPlatformImage)} G。`);
+        return;
+      }
+
+      const payload: SingleInstanceLaunchInput = {
+        name: createForm.name.trim(),
+        hostName: createForm.hostName.trim() || undefined,
+        platformImageAssetId: selectedPlatformImage.id,
+        cpu,
+        memory,
+        ...(createForm.systemDiskSize.trim() ? { systemDiskSize: Number(createForm.systemDiskSize) } : {}),
+        expiresAt: new Date(createForm.expiresAt).toISOString(),
+        password: createForm.password.trim() || undefined,
+        quantity: Number(createForm.quantity),
+        remark: createForm.remark.trim() || undefined,
+      };
+      launchRequestRef.current = { fingerprint: launchFingerprint, key: crypto.randomUUID(), payload };
     }
-
-    if (
-      !instanceTypeAvailability ||
-      instanceTypeAvailability.cpu !== cpu ||
-      instanceTypeAvailability.memory !== memory ||
-      !instanceTypeAvailability.exactAvailable
-    ) {
-      setCreateFormError('当前规格未通过可售校验，请调整 CPU / 内存或稍后重试。');
-      return;
-    }
-
-    if (workspace?.provider === 'tencent_cloud') {
-      try { verifiedTencentInstanceTypes(instanceTypeAvailability, cpu, memory); }
-      catch (error) { setCreateFormError(error instanceof Error ? error.message : '腾讯云规格校验失败。'); return; }
-    }
-    const provider = workspace?.provider ?? 'alibaba_cloud';
-    const expiryError = provider === 'tencent_cloud' ? cloudExpiryError(createForm.expiresAt, provider) : null;
-    const imageError = provider === 'tencent_cloud' ? tencentImageError(selectedPlatformImage) : null;
-    const diskSize = Number(createForm.systemDiskSize);
-    if (expiryError || imageError || provider === 'tencent_cloud' && (!Number.isInteger(diskSize) || diskSize < minimumSystemDiskSize(provider, selectedPlatformImage))) {
-      setCreateFormError(expiryError ?? imageError ?? `系统盘至少需要 ${minimumSystemDiskSize(provider, selectedPlatformImage)} G。`);
-      return;
-    }
-
-    const payload: SingleInstanceLaunchInput = {
-      name: createForm.name.trim(),
-      hostName: createForm.hostName.trim() || undefined,
-      platformImageAssetId: selectedPlatformImage.id,
-      cpu,
-      memory,
-      ...(createForm.systemDiskSize.trim() ? { systemDiskSize: Number(createForm.systemDiskSize) } : {}),
-      expiresAt: new Date(createForm.expiresAt).toISOString(),
-      password: createForm.password.trim() || undefined,
-      quantity: Number(createForm.quantity),
-      remark: createForm.remark.trim() || undefined,
-    };
-
+    const request = launchRequestRef.current!;
+    launchPendingRef.current = true;
     setIsSubmitting(true);
     setCreateFormError(null);
     setErrorMessage(null);
 
     try {
-      await launchSingleInstances(apiBaseUrl, session.token, payload);
+      await launchSingleInstances(apiBaseUrl, session.token, request.payload, request.key);
+      if (!isCurrentLaunch()) return;
+      launchRequestRef.current = null;
       screenCache?.invalidate(apiBaseUrl, session.token, 'single-instances:');
       setIsCreateOpen(false);
       // A failed read must never turn an accepted paid launch into a retryable write.
       try {
         await refreshSingleInstanceRows(session.token, listMode, true);
       } catch (error) {
+        if (!isCurrentLaunch()) return;
         if (isUnauthorizedError(error)) {
+          if (launchContextRef.current.token !== session.token) return;
           session.logout();
           router.replace('/admin/login');
         } else {
@@ -1090,15 +1110,18 @@ export function SingleInstancesScreen({
         }
       }
     } catch (error: unknown) {
+      if (!isCurrentLaunch()) return;
       if (isUnauthorizedError(error)) {
+        if (launchContextRef.current.token !== session.token) return;
         session.logout();
         router.replace('/admin/login');
         return;
       }
 
-      setErrorMessage('创建实例失败，请稍后重试。');
+      setErrorMessage(error instanceof AdminApiError ? error.message : '创建结果尚未确认，可重试当前提交查询原任务；请勿新建重复批次。');
     } finally {
-      setIsSubmitting(false);
+      launchPendingRef.current = false;
+      if (isCurrentLaunch()) setIsSubmitting(false);
     }
   }
 
@@ -1147,7 +1170,16 @@ export function SingleInstancesScreen({
           ? `镜像打包完成，已保存到我的镜像：${packImageDialog.displayName}`
           : `镜像打包任务已提交，镜像可用后会出现在我的镜像：${packImageDialog.displayName}`,
       );
-      await refreshSingleInstanceRows(session.token, listMode, true);
+      try {
+        await refreshSingleInstanceRows(session.token, listMode, true);
+      } catch (error) {
+        if (isUnauthorizedError(error)) {
+          session.logout();
+          router.replace('/admin/login');
+        } else {
+          setListErrorMessage('镜像打包任务已受理，实例列表刷新失败。请刷新列表，不要重复打包。');
+        }
+      }
     } catch (error: unknown) {
       if (isUnauthorizedError(error)) {
         session.logout();
@@ -2197,8 +2229,8 @@ export function SingleInstancesScreen({
               <Button disabled={isSubmitting} type="button" variant="outline" onClick={() => setIsCreateOpen(false)}>
                 取消
               </Button>
-              <Button disabled={!canProvision || isSubmitting || !enabledPlatformImages.length} form="single-instance-create-form" type="submit">
-                确认创建
+              <Button disabled={!canProvision || isSubmitting || !canReplayLaunch && !enabledPlatformImages.length} form="single-instance-create-form" formNoValidate={canReplayLaunch} type="submit">
+                {canReplayLaunch && !isSubmitting ? '查询原请求' : '确认创建'}
               </Button>
             </>
           }

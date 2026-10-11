@@ -58,10 +58,11 @@ export class SingleInstancesController {
   }
 
   @Get(':id/access')
-  getAccess(@Req() request: AuthenticatedAdminRequest, @Param('id') id: string) {
+  async getAccess(@Req() request: AuthenticatedAdminRequest, @Param('id') id: string) {
+    const result = await this.singleInstancesService.getAccessById(id, request.adminUser);
     if (request.authContext.source === 'mcp') {
       const metadata = readOperationRequestMetadata(request);
-      void this.operationControlService.audit({
+      await this.operationControlService.audit({
         operationId: `request:${metadata.requestId}`,
         requestId: metadata.requestId,
         actorUserId: request.adminUser.id,
@@ -73,7 +74,7 @@ export class SingleInstancesController {
         targetId: id,
       });
     }
-    return this.singleInstancesService.getAccessById(id, request.adminUser);
+    return result;
   }
 
   @Post('launch')
@@ -98,7 +99,12 @@ export class SingleInstancesController {
         },
       });
     }
-    return this.singleInstancesService.launch(input, request.adminUser.id);
+    return this.operationControlService.executeIdempotent({
+      context: request.authContext, metadata: readOperationRequestMetadata(request),
+      toolName: 'web_single_instance_batch_launch', arguments: body as unknown as Record<string, unknown>,
+      targetType: 'single_instance_batch',
+      execute: () => this.singleInstancesService.launch(input, request.adminUser.id),
+    });
   }
 
   @Post(':id/destroy')
@@ -175,8 +181,8 @@ export class SingleInstancesController {
     const payload = this.sanitizeActionPayload(body);
     if (request.authContext.source === 'mcp' && action === 'open-vnc') {
       const metadata = readOperationRequestMetadata(request);
-      return this.singleInstancesService.runAction(id, action, request.adminUser, payload).then((result) => {
-        void this.operationControlService.audit({
+      return this.singleInstancesService.runAction(id, action, request.adminUser, payload).then(async (result) => {
+        await this.operationControlService.audit({
           operationId: `request:${metadata.requestId}`,
           requestId: metadata.requestId,
           actorUserId: request.adminUser.id,

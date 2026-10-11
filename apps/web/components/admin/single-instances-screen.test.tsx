@@ -1,5 +1,5 @@
 import React from 'react';
-import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const {
@@ -86,6 +86,7 @@ vi.mock('../../lib/admin-api', () => ({
   triggerSingleInstanceAction: triggerSingleInstanceActionMock,
 }));
 
+import { AdminApiError } from '../../lib/admin-api';
 import { SingleInstancesScreen } from './single-instances-screen';
 
 class ResizeObserverMock {
@@ -145,6 +146,37 @@ describe('SingleInstancesScreen', () => {
     expect(screen.queryByRole('dialog', { name: '创建实例' })).toBeNull();
     expect(screen.queryByText('创建实例失败，请稍后重试。')).toBeNull();
     expect(launchSingleInstancesMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps batch parameters and the idempotency key when retrying a lost launch response', async () => {
+    fetchSingleInstancesMock.mockResolvedValue([]);
+    fetchProvisionJobsMock.mockResolvedValue([]);
+    fetchPlatformImagesMock.mockResolvedValue({ items: [{ id: 'platform-image-1', imageId: 'm-123', displayName: 'Ubuntu', enabled: true }] });
+    fetchInstanceTypeAvailabilityMock.mockResolvedValue({ cpu: 2, memory: 2, exactAvailable: true,
+      regionId: 'cn-hangzhou', zoneId: 'cn-hangzhou-h', warning: null,
+      matches: [{ instanceTypeId: 'ecs.c6.large', cpu: 2, memoryGiB: 2, architecture: 'x86' }] });
+    launchSingleInstancesMock.mockRejectedValue(new TypeError('Network connection lost'));
+    render(<SingleInstancesScreen apiBaseUrl="http://localhost:3001" />);
+    fireEvent.click(await screen.findByRole('button', { name: '创建实例' }));
+    fireEvent.change(screen.getByLabelText('实例名'), { target: { value: 'batch-once' } });
+    fireEvent.change(screen.getByLabelText('镜像'), { target: { value: 'Ubuntu (m-123)' } });
+    fireEvent.change(screen.getByLabelText('到期时间'), { target: { value: '2100-01-01T12:00' } });
+    await waitFor(() => expect(fetchInstanceTypeAvailabilityMock).toHaveBeenCalled());
+    const form = screen.getByRole('button', { name: '确认创建' }).closest('[role=dialog]')!.querySelector('form')!;
+    fireEvent.submit(form);
+    fireEvent.submit(form);
+    await screen.findByText(/创建结果尚未确认/);
+    expect(launchSingleInstancesMock).toHaveBeenCalledTimes(1);
+    const firstRequest = launchSingleInstancesMock.mock.calls[0];
+    expect(firstRequest[3]).toMatch(/^[0-9a-f-]{36}$/);
+    fireEvent.click(screen.getByRole('button', { name: '查询原请求' }));
+    await waitFor(() => expect(launchSingleInstancesMock).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(screen.getByRole('button', { name: '查询原请求' }).hasAttribute('disabled')).toBe(false));
+    expect(launchSingleInstancesMock.mock.calls[1]).toEqual(firstRequest);
+    fireEvent.change(screen.getByLabelText('实例名'), { target: { value: 'another-intended-batch' } });
+    fireEvent.click(screen.getByRole('button', { name: '确认创建' }));
+    await waitFor(() => expect(launchSingleInstancesMock).toHaveBeenCalledTimes(3));
+    expect(launchSingleInstancesMock.mock.calls[2][3]).not.toEqual(firstRequest[3]);
   });
 
   beforeEach(() => {
@@ -220,7 +252,58 @@ describe('SingleInstancesScreen', () => {
     expect(launchSingleInstancesMock).not.toHaveBeenCalled();
     fireEvent.change(screen.getByLabelText('到期时间'), { target: { value: localText(new Date(Date.now() + 60 * 60_000)) } });
     fireEvent.submit(document.getElementById('single-instance-create-form')!);
-    await waitFor(() => expect(launchSingleInstancesMock).toHaveBeenCalledWith(expect.anything(), expect.anything(), expect.objectContaining({ platformImageAssetId: 'tencent-image', systemDiskSize: 80 })));
+    await waitFor(() => expect(launchSingleInstancesMock).toHaveBeenCalledWith(expect.anything(), expect.anything(), expect.objectContaining({ platformImageAssetId: 'tencent-image', systemDiskSize: 80 }), expect.any(String)));
+  });
+
+  it('queries the original Tencent batch after two minutes without renewing its expiration or key', async () => {
+    const now = vi.spyOn(Date, 'now').mockReturnValue(new Date('2026-10-11T08:00:00Z').getTime());
+    try {
+      workspaceState.value = { workspace: { provider: 'tencent_cloud', isReadOnly: false, capabilities: { provisioning: true } } };
+      fetchSingleInstancesMock.mockResolvedValue([]); fetchProvisionJobsMock.mockResolvedValue([]);
+      fetchPlatformImagesMock.mockResolvedValue({ items: [{ id: 'tencent-image', provider: 'tencent_cloud', imageId: 'img-tencent', displayName: 'Tencent Linux', enabled: true, tags: [], architecture: 'x86_64', minimumSystemDiskSize: 80 }] });
+      fetchInstanceTypeAvailabilityMock.mockResolvedValue({ cpu: 2, memory: 2, exactAvailable: true, matches: [{ instanceTypeId: 'S5.MEDIUM2', cpu: 2, memoryGiB: 2, architecture: 'x86_64' }] });
+      launchSingleInstancesMock.mockRejectedValueOnce(new TypeError('Response lost')).mockResolvedValue({ batch: { id: 'original-batch' }, instances: [] });
+      render(<SingleInstancesScreen />);
+      fireEvent.click(await screen.findByRole('button', { name: '创建实例' }));
+      fireEvent.change(screen.getByLabelText('实例名'), { target: { value: 'original-intent' } });
+      fireEvent.change(screen.getByLabelText('到期时间'), { target: { value: '2026-10-11T08:11' } });
+      await waitFor(() => expect(fetchInstanceTypeAvailabilityMock).toHaveBeenCalled());
+      expect((screen.getByRole('button', { name: '确认创建' }) as HTMLButtonElement).formNoValidate).toBe(false);
+      fireEvent.click(screen.getByRole('button', { name: '确认创建' }));
+      await screen.findByText(/创建结果尚未确认/);
+      const original = launchSingleInstancesMock.mock.calls[0];
+      now.mockReturnValue(new Date('2026-10-11T08:02:00Z').getTime());
+      fireEvent.change(screen.getByLabelText('实例名'), { target: { value: 'different-intent' } });
+      fireEvent.click(screen.getByRole('button', { name: '确认创建' }));
+      await screen.findByText('腾讯云实例到期时间至少需要在 10 分钟后。');
+      expect(launchSingleInstancesMock).toHaveBeenCalledTimes(1);
+      fireEvent.change(screen.getByLabelText('实例名'), { target: { value: 'original-intent' } });
+      const retry = screen.getByRole('button', { name: '查询原请求' }) as HTMLButtonElement;
+      expect(retry.formNoValidate).toBe(true);
+      fireEvent.click(retry);
+      await waitFor(() => expect(screen.queryByRole('dialog', { name: '创建实例' })).toBeNull());
+      expect(launchSingleInstancesMock.mock.calls[1]).toEqual(original);
+    } finally { now.mockRestore(); }
+  });
+
+  it.each(['success', 'unauthorized'])('ignores a late batch launch %s after the workspace page unmounts', async outcome => {
+    fetchSingleInstancesMock.mockResolvedValue([]); fetchProvisionJobsMock.mockResolvedValue([]);
+    fetchPlatformImagesMock.mockResolvedValue({ items: [{ id: 'platform-image-1', imageId: 'm-123', displayName: 'Ubuntu', enabled: true }] });
+    fetchInstanceTypeAvailabilityMock.mockResolvedValue({ cpu: 2, memory: 2, exactAvailable: true, matches: [{ instanceTypeId: 'ecs.c6.large', cpu: 2, memoryGiB: 2, architecture: 'x86' }] });
+    let resolve!: (value: unknown) => void; let reject!: (error: unknown) => void;
+    launchSingleInstancesMock.mockReturnValue(new Promise((done, fail) => { resolve = done; reject = fail; }));
+    const mounted = render(<SingleInstancesScreen />);
+    fireEvent.click(await screen.findByRole('button', { name: '创建实例' }));
+    fireEvent.change(screen.getByLabelText('实例名'), { target: { value: 'original-intent' } });
+    fireEvent.change(screen.getByLabelText('到期时间'), { target: { value: '2100-01-01T12:00' } });
+    await waitFor(() => expect(fetchInstanceTypeAvailabilityMock).toHaveBeenCalled());
+    fireEvent.click(screen.getByRole('button', { name: '确认创建' }));
+    await waitFor(() => expect(launchSingleInstancesMock).toHaveBeenCalledTimes(1));
+    const reads = fetchSingleInstancesMock.mock.calls.length;
+    mounted.unmount();
+    await act(async () => { if (outcome === 'success') resolve({ batch: { id: 'old-batch' }, instances: [] }); else reject(new AdminApiError(401)); });
+    expect(fetchSingleInstancesMock).toHaveBeenCalledTimes(reads);
+    expect(replaceMock).not.toHaveBeenCalled();
   });
 
   it('renders list/history, opens create dialog, and submits the launch payload without triggeredBy', async () => {
@@ -305,6 +388,7 @@ describe('SingleInstancesScreen', () => {
           memory: 2,
           quantity: 2,
         }),
+        expect.any(String),
       ),
     );
     expect(launchSingleInstancesMock.mock.calls[0]?.[2]).not.toHaveProperty('systemDiskSize', 0);
@@ -1278,7 +1362,7 @@ describe('SingleInstancesScreen', () => {
     anchorClickSpy.mockRestore();
   });
 
-  it('opens a pack image dialog before submitting pack-image actions', async () => {
+  it.each([false, true])('keeps an accepted pack-image action when the following refresh fails: %s', async refreshFails => {
     triggerSingleInstanceActionMock.mockResolvedValue({
       status: 'accepted',
       action: 'pack-image',
@@ -1320,6 +1404,7 @@ describe('SingleInstancesScreen', () => {
     fireEvent.change(within(dialog).getByLabelText('默认主机名'), { target: { value: 'custom-host' } });
     fireEvent.change(within(dialog).getByLabelText('默认密码'), { target: { value: 'Secret123!' } });
     fireEvent.change(within(dialog).getByLabelText('镜像备注'), { target: { value: 'snapshot note' } });
+    if (refreshFails) fetchSingleInstancesMock.mockRejectedValue(new Error('read failed after accepted pack'));
     fireEvent.click(within(dialog).getByRole('button', { name: '确认打包' }));
 
     await waitFor(() =>
@@ -1336,6 +1421,11 @@ describe('SingleInstancesScreen', () => {
         },
       ),
     );
+    await screen.findByText('镜像打包任务已提交，镜像可用后会出现在我的镜像：custom-pack-image');
+    if (refreshFails) await screen.findByText('镜像打包任务已受理，实例列表刷新失败。请刷新列表，不要重复打包。');
+    expect(screen.queryByText('镜像打包失败，请稍后重试。')).toBeNull();
+    expect(screen.queryByRole('dialog', { name: '打包为镜像' })).toBeNull();
+    expect(triggerSingleInstanceActionMock).toHaveBeenCalledTimes(1);
   });
 
   it('shows masked credentials and copies only the password', async () => {

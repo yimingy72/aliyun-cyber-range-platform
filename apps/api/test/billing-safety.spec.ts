@@ -27,7 +27,7 @@ describe('billing safety', () => {
   it.each([
     { Success: false, Code: 'Throttling', Message: 'failed' },
     { Success: true, Code: 'Success' },
-    { Success: true, Code: 'Success', Data: { Items: [null] } },
+    { Success: true, Code: 'Success', Data: { AccountID: CONTEXT.accountUid, BillingCycle: DAY.slice(0, 7), Items: [null] } },
   ])('rejects invalid business responses without changing previous bills: %j', async payload => {
     const f = await fixture();
     await f.sync([row()]).syncRange({ startAt: DAY, endAt: DAY });
@@ -45,11 +45,57 @@ describe('billing safety', () => {
     const service = new BillingSyncService(f.repository, new BillingBssClient(config), config);
     global.fetch = jest.fn().mockResolvedValue({ ok: true, json: async () => { throw new Error('bad JSON'); } });
     await expect(service.syncRange({ startAt: DAY, endAt: DAY })).rejects.toThrow('invalid JSON');
-    global.fetch = jest.fn().mockResolvedValueOnce(response({ Success: true, Code: 'Success', Data: { Items: [row()], NextToken: 'next' } })).mockRejectedValueOnce(new Error('page failed'));
+    global.fetch = jest.fn().mockResolvedValueOnce(response({ Success: true, Code: 'Success', Data: { AccountID: CONTEXT.accountUid, BillingCycle: DAY.slice(0, 7), Items: [row()], NextToken: 'next' } })).mockRejectedValueOnce(new Error('page failed'));
     await expect(service.syncRange({ startAt: DAY, endAt: DAY })).rejects.toThrow('page failed');
-    global.fetch = jest.fn().mockResolvedValue(response({ Success: true, Code: 'Success', Data: { Items: [row()], NextToken: 'same' } }));
+    global.fetch = jest.fn().mockResolvedValue(response({ Success: true, Code: 'Success', Data: { AccountID: CONTEXT.accountUid, BillingCycle: DAY.slice(0, 7), Items: [row()], NextToken: 'same' } }));
     await expect(service.syncRange({ startAt: DAY, endAt: DAY })).rejects.toThrow('pagination token');
     expect(await f.repository.listBillingLineItems()).toEqual(previous);
+  });
+
+  it.each([' ', '0x10', '0.0000000001', '99999999999.123456789', '100000000000', '-100000000000'])('retains the previous day instead of rounding or coercing BSS amount %s', async amount => {
+    const f = await fixture();
+    await f.sync([row()]).syncRange({ startAt: DAY, endAt: DAY });
+    const previous = await f.repository.listBillingLineItems();
+    await expect(f.sync([row({ PretaxAmount: amount })]).syncRange({ startAt: DAY, endAt: DAY })).rejects.toThrow(/invalid|precision/);
+    expect(await f.repository.listBillingLineItems()).toEqual(previous);
+  });
+
+  it('preserves supported fractional charges and negative refunds exactly', async () => {
+    const f = await fixture();
+    await f.sync([row({ PretaxAmount: '0.000000001' }), row({ Item: 'Refund', PretaxAmount: '-0.123456789' })]).syncRange({ startAt: DAY, endAt: DAY });
+    expect((await f.repository.listBillingLineItems()).map(item => item.pretaxAmount).sort()).toEqual([-0.123456789, 0.000000001].sort());
+  });
+
+  it.each([
+    { AccountID: 'different-account', BillingCycle: '2026-10' },
+    { AccountID: CONTEXT.accountUid, BillingCycle: '2026-09' },
+    { BillingCycle: '2026-10' },
+  ])('rejects an unverified empty BSS revision without clearing existing bills: %j', async identity => {
+    const f = await fixture();
+    await f.sync([row()]).syncRange({ startAt: DAY, endAt: DAY });
+    const previous = await f.repository.listBillingLineItems();
+    global.fetch = jest.fn().mockResolvedValue(response({ Success: true, Code: 'Success', Data: { ...identity, Items: [], TotalCount: 0 } }));
+    await expect(new BillingSyncService(f.repository, new BillingBssClient(config), config).syncRange({ startAt: DAY, endAt: DAY })).rejects.toThrow('account/cycle');
+    expect(await f.repository.listBillingLineItems()).toEqual(previous);
+  });
+
+  it('checks the account and cycle on later pages before replacing the day', async () => {
+    const f = await fixture();
+    await f.sync([row()]).syncRange({ startAt: DAY, endAt: DAY });
+    const previous = await f.repository.listBillingLineItems();
+    global.fetch = jest.fn()
+      .mockResolvedValueOnce(response({ Success: true, Code: 'Success', Data: { AccountID: CONTEXT.accountUid, BillingCycle: '2026-10', Items: [row()], TotalCount: 2, NextToken: 'next' } }))
+      .mockResolvedValueOnce(response({ Success: true, Code: 'Success', Data: { AccountID: 'different-account', BillingCycle: '2026-10', Items: [row()], TotalCount: 2 } }));
+    await expect(new BillingSyncService(f.repository, new BillingBssClient(config), config).syncRange({ startAt: DAY, endAt: DAY })).rejects.toThrow('account/cycle');
+    expect(await f.repository.listBillingLineItems()).toEqual(previous);
+  });
+
+  it('accepts a verified empty revision to clear corrected charges', async () => {
+    const f = await fixture();
+    await f.sync([row()]).syncRange({ startAt: DAY, endAt: DAY });
+    global.fetch = jest.fn().mockResolvedValue(response({ Success: true, Code: 'Success', Data: { AccountID: CONTEXT.accountUid, BillingCycle: '2026-10', Items: [], TotalCount: 0 } }));
+    await new BillingSyncService(f.repository, new BillingBssClient(config), config).syncRange({ startAt: DAY, endAt: DAY });
+    expect(await f.repository.listBillingLineItems()).toEqual([]);
   });
 
   it('retains charge/refund/adjustment and commodity dimensions while deduplicating repeated identical rows', async () => {
@@ -94,8 +140,8 @@ describe('billing safety', () => {
     const f = await fixture();
     await f.sync([row()]).syncRange({ startAt: DAY, endAt: DAY });
     const previous = await f.repository.listBillingLineItems();
-    global.fetch = jest.fn().mockResolvedValueOnce(response({ Success: true, Code: 'Success', Data: { Items: [row()], TotalCount: 2, NextToken: 'next' } }))
-      .mockResolvedValueOnce(response({ Success: true, Code: 'Success', Data: { Items: [row()], TotalCount: 3 } }));
+    global.fetch = jest.fn().mockResolvedValueOnce(response({ Success: true, Code: 'Success', Data: { AccountID: CONTEXT.accountUid, BillingCycle: DAY.slice(0, 7), Items: [row()], TotalCount: 2, NextToken: 'next' } }))
+      .mockResolvedValueOnce(response({ Success: true, Code: 'Success', Data: { AccountID: CONTEXT.accountUid, BillingCycle: DAY.slice(0, 7), Items: [row()], TotalCount: 3 } }));
     await expect(new BillingSyncService(f.repository, new BillingBssClient(config), config).syncRange({ startAt: DAY, endAt: DAY })).rejects.toThrow('inconsistent row count');
     await expect(f.sync([row({ BillingDate: '2026-09-30' })]).syncRange({ startAt: DAY, endAt: DAY })).rejects.toThrow('different billing date');
     expect(await f.repository.listBillingLineItems()).toEqual(previous);

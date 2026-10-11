@@ -1,3 +1,5 @@
+import * as workspaceScope from '../src/auth/cloud-workspace-scope';
+import { randomUUID } from 'node:crypto';
 import { createMemoryAdminRepository } from './support/create-memory-admin-repository';
 import { INestApplication } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
@@ -200,6 +202,7 @@ describe('Range instance launch API', () => {
   };
 
   beforeAll(async () => {
+    jest.spyOn(workspaceScope, 'requireCurrentCloudWorkspaceId').mockReturnValue('legacy-unbound');
     process.env.ADMIN_USERNAME = 'admin';
     process.env.ADMIN_PASSWORD = 'change-me';
     process.env.ADMIN_TOKEN = 'dev-admin-token';
@@ -361,6 +364,7 @@ describe('Range instance launch API', () => {
   it('launches a range instance atomically with snapshots and a pending create job', async () => {
     const response = await request(app.getHttpServer())
       .post('/admin/ranges/launch')
+      .set('x-idempotency-key', randomUUID())
       .set('authorization', `Bearer ${userToken}`)
       .send({
         templateId,
@@ -402,6 +406,7 @@ describe('Range instance launch API', () => {
   it('reuses custom host passwords and generates per-host runtime passwords during launch', async () => {
     const launchResponse = await request(app.getHttpServer())
       .post('/admin/ranges/launch')
+      .set('x-idempotency-key', randomUUID())
       .set('authorization', `Bearer ${userToken}`)
       .send({
         templateId,
@@ -410,7 +415,9 @@ describe('Range instance launch API', () => {
       })
       .expect(201);
 
-    expect(launchResponse.body.runtimeCredentials).toEqual(
+    expect(launchResponse.body.runtimeCredentials).toBeUndefined();
+    const accessResponse = await request(app.getHttpServer()).get(`/admin/ranges/${launchResponse.body.id}/access`).set('authorization', `Bearer ${userToken}`).expect(200);
+    expect(accessResponse.body.runtimeCredentials).toEqual(
       expect.objectContaining({
         'entry-host': {
           username: 'root',
@@ -423,12 +430,12 @@ describe('Range instance launch API', () => {
       }),
     );
 
-    expect(launchResponse.body.runtimeCredentials['db-host'].password).not.toEqual('TemplateSecret123!');
-    expect(launchResponse.body.runtimeCredentials['db-host'].password).not.toEqual('');
-    expect(launchResponse.body.runtimeCredentials['db-host'].password.length).toBeGreaterThanOrEqual(8);
-    expect(launchResponse.body.runtimeCredentials['db-host'].password.length).toBeLessThanOrEqual(30);
-    expect(launchResponse.body.runtimeCredentials['db-host'].password).not.toMatch(/\s/);
-    expect(countPasswordCharacterClasses(launchResponse.body.runtimeCredentials['db-host'].password)).toBeGreaterThanOrEqual(3);
+    expect(accessResponse.body.runtimeCredentials['db-host'].password).not.toEqual('TemplateSecret123!');
+    expect(accessResponse.body.runtimeCredentials['db-host'].password).not.toEqual('');
+    expect(accessResponse.body.runtimeCredentials['db-host'].password.length).toBeGreaterThanOrEqual(8);
+    expect(accessResponse.body.runtimeCredentials['db-host'].password.length).toBeLessThanOrEqual(30);
+    expect(accessResponse.body.runtimeCredentials['db-host'].password).not.toMatch(/\s/);
+    expect(countPasswordCharacterClasses(accessResponse.body.runtimeCredentials['db-host'].password)).toBeGreaterThanOrEqual(3);
 
     const detailResponse = await request(app.getHttpServer())
       .get(`/admin/ranges/${launchResponse.body.id}`)
@@ -438,7 +445,7 @@ describe('Range instance launch API', () => {
     expect(detailResponse.body).toEqual(
       expect.objectContaining({
         id: launchResponse.body.id,
-        runtimeCredentials: launchResponse.body.runtimeCredentials,
+        runtimeCredentials: accessResponse.body.runtimeCredentials,
       }),
     );
   });
@@ -479,6 +486,7 @@ describe('Range instance launch API', () => {
 
     const response = await request(app.getHttpServer())
       .post('/admin/ranges/launch')
+      .set('x-idempotency-key', randomUUID())
       .set('authorization', `Bearer ${userToken}`)
       .send({
         templateId: legacyTemplate.id,
@@ -493,6 +501,7 @@ describe('Range instance launch API', () => {
   it('rejects client-sent triggeredBy on range launch requests', async () => {
     await request(app.getHttpServer())
       .post('/admin/ranges/launch')
+      .set('x-idempotency-key', randomUUID())
       .set('authorization', `Bearer ${userToken}`)
       .send({
         templateId,

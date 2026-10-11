@@ -41,10 +41,11 @@ export class RangesController {
   }
 
   @Get(':id/access')
-  getAccess(@Req() request: AuthenticatedAdminRequest, @Param('id') id: string) {
+  async getAccess(@Req() request: AuthenticatedAdminRequest, @Param('id') id: string) {
+    const result = await this.rangeInstancesService.getAccessById(id, request.adminUser);
     if (request.authContext.source === 'mcp') {
       const metadata = readOperationRequestMetadata(request);
-      void this.operationControlService.audit({
+      await this.operationControlService.audit({
         operationId: `request:${metadata.requestId}`,
         requestId: metadata.requestId,
         actorUserId: request.adminUser.id,
@@ -56,7 +57,7 @@ export class RangesController {
         targetId: id,
       });
     }
-    return this.rangeInstancesService.getAccessById(id, request.adminUser);
+    return result;
   }
 
   @Patch(':id/draft')
@@ -97,7 +98,12 @@ export class RangesController {
         },
       });
     }
-    return this.rangeInstancesService.launch(body, request.adminUser);
+    return this.operationControlService.executeIdempotent({
+      context: request.authContext, metadata: readOperationRequestMetadata(request),
+      toolName: 'web_range_instance_launch', arguments: body as unknown as Record<string, unknown>,
+      targetType: 'range_instance',
+      execute: () => this.rangeInstancesService.launch(body, request.adminUser),
+    });
   }
 
   @Post(':id/create')
@@ -203,8 +209,8 @@ export class RangesController {
 
     if (request.authContext.source === 'mcp' && action === 'open-vnc') {
       const metadata = readOperationRequestMetadata(request);
-      return this.rangeInstanceNodeActionsService.run(id, nodeId, action, payload, request.adminUser).then((result) => {
-        void this.operationControlService.audit({
+      return this.rangeInstanceNodeActionsService.run(id, nodeId, action, payload, request.adminUser).then(async (result) => {
+        await this.operationControlService.audit({
           operationId: `request:${metadata.requestId}`,
           requestId: metadata.requestId,
           actorUserId: request.adminUser.id,

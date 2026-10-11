@@ -1,3 +1,5 @@
+import * as workspaceScope from '../src/auth/cloud-workspace-scope';
+import { randomUUID } from 'node:crypto';
 import { useFastSingleInstanceVerification } from './support/fast-single-instance-verification';
 import { withEcsResponseContract } from './support/ecs-response-contract';
 import { INestApplication } from '@nestjs/common';
@@ -62,6 +64,7 @@ describe('single instances', () => {
   let adminToken: string;
 
   beforeEach(async () => {
+    jest.spyOn(workspaceScope, 'requireCurrentCloudWorkspaceId').mockReturnValue('legacy-unbound');
     process.env.ADMIN_USERNAME = 'admin';
     process.env.ADMIN_PASSWORD = 'change-me';
     process.env.ADMIN_TOKEN = 'dev-admin-token';
@@ -158,6 +161,7 @@ describe('single instances', () => {
   it('queues default OpenTofu instances with generated names without executing them in the API', async () => {
     const response = await request(app.getHttpServer())
       .post('/admin/instances/launch')
+      .set('x-idempotency-key', randomUUID())
       .set('Authorization', `Bearer ${adminToken}`)
       .send({
         name: 'web-lab',
@@ -217,6 +221,7 @@ describe('single instances', () => {
     const startedAt = Date.now();
     const response = await request(app.getHttpServer())
       .post('/admin/instances/launch')
+      .set('x-idempotency-key', randomUUID())
       .set('Authorization', `Bearer ${adminToken}`)
       .send({
         name: 'default-expiry-lab',
@@ -302,6 +307,7 @@ describe('single instances', () => {
 
     const response = await request(app.getHttpServer())
       .post('/admin/instances/launch')
+      .set('x-idempotency-key', randomUUID())
       .set('Authorization', `Bearer ${adminToken}`)
       .send({
         name: 'private-owner-lab',
@@ -365,6 +371,7 @@ describe('single instances', () => {
 
     await request(app.getHttpServer())
       .post('/admin/instances/launch')
+      .set('x-idempotency-key', randomUUID())
       .set('Authorization', `Bearer ${adminToken}`)
       .send({
         name: 'private-pending-lab',
@@ -425,6 +432,7 @@ describe('single instances', () => {
 
     const response = await request(app.getHttpServer())
       .post('/admin/instances/launch')
+      .set('x-idempotency-key', randomUUID())
       .set('Authorization', `Bearer ${adminToken}`)
       .send({
         name: 'random-host-lab',
@@ -505,6 +513,7 @@ describe('single instances', () => {
 
     const response = await request(app.getHttpServer())
       .post('/admin/instances/launch')
+      .set('x-idempotency-key', randomUUID())
       .set('Authorization', `Bearer ${adminToken}`)
       .send({
         name: 'billing-tags-lab',
@@ -615,6 +624,7 @@ describe('single instances', () => {
 
     const response = await request(app.getHttpServer())
       .post('/admin/instances/launch')
+      .set('x-idempotency-key', randomUUID())
       .set('Authorization', `Bearer ${adminToken}`)
       .send({
         name: 'default-host-lab',
@@ -689,6 +699,7 @@ describe('single instances', () => {
 
     await request(app.getHttpServer())
       .post('/admin/instances/launch')
+      .set('x-idempotency-key', randomUUID())
       .set('Authorization', `Bearer ${otherAdminToken}`)
       .send({
         name: 'private-foreign-lab',
@@ -758,6 +769,7 @@ describe('single instances', () => {
 
     const response = await request(app.getHttpServer())
       .post('/admin/instances/launch')
+      .set('x-idempotency-key', randomUUID())
       .set('Authorization', `Bearer ${adminToken}`)
       .send({
         name: 'offset-lab',
@@ -812,6 +824,7 @@ describe('single instances', () => {
 
     const response = await request(app.getHttpServer())
       .post('/admin/instances/launch')
+      .set('x-idempotency-key', randomUUID())
       .set('Authorization', `Bearer ${adminToken}`)
       .send({
         name: 'windows-lab',
@@ -827,7 +840,9 @@ describe('single instances', () => {
       })
       .expect(201);
 
-    expect(response.body.instances[0].runtimeCredentials['single-ecs-1']).toMatchObject({
+    expect(response.body.instances[0].runtimeCredentials).toBeUndefined();
+    const access = await request(app.getHttpServer()).get(`/admin/instances/${response.body.instances[0].id}/access`).set('Authorization', `Bearer ${adminToken}`).expect(200);
+    expect(access.body.runtimeCredentials['single-ecs-1']).toMatchObject({
       username: 'Administrator',
     });
   });
@@ -835,6 +850,7 @@ describe('single instances', () => {
   it('generates different passwords for batch single instances when password is omitted', async () => {
     const response = await request(app.getHttpServer())
       .post('/admin/instances/launch')
+      .set('x-idempotency-key', randomUUID())
       .set('Authorization', `Bearer ${adminToken}`)
       .send({
         name: 'batch-random-passwords',
@@ -850,8 +866,9 @@ describe('single instances', () => {
       })
       .expect(201);
 
-    const firstPassword = response.body.instances[0].runtimeCredentials['single-ecs-1'].password;
-    const secondPassword = response.body.instances[1].runtimeCredentials['single-ecs-2'].password;
+    const access = await Promise.all(response.body.instances.map((instance: { id: string }) => request(app.getHttpServer()).get(`/admin/instances/${instance.id}/access`).set('Authorization', `Bearer ${adminToken}`).expect(200)));
+    const firstPassword = access[0].body.runtimeCredentials['single-ecs-1'].password;
+    const secondPassword = access[1].body.runtimeCredentials['single-ecs-2'].password;
 
     expect(typeof firstPassword).toBe('string');
     expect(typeof secondPassword).toBe('string');
@@ -861,6 +878,7 @@ describe('single instances', () => {
   it('reuses the same password for batch single instances when password is provided', async () => {
     const response = await request(app.getHttpServer())
       .post('/admin/instances/launch')
+      .set('x-idempotency-key', randomUUID())
       .set('Authorization', `Bearer ${adminToken}`)
       .send({
         name: 'batch-shared-password',
@@ -876,8 +894,9 @@ describe('single instances', () => {
       })
       .expect(201);
 
-    expect(response.body.instances[0].runtimeCredentials['single-ecs-1'].password).toBe('SharedPassword123!');
-    expect(response.body.instances[1].runtimeCredentials['single-ecs-2'].password).toBe('SharedPassword123!');
+    const access = await Promise.all(response.body.instances.map((instance: { id: string }) => request(app.getHttpServer()).get(`/admin/instances/${instance.id}/access`).set('Authorization', `Bearer ${adminToken}`).expect(200)));
+    expect(access[0].body.runtimeCredentials['single-ecs-1'].password).toBe('SharedPassword123!');
+    expect(access[1].body.runtimeCredentials['single-ecs-2'].password).toBe('SharedPassword123!');
   });
 
   it('returns grouped batch payloads and leaves legacy single rows standalone', async () => {
@@ -1234,6 +1253,7 @@ describe('single instances', () => {
     try {
       await request(app.getHttpServer())
         .post('/admin/instances/launch')
+      .set('x-idempotency-key', randomUUID())
         .set('Authorization', `Bearer ${adminToken}`)
         .send({
           name: 'dispatch-order-lab',
@@ -1389,6 +1409,7 @@ describe('single instances', () => {
     try {
       await request(app.getHttpServer())
         .post('/admin/instances/launch')
+      .set('x-idempotency-key', randomUUID())
         .set('Authorization', `Bearer ${adminToken}`)
         .send({
           name: 'dispatch-failure-lab',
@@ -1595,6 +1616,7 @@ describe('single instances', () => {
 
     const response = await request(app.getHttpServer())
       .post('/admin/instances/launch')
+      .set('x-idempotency-key', randomUUID())
       .set('Authorization', `Bearer ${adminToken}`)
       .send({
         name: 'web-lab',
@@ -1693,6 +1715,7 @@ describe('single instances', () => {
 
     const response = await request(app.getHttpServer())
       .post('/admin/instances/launch')
+      .set('x-idempotency-key', randomUUID())
       .set('Authorization', `Bearer ${adminToken}`)
       .send({
         name: 'public-ip-lab',
@@ -1766,6 +1789,7 @@ describe('single instances', () => {
 
     const response = await request(app.getHttpServer())
       .post('/admin/instances/launch')
+      .set('x-idempotency-key', randomUUID())
       .set('Authorization', `Bearer ${adminToken}`)
       .send({
         name: 'short-expire-lab',

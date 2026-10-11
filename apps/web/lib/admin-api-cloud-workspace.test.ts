@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { clearAdminSession, writeAdminSession } from './admin-auth-storage';
 import { setCloudWorkspaceSelection, workspaceStorageKey } from './cloud-workspace-selection';
-import { completeImageImport, deleteCloudAccount, fetchCloudWorkspaces, fetchPlatformImages, saveCloudAccount, switchCloudWorkspace } from './admin-api';
+import { completeImageImport, deleteCloudAccount, fetchCloudWorkspaces, fetchPlatformImages, launchRangeInstance, launchSingleInstances, saveCloudAccount, switchCloudWorkspace } from './admin-api';
 
 describe('workspace-scoped Web API and local drafts', () => {
   beforeEach(() => { window.localStorage.clear(); window.sessionStorage.clear(); clearAdminSession(); writeAdminSession({ token: 'token', profile: { id: 'root', username: 'admin', role: 'admin' } }); setCloudWorkspaceSelection('root', 'ali'); });
@@ -35,4 +35,17 @@ describe('workspace-scoped Web API and local drafts', () => {
     expect(request.mock.calls[0]![1].method).toBe('DELETE');
     expect(request.mock.calls[0]![1].headers['x-cloud-workspace-id']).toBe('ali');
   });
+  it('passes the stable request key with the frozen launch payload and selected workspace', async () => {
+    const request = vi.fn().mockImplementation(async () => new Response('{}')); vi.stubGlobal('fetch', request);
+    const expiresAt = '2100-01-01T12:00:00.000Z';
+    const single = { name: 'batch-once', platformImageAssetId: 'image-1', cpu: 2, memory: 4, quantity: 50, expiresAt };
+    await launchSingleInstances('https://fixture.invalid', 'token', single, 'batch-request-key');
+    await launchSingleInstances('https://fixture.invalid', 'token', single, 'batch-request-key');
+    expect(request.mock.calls[0]).toEqual(request.mock.calls[1]);
+    expect(request.mock.calls[0][1].headers).toMatchObject({ 'x-cloud-workspace-id': 'ali', 'x-idempotency-key': 'batch-request-key' });
+    expect(JSON.parse(request.mock.calls[0][1].body)).toEqual(single);
+    await launchRangeInstance('https://fixture.invalid', 'token', { templateId: 'template-1', name: 'range-once', expiresAt }, 'range-request-key');
+    expect(request.mock.calls[2][1].headers).toMatchObject({ 'x-cloud-workspace-id': 'ali', 'x-idempotency-key': 'range-request-key' });
+  });
+
 });
