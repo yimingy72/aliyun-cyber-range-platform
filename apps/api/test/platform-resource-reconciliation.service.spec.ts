@@ -303,6 +303,85 @@ describe('OpenTofu member reconciliation isolation', () => {
     expect(await test.repository.getRangeInstanceById(instance.id)).toMatchObject({ status: 'destroy_failed' });
   });
 
+  it.each(['running', 'create_failed', 'destroy_failed', 'destroyed'])('syncs only the observed physical ECS and its verified disks for a %s recovery inventory', async status => {
+    const test = await fixture();
+    const instance = test.instances[0];
+    const summary = { ...instance.resourceSummary!, hostIds: { ecs: 'i-0', 'ecs-recovery-1': 'i-recovery' },
+      systemDiskIds: { ecs: 'd-0', 'ecs-recovery-1': 'd-recovery' },
+      dataDiskIds: { 'ecs:d-data-0': 'd-data-0', 'ecs-recovery-1:d-data-recovery': 'd-data-recovery',
+        'ecs-recovery-1:d-unbilled-recovery': 'd-unbilled-recovery' },
+      diskInventoryHostIds: { ecs: 'i-0', 'ecs-recovery-1': 'i-recovery' },
+      diskOwnershipProofs: { 'd-data-0': { instanceId: 'i-0', method: 'persisted' as const },
+        'd-data-recovery': { instanceId: 'i-recovery', method: 'persisted' as const },
+        'd-unbilled-recovery': { instanceId: 'i-recovery', method: 'persisted' as const } } };
+    const before = await test.repository.updateRangeInstance(instance.id, { status: status as never, resourceSummary: summary });
+    const releasedAt = new Date('2026-10-01');
+    const unobserved = await Promise.all(([
+      ['i-recovery', 'ecs'], ['d-recovery', 'disk'], ['d-data-recovery', 'disk'],
+    ] as const).map(([cloudResourceId, cloudResourceType]) => test.repository.createBillingLedgerResource({
+      regionId: 'cn-hangzhou', cloudResourceId, cloudResourceType, cloudAccountUid: 'account-a', billingScope: 'user',
+      ownerUserId: 'alice', rangeInstanceId: instance.id, singleInstanceBatchId: 'batch-a',
+      sourceProvisionJobId: test.jobs[0].id, billingStartAt: instance.createdAt, releasedAt })));
+    const diskClient = new AliyunEcsResourceClient({} as never);
+    test.client.verifyRecordedDisks.mockImplementation(async () => diskClient.verifyRecordedDisks(test.credentials, before, 'i-0'));
+    const request = jest.spyOn(global, 'fetch').mockResolvedValue(new Response(JSON.stringify({
+      RequestId: 'fixture-disks', TotalCount: 2, PageNumber: 1, PageSize: 100,
+      Disks: { Disk: [{ DiskId: 'd-0', InstanceId: 'i-0', Type: 'system', Tags: { Tag: [] } },
+        { DiskId: 'd-data-0', InstanceId: 'i-0', Type: 'data', Tags: { Tag: [] } }] },
+    }), { status: 200 }));
+    try {
+      expect(await test.service.reconcile()).toEqual({ recovered: 0, drifts: status === 'running' ? 0 : 1, skipped: false });
+      expect(request).toHaveBeenCalledTimes(1);
+      expect(JSON.parse(new URL(String(request.mock.calls[0][0])).searchParams.get('DiskIds')!)).toEqual(['d-0', 'd-data-0']);
+      const ledgers = await test.repository.listBillingLedgerResources();
+      for (const prior of unobserved) expect(ledgers.find(row => row.id === prior.id)).toEqual(prior);
+      expect(ledgers.filter(row => !unobserved.some(prior => prior.id === row.id)).map(row => row.cloudResourceId).sort())
+        .toEqual(['d-0', 'd-data-0', 'i-0']);
+      expect(ledgers.filter(row => ['d-0', 'd-data-0', 'i-0'].includes(row.cloudResourceId)))
+        .toEqual(expect.arrayContaining([expect.objectContaining({ cloudResourceId: 'd-data-0', releasedAt: null,
+          ownerUserId: 'alice', singleInstanceBatchId: 'batch-a', sourceProvisionJobId: test.jobs[0].id })]));
+      expect(await test.repository.getRangeInstanceById(instance.id)).toEqual(before);
+      expect(test.client.tagResources).not.toHaveBeenCalled();
+    } finally { request.mockRestore(); }
+  });
+
+  it('can reopen only the proven recovery ECS and its verified disks while preserving its original inventory keys', async () => {
+    const test = await fixture();
+    const instance = test.instances[0];
+    const summary = { ...instance.resourceSummary!, hostIds: { ecs: 'i-0', 'ecs-recovery-1': 'i-recovery' },
+      systemDiskIds: { ecs: 'd-0', 'ecs-recovery-1': 'd-recovery' },
+      dataDiskIds: { 'ecs-recovery-1:d-data-recovery': 'd-data-recovery' },
+      diskInventoryHostIds: { ecs: 'i-0', 'ecs-recovery-1': 'i-recovery' },
+      diskOwnershipProofs: { 'd-data-recovery': { instanceId: 'i-recovery', method: 'persisted' as const } } };
+    const before = await test.repository.updateRangeInstance(instance.id, { status: 'destroy_failed', resourceSummary: summary });
+    const releasedAt = new Date('2026-10-01');
+    const existing = await Promise.all(([
+      ['i-0', 'ecs'], ['d-0', 'disk'], ['i-recovery', 'ecs'], ['d-recovery', 'disk'], ['d-data-recovery', 'disk'],
+    ] as const).map(([cloudResourceId, cloudResourceType]) => test.repository.createBillingLedgerResource({
+      regionId: 'cn-hangzhou', cloudResourceId, cloudResourceType, cloudAccountUid: 'account-a', billingScope: 'user',
+      ownerUserId: 'alice', rangeInstanceId: instance.id, singleInstanceBatchId: 'batch-a',
+      sourceProvisionJobId: test.jobs[0].id, billingStartAt: instance.createdAt, releasedAt })));
+    test.cloud[0].instanceId = 'i-recovery';
+    const diskClient = new AliyunEcsResourceClient({} as never);
+    test.client.verifyRecordedDisks.mockImplementation(async () => diskClient.verifyRecordedDisks(test.credentials, before, 'i-recovery'));
+    const request = jest.spyOn(global, 'fetch').mockResolvedValue(new Response(JSON.stringify({
+      RequestId: 'fixture-disks', TotalCount: 2, PageNumber: 1, PageSize: 100,
+      Disks: { Disk: [{ DiskId: 'd-recovery', InstanceId: 'i-recovery', Type: 'system', Tags: { Tag: [] } },
+        { DiskId: 'd-data-recovery', InstanceId: 'i-recovery', Type: 'data', Tags: { Tag: [] } }] },
+    }), { status: 200 }));
+    try {
+      expect(await test.service.reconcile()).toEqual({ recovered: 0, drifts: 1, skipped: false });
+      expect(JSON.parse(new URL(String(request.mock.calls[0][0])).searchParams.get('DiskIds')!)).toEqual(['d-recovery', 'd-data-recovery']);
+      const ledgers = await test.repository.listBillingLedgerResources();
+      expect(ledgers).toHaveLength(existing.length);
+      for (const prior of existing) expect(ledgers.find(row => row.id === prior.id)).toEqual({ ...prior,
+        updatedAt: ['i-0', 'd-0'].includes(prior.cloudResourceId) ? prior.updatedAt : expect.anything(),
+        releasedAt: ['i-0', 'd-0'].includes(prior.cloudResourceId) ? releasedAt : null });
+      expect(await test.repository.getRangeInstanceById(instance.id)).toEqual(before);
+      expect(test.client.tagResources).not.toHaveBeenCalled();
+    } finally { request.mockRestore(); }
+  });
+
   it.each(['missing disk','foreign disk'])('reports %s without replacing disk ownership or closing its ledger', async reason => {
     const test = await fixture(); test.client.verifyRecordedDisks.mockResolvedValue(false);
     expect(await test.service.reconcile()).toEqual({recovered:0,drifts:1,skipped:false});
