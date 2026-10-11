@@ -1,8 +1,10 @@
 import { completeTemplatePayload } from './support/complete-template-payload';
 import { BadRequestException } from '@nestjs/common';
+import { compileTemplateTopology, type ScenarioGraphDraft } from '@aliyun-cyber-range/scenario-runtime/compiled';
 
-import type { AdminRepository, RangeTemplateRecord, RangeTemplateVersionRecord } from '../src/admin/admin.repository';
+import type { AdminRepository, RangeTemplateCompiledSpec, RangeTemplateRecord, RangeTemplateVersionRecord } from '../src/admin/admin.repository';
 import { RangeTemplatesService } from '../src/admin/range-templates.service';
+import { runInCloudWorkspace } from '../src/auth/cloud-workspace-scope';
 
 function createDraftVersion(
   overrides: Partial<RangeTemplateVersionRecord> = {},
@@ -188,6 +190,72 @@ describe('RangeTemplatesService publish precheck', () => {
 
   afterEach(() => {
     assertTemplateEcsImageSelectionsSpy.mockRestore();
+  });
+
+  it.each([
+    ['alibaba_cloud', 'private'], ['tencent_cloud', 'private'],
+    ['alibaba_cloud', 'snat'], ['tencent_cloud', 'snat'],
+    ['alibaba_cloud', 'multiple-dnat'], ['tencent_cloud', 'multiple-dnat'],
+  ] as const)('creates, saves and publishes a compiled %s %s topology', async (provider, mode) => {
+    const source = createDraftVersion().topologySpec!;
+    const graph = completeTemplatePayload(source).topologyGraph as unknown as ScenarioGraphDraft;
+    for (const node of graph.nodes) {
+      if (node.kind !== 'switch') continue;
+      const host = source.hosts.find(candidate => candidate.zoneKey === node.zoneKey)!;
+      node.nat = {
+        snatEnabled: mode !== 'private',
+        dnatMappings: mode === 'multiple-dnat' ? [{ key: `${host.key}-ssh`, targetHostId: host.key,
+          protocol: 'tcp', externalPort: node.zoneKey === 'dmz' ? 2222 : 2223, internalPort: 22 }] : [],
+      };
+    }
+    const modulePathOrRef = `infra/opentofu/modules/${provider === 'tencent_cloud' ? 'tencentcloud' : 'alicloud'}-enterprise-range`;
+    const payload = JSON.parse(JSON.stringify(compileTemplateTopology(graph, {
+      name: 'Enterprise Template', slug: 'enterprise-template', version: 'v1', cloudProvider: provider,
+      iacType: 'opentofu', primaryVpcCidr: source.vpcCidr, secondaryVpcCidrs: [],
+      modulePathOrRef,
+    }))) as ReturnType<typeof completeTemplatePayload>;
+    const template = createTemplateRecord({ cloudProvider: provider, modulePathOrRef, ...payload,
+      currentDraftVersion: createDraftVersion({ modulePathOrRef, ...payload }) });
+    const repository = { ...createRepository(template), createRangeTemplate: jest.fn().mockResolvedValue(template) };
+    const service = new RangeTemplatesService(repository);
+
+    await runInCloudWorkspace({ cloudWorkspaceId: `${provider}-workspace`, provider, accountUid: null }, async () => {
+      await expect(service.create({ name: template.name, ...payload })).resolves.toMatchObject({ id: template.id });
+      await expect(service.validateAndSave(template.id, { expectedRevision: template.revision, ...payload }))
+        .resolves.toMatchObject({ id: template.id });
+      await expect(service.publishToPlatform(template.id, template.revision)).resolves.toMatchObject({ id: template.id });
+    });
+
+    const saved = (repository.saveRangeTemplateTopology as jest.Mock).mock.calls[0][1];
+    expect(saved.topologySpec.hosts.map((host: { exposePublic: boolean }) => host.exposePublic))
+      .toEqual(mode === 'multiple-dnat' ? [true, true] : [false, false]);
+    expect(saved.compiledProvisionSpec.dnatEntries).toHaveLength(mode === 'multiple-dnat' ? 2 : 0);
+    if (mode === 'private') {
+      expect(saved.compiledProvisionSpec.natGateways).toEqual([]);
+      expect(saved.compiledProvisionSpec.eips).toEqual([]);
+    }
+    expect(repository.publishRangeTemplateToPlatform).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    ['dmz-entry', true, false], ['dmz-entry', false, true],
+    ['office-client', true, false], ['office-client', false, true],
+    ['dmz-entry', undefined, false], ['office-client', undefined, true],
+  ] as const)('rejects %s public exposure changing from %s to %s in compiled resources', async (hostKey, declared, compiled) => {
+    const draft = createDraftVersion();
+    draft.topologySpec!.hosts.find(host => host.key === hostKey)!.exposePublic = declared;
+    (draft.compiledSpec as RangeTemplateCompiledSpec).resources.find(resource => resource.id === hostKey)!.config.exposePublic = compiled;
+    const template = createTemplateRecord({ currentDraftVersion: draft });
+    const repository = createRepository(template);
+    const result = new RangeTemplatesService(repository).publishToPlatform(template.id, template.revision);
+
+    await expect(result).rejects.toThrow(BadRequestException);
+    await result.catch((error: BadRequestException) => {
+      expect(error.getResponse()).toMatchObject({ message: expect.arrayContaining([
+        `Compiled host resource public access mismatch for host ${hostKey}`,
+      ]) });
+    });
+    expect(repository.publishRangeTemplateToPlatform).not.toHaveBeenCalled();
   });
 
   it('rejects publish when compiled resources are missing declared topology nodes', async () => {
@@ -722,7 +790,7 @@ describe('RangeTemplatesService publish precheck', () => {
             'Compiled host resource zoneKey mismatch for host dmz-entry',
             'Compiled host resource role mismatch for host dmz-entry',
             'Compiled host resource privateIp mismatch for host dmz-entry',
-            'Compiled public entry host must expose public access: dmz-entry',
+            'Compiled host resource public access mismatch for host dmz-entry',
           ]),
         }),
       );
