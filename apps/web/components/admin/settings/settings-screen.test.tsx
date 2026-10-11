@@ -3,15 +3,17 @@ import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testi
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { CloudWorkspaceView } from '@/lib/admin-types';
 
-const { list, save, remove, select, replace, logout, state } = vi.hoisted(() => ({ list: vi.fn(), save: vi.fn(), remove: vi.fn(), select: vi.fn(), replace: vi.fn(), logout: vi.fn(), state: { manager: true, sessionManager: true } }));
+const { list, save, remove, select, replace, logout, state } = vi.hoisted(() => ({ list: vi.fn(), save: vi.fn(), remove: vi.fn(), select: vi.fn(), replace: vi.fn(), logout: vi.fn(), state: { manager: true, sessionManager: true, active: true, workspaceId: 'ali' } }));
 vi.mock('next/navigation', () => ({ useRouter: () => ({ replace }) }));
 vi.mock('@/lib/admin-api', async () => ({ ...await vi.importActual<typeof import('@/lib/admin-api')>('@/lib/admin-api'), fetchCloudWorkspaces: list, saveCloudAccount: save, deleteCloudAccount: remove }));
 vi.mock('../use-admin-session', () => ({ useAdminSession: () => ({ token: 'fixture-token', profile: { id: 'root', username: 'admin', role: 'admin', isPlatformManager: state.sessionManager }, isAdmin: true, isReady: true, logout }) }));
-vi.mock('../cloud-workspace-provider', () => ({ cloudProviderLabel: (provider: string) => provider === 'tencent_cloud' ? '腾讯云' : '阿里云', useCloudWorkspace: () => ({ workspace: ali, profile: { id: 'root', username: 'admin', role: 'admin', isPlatformManager: state.manager }, isReady: true, isSwitching: false, refreshCurrent: async () => undefined, switchTo: select }) }));
+vi.mock('../cloud-workspace-provider', () => ({ cloudProviderLabel: (provider: string) => provider === 'tencent_cloud' ? '腾讯云' : '阿里云', useCloudWorkspace: () => ({ workspace: state.workspaceId === 'legacy-unbound' ? legacy : ali, profile: { id: 'root', username: 'admin', role: 'admin', isPlatformManager: state.manager }, isReady: true, isSwitching: false, refreshCurrent: async () => undefined, switchTo: select }) }));
+vi.mock('../admin-page-cache', () => ({ useAdminRouteIsActive: () => state.active }));
 import { SettingsScreen } from './settings-screen';
 import { AdminApiError } from '@/lib/admin-api';
 const ali: CloudWorkspaceView = { id: 'ali', provider: 'alibaba_cloud', accountUid: '111', displayName: '杭州训练账号', isReadOnly: false, activeCloudAccountContextId: 'ctx-ali', contexts: [{ id: 'ctx-ali', cloudWorkspaceId: 'ali', provider: 'alibaba_cloud', accountUid: '111', displayName: '杭州', regionId: 'cn-hangzhou', zoneId: 'cn-hangzhou-h', isActive: true, status: 'ready', imageImportBucket: 'owned-bucket', bucketStatus: 'ready' }], capabilities: { provisioning: true, imageImport: true, billingSync: true } };
 const tencent: CloudWorkspaceView = { ...ali, id: 'tencent', provider: 'tencent_cloud', accountUid: '222', displayName: '南京训练账号', activeCloudAccountContextId: 'ctx-tencent', contexts: [{ ...ali.contexts[0]!, id: 'ctx-tencent', cloudWorkspaceId: 'tencent', provider: 'tencent_cloud', accountUid: '222', regionId: 'ap-nanjing', zoneId: 'ap-nanjing-1', imageImportBucket: '' }] };
+const legacy: CloudWorkspaceView = { id: 'legacy-unbound', provider: 'alibaba_cloud', accountUid: null, displayName: '历史未绑定来源', isReadOnly: true, activeCloudAccountContextId: null, contexts: [], capabilities: { provisioning: false, imageImport: false, billingSync: false } };
 function openTencent() { fireEvent.mouseDown(screen.getByRole('tab', { name: '腾讯云' }), { button: 0, ctrlKey: false }); }
 async function openMore(name: string) {
   fireEvent.keyDown(screen.getByRole('button', { name: `账号“${name}”的更多操作` }), { key: 'ArrowDown' });
@@ -22,7 +24,7 @@ function fillTencent() {
   for (const [label, value] of [['默认地域', 'ap-nanjing'], ['默认可用区', 'ap-nanjing-1'], ['SecretId', 'fixture-secret-id'], ['SecretKey', 'fixture-secret-key']]) fireEvent.change(screen.getByLabelText(label!), { target: { value } });
 }
 describe('settings cloud workspaces', () => {
-  beforeEach(() => { vi.clearAllMocks(); state.manager = true; state.sessionManager = true; list.mockResolvedValue([ali, tencent]); save.mockResolvedValue(tencent.contexts[0]); select.mockResolvedValue(undefined); remove.mockResolvedValue({ id: tencent.id, provider: tencent.provider, accountUid: tencent.accountUid, displayName: tencent.displayName, deletedAt: '2026-10-10T00:00:00Z', retainedData: true }); });
+  beforeEach(() => { vi.clearAllMocks(); state.manager = true; state.sessionManager = true; state.active = true; state.workspaceId = 'ali'; list.mockResolvedValue([ali, tencent]); save.mockResolvedValue(tencent.contexts[0]); select.mockResolvedValue(undefined); remove.mockResolvedValue({ id: tencent.id, provider: tencent.provider, accountUid: tencent.accountUid, displayName: tencent.displayName, deletedAt: '2026-10-10T00:00:00Z', retainedData: true }); });
   afterEach(cleanup);
   it('filters providers without switching data and keeps image queries out of settings', async () => {
     render(<SettingsScreen apiBaseUrl="https://fixture.invalid" />);
@@ -38,13 +40,74 @@ describe('settings cloud workspaces', () => {
   });
   it('saves account binding without switching, exposing or retaining credentials', async () => {
     render(<SettingsScreen apiBaseUrl="https://fixture.invalid" />); await screen.findByText('111'); openTencent(); fillTencent();
-    fireEvent.submit(screen.getByRole('form', { name: '云账号绑定表单' }));
+    fireEvent.click(within(screen.getByRole('dialog', { name: '绑定腾讯云账号' })).getByRole('button', { name: '验证并保存' }));
     await screen.findByText('账号已保存。');
     expect(save).toHaveBeenCalledWith('https://fixture.invalid', 'fixture-token', expect.objectContaining({ provider: 'tencent_cloud', accessKeyId: 'fixture-secret-id', accessKeySecret: 'fixture-secret-key' }));
     expect(select).not.toHaveBeenCalled();
     fireEvent.click(screen.getByRole('button', { name: '绑定腾讯云账号' }));
     expect((screen.getByLabelText('SecretKey') as HTMLInputElement).value).toBe('');
     expect((screen.getByLabelText('SecretId') as HTMLInputElement).value).toBe('');
+  });
+  it('opens a focused dialog and clears credentials when cancelled', async () => {
+    render(<SettingsScreen />); await screen.findByText('111'); openTencent(); fillTencent();
+    const dialog = await screen.findByRole('dialog', { name: '绑定腾讯云账号' });
+    expect(within(dialog).getByRole('form', { name: '云账号绑定表单' })).toBeTruthy();
+    expect(document.activeElement).toBe(within(dialog).getByLabelText('账号名称'));
+    expect((within(dialog).getByLabelText('SecretKey') as HTMLInputElement).type).toBe('password');
+    fireEvent.click(within(dialog).getByRole('button', { name: '取消' }));
+    expect(screen.queryByRole('dialog')).toBeNull();
+    expect(save).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('button', { name: '绑定腾讯云账号' }));
+    expect((screen.getByLabelText('SecretId') as HTMLInputElement).value).toBe('');
+    expect((screen.getByLabelText('SecretKey') as HTMLInputElement).value).toBe('');
+  });
+  it('shows validation errors inside the dialog and prevents closing or duplicate saves while pending', async () => {
+    save.mockRejectedValueOnce(new Error('凭据验证失败'));
+    render(<SettingsScreen />); await screen.findByText('111'); openTencent(); fillTencent();
+    fireEvent.submit(screen.getByRole('form', { name: '云账号绑定表单' }));
+    const dialog = await screen.findByRole('dialog', { name: '绑定腾讯云账号' });
+    expect(await within(dialog).findByRole('alert')).toHaveProperty('textContent', '凭据验证失败');
+    expect((within(dialog).getByLabelText('SecretKey') as HTMLInputElement).value).toBe('fixture-secret-key');
+    let finish!: (value: typeof tencent.contexts[0]) => void;
+    save.mockImplementationOnce(() => new Promise(resolve => { finish = resolve; }));
+    const form = within(dialog).getByRole('form', { name: '云账号绑定表单' });
+    fireEvent.submit(form); fireEvent.submit(form);
+    fireEvent.keyDown(document, { key: 'Escape' });
+    expect(screen.getByRole('dialog', { name: '绑定腾讯云账号' })).toBeTruthy();
+    expect(within(dialog).getByRole('button', { name: '取消' }).hasAttribute('disabled')).toBe(true);
+    expect(save).toHaveBeenCalledTimes(2);
+    await act(async () => finish(tencent.contexts[0]));
+    await screen.findByText('账号已保存。');
+    expect(screen.queryByRole('dialog')).toBeNull();
+  });
+  it('dismisses a cached page dialog and clears its credentials when leaving settings', async () => {
+    const page = render(<SettingsScreen />); await screen.findByText('111'); openTencent(); fillTencent();
+    state.active = false; page.rerender(<SettingsScreen />);
+    expect(screen.queryByRole('dialog')).toBeNull();
+    state.active = true; page.rerender(<SettingsScreen />);
+    await screen.findByText('222');
+    fireEvent.click(screen.getByRole('button', { name: '绑定腾讯云账号' }));
+    expect((screen.getByLabelText('SecretKey') as HTMLInputElement).value).toBe('');
+  });
+  it('separates the system history partition while preserving known read-only accounts and history access', async () => {
+    const knownHistory = { ...ali, id: 'known-history', accountUid: '333', displayName: '已停用账号', isReadOnly: true };
+    list.mockResolvedValue([ali, tencent, legacy, knownHistory]);
+    const page = render(<SettingsScreen />); await screen.findByText('111');
+    const table = screen.getByRole('table', { name: '已绑定云账号' });
+    expect(within(table).queryByText('历史未绑定来源')).toBeNull();
+    expect(within(table).queryByText('历史来源未确认')).toBeNull();
+    expect(within(table).getByText('333')).toBeTruthy();
+    const history = screen.getByRole('region', { name: '历史数据' });
+    expect(within(history).getByText('只读')).toBeTruthy();
+    expect(within(history).getByText(/保留用于账单核对和审计/)).toBeTruthy();
+    expect(within(history).queryByRole('button', { name: /删除/ })).toBeNull();
+    openTencent();
+    fireEvent.click(within(history).getByRole('button', { name: '查看历史' }));
+    await waitFor(() => expect(select).toHaveBeenCalledWith('legacy-unbound'));
+    expect(remove).not.toHaveBeenCalled();
+    state.workspaceId = 'legacy-unbound'; page.rerender(<SettingsScreen />);
+    expect(within(history).getByText('当前视图')).toBeTruthy();
+    expect(within(history).queryByRole('button', { name: '查看历史' })).toBeNull();
   });
   it('edits a named account with an explicit workspace and fresh credentials', async () => {
     save.mockResolvedValue(ali.contexts[0]);
