@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Param, Post, Query, Res, UseGuards } from '@nestjs/common';
+import { BadGatewayException, Body, Controller, Get, Param, Post, Query, Res, UseGuards } from '@nestjs/common';
 import type { Response } from 'express';
 
 import { AdminAuthGuard } from './admin-auth.guard';
@@ -56,10 +56,20 @@ export class BillingController {
   }
 
   @Post('sync')
-  sync(@Body() body: BillingWindowDto) {
+  async sync(@Body() body: BillingWindowDto) {
     const window = resolveBillingWindow(body, 7);
-    if (!body.startAt && !body.endAt) return this.billingSyncService.syncRecentDays(7);
-    return this.billingSyncService.syncRange({ startAt: window.startAtText, endAt: window.endAtText });
+    try {
+      if (!body.startAt && !body.endAt) return await this.billingSyncService.syncRecentDays(7);
+      return await this.billingSyncService.syncRange({ startAt: window.startAtText, endAt: window.endAtText });
+    } catch (error) {
+      if (error instanceof Error && error.message.includes('exceeds ledger precision')) {
+        throw new BadGatewayException({
+          code: 'BILLING_AMOUNT_PRECISION',
+          message: '云厂商账单金额超出平台可无损保存的精度，失败账期的原有数据已保留，请联系管理员检查。',
+        });
+      }
+      throw error;
+    }
   }
 
   @Get('export/platform.csv')

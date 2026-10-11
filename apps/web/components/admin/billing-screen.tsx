@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation';
 import { ChevronDown, ChevronRight, Download, RefreshCw } from 'lucide-react';
 
 import {
+  AdminApiError,
   exportBillingUserItemsCsv,
   exportBillingUsersCsv,
   exportPlatformBillingCsv,
@@ -54,7 +55,7 @@ type BillingOverviewSnapshot = {
 
 const preciseMoneyFormatter = new Intl.NumberFormat('zh-CN', {
   minimumFractionDigits: 2,
-  maximumFractionDigits: 9,
+  maximumFractionDigits: 18,
 });
 
 function getDefaultRange(): BillingRange {
@@ -83,7 +84,7 @@ function formatMoney(value: number | null | undefined, currency = 'CNY') {
       currency,
       currencyDisplay: 'code',
       minimumFractionDigits: 2,
-      maximumFractionDigits: 9,
+      maximumFractionDigits: 18,
     }).format(amount);
   } catch {
     return `${currency} ${preciseMoneyFormatter.format(amount)}`;
@@ -519,7 +520,10 @@ export function BillingScreen({ apiBaseUrl = 'http://localhost:3001' }: BillingS
         return;
       }
 
-      setErrorMessage('账单同步失败，请稍后重试。');
+      const details = error instanceof AdminApiError ? error.details : null;
+      setErrorMessage(details && typeof details === 'object' && 'code' in details
+        && details.code === 'BILLING_AMOUNT_PRECISION' && error instanceof AdminApiError
+        ? error.message : '账单同步失败，请稍后重试。');
     } finally {
       setIsSyncing(false);
     }

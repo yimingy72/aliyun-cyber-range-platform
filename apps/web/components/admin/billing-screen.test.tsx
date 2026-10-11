@@ -499,6 +499,37 @@ describe('BillingScreen', () => {
     expect(screen.getByText('平台已归属费用').parentElement?.textContent).toContain('未知');
   });
 
+  it.each(['CNY', 'USD'])('keeps ten-decimal %s charges and refunds visible', async currency => {
+    vi.spyOn(adminSessionModule, 'useAdminSession').mockReturnValue(adminSession);
+    fetchBillingSummaryMock.mockResolvedValue({ billingScope: 'platform_resources', currency,
+      reconciliationIssues: [], totalPretaxAmount: 0.1325781504, platformPretaxAmount: -0.1325781504 });
+    fetchBillingUsersMock.mockResolvedValue([]);
+    fetchBillingUserGroupsMock.mockResolvedValue([]);
+    render(<BillingScreen apiBaseUrl="http://localhost:3001" />);
+    await screen.findByText('当前账期没有费用明细');
+    expect(screen.getByText('平台已归属费用').parentElement?.textContent).toContain('0.1325781504');
+    expect(screen.getByText('平台公共费用').parentElement?.textContent).toMatch(/-.*0\.1325781504/);
+  });
+
+  it.each([true, false])('shows a safe billing precision explanation without clearing existing costs: %s', async knownError => {
+    vi.spyOn(adminSessionModule, 'useAdminSession').mockReturnValue(adminSession);
+    fetchBillingSummaryMock.mockResolvedValue({ billingScope: 'platform_resources', reconciliationIssues: [],
+      totalPretaxAmount: 8.4, platformPretaxAmount: 0 });
+    fetchBillingUsersMock.mockResolvedValue([]);
+    fetchBillingUserGroupsMock.mockResolvedValue([]);
+    const message = '云厂商账单金额超出平台可无损保存的精度，失败账期的原有数据已保留，请联系管理员检查。';
+    triggerBillingSyncMock.mockRejectedValue(knownError
+      ? new AdminApiError(502, message, { code: 'BILLING_AMOUNT_PRECISION' })
+      : new AdminApiError(500, 'private upstream diagnostics'));
+    render(<BillingScreen apiBaseUrl="http://localhost:3001" />);
+    await screen.findByText('当前账期没有费用明细');
+    fireEvent.click(screen.getByRole('button', { name: '立即同步' }));
+    await screen.findByText(knownError ? message : '账单同步失败，请稍后重试。');
+    expect(screen.getByText('¥ 8.40')).toBeTruthy();
+    expect(screen.queryByText('private upstream diagnostics')).toBeNull();
+    expect(screen.queryByText(/已同步 \d+ 天/)).toBeNull();
+  });
+
   it('uses the selected entire calendar month when refreshing bills', async () => {
     vi.spyOn(adminSessionModule, 'useAdminSession').mockReturnValue(adminSession);
     fetchBillingSummaryMock.mockResolvedValue({ billingScope: 'platform_resources', reconciliationIssues: [], totalPretaxAmount: 0, platformPretaxAmount: 0, anomalyCount: 0 });
