@@ -1,0 +1,119 @@
+diff --git a/apps/api/test/alibaba-range-expiry.spec.ts b/apps/api/test/alibaba-range-expiry.spec.ts
+new file mode 100644
+index 0000000..8479075
+--- /dev/null
++++ b/apps/api/test/alibaba-range-expiry.spec.ts
+@@ -0,0 +1,113 @@
++import fs from 'node:fs/promises';
++import os from 'node:os';
++import path from 'node:path';
++import { OpenTofuRangeProvisioner } from '../src/provisioning/open-tofu-range-provisioner';
++import { RangeInstancesService } from '../src/admin/range-instances.service';
++import { runInCloudWorkspace } from '../src/auth/cloud-workspace-scope';
++import { alibabaRangeAutoReleaseTime, assertAlibabaRangeExpiryPlan } from '../src/provisioning/alibaba-range-expiry';
++import { preserveDeployedRangeHostFacts } from '../src/provisioning/range-update-plan-safety';
++
++const NOW = Date.parse('2026-10-11T00:00:00Z');
++const EXPIRES = '2026-10-11T01:00:15.001Z';
++const RELEASE = '2026-10-11T01:01:00Z';
++const plan = (after: Record<string, unknown>, actions = ['create']) => ({ resource_changes: [
++  { type: 'alicloud_instance', change: { actions, after } },
++] });
++const armed = { auto_release_time: RELEASE, instance_charge_type: 'PostPaid', deletion_protection: false };
++
++describe('Alibaba range absolute cloud expiry', () => {
++  it.each(['invalid', '', '2026-10-10T23:59:00Z', '2026-10-11T00:29:59Z', '2030-10-11T00:00:00Z'])(
++    'rejects unsafe expiry %s rather than removing or extending the cloud timer', expiresAt => {
++      expect(() => alibabaRangeAutoReleaseTime(expiresAt, NOW)).toThrow();
++    });
++  it('rounds up to the minute without ever releasing early or renewing a retry', () => {
++    expect(alibabaRangeAutoReleaseTime(EXPIRES, NOW)).toBe(RELEASE);
++    expect(alibabaRangeAutoReleaseTime(EXPIRES, NOW + 10 * 60_000)).toBe(RELEASE);
++    expect(alibabaRangeAutoReleaseTime('2026-10-11T09:00:00+08:00', NOW)).toBe('2026-10-11T01:00:00Z');
++    expect(alibabaRangeAutoReleaseTime('2026-10-11T00:30:00Z', NOW)).toBe('2026-10-11T00:30:00Z');
++  });
++  it('reserves five minutes at admission but checks the real 30-minute minimum before apply', () => {
++    expect(() => alibabaRangeAutoReleaseTime('2026-10-11T00:34:59Z', NOW, 35)).toThrow('35 分钟');
++    expect(alibabaRangeAutoReleaseTime('2026-10-11T00:35:00Z', NOW, 35)).toBe('2026-10-11T00:35:00Z');
++    expect(() => assertAlibabaRangeExpiryPlan(plan(armed), EXPIRES, NOW + 32 * 60_000)).toThrow('30 分钟');
++    expect(() => assertAlibabaRangeExpiryPlan(plan(armed), EXPIRES, NOW)).not.toThrow();
++  });
++  it.each([
++    {}, { ...armed, auto_release_time: '2026-10-11T02:00:00Z' }, { ...armed, auto_release_time: null },
++    { ...armed, instance_charge_type: 'PrePaid' }, { ...armed, deletion_protection: true },
++  ])('refuses any new VM whose actual plan is not armed exactly: %j', after => {
++    expect(() => assertAlibabaRangeExpiryPlan(plan(after), EXPIRES, NOW)).toThrow('exact frozen');
++  });
++  it('rejects a new VM with no frozen expiry and checks replacement creates too', () => {
++    expect(() => assertAlibabaRangeExpiryPlan(plan(armed), undefined, NOW)).toThrow();
++    expect(() => assertAlibabaRangeExpiryPlan(plan({}, ['delete', 'create']), EXPIRES, NOW)).toThrow('exact frozen');
++  });
++  it.each(['update', 'no-op', 'delete'])('does not re-arm existing VMs during %s', action => {
++    expect(() => assertAlibabaRangeExpiryPlan(plan({}, [action]), undefined, NOW)).not.toThrow();
++    expect(() => assertAlibabaRangeExpiryPlan(plan({}, [action]), EXPIRES, NOW + 90 * 60_000)).not.toThrow();
++  });
++  it('keeps deployed host facts including the original timer while a new host gets its own definition', () => {
++    const common = { resource_name_prefix: 'fixture', zone_id: 'cn-hangzhou-h', vpc_cidr: '10.0.0.0/16', secondary_vpc_cidrs: [],
++      network_zones: [], host_network_interfaces: [], system_disk_category: 'cloud_essd', host_passwords: { old: 'fixture-only' } };
++    const host = { key: 'old', zone_key: 'zone', private_ip: '10.0.1.10', auto_release_time: '2026-10-11T01:00:00Z',
++      image_id: 'm-frozen', instance_type: 'ecs.c7.large', system_disk_size: 40 };
++    const previous = { ...common, hosts: [host] };
++    const next = { ...common, host_passwords: { ...common.host_passwords }, hosts: [{ ...host, auto_release_time: RELEASE, image_id: 'm-changed' }, { key: 'new', auto_release_time: RELEASE }] };
++    const state = { instances: [{ type: 'alicloud_instance', address: 'module.range.alicloud_instance.hosts["old"]', attributes: { id: 'i-old' } }] };
++    const preserved = preserveDeployedRangeHostFacts(state as any, previous, next, { provider: 'alibaba_cloud' } as any);
++    expect(preserved.hosts).toEqual([previous.hosts[0], next.hosts[1]]);
++    const legacy = { ...previous, hosts: [{ ...host, auto_release_time: undefined }] };
++    expect(preserveDeployedRangeHostFacts(state as any, legacy, next, { provider: 'alibaba_cloud' } as any).hosts[0].auto_release_time).toBeUndefined();
++  });
++});
++
++
++describe('range expiry wiring before any cloud apply', () => {
++  beforeEach(() => { jest.useFakeTimers({ doNotFake: ['nextTick', 'setImmediate'] }); jest.setSystemTime(NOW); });
++  afterEach(() => { jest.restoreAllMocks(); jest.useRealTimers(); });
++  it.each(['missing-timer', 'plan-too-slow', 'armed'])('checks %s using the real workspace renderer and pre-apply entry', async scenario => {
++    jest.spyOn(Date, 'now').mockReturnValue(NOW);
++    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'range-expiry-'));
++    await fs.mkdir(path.join(root, 'infra/module'), { recursive: true });
++    const onApplyStart = jest.fn(async () => { throw new Error('fixture-stop-before-cloud'); });
++    const runner = {
++      init: jest.fn(async () => ({ stdout: '', stderr: '' })),
++      plan: jest.fn(async () => ({ stdout: '', stderr: '' })),
++      showPlan: jest.fn(async () => {
++        if (scenario === 'plan-too-slow') jest.spyOn(Date, 'now').mockReturnValue(NOW + 32 * 60_000);
++        return plan(scenario === 'missing-timer' ? {} : armed);
++      }),
++      apply: jest.fn(), output: jest.fn(), destroy: jest.fn(),
++    };
++    const provisioner = new OpenTofuRangeProvisioner({ runner: runner as any, projectRootDir: root,
++      workspacesRootDir: path.join(root, 'workspaces'), env: { OPENTOFU_INSTANCE_TYPE: 'ecs.c7.large', OPENTOFU_IMAGE_ID: 'm-fixture' } });
++    try {
++      await expect(provisioner.create({ rangeInstanceId: 'range-fixture', templateModulePath: 'infra/module', allocatedCidr: null,
++        expiresAt: EXPIRES, onApplyStart, runtimeCredentials: { entry: { username: 'root', password: 'Fixture-only-pass123!' } },
++        runtimeConfig: { provider: 'alibaba_cloud', accessKeyId: 'fixture-key', accessKeySecret: 'fixture-secret', defaultRegion: 'cn-hangzhou', defaultZoneId: 'cn-hangzhou-h' },
++        topologySpec: { vpcCidr: '10.90.0.0/16', networkZones: [{ key: 'dmz', name: 'DMZ', purpose: 'public-entry', cidr: '10.90.10.0/24', isPublicEntry: true }],
++          hosts: [{ key: 'entry', name: 'Entry', zoneKey: 'dmz', role: 'entry', privateIp: '10.90.10.10', exposePublic: true }],
++          publicEntry: { hostKey: 'entry', protocols: [{ protocol: 'ssh', port: 22 }] } },
++      })).rejects.toThrow(scenario === 'armed' ? 'fixture-stop-before-cloud' : scenario === 'plan-too-slow' ? '30 分钟' : 'exact frozen');
++      const vars = JSON.parse(await fs.readFile(path.join(root, 'workspaces/range-fixture/range.auto.tfvars.json'), 'utf8'));
++      expect(vars.hosts).toEqual([expect.objectContaining({ key: 'entry', auto_release_time: RELEASE })]);
++      expect(await fs.readFile(path.join(root, 'workspaces/range-fixture/variables.tf'), 'utf8')).toContain('auto_release_time = optional(string)');
++      expect(onApplyStart).toHaveBeenCalledTimes(scenario === 'armed' ? 1 : 0);
++      expect(runner.apply).not.toHaveBeenCalled();
++    } finally { await fs.rm(root, { recursive: true, force: true }); }
++  });
++
++  it('rejects too-short admission before creating any platform record or job', async () => {
++    jest.spyOn(Date, 'now').mockReturnValue(NOW);
++    const repository = { getRangeTemplateById: jest.fn(), createRangeInstance: jest.fn(), createProvisionJob: jest.fn() };
++    const config = { getExecutionAccountContext: async () => ({ provider: 'alibaba_cloud', cloudAccountContextId: 'context', accountUid: '100001', accountUidResolved: true }) };
++    // The guard runs before template lookup, independent of the template/worker services.
++    const service = new RangeInstancesService(repository as any, {} as any, config as any, {} as any, {} as any);
++    await expect(runInCloudWorkspace({ cloudWorkspaceId: 'workspace', provider: 'alibaba_cloud', accountUid: '100001' },
++      () => service.launch({ templateId: 'template', name: 'new range', expiresAt: '2026-10-11T00:34:00Z' })))
++      .rejects.toThrow('35 分钟');
++    expect(repository.getRangeTemplateById).not.toHaveBeenCalled();
++    expect(repository.createRangeInstance).not.toHaveBeenCalled();
++    expect(repository.createProvisionJob).not.toHaveBeenCalled();
++  });
++});

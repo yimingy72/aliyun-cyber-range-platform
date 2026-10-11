@@ -1,0 +1,254 @@
+diff --git a/apps/api/src/admin/billing.service.ts b/apps/api/src/admin/billing.service.ts
+index defe8b7..b097af0 100644
+--- a/apps/api/src/admin/billing.service.ts
++++ b/apps/api/src/admin/billing.service.ts
+@@ -237 +237 @@ export class BillingService {
+-    const reconciliationIssues = await Promise.all([...pendingResources].map(async ([resourceType, ids]) => ({ resourceType, resourceCount: ids.size,
++    const reconciliationIssues: Array<{ resourceType: 'snapshot' | 'oss' | 'unknown' | 'cleanup' | 'post_release'; resourceCount: number; reason: string; resources: Awaited<ReturnType<BillingService['reconciliationResourceDetails']>>; detailsTruncated?: boolean }> = await Promise.all([...pendingResources].map(async ([resourceType, ids]) => ({ resourceType, resourceCount: ids.size,
+@@ -241,0 +242,26 @@ export class BillingService {
++    // Current operational risk is deliberately independent of the selected historical bill window.
++    // Read only the scheduler projection: no runtime passwords, cloud credentials or mutable cloud calls.
++    const billable = ledgerResources.filter(ledger => ['ecs', 'disk', 'eip', 'nat_gateway'].includes(ledger.cloudResourceType));
++    const sourceIds = [...new Set(billable.flatMap(ledger => ledger.rangeInstanceId ? [ledger.rangeInstanceId] : []))];
++    const instances = sourceIds.length ? await this.adminRepository.listProvisioningInstancesByIds(sourceIds) : [];
++    const instancesById = new Map(instances.map(instance => [instance.id, instance]));
++    const now = new Date();
++    const cleanup = new Set(billable.filter(ledger => {
++      const instance = ledger.rangeInstanceId ? instancesById.get(ledger.rangeInstanceId) : null;
++      return !ledger.releasedAt && instance && instance.cloudWorkspaceId === ledger.cloudWorkspaceId && instance.ownerUserId === ledger.ownerUserId
++        && (instance.expiresAt && instance.expiresAt <= now || ['destroyed', 'destroy_failed', 'create_failed'].includes(instance.status));
++    }).map(ledger => `ledger:${ledger.id}`));
++    const released = new Map(billable.filter(ledger => ledger.releasedAt).map(ledger => [ledger.id, ledger]));
++    const postRelease = new Set(trackedLineItems.filter(item => {
++      const ledger = item.matchedLedgerId ? released.get(item.matchedLedgerId) : null;
++      return ledger && item.pretaxAmount > 0 && toIsoDate(item.billingDate) > billingDayText(ledger.releasedAt!);
++    }).map(item => `ledger:${item.matchedLedgerId}`));
++    for (const [resourceType, ids, reason, proofFailureReason] of [
++      ['cleanup', cleanup, '当前已到期或进入失败/销毁终态的资源尚无释放证明；EIP、NAT 和独立云盘不会因主机到期而自动结清。核对原创建任务与云端库存后回收，不按标签批量删除。', 'RESOURCE_RELEASE_UNVERIFIED'],
++      ['post_release', postRelease, '所选账期存在释放日之后的正费用，可能为迟到用量或调账；请核对官方用量区间和原创建任务，不直接认定重复扣款，不自动冲销历史金额。', 'POST_RELEASE_BILL_REVIEW'],
++    ] as const) {
++      if (!ids.size) continue;
++      const resources = await this.reconciliationResourceDetails(new Set([...ids].sort().slice(0, 100)), proof, false);
++      reconciliationIssues.push({ resourceType, resourceCount: ids.size, reason, detailsTruncated: ids.size > 100,
++        resources: resources.map(resource => ({ ...resource, proofFailureReason })) });
++    }
+diff --git a/apps/api/src/admin/range-instances.service.ts b/apps/api/src/admin/range-instances.service.ts
+index 951eb77..d1e0756 100644
+--- a/apps/api/src/admin/range-instances.service.ts
++++ b/apps/api/src/admin/range-instances.service.ts
+@@ -0,0 +1 @@
++import { alibabaRangeAutoReleaseTime } from '../provisioning/alibaba-range-expiry';
+@@ -240,0 +242 @@ export class RangeInstancesService {
++    if (account?.provider === 'alibaba_cloud') alibabaRangeAutoReleaseTime(input.expiresAt, Date.now(), 35);
+diff --git a/apps/api/src/admin/tencent-cloud-client.ts b/apps/api/src/admin/tencent-cloud-client.ts
+index cf52cef..d3bed6c 100644
+--- a/apps/api/src/admin/tencent-cloud-client.ts
++++ b/apps/api/src/admin/tencent-cloud-client.ts
+@@ -0,0 +1 @@
++import { assertReconciliationActive, reconciliationRequestSignal } from '../provisioning/reconciliation-budget';
+@@ -90 +91 @@ export async function requestTencentCloud<T>(input: TencentCloudRequest): Promis
+-      signal: AbortSignal.timeout(15_000),
++      signal: reconciliationRequestSignal(15_000),
+@@ -107,0 +109 @@ export async function requestTencentCloud<T>(input: TencentCloudRequest): Promis
++  assertReconciliationActive();
+diff --git a/apps/api/src/provisioning/alibaba-range-expiry.ts b/apps/api/src/provisioning/alibaba-range-expiry.ts
+new file mode 100644
+index 0000000..9ce1f98
+--- /dev/null
++++ b/apps/api/src/provisioning/alibaba-range-expiry.ts
+@@ -0,0 +1,28 @@
++import { ConflictException } from '@nestjs/common';
++
++const MINUTE = 60_000;
++
++export function alibabaRangeAutoReleaseTime(expiresAt: string, now = Date.now(), minimumMinutes = 30): string {
++  const expiry = Date.parse(expiresAt);
++  const latest = new Date(now);
++  latest.setUTCFullYear(latest.getUTCFullYear() + 3);
++  // ECS truncates seconds. Round UP once, never release before the user's requested instant.
++  const release = Math.ceil(expiry / MINUTE) * MINUTE;
++  if (!Number.isFinite(expiry) || expiry - now < minimumMinutes * MINUTE || release > latest.getTime()) {
++    throw new ConflictException(`阿里云编排实例到期时间需在 ${minimumMinutes} 分钟之后且不超过三年，以设置云端自动释放；不会自动延长有效期。`);
++  }
++  return new Date(release).toISOString().replace('.000Z', 'Z');
++}
++
++export function assertAlibabaRangeExpiryPlan(plan: unknown, expiresAt: string | undefined, now = Date.now()) {
++  const changes = (plan as { resource_changes?: Array<{ type: string; change?: { actions?: string[]; after?: Record<string, unknown> } }> })?.resource_changes ?? [];
++  const hosts = changes.filter(change => change.type === 'alicloud_instance' && change.change?.actions?.includes('create'));
++  if (!hosts.length) return; // Deletes and policy-only updates must not re-arm or renew an existing VM.
++  const release = alibabaRangeAutoReleaseTime(expiresAt ?? '', now);
++  for (const host of hosts) {
++    if (host.change?.after?.auto_release_time !== release || host.change.after.instance_charge_type !== 'PostPaid'
++      || host.change.after.deletion_protection === true) {
++      throw new Error('Alibaba range creation plan lacks its exact frozen pay-as-you-go auto-release time');
++    }
++  }
++}
+diff --git a/apps/api/src/provisioning/open-tofu-range-provisioner.ts b/apps/api/src/provisioning/open-tofu-range-provisioner.ts
+index d22ea63..c6878d8 100644
+--- a/apps/api/src/provisioning/open-tofu-range-provisioner.ts
++++ b/apps/api/src/provisioning/open-tofu-range-provisioner.ts
+@@ -0,0 +1 @@
++import { alibabaRangeAutoReleaseTime, assertAlibabaRangeExpiryPlan } from './alibaba-range-expiry';
+@@ -374,0 +376,3 @@ export class OpenTofuRangeProvisioner implements RangeProvisioner {
++      if (input.instanceMode !== 'single' && input.runtimeConfig?.provider !== 'tencent_cloud') {
++        assertAlibabaRangeExpiryPlan(planned, input.expiresAt);
++      }
+@@ -956,0 +961,8 @@ export class OpenTofuRangeProvisioner implements RangeProvisioner {
++    if (options.requireRuntimePasswords && input.runtimeConfig?.provider !== 'tencent_cloud' && input.expiresAt) {
++      const deployed = new Set(priorState?.instances.filter(resource => resource.type === 'alicloud_instance').map(resource => resourceInstanceKey(resource.address)) ?? []);
++      const hosts = (variables as { hosts: Array<{ key: string; auto_release_time?: string }> }).hosts;
++      if (hosts.some(host => !deployed.has(host.key))) {
++        const autoReleaseTime = alibabaRangeAutoReleaseTime(input.expiresAt);
++        for (const host of hosts) if (!deployed.has(host.key)) host.auto_release_time = autoReleaseTime;
++      }
++    }
+diff --git a/apps/api/src/provisioning/platform-resource-reconciliation.service.ts b/apps/api/src/provisioning/platform-resource-reconciliation.service.ts
+index 656e6fe..870c04d 100644
+--- a/apps/api/src/provisioning/platform-resource-reconciliation.service.ts
++++ b/apps/api/src/provisioning/platform-resource-reconciliation.service.ts
+@@ -0,0 +1 @@
++import { assertReconciliationActive, reconciliationRequestSignal } from './reconciliation-budget';
+@@ -208 +209 @@ export class AliyunEcsResourceClient {
+-      signal: AbortSignal.timeout(30_000),
++      signal: reconciliationRequestSignal(30_000),
+@@ -215 +216,3 @@ export class AliyunEcsResourceClient {
+-    return (await response.json()) as ResponsePayload;
++    const payload = await response.json();
++    assertReconciliationActive();
++    return payload as ResponsePayload;
+@@ -226,0 +230 @@ export class PlatformResourceReconciliationService {
++    assertReconciliationActive();
+@@ -227,0 +232 @@ export class PlatformResourceReconciliationService {
++    assertReconciliationActive();
+@@ -238,0 +244 @@ export class PlatformResourceReconciliationService {
++    assertReconciliationActive();
+@@ -243,0 +250 @@ export class PlatformResourceReconciliationService {
++      assertReconciliationActive();
+@@ -327,0 +335 @@ export class PlatformResourceReconciliationService {
++      assertReconciliationActive();
+@@ -342,0 +351 @@ export class PlatformResourceReconciliationService {
++      assertReconciliationActive();
+@@ -371,0 +381 @@ export class PlatformResourceReconciliationService {
++      assertReconciliationActive();
+@@ -377,0 +388 @@ export class PlatformResourceReconciliationService {
++      assertReconciliationActive();
+@@ -388,0 +400 @@ export class PlatformResourceReconciliationService {
++      assertReconciliationActive();
+@@ -424,0 +437 @@ export class PlatformResourceReconciliationService {
++        assertReconciliationActive();
+@@ -438,0 +452 @@ export class PlatformResourceReconciliationService {
++      assertReconciliationActive();
+@@ -442,0 +457 @@ export class PlatformResourceReconciliationService {
++      assertReconciliationActive();
+@@ -456,2 +471,5 @@ export class PlatformResourceReconciliationService {
+-    try { return await this.aliyunEcsResourceClient.verifyRecordedDisks(credentials,instance,cloudInstanceId); }
+-    catch { return false; }
++    try {
++      const verified = await this.aliyunEcsResourceClient.verifyRecordedDisks(credentials, instance, cloudInstanceId);
++      assertReconciliationActive();
++      return verified;
++    } catch { assertReconciliationActive(); return false; }
+@@ -466,0 +485 @@ export class PlatformResourceReconciliationService {
++    assertReconciliationActive();
+diff --git a/apps/api/src/provisioning/provisioning-worker.service.ts b/apps/api/src/provisioning/provisioning-worker.service.ts
+index 143e9d5..bc62505 100644
+--- a/apps/api/src/provisioning/provisioning-worker.service.ts
++++ b/apps/api/src/provisioning/provisioning-worker.service.ts
+@@ -0,0 +1 @@
++import { assertReconciliationActive, runWithReconciliationBudget } from './reconciliation-budget';
+@@ -89,0 +91,10 @@ export class ProvisioningWorkerService {
++  private reconciliationTask: Promise<void> | null = null;
++  private reconciliationAbort: AbortController | null = null;
++  private reconciliationWorkspaceOffset = 0;
++  private readonly reconciliationRegionOffsets = new Map<string, number>();
++  private stopping = false;
++
++  onModuleDestroy() {
++    this.stopping = true;
++    this.reconciliationAbort?.abort(new Error('Reconciliation stopped'));
++  }
+@@ -121 +131,0 @@ export class ProvisioningWorkerService {
+-    await this.reconcilePlatformResourcesSafely(new Date());
+@@ -123 +133 @@ export class ProvisioningWorkerService {
+-    while (true) {
++    while (!this.stopping) {
+@@ -127 +136,0 @@ export class ProvisioningWorkerService {
+-      await this.reconcilePlatformResourcesIfDue(now);
+@@ -128,0 +138 @@ export class ProvisioningWorkerService {
++      this.reconcilePlatformResourcesIfDue(now);
+@@ -154 +164,4 @@ export class ProvisioningWorkerService {
+-    for (const space of spaces) {
++    // Rotate the first workspace/region so a deadline cannot starve the tail forever.
++    const offset = this.reconciliationWorkspaceOffset++ % (spaces.length || 1);
++    for (const space of [...spaces.slice(offset), ...spaces.slice(0, offset)]) {
++      assertReconciliationActive();
+@@ -163,2 +176,5 @@ export class ProvisioningWorkerService {
+-          const contextIds = await contexts.listWorkspaceAccountContextIds();
+-          for (const contextId of new Set(contextIds)) {
++          const contextIds = [...new Set(await contexts.listWorkspaceAccountContextIds())];
++          const regionOffset = (this.reconciliationRegionOffsets.get(space.id) ?? 0) % (contextIds.length || 1);
++          this.reconciliationRegionOffsets.set(space.id, regionOffset + 1);
++          for (const contextId of [...contextIds.slice(regionOffset), ...contextIds.slice(0, regionOffset)]) {
++            assertReconciliationActive();
+@@ -198,6 +214,16 @@ export class ProvisioningWorkerService {
+-  private async reconcilePlatformResourcesIfDue(now: Date) {
+-    if (now.getTime() < this.nextResourceReconciliationAt) {
+-      return;
+-    }
+-
+-    await this.reconcilePlatformResourcesSafely(now);
++  private reconcilePlatformResourcesIfDue(now: Date) {
++    if (this.stopping || this.reconciliationTask || now.getTime() < this.nextResourceReconciliationAt) return;
++    const controller = new AbortController();
++    this.reconciliationAbort = controller;
++    const deadline = setTimeout(() => {
++      controller.abort(new Error('Reconciliation round exceeded its two-minute budget'));
++      this.logger.error('Resource reconciliation exceeded its budget; inventory remains unverified and cleanup scheduling continues.');
++    }, 120_000);
++    deadline.unref();
++    // Never race and forget the old task: its slot stays occupied until it actually unwinds.
++    this.reconciliationTask = runInSystemCloudWorkspaceScope(() => runWithReconciliationBudget(controller.signal,
++      () => this.reconcilePlatformResourcesSafely(now))).finally(() => {
++        clearTimeout(deadline);
++        this.reconciliationTask = null;
++        this.reconciliationAbort = null;
++      });
+diff --git a/apps/api/src/provisioning/reconciliation-budget.ts b/apps/api/src/provisioning/reconciliation-budget.ts
+new file mode 100644
+index 0000000..1be042b
+--- /dev/null
++++ b/apps/api/src/provisioning/reconciliation-budget.ts
+@@ -0,0 +1,19 @@
++import { AsyncLocalStorage } from 'node:async_hooks';
++
++// Only inventory reconciliation inherits this budget; provisioning/cleanup has its own claim signal.
++const budget = new AsyncLocalStorage<AbortSignal>();
++
++export function runWithReconciliationBudget<T>(signal: AbortSignal, work: () => Promise<T>): Promise<T> {
++  return budget.run(signal, work);
++}
++
++export function assertReconciliationActive() {
++  budget.getStore()?.throwIfAborted();
++}
++
++export function reconciliationRequestSignal(timeoutMs: number): AbortSignal {
++  const signal = budget.getStore();
++  signal?.throwIfAborted();
++  const request = AbortSignal.timeout(timeoutMs);
++  return signal ? AbortSignal.any([signal, request]) : request;
++}
+diff --git a/apps/api/src/provisioning/root-wrapper-template.ts b/apps/api/src/provisioning/root-wrapper-template.ts
+index 848799b..ba1e07e 100644
+--- a/apps/api/src/provisioning/root-wrapper-template.ts
++++ b/apps/api/src/provisioning/root-wrapper-template.ts
+@@ -175,0 +176 @@ variable "hosts" {
++    auto_release_time = optional(string)
+diff --git a/apps/api/src/worker-main.ts b/apps/api/src/worker-main.ts
+index 544e86d..36fe689 100644
+--- a/apps/api/src/worker-main.ts
++++ b/apps/api/src/worker-main.ts
+@@ -11,0 +12 @@ async function bootstrap() {
++  app.enableShutdownHooks();

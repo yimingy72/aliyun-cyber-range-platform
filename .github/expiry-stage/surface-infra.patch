@@ -1,0 +1,193 @@
+diff --git a/docs/reviews/2026-10-11-expiry-cost-guardrails.md b/docs/reviews/2026-10-11-expiry-cost-guardrails.md
+new file mode 100644
+index 0000000..7af9645
+--- /dev/null
++++ b/docs/reviews/2026-10-11-expiry-cost-guardrails.md
+@@ -0,0 +1,50 @@
++# 到期、回收与费用风险：后续修复
++
++本次是 PR #22 的后续变更，不替代前次资源归属、分页和单请求超时修复。仅变更代码、测试与说明；不连接真实云账号，不自动合并或部署。
++
++## 风险与实现
++
++### 1. worker 停机期间的主机费用
++
++阿里云 RunInstances 可原子携带 AutoReleaseTime。项目锁定的 alicloud provider 在创建 RPC 中传递 auto_release_time，故无需额外云任务、客体脚本或创建后的第二次设置请求。
++
++新阿里云**编排实例**受理至少预留 35 分钟（原生最低 30 分钟加规划缓冲），不超过三年。云端忽略秒，因此将原始绝对 expiresAt 向上取整到分钟，不提前释放，最多晚不足一分钟；worker 仍按原始时间安排整套回收。真正 apply 前再次检查计划中每一台新增 ECS 的绝对时间、PostPaid 和删除保护，规划耗时过长则拒绝，不延长时间、不退回无定时器创建。
++
++新增拓扑主机继承原 expiresAt。对原有主机复用已有参数：规则更新不重设自动释放、旧实例不隐式补装定时器。临近到期不允许新增主机，但只改规则、删除不因这一准入门槛被拒绝。未知响应恢复仍使用原幂等键。
++
++**不是整套费用上限。** ECS 定时释放不删除独立 EIP、NAT、快照和独立云盘；整套资源仍须 worker 按冻结账号、物理库存和 state 回收。镜像单实例的既有短时有效期策略不在本次变更范围，不能把本次编排保护当成所有实例都有云端兜底。云账号停用、权限失败、云端服务异常也不能由离线测试排除。
++
++### 2. 慢对账阻塞回收与创建
++
++worker 优先处理过期记录和领取作业，然后启动独立的单次对账任务，不再等待对账完成才进入下一轮。每个 worker 最多一个对账任务，整轮 120 秒取消预算通过异步上下文传递给阿里云和腾讯云 RPC；每个 RPC 原有的 30/15 秒超时仍生效。
++
++预算耗尽后不把未知库存变成空库存，也不误记磁盘所有权冲突。取消前已经发出的数据库事务不能强制撤销；不抢占其锁、不擅自关闭费用台账。任务实际退出前始终占用单飞槽，避免超时任务与下一轮并发写入。工作空间和地域轮换起点，避免尾部永久饥饿。进程关闭取消对账，不能取消其它作业的独立请求。
++
++这是单 worker 的网络对账隔离，不承诺数据库无限阻塞时仍无锁竞争；不是跨副本全局唯一任务，也不是所有业务云请求的总超时。
++
++### 3. 费用与回收证据不同
++
++现有账单汇总增加两类**只读**诊断，沿用当前工作空间与用户过滤、真实来源证明和已有总金额算法：
++
++- cleanup：当前已到期或处于失败/销毁终态的 ECS、云盘、EIP、NAT 台账缺少释放时间。独立于所选历史账期，金额不估算，资源不删除。
++- post_release：所选账期存在释放日之后的正费用。释放当日用量、退款不据此告警。可能是迟到用量、调账、遗留资源或待核实的历史记录，不直接认定重复扣款或自动退款。提示不重复计入任何金额。
++
++每类最多返回 100 条脱敏来源明细，resourceCount 保留准确总数，detailsTruncated 标记截断。原始云标签、密码、云凭据不进入响应。unknown 仍表示历史来源待核对，不能升级为可以自动删除的资源。
++
++## 运维核验步骤
++
++首先确认正确云账号工作空间与原创建任务，读取任务证据和真实物理 ID；不要仅凭名称、标签或页面终态删除云资源。然后对照 ECS、云盘、EIP、NAT、镜像及快照的各自库存和引用关系，按平台既有恢复流程回收。无法证明所有权或缺少 state 时保持失败可见，不新建替代、不清除审计。
++
++资源消失和 releasedAt 是回收证据，不是财务结清证明。使用同账号官方账单核对服务/用量时间、金额、退款、调账和延迟出账。旧账单争议人工核验；本次没有历史批量改账、冲销、迁移或标签批量删除脚本。
++
++## 验证入口
++
++`bash scripts/ci/verify-docker.sh`：重新构建测试容器，运行全仓测试、生产编译、隔离 PostgreSQL 迁移和离线 IaC。新增 enterprise expiry.tftest.hcl 通过 mock provider 验证字段实际传入 ECS 资源；没有真实云 apply。
++
++重点回归：alibaba-range-expiry.spec.ts、reconciliation-scheduling-budget.spec.ts、billing-lifecycle-risks.spec.ts、Web cloud-execution-policy/templates/billing 测试及 MCP billing-contract.spec.ts。CI 产物保存精确 patch、文件 blob、固定基线和实际日志；最终结果见 PR 的实际验证记录，不能将前次通过数字当成本次结果。
++
++## 官方合同依据
++
++- RunInstances：https://help.aliyun.com/zh/ecs/developer-reference/api-ecs-2014-05-26-runinstances
++- 自动释放：https://help.aliyun.com/zh/ecs/user-guide/release-an-instance
++- 固定 provider 创建实现：aliyun/terraform-provider-alicloud，commit 501318273fb83fabb981d45383d2fd7075ec7c8a，alicloud/resource_alicloud_instance.go，RunInstances AutoReleaseTime 参数。
+diff --git a/infra/opentofu/modules/alicloud-enterprise-range/main.tf b/infra/opentofu/modules/alicloud-enterprise-range/main.tf
+index 3b19f43..56db010 100644
+--- a/infra/opentofu/modules/alicloud-enterprise-range/main.tf
++++ b/infra/opentofu/modules/alicloud-enterprise-range/main.tf
+@@ -508,0 +509 @@ resource "alicloud_instance" "hosts" {
++  auto_release_time     = try(each.value.auto_release_time, null)
+diff --git a/infra/opentofu/modules/alicloud-enterprise-range/tests/expiry.tftest.hcl b/infra/opentofu/modules/alicloud-enterprise-range/tests/expiry.tftest.hcl
+new file mode 100644
+index 0000000..4652d07
+--- /dev/null
++++ b/infra/opentofu/modules/alicloud-enterprise-range/tests/expiry.tftest.hcl
+@@ -0,0 +1,74 @@
++mock_provider "alicloud" {}
++
++override_resource {
++  target = alicloud_security_group.hosts
++  values = { id = "sg-primary" }
++}
++
++override_resource {
++  target = alicloud_security_group.network_interfaces
++  values = { id = "sg-secondary" }
++}
++
++variables {
++  resource_name_prefix = "nic-test"
++  zone_id              = "cn-hangzhou-h"
++  vpc_cidr             = "10.0.0.0/16"
++  dmz_cidr             = "10.0.1.0/24"
++  office_cidr          = "10.0.2.0/24"
++  server_cidr          = "10.0.3.0/24"
++  dmz_private_ip       = "10.0.1.10"
++  office_private_ip    = "10.0.2.20"
++  server_private_ip    = "10.0.3.10"
++  instance_type        = "ecs.e-c1m2.large"
++  image_id             = "m-test"
++  instance_password    = "Mock-test-only-123!"
++  entry_host_key       = "entry"
++  network_zones = [
++    { key = "dmz", name = "DMZ", cidr = "10.0.1.0/24", purpose = "dmz", is_public_entry = true },
++    { key = "private", name = "Private", cidr = "10.0.2.0/24", purpose = "internal", is_public_entry = false }
++  ]
++  hosts = [
++    { key = "entry", name = "Entry", host_name = "entry-host", zone_key = "dmz", private_ip = "10.0.1.10", role = "entry", expose_public = true },
++    { key = "internal", name = "Internal", host_name = "internal-host", zone_key = "private", private_ip = "10.0.2.20", role = "internal", expose_public = false }
++  ]
++  host_network_interfaces = [{
++    host_key = "entry"
++    interfaces = [
++      { nic_id = "primary", device_index = 0, zone_key = "dmz", private_ip = "10.0.1.10", secondary_private_ips = ["10.0.1.11"] },
++      { nic_id = "secondary", device_index = 1, zone_key = "private", private_ip = "10.0.2.10", secondary_private_ips = ["10.0.2.11"] }
++    ]
++  }]
++  security_group_rules = [
++    { key = "http-primary", name = "HTTP", target_host_key = "entry", target_device_index = 0, direction = "ingress", policy = "accept", protocol = "tcp", port_range = "80/80", source_cidr = "0.0.0.0/0", priority = 1 },
++    { key = "ssh-secondary", name = "Private SSH", target_host_key = "entry", target_device_index = 1, direction = "ingress", policy = "accept", protocol = "tcp", port_range = "22/22", source_cidr = "10.0.2.0/24", priority = 1 }
++  ]
++  nat_gateways = [{ key = "nat", name = "NAT", zone_key = "dmz", snat_enabled = true }]
++  eips         = [{ key = "dnat", name = "DNAT", bind_target_type = "nat_gateway", bind_target_key = "nat", bandwidth_mbps = 30 }]
++  dnat_entries = [
++    { key = "dnat-entry-tcp-80", name = "TCP80", nat_gateway_key = "nat", eip_key = "dnat", backend_host_key = "entry", external_port = 80, internal_port = 80, protocol = "tcp" },
++    { key = "dnat-entry-udp-80", name = "UDP80", nat_gateway_key = "nat", eip_key = "dnat", backend_host_key = "entry", external_port = 80, internal_port = 80, protocol = "udp" }
++  ]
++}
++
++run "new_hosts_receive_frozen_cloud_expiry" {
++  command = plan
++  variables {
++    hosts = [
++      { key = "entry", name = "Entry", host_name = "entry-host", zone_key = "dmz", private_ip = "10.0.1.10", role = "entry", expose_public = true, auto_release_time = "2027-01-01T01:01:00Z" },
++      { key = "internal", name = "Internal", host_name = "internal-host", zone_key = "private", private_ip = "10.0.2.20", role = "internal", expose_public = false, auto_release_time = "2027-01-01T01:01:00Z" }
++    ]
++  }
++  assert {
++    condition     = alltrue([for host in alicloud_instance.hosts : host.auto_release_time == "2027-01-01T01:01:00Z" && host.instance_charge_type == "PostPaid"])
++    error_message = "Every new range ECS must receive the same frozen absolute cloud expiry during creation."
++  }
++}
++
++run "legacy_hosts_are_not_implicitly_rearmed" {
++  command = plan
++  assert {
++    condition     = alltrue([for host in alicloud_instance.hosts : host.auto_release_time == null || host.auto_release_time == ""])
++    error_message = "A legacy host without a saved cloud timer must not be assigned a newly calculated expiration."
++  }
++}
+diff --git a/infra/opentofu/modules/alicloud-enterprise-range/variables.tf b/infra/opentofu/modules/alicloud-enterprise-range/variables.tf
+index f2bbf05..58108f6 100644
+--- a/infra/opentofu/modules/alicloud-enterprise-range/variables.tf
++++ b/infra/opentofu/modules/alicloud-enterprise-range/variables.tf
+@@ -42,10 +42,11 @@ variable "hosts" {
+-    key              = string
+-    name             = string
+-    host_name        = optional(string)
+-    zone_key         = string
+-    private_ip       = string
+-    role             = string
+-    expose_public    = bool
+-    instance_type    = optional(string)
+-    image_id         = optional(string)
+-    system_disk_size = optional(number)
++    key               = string
++    name              = string
++    host_name         = optional(string)
++    zone_key          = string
++    private_ip        = string
++    role              = string
++    expose_public     = bool
++    instance_type     = optional(string)
++    image_id          = optional(string)
++    system_disk_size  = optional(number)
++    auto_release_time = optional(string)
+diff --git a/scripts/dev/validate-opentofu-example.sh b/scripts/dev/validate-opentofu-example.sh
+index 990e8fe..0359e11 100644
+--- a/scripts/dev/validate-opentofu-example.sh
++++ b/scripts/dev/validate-opentofu-example.sh
+@@ -307,0 +308,2 @@ run_tofu_in_directory "infra/opentofu/modules/alicloud-single-instance-batch" te
++
++run_tofu_in_directory "infra/opentofu/modules/alicloud-enterprise-range" test -no-color -filter=tests/expiry.tftest.hcl
+diff --git a/skills/references/products/billing.md b/skills/references/products/billing.md
+index 9bda804..9dfac0a 100644
+--- a/skills/references/products/billing.md
++++ b/skills/references/products/billing.md
+@@ -56,0 +57,4 @@
++
++## 当前回收与释放后费用
++
++reconciliationIssues 中 cleanup 是当前到期/失败/销毁记录缺少资源释放证明，不受所选账期窗口限制；post_release 是所选账期释放日之后出现的正费用，可能为延迟出账或调账。二者不增加汇总金额，不证明重复扣款，不允许自动冲销或按标签删除。每类明细最多 100 条，resourceCount 为实际数量，detailsTruncated 表示截断。依据同工作空间、原创建任务、物理库存与官方用量时间核验；unknown 来源不明时保留历史并停止自动处理。
+diff --git a/skills/references/products/range-instances.md b/skills/references/products/range-instances.md
+index 1d86fe4..109482b 100644
+--- a/skills/references/products/range-instances.md
++++ b/skills/references/products/range-instances.md
+@@ -99,0 +100,4 @@
++
++## 到期兜底边界
++
++新阿里云编排启动至少预留 35 分钟且不超过三年；apply 前新增主机须仍满足 30 分钟云端原生自动释放门槛，失败不能延长 expiresAt 或更换幂等键盲目重建。新主机向上取整至分钟的绝对释放时间不会提前终止；已有主机规则更新不重新设置计时器。ECS 自动释放不清理独立 EIP/NAT/快照/云盘，必须继续核验整套回收。此策略不等于镜像单实例也有相同保护。

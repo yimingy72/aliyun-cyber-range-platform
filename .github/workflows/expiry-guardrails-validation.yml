@@ -1,0 +1,126 @@
+name: Expiry and cost guardrail validation
+on:
+  push:
+    branches: [codex/expiry-cost-guardrails]
+    paths: ['.github/expiry-stage/**', '.github/workflows/expiry-guardrails-validation.yml']
+permissions:
+  contents: write
+concurrency:
+  group: expiry-guardrails-validation
+  cancel-in-progress: false
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      REVIEW_BASE: 676220162ad30065bb08cadc114a91a8a862b618
+      INTEGRATION_BASE: 37a6c65f510301897bef2d09446678a583437cf5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: codex/expiry-cost-guardrails
+          fetch-depth: 0
+      - name: Apply exact reviewed sources in an isolated worktree
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          git diff --quiet "$REVIEW_BASE" -- apps packages infra scripts test docs skills
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git worktree add --detach .worktrees/guardrails-validation "$REVIEW_BASE"
+          mkdir -p "$RUNNER_TEMP/guardrails-results" "$RUNNER_TEMP/guardrails-baseline"
+          while read -r hash file; do
+            test "$(git hash-object ".github/expiry-stage/$file")" = "$hash"
+            git -C .worktrees/guardrails-validation apply --unidiff-zero "$GITHUB_WORKSPACE/.github/expiry-stage/$file"
+          done <<'HASHES'
+          c1129e928e7c2a11ff7b342e5b75bade08b45dcc core.patch
+          7f2224ce22270fbbf0c24e66fb65dc2ae62d2809 expiry-tests.patch
+          a67775a5e73aa7ba1a41d56dec7115f8b5542532 budget-tests.patch
+          c61785270cccaecb6ca4c77802e1b0b9f4125ecd billing-tests.patch
+          c3185332b3f9f4f3c57faa325bf64cc22ec1779d surface-apps.patch
+          a6b7ee90fb8f6862950a757c76fb136b218a182f surface-infra.patch
+          HASHES
+          cd .worktrees/guardrails-validation
+          git add -N apps packages infra scripts docs skills
+          git diff --check
+          git diff --binary > "$RUNNER_TEMP/guardrails-results/validated.patch"
+          git diff --name-only | while read -r file; do printf '%s %s\n' "$(git hash-object "$file")" "$file"; done > "$RUNNER_TEMP/guardrails-results/file-blobs.txt"
+          git show "$REVIEW_BASE:apps/api/src/admin/range-instances.service.ts" > "$RUNNER_TEMP/guardrails-baseline/range-instances.service.ts"
+          git show "$REVIEW_BASE:apps/api/src/provisioning/open-tofu-range-provisioner.ts" > "$RUNNER_TEMP/guardrails-baseline/open-tofu-range-provisioner.ts"
+      - name: Free runner disk
+        run: sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc
+      - uses: actions/cache@v4
+        with:
+          path: .local/provider-fast-wait/cache
+          key: ${{ runner.os }}-alicloud-fast-wait-${{ hashFiles('scripts/provider/alicloud-fast-wait/**') }}
+      - uses: actions/cache@v4
+        with:
+          path: .local/tencentcloud-idempotency
+          key: ${{ runner.os }}-tencentcloud-provider-${{ hashFiles('scripts/provider/tencentcloud-idempotency/*') }}
+      - name: Build the changed-source Docker image
+        working-directory: .worktrees/guardrails-validation
+        run: |
+          mkdir -p "$GITHUB_WORKSPACE/.local"
+          ln -s "$GITHUB_WORKSPACE/.local" .local
+          docker build -f scripts/ci/Dockerfile -t "cyber-range-guardrails:$GITHUB_RUN_ID" .
+      - name: Run targeted regression tests in Docker
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker run --rm --network none -e NODE_ENV=test -e RANGE_PROVISIONER_MODE=dry-run \
+            -v "$RUNNER_TEMP/guardrails-results:/results" "cyber-range-guardrails:$GITHUB_RUN_ID" sh -ec '
+              pnpm --filter @aliyun-cyber-range/api test --runTestsByPath \
+                test/alibaba-range-expiry.spec.ts test/reconciliation-scheduling-budget.spec.ts \
+                test/billing-lifecycle-risks.spec.ts test/background-cloud-workspace.spec.ts \
+                test/platform-resource-reconciliation.service.spec.ts \
+                --json --outputFile=/results/fixed.json
+            ' 2>&1 | tee "$RUNNER_TEMP/guardrails-results/fixed.log"
+      - name: Prove original admission and provisioning sources fail the new wiring tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          set +e
+          docker run --rm --network none -e NODE_ENV=test -e RANGE_PROVISIONER_MODE=dry-run \
+            -v "$RUNNER_TEMP/guardrails-results:/results" \
+            -v "$RUNNER_TEMP/guardrails-baseline/range-instances.service.ts:/app/apps/api/src/admin/range-instances.service.ts:ro" \
+            -v "$RUNNER_TEMP/guardrails-baseline/open-tofu-range-provisioner.ts:/app/apps/api/src/provisioning/open-tofu-range-provisioner.ts:ro" \
+            "cyber-range-guardrails:$GITHUB_RUN_ID" sh -ec '
+              pnpm --filter @aliyun-cyber-range/api test --runTestsByPath test/alibaba-range-expiry.spec.ts \
+                --testNamePattern="range expiry wiring" --json --outputFile=/results/baseline.json
+            ' 2>&1 | tee "$RUNNER_TEMP/guardrails-results/baseline.log"
+          result=${PIPESTATUS[0]}
+          set -e
+          test "$result" -ne 0
+          python3 -c 'import json,os; d=json.load(open(os.environ["RUNNER_TEMP"]+"/guardrails-results/baseline.json")); assert d["numFailedTests"] >= 3 and d["numRuntimeErrorTestSuites"] == 0, d'
+      - name: Build and test compatibility with pinned master in Docker
+        working-directory: .worktrees/guardrails-validation
+        shell: bash
+        run: |
+          set -euo pipefail
+          git add apps packages infra scripts docs skills
+          git commit -m 'test: isolated guardrail candidate'
+          git merge --no-edit "$INTEGRATION_BASE"
+          git rev-parse HEAD > "$RUNNER_TEMP/guardrails-results/integration-commit.txt"
+          printf '%s\n%s\n' "$REVIEW_BASE" "$INTEGRATION_BASE" > "$RUNNER_TEMP/guardrails-results/bases.txt"
+          CI_BASE_IMAGE="cyber-range-guardrails:$GITHUB_RUN_ID" bash scripts/ci/verify-docker.sh 2>&1 | tee "$RUNNER_TEMP/guardrails-results/full-docker.log"
+      - name: Publish only tested changes and remove staging files
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          git apply --check "$RUNNER_TEMP/guardrails-results/validated.patch"
+          git apply "$RUNNER_TEMP/guardrails-results/validated.patch"
+          git rm -r .github/expiry-stage .github/workflows/expiry-guardrails-validation.yml
+          git add apps packages infra scripts docs skills
+          git diff --cached --check
+          git commit -m 'fix: guard range expiry, isolate reconciliation and expose cost recovery risks'
+          git rev-parse HEAD > "$RUNNER_TEMP/guardrails-results/published-commit.txt"
+          git diff --stat "$REVIEW_BASE" > "$RUNNER_TEMP/guardrails-results/published-stat.txt"
+          git push origin HEAD:codex/expiry-cost-guardrails
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: expiry-guardrails-validation-${{ github.run_id }}
+          path: ${{ runner.temp }}/guardrails-results/
+          retention-days: 7

@@ -1,0 +1,117 @@
+diff --git a/apps/api/test/billing-lifecycle-risks.spec.ts b/apps/api/test/billing-lifecycle-risks.spec.ts
+new file mode 100644
+index 0000000..aa12097
+--- /dev/null
++++ b/apps/api/test/billing-lifecycle-risks.spec.ts
+@@ -0,0 +1,111 @@
++import { BillingService } from '../src/admin/billing.service';
++import type { BillingLedgerResourceRecord, CreateBillingLineItemInput } from '../src/admin/admin.repository';
++import { runInCloudWorkspace } from '../src/auth/cloud-workspace-scope';
++import { createMemoryAdminRepository } from './support/create-memory-admin-repository';
++import { createProvenBillingLedger } from './support/create-billing-fixture';
++
++const scope = { cloudWorkspaceId: 'workspace-a', provider: 'alibaba_cloud' as const, accountUid: '100001', actorUserId: 'alice', isPlatformManager: false };
++const window = { startAt: '2026-09-30', endAt: '2026-09-30' };
++const ledgerInput = { cloudProvider: 'alibaba_cloud' as const, cloudAccountUid: scope.accountUid, regionId: 'cn-hangzhou',
++  billingStartAt: new Date('2026-09-01'), billingScope: 'user' as const, ownerUserId: 'alice', tagsSnapshot: { secret: 'never-return-this' } };
++const bill = (ledger: BillingLedgerResourceRecord, amount = 3): CreateBillingLineItemInput => ({ cloudProvider: 'alibaba_cloud',
++  cloudAccountUid: scope.accountUid, syncBatchId: 'fixture-sync', sourceFingerprint: ledger.id, billCycle: '2026-09', billingDate: window.startAt,
++  cloudResourceType: ledger.cloudResourceType, cloudResourceId: ledger.cloudResourceId, productCode: ledger.cloudResourceType, billItem: 'charge',
++  pretaxAmount: amount, currency: 'CNY', billingScope: 'user', ownerUserId: ledger.ownerUserId, matchedLedgerId: ledger.id,
++  rawPayload: { OwnerID: scope.accountUid, Region: 'cn-hangzhou' } });
++
++beforeEach(() => jest.useFakeTimers().setSystemTime(new Date('2026-10-11T08:00:00Z')));
++afterEach(() => { jest.useRealTimers(); jest.restoreAllMocks(); });
++
++describe('read-only lifecycle cost risk diagnostics', () => {
++  it.each(['ecs', 'disk', 'eip', 'nat_gateway'] as const)('flags current expired %s resources outside the bill window without inventing a fee or mutating history', async kind => {
++    const repository = createMemoryAdminRepository();
++    await runInCloudWorkspace(scope, async () => {
++      const source = await createProvenBillingLedger(repository, { ...ledgerInput, cloudResourceType: kind, cloudResourceId: `owned-${kind}` });
++      await repository.updateRangeInstance(source.instance.id, { status: 'running', expiresAt: new Date('2026-10-10') });
++      const before = await repository.listBillingLedgerResources();
++      const mutations = ['updateBillingLedgerResource', 'createBillingLedgerResource', 'updateRangeInstance', 'createProvisionJob', 'upsertCloudResourceDrift'] as const;
++      const spies = mutations.map(method => jest.spyOn(repository, method));
++      const summary = await new BillingService(repository).getSummary(window);
++      expect(summary.totalPretaxAmount).toBe(0);
++      const issue = summary.reconciliationIssues.find(issue => issue.resourceType === 'cleanup');
++      expect(issue).toMatchObject({ resourceCount: 1, detailsTruncated: false, resources: [{ ledgerId: source.ledger.id,
++        cloudWorkspaceId: scope.cloudWorkspaceId, sourceProvisionJobId: source.job.id, ownerUserId: 'alice', releasedAt: null,
++        proofFailureReason: 'RESOURCE_RELEASE_UNVERIFIED' }] });
++      expect(JSON.stringify(issue)).not.toContain('never-return-this');
++      expect(await repository.listBillingLedgerResources()).toEqual(before);
++      for (const spy of spies) expect(spy).not.toHaveBeenCalled();
++    });
++  });
++
++  it.each(['destroyed', 'destroy_failed', 'create_failed'] as const)('shows an unverified release after %s even without an expiry', async status => {
++    const repository = createMemoryAdminRepository();
++    await runInCloudWorkspace(scope, async () => {
++      const source = await createProvenBillingLedger(repository, { ...ledgerInput, cloudResourceType: 'eip', cloudResourceId: 'eip-owned' });
++      await repository.updateRangeInstance(source.instance.id, { status });
++      expect((await new BillingService(repository).getSummary(window)).reconciliationIssues).toEqual(expect.arrayContaining([
++        expect.objectContaining({ resourceType: 'cleanup', resourceCount: 1 }),
++      ]));
++    });
++  });
++
++  it('distinguishes later positive bills from same-day usage, refunds and missing ownership', async () => {
++    const repository = createMemoryAdminRepository();
++    await runInCloudWorkspace(scope, async () => {
++      for (const [id, releasedAt, amount] of [
++        ['positive', '2026-09-28', 3], ['same-day', '2026-09-30', 2], ['refund', '2026-09-28', -1],
++      ] as const) {
++        const source = await createProvenBillingLedger(repository, { ...ledgerInput, cloudResourceType: 'ecs', cloudResourceId: `i-${id}`, releasedAt: new Date(releasedAt) });
++        await repository.upsertBillingLineItems([bill(source.ledger, amount)]);
++      }
++      const before = await repository.listBillingLineItems();
++      const summary = await new BillingService(repository).getSummary(window);
++      expect(summary.totalPretaxAmount).toBe(4);
++      expect(summary.reconciliationIssues).toEqual(expect.arrayContaining([expect.objectContaining({ resourceType: 'post_release', resourceCount: 1,
++        reason: expect.stringContaining('不直接认定重复扣款'), resources: [expect.objectContaining({ cloudResourceId: 'i-positive', proofFailureReason: 'POST_RELEASE_BILL_REVIEW' })] })]));
++      expect(summary.reconciliationIssues.some(issue => issue.resourceType === 'cleanup')).toBe(false);
++      expect(await repository.listBillingLineItems()).toEqual(before);
++    });
++  });
++
++  it('never promotes an unverified historical source to a proven cleanup target', async () => {
++    const repository = createMemoryAdminRepository();
++    await runInCloudWorkspace(scope, async () => {
++      const source = await createProvenBillingLedger(repository, { ...ledgerInput, cloudResourceType: 'ecs', cloudResourceId: 'i-unverified' });
++      await repository.updateRangeInstance(source.instance.id, { status: 'destroy_failed' });
++      await repository.updateBillingLedgerResource(source.ledger.id, { cloudAccountUid: null });
++      const summary = await new BillingService(repository).getSummary(window);
++      expect(summary.reconciliationIssues.some(issue => issue.resourceType === 'cleanup')).toBe(false);
++      expect(summary.reconciliationIssues).toEqual(expect.arrayContaining([expect.objectContaining({ resourceType: 'unknown' })]));
++    });
++  });
++
++  it('isolates risk identities and counts by workspace and actor, including shared physical IDs', async () => {
++    const repository = createMemoryAdminRepository();
++    for (const [workspace, owner] of [['workspace-a', 'alice'], ['workspace-a', 'bob'], ['workspace-b', 'alice']]) {
++      await runInCloudWorkspace({ ...scope, cloudWorkspaceId: workspace, actorUserId: owner, isPlatformManager: true }, async () => {
++        const source = await createProvenBillingLedger(repository, { ...ledgerInput, ownerUserId: owner, cloudResourceType: 'ecs', cloudResourceId: `i-${owner}` });
++        await repository.updateRangeInstance(source.instance.id, { status: 'destroy_failed' });
++      });
++    }
++    const service = new BillingService(repository);
++    const user = await runInCloudWorkspace(scope, () => service.getSummary(window));
++    expect(user.reconciliationIssues.find(issue => issue.resourceType === 'cleanup')).toMatchObject({ resourceCount: 1,
++      resources: [{ ownerUserId: 'alice', cloudWorkspaceId: 'workspace-a' }] });
++    const manager = await runInCloudWorkspace({ ...scope, isPlatformManager: true }, () => service.getSummary(window));
++    expect(manager.reconciliationIssues.find(issue => issue.resourceType === 'cleanup')).toMatchObject({ resourceCount: 2 });
++  });
++
++  it('caps diagnostic details without hiding the true number of pending releases', async () => {
++    const repository = createMemoryAdminRepository();
++    await runInCloudWorkspace(scope, async () => {
++      for (let i = 0; i < 101; i++) {
++        const source = await createProvenBillingLedger(repository, { ...ledgerInput, cloudResourceType: 'ecs', cloudResourceId: `i-${i}` });
++        await repository.updateRangeInstance(source.instance.id, { status: 'destroy_failed' });
++      }
++      const issue = (await new BillingService(repository).getSummary(window)).reconciliationIssues.find(issue => issue.resourceType === 'cleanup');
++      expect(issue).toMatchObject({ resourceCount: 101, detailsTruncated: true });
++      expect(issue!.resources).toHaveLength(100);
++    });
++  });
++});

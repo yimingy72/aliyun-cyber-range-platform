@@ -1,0 +1,140 @@
+diff --git a/apps/mcp/src/tools/output-schemas.ts b/apps/mcp/src/tools/output-schemas.ts
+index 14a4da0..6a7672c 100644
+--- a/apps/mcp/src/tools/output-schemas.ts
++++ b/apps/mcp/src/tools/output-schemas.ts
+@@ -132 +132 @@ export const billingReconciliationResourceSchema = z.object({
+-    'SOURCE_RESOURCE_NOT_IN_CREATION_INVENTORY', 'SOURCE_SNAPSHOT_INVENTORY_OR_BILL_PROOF_INCOMPLETE']),
++    'SOURCE_RESOURCE_NOT_IN_CREATION_INVENTORY', 'SOURCE_SNAPSHOT_INVENTORY_OR_BILL_PROOF_INCOMPLETE', 'RESOURCE_RELEASE_UNVERIFIED', 'POST_RELEASE_BILL_REVIEW']),
+@@ -142 +142 @@ export const billingSummaryOutputSchema = resultOutputSchema(
+-      resourceType: z.enum(['snapshot', 'oss', 'unknown']),
++      resourceType: z.enum(['snapshot', 'oss', 'unknown', 'cleanup', 'post_release']),
+@@ -143,0 +144 @@ export const billingSummaryOutputSchema = resultOutputSchema(
++      detailsTruncated: z.boolean().optional(),
+@@ -146 +147 @@ export const billingSummaryOutputSchema = resultOutputSchema(
+-    }).strict()).optional().describe('已知平台快照/OSS仍需细分账单，或unknown表示平台创建链已知但历史账号/归属来源待核验；提示不含账号聚合金额，缺失表示状态未知。'),
++    }).strict()).optional().describe('snapshot/oss 为分账待核验，unknown 为历史来源待核验，cleanup 为当前回收缺少证明（不受账期窗口限制），post_release 为所选账期释放日之后正费用待核对。提示不新增费用、不证明重复扣款；detailsTruncated 表示明细已截断。'),
+diff --git a/apps/mcp/test/billing-contract.spec.ts b/apps/mcp/test/billing-contract.spec.ts
+index c3724e9..c6b6bd0 100644
+--- a/apps/mcp/test/billing-contract.spec.ts
++++ b/apps/mcp/test/billing-contract.spec.ts
+@@ -25,2 +25,3 @@ describe('billing currency and export contracts', () => {
+-  it('preserves pending resource identities and release times through SDK and MCP HTTP output validation', async () => {
+-    const fetch = vi.fn(async (_url: string, _init?: RequestInit) => new Response(JSON.stringify(pendingSummary)));
++  it.each(['unknown', 'cleanup', 'post_release'] as const)('preserves %s identities and release times through SDK and MCP HTTP output validation', async kind => {
++    const summary = { ...pendingSummary, reconciliationIssues: [{ ...pendingSummary.reconciliationIssues[0], resourceType: kind, detailsTruncated: false, resources: [{ ...pendingResource, proofFailureReason: kind === 'cleanup' ? 'RESOURCE_RELEASE_UNVERIFIED' : kind === 'post_release' ? 'POST_RELEASE_BILL_REVIEW' : pendingResource.proofFailureReason }] }] };
++    const fetch = vi.fn(async (_url: string, _init?: RequestInit) => new Response(JSON.stringify(summary)));
+@@ -38 +39 @@ describe('billing currency and export contracts', () => {
+-        .resolves.toMatchObject({ structuredContent: { result: pendingSummary } });
++        .resolves.toMatchObject({ structuredContent: { result: summary } });
+diff --git a/apps/web/components/admin/billing-screen.test.tsx b/apps/web/components/admin/billing-screen.test.tsx
+index 7d044f6..f8ebb67 100644
+--- a/apps/web/components/admin/billing-screen.test.tsx
++++ b/apps/web/components/admin/billing-screen.test.tsx
+@@ -183,0 +184,11 @@ describe('BillingScreen', () => {
++  it('labels current cleanup risk separately from selected-period post-release bill review', async () => {
++    const response = await fetchBillingSummaryMock();
++    fetchBillingSummaryMock.mockResolvedValue({ ...response, reconciliationIssues: [
++      { resourceType: 'cleanup', resourceCount: 2, reason: '缺少云端释放证明，不代表免费。' },
++      { resourceType: 'post_release', resourceCount: 1, reason: '可能为迟到用量或调账，不自动冲销。' },
++    ] });
++    render(<BillingScreen apiBaseUrl="http://localhost:3001" />);
++    expect(await screen.findByText(/当前回收待核验：2 项/)).toBeTruthy();
++    expect(await screen.findByText(/释放后费用待核对：1 项/)).toBeTruthy();
++  });
++
+diff --git a/apps/web/components/admin/billing-screen.tsx b/apps/web/components/admin/billing-screen.tsx
+index 23af968..3bdd11c 100644
+--- a/apps/web/components/admin/billing-screen.tsx
++++ b/apps/web/components/admin/billing-screen.tsx
+@@ -698 +698,3 @@ export function BillingScreen({ apiBaseUrl = 'http://localhost:3001' }: BillingS
+-                {issue.resourceType === 'unknown'
++                {issue.resourceType === 'cleanup' ? `当前回收待核验：${issue.resourceCount} 项。`
++                  : issue.resourceType === 'post_release' ? `释放后费用待核对：${issue.resourceCount} 项。`
++                  : issue.resourceType === 'unknown'
+diff --git a/apps/web/components/admin/templates-screen.test.tsx b/apps/web/components/admin/templates-screen.test.tsx
+index 5a25546..c7fa5e8 100644
+--- a/apps/web/components/admin/templates-screen.test.tsx
++++ b/apps/web/components/admin/templates-screen.test.tsx
+@@ -8,0 +9,2 @@ import { ADMIN_PAGE_SIZE_STORAGE_KEY } from './admin-pagination';
++const validLaunchExpiry = new Date(Date.now() + 86_400_000).toISOString().slice(0, 16);
++
+@@ -1038 +1040 @@ describe('TemplatesScreen', () => {
+-      target: { value: '2026-07-09T20:30' },
++      target: { value: validLaunchExpiry },
+@@ -1049 +1051 @@ describe('TemplatesScreen', () => {
+-          expiresAt: '2026-07-09T20:30:00.000Z',
++          expiresAt: new Date(validLaunchExpiry).toISOString(),
+@@ -1066 +1068 @@ describe('TemplatesScreen', () => {
+-    fireEvent.change(within(dialog).getByLabelText('到期时间'), { target: { value: '2100-01-01T12:00' } });
++    fireEvent.change(within(dialog).getByLabelText('到期时间'), { target: { value: validLaunchExpiry } });
+@@ -1118 +1120 @@ describe('TemplatesScreen', () => {
+-    fireEvent.change(within(dialog).getByLabelText('到期时间'), { target: { value: '2100-01-01T12:00' } });
++    fireEvent.change(within(dialog).getByLabelText('到期时间'), { target: { value: validLaunchExpiry } });
+@@ -1148 +1150 @@ describe('TemplatesScreen', () => {
+-      target: { value: '2026-07-09T20:30' },
++      target: { value: validLaunchExpiry },
+diff --git a/apps/web/components/admin/templates-screen.tsx b/apps/web/components/admin/templates-screen.tsx
+index 05f2f89..969d6dd 100644
+--- a/apps/web/components/admin/templates-screen.tsx
++++ b/apps/web/components/admin/templates-screen.tsx
+@@ -30 +30 @@ import { workspaceStorageKey } from '../../lib/cloud-workspace-selection';
+-import { cloudExpiryError } from '@/lib/cloud-execution-policy';
++import { rangeExpiryError } from '@/lib/cloud-execution-policy';
+@@ -751 +751 @@ export function TemplatesScreen({
+-      const expiryError = workspace?.provider === 'tencent_cloud' ? cloudExpiryError(expiresAt, workspace.provider) : null;
++      const expiryError = rangeExpiryError(expiresAt, workspace?.provider ?? 'alibaba_cloud');
+diff --git a/apps/web/lib/admin-types.ts b/apps/web/lib/admin-types.ts
+index ff1f425..14a784e 100644
+--- a/apps/web/lib/admin-types.ts
++++ b/apps/web/lib/admin-types.ts
+@@ -422 +422 @@ export type BillingSummary = {
+-  reconciliationIssues?: Array<{ resourceType: 'snapshot' | 'oss' | 'unknown'; resourceCount: number; reason: string }>;
++  reconciliationIssues?: Array<{ resourceType: 'snapshot' | 'oss' | 'unknown' | 'cleanup' | 'post_release'; resourceCount: number; reason: string; detailsTruncated?: boolean }>;
+diff --git a/apps/web/lib/cloud-execution-policy.test.ts b/apps/web/lib/cloud-execution-policy.test.ts
+index c0dab3b..e9f9c94 100644
+--- a/apps/web/lib/cloud-execution-policy.test.ts
++++ b/apps/web/lib/cloud-execution-policy.test.ts
+@@ -2 +2 @@ import { describe, expect, it } from 'vitest';
+-import { cloudExpiryError, minimumSystemDiskSize, tencentImageError, verifiedTencentInstanceTypes } from './cloud-execution-policy';
++import { rangeExpiryError, cloudExpiryError, minimumSystemDiskSize, tencentImageError, verifiedTencentInstanceTypes } from './cloud-execution-policy';
+@@ -31,0 +32,13 @@ describe('Tencent execution form policy', () => {
++
++
++describe('Alibaba range cloud timer admission', () => {
++  const now = Date.parse('2026-10-11T00:00:00Z');
++  it('enforces the range-specific 35-minute buffer without changing single-instance or Tencent policy', () => {
++    expect(rangeExpiryError('2026-10-11T00:34:59Z', 'alibaba_cloud', now)).toContain('35 分钟');
++    expect(rangeExpiryError('2026-10-11T00:35:00Z', 'alibaba_cloud', now)).toBeNull();
++    expect(rangeExpiryError('2030-01-01T00:00:00Z', 'alibaba_cloud', now)).toContain('三年');
++    expect(rangeExpiryError('invalid', 'alibaba_cloud', now)).toBeTruthy();
++    expect(rangeExpiryError('2026-10-11T00:10:00Z', 'tencent_cloud', now)).toBeNull();
++    expect(cloudExpiryError('2026-10-11T00:10:00Z', 'alibaba_cloud', now)).toBeNull();
++  });
++});
+diff --git a/apps/web/lib/cloud-execution-policy.ts b/apps/web/lib/cloud-execution-policy.ts
+index a3f7a53..f8d4ced 100644
+--- a/apps/web/lib/cloud-execution-policy.ts
++++ b/apps/web/lib/cloud-execution-policy.ts
+@@ -27,0 +28,11 @@ export function verifiedTencentInstanceTypes(snapshot: import('./admin-types').I
++
++export function rangeExpiryError(expiresAt: string, provider: CloudWorkspaceView['provider'], now = Date.now()) {
++  const error = cloudExpiryError(expiresAt, provider, now);
++  if (error || provider !== 'alibaba_cloud') return error;
++  const latest = new Date(now); latest.setUTCFullYear(latest.getUTCFullYear() + 3);
++  const expiry = Date.parse(expiresAt);
++  if (expiry - now < 35 * 60_000 || Math.ceil(expiry / 60_000) * 60_000 > latest.getTime()) {
++    return '阿里云编排实例需预留至少 35 分钟且不超过三年，以设置云端自动释放。';
++  }
++  return null;
++}
+diff --git a/packages/platform-api-client/src/types.ts b/packages/platform-api-client/src/types.ts
+index e900cd6..65e0cef 100644
+--- a/packages/platform-api-client/src/types.ts
++++ b/packages/platform-api-client/src/types.ts
+@@ -129 +129,2 @@ export type BillingReconciliationResource = {
+-    | 'SOURCE_RESOURCE_NOT_IN_CREATION_INVENTORY' | 'SOURCE_SNAPSHOT_INVENTORY_OR_BILL_PROOF_INCOMPLETE';
++    | 'SOURCE_RESOURCE_NOT_IN_CREATION_INVENTORY' | 'SOURCE_SNAPSHOT_INVENTORY_OR_BILL_PROOF_INCOMPLETE'
++    | 'RESOURCE_RELEASE_UNVERIFIED' | 'POST_RELEASE_BILL_REVIEW';
+@@ -139 +140 @@ export type BillingSummary = Record<string, unknown> & {
+-  reconciliationIssues?: Array<{ resourceType: 'snapshot' | 'oss' | 'unknown'; resourceCount: number; reason: string; resources?: BillingReconciliationResource[] }>;
++  reconciliationIssues?: Array<{ resourceType: 'snapshot' | 'oss' | 'unknown' | 'cleanup' | 'post_release'; resourceCount: number; reason: string; detailsTruncated?: boolean; resources?: BillingReconciliationResource[] }>;

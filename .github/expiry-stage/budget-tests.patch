@@ -1,0 +1,141 @@
+diff --git a/apps/api/test/reconciliation-scheduling-budget.spec.ts b/apps/api/test/reconciliation-scheduling-budget.spec.ts
+new file mode 100644
+index 0000000..d4ade79
+--- /dev/null
++++ b/apps/api/test/reconciliation-scheduling-budget.spec.ts
+@@ -0,0 +1,135 @@
++import { Logger } from '@nestjs/common';
++import { ProvisioningWorkerService } from '../src/provisioning/provisioning-worker.service';
++import { AliyunEcsResourceClient, PlatformResourceReconciliationService } from '../src/provisioning/platform-resource-reconciliation.service';
++import { assertReconciliationActive, reconciliationRequestSignal, runWithReconciliationBudget } from '../src/provisioning/reconciliation-budget';
++import { requestTencentCloud } from '../src/admin/tencent-cloud-client';
++import { runInCloudWorkspace, getCurrentCloudWorkspaceId } from '../src/auth/cloud-workspace-scope';
++import { createMemoryAdminRepository } from './support/create-memory-admin-repository';
++
++const originalFetch = global.fetch;
++const credentials = { provider: 'alibaba_cloud' as const, regionId: 'cn-hangzhou', accountUid: 'fixture-uid',
++  accountUidResolved: true, cloudAccountContextId: 'fixture-context', accessKeyId: 'fixture-key', accessKeySecret: 'fixture-secret' };
++const flush = async () => { for (let i = 0; i < 30; i++) await Promise.resolve(); };
++
++afterEach(() => { global.fetch = originalFetch; jest.restoreAllMocks(); jest.useRealTimers(); });
++
++describe('independent, bounded reconciliation', () => {
++  it('keeps expiry scheduling and job intake moving while one reconciliation stalls, even past its budget', async () => {
++    jest.useFakeTimers();
++    jest.spyOn(Logger.prototype, 'error').mockImplementation(() => undefined);
++    let finish!: () => void;
++    let budgetSignal!: AbortSignal;
++    const reconcile = jest.fn(async () => {
++      budgetSignal = reconciliationRequestSignal(1_000_000);
++      await new Promise<void>(resolve => { finish = resolve; });
++      assertReconciliationActive();
++      return { recovered: 0, drifts: 0 };
++    });
++    const worker = new ProvisioningWorkerService(createMemoryAdminRepository(), {} as any, {} as any, undefined, { reconcile } as any);
++    const recover = jest.spyOn(worker, 'recoverInterruptedJobs').mockResolvedValue(0);
++    const expire = jest.spyOn(worker, 'processExpiredInstances').mockResolvedValue(undefined);
++    const intake = jest.spyOn(worker as any, 'startEligiblePendingJobs').mockResolvedValue(0);
++    const loop = worker.runLoop();
++    await flush();
++    await jest.advanceTimersByTimeAsync(121_000);
++    expect(budgetSignal.aborted).toBe(true);
++    expect(expire.mock.calls.length).toBeGreaterThan(100);
++    expect(intake.mock.calls.length).toBeGreaterThan(100);
++    expect(recover.mock.calls.length).toBeGreaterThan(100);
++    await jest.advanceTimersByTimeAsync(300_000);
++    expect(reconcile).toHaveBeenCalledTimes(1); // A timed-out but unwinding task never overlaps a replacement.
++    worker.onModuleDestroy();
++    finish();
++    await jest.advanceTimersByTimeAsync(1_000);
++    await loop;
++    await (worker as any).reconciliationTask;
++  });
++
++  it('cancels reconciliation on shutdown without canceling unrelated provisioning requests', async () => {
++    jest.useFakeTimers();
++    jest.spyOn(Logger.prototype, 'error').mockImplementation(() => undefined);
++    let signal!: AbortSignal;
++    const outside = reconciliationRequestSignal(1_000_000);
++    const reconcile = jest.fn(async () => {
++      signal = reconciliationRequestSignal(1_000_000);
++      await new Promise<void>(resolve => signal.addEventListener('abort', () => resolve(), { once: true }));
++      assertReconciliationActive();
++    });
++    const worker = new ProvisioningWorkerService(createMemoryAdminRepository(), {} as any, {} as any, undefined, { reconcile } as any);
++    (worker as any).reconcilePlatformResourcesIfDue(new Date());
++    await flush();
++    worker.onModuleDestroy();
++    await (worker as any).reconciliationTask;
++    expect(signal.aborted).toBe(true);
++    expect(outside.aborted).toBe(false);
++    (worker as any).reconcilePlatformResourcesIfDue(new Date(Date.now() + 600_000));
++    expect(reconcile).toHaveBeenCalledTimes(1);
++  });
++
++  it.each(['alibaba', 'tencent'])('propagates the round deadline to a pending %s RPC', async provider => {
++    const controller = new AbortController();
++    global.fetch = jest.fn((_url: unknown, init?: RequestInit) => new Promise<Response>((_resolve, reject) => {
++      init!.signal!.addEventListener('abort', () => reject(new Error('fixture-budget-exhausted')), { once: true });
++    })) as typeof fetch;
++    const read = () => provider === 'alibaba'
++      ? new AliyunEcsResourceClient({} as any).listPlatformManagedInstances(credentials)
++      : requestTencentCloud({ service: 'cvm', version: '2017-03-12', action: 'DescribeInstances', regionId: 'ap-shanghai', accessKeyId: 'fixture-key', accessKeySecret: 'fixture-secret' });
++    const pending = expect(runWithReconciliationBudget(controller.signal, read)).rejects.toThrow();
++    await flush();
++    controller.abort(new Error('fixture-budget-exhausted'));
++    await pending;
++    expect(global.fetch).toHaveBeenCalledTimes(1);
++    await expect(runWithReconciliationBudget(controller.signal, read)).rejects.toThrow();
++    expect(global.fetch).toHaveBeenCalledTimes(1);
++  });
++
++  it('rejects a late inventory result after cancellation without recording drift or closing a ledger', async () => {
++    const controller = new AbortController();
++    const repository = createMemoryAdminRepository();
++    const drift = jest.spyOn(repository, 'upsertCloudResourceDrift');
++    const resolved = jest.spyOn(repository, 'resolveCloudResourceDrift');
++    const client = { getDefaultCredentials: async () => credentials, listPlatformManagedInstances: async () => {
++      controller.abort(new Error('fixture-budget-exhausted'));
++      return [{ instanceId: 'i-unmatched', tags: { RangeInstanceId: 'not-owned' } }];
++    } };
++    const service = new PlatformResourceReconciliationService(repository, client as any);
++    await expect(runWithReconciliationBudget(controller.signal, () => service.reconcile())).rejects.toThrow('fixture-budget-exhausted');
++    expect(drift).not.toHaveBeenCalled();
++    expect(resolved).not.toHaveBeenCalled();
++    expect(await repository.listBillingLedgerResources()).toEqual([]);
++  });
++
++  it('does not downgrade an aborted disk read to an ownership failure', async () => {
++    const controller = new AbortController();
++    const repository = createMemoryAdminRepository();
++    const instance = await repository.createRangeInstance({ name: 'fixture', instanceMode: 'range', resourceSummary: { mode: 'opentofu', executionContext: {
++      cloudAccountContextId: credentials.cloudAccountContextId, cloudAccountUid: credentials.accountUid, regionId: credentials.regionId, zoneId: 'cn-hangzhou-h',
++    } } });
++    const job = await repository.createProvisionJob({ rangeInstanceId: instance.id, jobType: 'create', triggeredBy: 'fixture' });
++    await repository.updateProvisionJob(job.id, { status: 'succeeded' });
++    const client = { verifyRecordedDisks: async () => { controller.abort(new Error('disk-deadline')); throw new Error('transport'); } };
++    const service = new PlatformResourceReconciliationService(repository, client as any);
++    await expect(runWithReconciliationBudget(controller.signal, () => (service as any).verifySavedDisks(credentials, { ...instance, lastJobId: job.id }, 'i-fixture')))
++      .rejects.toThrow('disk-deadline');
++  });
++
++  it('rotates both the first workspace and its first regional context after a budget interruption', async () => {
++    const spaces = ['a', 'b'].map(id => ({ id, provider: 'alibaba_cloud' as const, accountUid: `uid-${id}`, isReadOnly: false }));
++    const visits: string[] = [];
++    let controller = new AbortController();
++    const config = {
++      listExecutionCloudWorkspaces: async () => spaces,
++      runInWorkspace: async (id: string, work: () => Promise<unknown>) => runInCloudWorkspace({ cloudWorkspaceId: id, provider: 'alibaba_cloud', accountUid: `uid-${id}`, isReadOnly: false }, work),
++      listWorkspaceAccountContextIds: async () => ['east', 'west'],
++      runInAccountContext: async (id: string, work: () => Promise<unknown>) => { visits.push(`${getCurrentCloudWorkspaceId()}:${id}`); return work(); },
++    };
++    jest.spyOn(Logger.prototype, 'error').mockImplementation(() => undefined);
++    const service = { reconcile: async () => { controller.abort(new Error('round-ended')); assertReconciliationActive(); } };
++    const worker = new ProvisioningWorkerService(createMemoryAdminRepository(), {} as any, config as any, undefined, service as any);
++    for (let i = 0; i < 3; i++) {
++      controller = new AbortController();
++      await expect(runWithReconciliationBudget(controller.signal, () => worker.reconcilePlatformResources(new Date()))).rejects.toThrow();
++    }
++    expect(visits).toEqual(['a:east', 'b:east', 'a:west']);
++  });
++});
