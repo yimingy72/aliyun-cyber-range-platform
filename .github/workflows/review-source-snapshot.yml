@@ -1,0 +1,23 @@
+name: Review source snapshot
+on:
+  push:
+    branches: [codex/lifecycle-billing-review-20261011]
+    paths: [.github/workflows/review-source-snapshot.yml]
+permissions:
+  contents: read
+jobs:
+  snapshot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: 062330497978375a99fa3b12c8d2396713547348
+          persist-credentials: false
+      - name: Export pinned public source only
+        run: git archive --format=tar.gz --output=/tmp/review-source.tar.gz HEAD
+      - uses: actions/upload-artifact@v4
+        with:
+          name: review-source-0623304
+          path: /tmp/review-source.tar.gz
+          retention-days: 1
