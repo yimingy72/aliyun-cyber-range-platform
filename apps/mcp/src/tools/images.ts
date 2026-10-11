@@ -10,6 +10,7 @@ import {
   imageListInputSchema,
   imageTagListInputSchema,
   imageTagCreateInputSchema,
+  imageTagDeleteInputSchema,
   imageTagsSetInputSchema,
   imageRenameInputSchema,
 } from './input-schemas';
@@ -34,19 +35,29 @@ const operation = (args: { idempotencyKey?: string; confirmationId?: string }) =
 export const imageTools: ToolDefinition[] = [
   {
     name: 'platform_image_tag_list', title: '查询镜像标签字典',
-    description: '查询现有全局镜像标签定义（id、name），用于选择资产关联标签。当前字典只提供查询和创建能力。',
+    description: '查询当前工作空间的镜像标签定义（id、name），用于选择资产关联标签或由管理员删除定义。',
     requiredScopes: ['images:read'], readOnlyHint: true,
     inputSchema: imageTagListInputSchema, outputSchema: imageTagListOutputSchema,
     call(context) { return context.client.listPlatformImageTags(); },
   },
   {
     name: 'platform_image_tag_create', title: '创建镜像标签定义',
-    description: '仅管理员创建全局镜像标签定义，不自动关联资产。名称唯一，当前没有全局标签重命名或删除能力；调用前明确该持久字典变更并取得用户确认。',
+    description: '仅管理员创建当前工作空间镜像标签定义，不自动关联资产。名称在工作空间内唯一；调用前取得用户确认。',
     requiredScopes: ['images:write'], adminOnly: true, annotations: { destructiveHint: false, idempotentHint: false },
     inputSchema: imageTagCreateInputSchema, outputSchema: imageTagOutputSchema,
     call(context, args) {
       const input = args as { name: string; idempotencyKey?: string; confirmationId?: string };
       return context.client.createPlatformImageTag(input.name, operation(input));
+    },
+  },
+  {
+    name: 'platform_image_tag_delete', title: '删除镜像标签定义',
+    description: '仅管理员删除当前工作空间的准确标签定义，同时移除该空间全部镜像的此标签关联；保留镜像、快照和云资源。调用前确认删除范围，按服务端二阶段确认执行。',
+    requiredScopes: ['images:write'], adminOnly: true, annotations: { destructiveHint: true, idempotentHint: false },
+    inputSchema: imageTagDeleteInputSchema, outputSchema: removedOutputSchema('platformImageTagId'),
+    call(context, args) {
+      const input = args as { platformImageTagId: string; idempotencyKey?: string; confirmationId?: string };
+      return context.client.deletePlatformImageTag(input.platformImageTagId, operation(input));
     },
   },
   {

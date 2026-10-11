@@ -228,6 +228,19 @@ export class ImageCatalogService {
     }
   }
 
+  async preparePlatformImageTagDeletion(id: string, currentUser: SessionUserProfile) {
+    if (currentUser.role !== 'admin') throw new ForbiddenException('Admin access required to delete platform image tags');
+    const [tag] = await this.adminRepository.listPlatformImageTagsByIds([id]);
+    if (!tag) throw new NotFoundException('镜像标签不存在');
+    return this.toPlatformImageTagView(tag);
+  }
+
+  async deletePlatformImageTag(id: string, currentUser: SessionUserProfile) {
+    await this.preparePlatformImageTagDeletion(id, currentUser);
+    if (!await this.adminRepository.deletePlatformImageTag(id)) throw new NotFoundException('镜像标签不存在');
+    return { removed: true, platformImageTagId: id };
+  }
+
   private async prepareTagAssociation(id: string, input: SetPlatformImageTagsDto, currentUser: SessionUserProfile) {
     const asset = await this.getScopedPlatformAssetOrThrow(id, currentUser);
     const tagIds = [...new Set(input.tagIds)];
@@ -247,8 +260,16 @@ export class ImageCatalogService {
   async setPlatformAssetTags(id: string, input: SetPlatformImageTagsDto, currentUser: SessionUserProfile) {
     const { tagIds } = await this.prepareTagAssociation(id, input, currentUser);
 
-    const updatedAsset = await this.adminRepository.replacePlatformImageAssetTags(id, tagIds);
-    return this.withCreatorUsername(updatedAsset, currentUser);
+    try {
+      const updatedAsset = await this.adminRepository.replacePlatformImageAssetTags(id, tagIds);
+      return this.withCreatorUsername(updatedAsset, currentUser);
+    } catch (error) {
+      // Deletion may win after validation; the nested write rolls back instead of leaving partial tags.
+      if (error && typeof error === 'object' && 'code' in error && ['P2003', 'P2025'].includes(String(error.code))) {
+        throw new ConflictException('镜像或标签已被删除，请刷新后重新设置标签');
+      }
+      throw error;
+    }
   }
 
   async collectPlatformAsset(snapshotId: string, displayName: string, currentUser: SessionUserProfile) {

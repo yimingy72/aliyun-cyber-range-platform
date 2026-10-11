@@ -25,6 +25,7 @@ import {
   collectPlatformImage,
   completeImageImport,
   createPlatformImageTag,
+  deletePlatformImageTag,
   createImageImport,
   deleteCustomImageSnapshot,
   disablePlatformImage,
@@ -609,6 +610,11 @@ function CloudImageCenterScreen({
   const [platformImageTags, setAvailablePlatformImageTags] = useState<PlatformImageTag[]>(
     () => cachedMetadata?.data.platformImageTags ?? [],
   );
+  const [tagManagerOpen, setTagManagerOpen] = useState(false);
+  const [deletingTag, setDeletingTag] = useState<PlatformImageTag | null>(null);
+  const [tagManagerError, setTagManagerError] = useState('');
+  const mountedRef = useRef(true);
+  useEffect(() => { mountedRef.current = true; return () => { mountedRef.current = false; }; }, []);
   const [platformCreatedByFilter, setPlatformCreatedByFilter] = useState('');
   const [platformTagFilter, setPlatformTagFilter] = useState('');
   const [myTagFilter, setMyTagFilter] = useState('');
@@ -1422,6 +1428,38 @@ function CloudImageCenterScreen({
     }
   }
 
+  async function handleDeleteTag() {
+    if (!deletingTag || !session.token || !session.isAdmin || pendingActionKeys.includes('delete:platform-image-tag')) return;
+    const tagId = deletingTag.id;
+    const actionKey = 'delete:platform-image-tag';
+    try {
+      setTagManagerError('');
+      beginAction(actionKey);
+      await deletePlatformImageTag(apiBaseUrl, session.token, tagId);
+      if (!mountedRef.current) return;
+      // Older list requests must not restore deleted tags or their asset associations.
+      platformImageTagsRequestVersionRef.current += 1;
+      platformRequestVersionRef.current += 1;
+      mineRequestVersionRef.current += 1;
+      screenCache?.invalidate(apiBaseUrl, session.token, 'image-center:');
+      screenCache?.invalidate(apiBaseUrl, session.token, 'platform-images:');
+      setAvailablePlatformImageTags(current => current.filter(tag => tag.id !== tagId));
+      const removeTag = (assets: PlatformImageAsset[]) => assets.map(asset => ({ ...asset, tags: asset.tags.filter(tag => tag.id !== tagId) }));
+      setPlatformAssets(removeTag);
+      setMyAssets(removeTag);
+      setPlatformTagFilter(current => current === tagId ? '' : current);
+      setMyTagFilter(current => current === tagId ? '' : current);
+      setDeletingTag(null);
+      setLoadAttempt(current => current + 1);
+    } catch (error) {
+      if (!mountedRef.current) return;
+      if (isUnauthorizedAdminError(error)) { session.logout(); return; }
+      setTagManagerError(error instanceof Error ? error.message : '镜像标签删除失败');
+    } finally {
+      if (mountedRef.current) endAction(actionKey);
+    }
+  }
+
   async function savePlatformImageTags(asset: PlatformImageAsset, tagIds: string[]) {
     if (!session.token) {
       throw new Error('登录已失效。');
@@ -2004,7 +2042,9 @@ function CloudImageCenterScreen({
               ) : undefined
             }
             action={
-              activeTab === 'platform' || activeTab === 'mine' ? (
+              <div className="flex flex-wrap items-center gap-2">
+                {session.isAdmin ? <Button disabled={workspace?.isReadOnly} onClick={() => { setTagManagerError(''); setTagManagerOpen(true); }} size="sm" type="button" variant="outline">管理标签</Button> : null}
+              {activeTab === 'platform' || activeTab === 'mine' ? (
                 <Button
                   disabled={!canImportImages || pendingActionKeys.includes('create:image-import')}
                   title={imageImportUnavailableMessage ?? undefined}
@@ -2037,7 +2077,8 @@ function CloudImageCenterScreen({
                   <RefreshCw aria-hidden="true" />
                   同步公共镜像
                 </Button>
-              ) : undefined
+              ) : undefined}
+              </div>
             }
           >
             <AdminPaginatedList
@@ -2196,6 +2237,29 @@ function CloudImageCenterScreen({
             </AdminPaginatedList>
           </AdminListToolbar>
         </div>
+
+          {tagManagerOpen && session.isAdmin ? (
+            <AdminDialog
+              open
+              title={deletingTag ? '确认删除镜像标签' : '管理镜像标签'}
+              description={deletingTag ? `删除“${deletingTag.name}”及当前账号下所有镜像的此标签关联，镜像和云资源会保留。` : undefined}
+              pending={pendingActionKeys.includes('delete:platform-image-tag')}
+              onOpenChange={(open) => { if (!open) { setTagManagerOpen(false); setDeletingTag(null); setTagManagerError(''); } }}
+              footer={deletingTag ? <>
+                <Button disabled={pendingActionKeys.includes('delete:platform-image-tag')} onClick={() => { setDeletingTag(null); setTagManagerError(''); }} type="button" variant="outline">取消</Button>
+                <Button disabled={pendingActionKeys.includes('delete:platform-image-tag')} onClick={() => void handleDeleteTag()} type="button" variant="destructive">确认删除标签</Button>
+              </> : undefined}
+            >
+              {tagManagerError ? <p role="alert" className="text-sm text-destructive">{tagManagerError}</p> : null}
+              {!deletingTag ? <ul className="max-h-80 divide-y overflow-y-auto">
+                {platformImageTags.map(tag => <li className="flex min-w-0 items-center justify-between gap-3 py-2" key={tag.id}>
+                  <span className="min-w-0 break-words">{tag.name}</span>
+                  <Button aria-label={`删除标签 ${tag.name}`} onClick={() => { setTagManagerError(''); setDeletingTag(tag); }} size="sm" type="button" variant="destructive">删除</Button>
+                </li>)}
+                {platformImageTags.length === 0 ? <li className="py-4 text-sm text-muted-foreground">暂无镜像标签</li> : null}
+              </ul> : null}
+            </AdminDialog>
+          ) : null}
 
           {imageImportDraft ? (
             <ImageCenterDialog

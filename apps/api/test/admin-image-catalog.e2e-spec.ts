@@ -6,6 +6,7 @@ import { hashPassword } from '../src/admin/admin-user-auth';
 import { ADMIN_REPOSITORY, type AdminRepository } from '../src/admin/admin.repository';
 import { OidcAdminBootstrapService } from '../src/oidc-admin-bootstrap.service';
 import { SystemConfigService } from '../src/admin/system-config.service';
+import { OperationControlService } from '../src/operations/operation-control.service';
 import { AppModule } from '../src/app.module';
 import { configureApp } from '../src/bootstrap/configure-app';
 import { toAccountScopeKey } from '../src/admin/image-account-scope';
@@ -492,6 +493,18 @@ describe('Admin image catalog APIs', () => {
       .set('authorization', `Bearer ${ownerToken}`)
       .expect(200)
       .expect({ items: [{ id: tagResponse.body.id, name: 'Web' }] });
+    // This legacy HTTP fixture has no workspace middleware; scoped audit persistence is tested separately.
+    const audit = jest.spyOn(app.get(OperationControlService), 'audit').mockResolvedValue(undefined as never);
+    await request(app.getHttpServer()).delete(`/admin/platform-image-tags/${tagResponse.body.id}`)
+      .set('authorization', `Bearer ${ownerToken}`).expect(403);
+    await request(app.getHttpServer()).delete(`/admin/platform-image-tags/${tagResponse.body.id}`)
+      .set('authorization', `Bearer ${adminToken}`).expect(200)
+      .expect({ removed: true, platformImageTagId: tagResponse.body.id });
+    expect(audit).toHaveBeenCalledWith(expect.objectContaining({ targetId: tagResponse.body.id, phase: 'succeeded' }));
+    expect((await repository.getPlatformImageAssetById(asset.id))!.tags).toEqual([]);
+    await request(app.getHttpServer()).delete(`/admin/platform-image-tags/${tagResponse.body.id}`)
+      .set('authorization', `Bearer ${adminToken}`).expect(404);
+
   });
 
   it('GET /admin/image-catalog scopes return cached rows without calling Alibaba Cloud', async () => {

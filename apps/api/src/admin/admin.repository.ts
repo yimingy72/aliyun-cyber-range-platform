@@ -1262,6 +1262,7 @@ export interface AdminRepository {
   listPlatformImageTags(): Promise<PlatformImageTagRecord[]>;
   listPlatformImageTagsByIds(ids: string[]): Promise<PlatformImageTagRecord[]>;
   createPlatformImageTag(input: CreatePlatformImageTagInput): Promise<PlatformImageTagRecord>;
+  deletePlatformImageTag(id: string): Promise<boolean>;
   replacePlatformImageAssetTags(id: string, tagIds: string[]): Promise<PlatformImageAssetRecord>;
   hasActiveImageImportForArtifact(input: {
     platformImageAssetId?: string | null;

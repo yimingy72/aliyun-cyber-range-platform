@@ -1012,6 +1012,13 @@ export async function createPlatformImageTag(apiBaseUrl: string, token: string, 
   return readJson<PlatformImageTag>(response);
 }
 
+export async function deletePlatformImageTag(apiBaseUrl: string, token: string, id: string) {
+  const response = await fetch(`${apiBaseUrl}/admin/platform-image-tags/${encodeURIComponent(id)}`, {
+    method: 'DELETE', headers: createAdminHeaders(token),
+  });
+  return readJson<{ removed: boolean; platformImageTagId: string }>(response);
+}
+
 export async function setPlatformImageTags(apiBaseUrl: string, token: string, id: string, tagIds: string[]) {
   const response = await fetch(`${apiBaseUrl}/admin/platform-images/${encodeURIComponent(id)}/tags`, {
     method: 'PUT',

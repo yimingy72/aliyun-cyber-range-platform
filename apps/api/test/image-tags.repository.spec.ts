@@ -40,4 +40,27 @@ describeDb('Image tag existing capabilities in isolated PostgreSQL', () => {
     expect((await repository.getPlatformImageAssetById(asset.id))!.tags).toEqual([]);
     expect(await repository.listPlatformImageTags()).toHaveLength(1);
   });
+  it('atomically cascades tag deletion, preserving assets and surviving concurrent association writes', async () => {
+    const removedTag = await service.createPlatformImageTag({ name: 'Remove' }, admin);
+    const keepTag = await service.createPlatformImageTag({ name: 'Keep' }, admin);
+    await repository.upsertImageSnapshots({ provider: 'alibaba_cloud', accountUid: '100001', regionId: 'cn-hangzhou', scope: 'custom', snapshots: ['m-delete-tag', 'm-delete-tag-other'].map(imageId => ({ imageId, sourceImageName: 'tagged', status: 'Available', isAvailable: true, lastSyncedAt: new Date() })) });
+    const [source] = await repository.listImageSnapshots({ imageId: 'm-delete-tag' });
+    const asset = await repository.collectPlatformImageAsset({ snapshotId: source.id, displayName: 'private', ownerUserId: owner.id, visibility: 'private' });
+    await service.setPlatformAssetTags(asset.id, { tagIds: [keepTag.id, removedTag.id] }, owner);
+    const [otherSource] = await repository.listImageSnapshots({ imageId: 'm-delete-tag-other' });
+    const otherAsset = await repository.collectPlatformImageAsset({ snapshotId: otherSource.id, displayName: 'platform', ownerUserId: admin.id, visibility: 'platform' });
+    await service.setPlatformAssetTags(otherAsset.id, { tagIds: [keepTag.id, removedTag.id] }, admin);
+    const results = await Promise.allSettled([
+      service.setPlatformAssetTags(asset.id, { tagIds: [keepTag.id, removedTag.id] }, owner),
+      service.deletePlatformImageTag(removedTag.id, admin),
+    ]);
+    expect(results[1].status).toBe('fulfilled');
+    expect((await repository.getPlatformImageAssetById(asset.id))!.tags.map(tag => tag.id)).toEqual([keepTag.id]);
+    expect(await prisma.platformImageAssetTag.count({ where: { tagId: removedTag.id } })).toBe(0);
+    expect((await repository.getPlatformImageAssetById(otherAsset.id))!.tags.map(tag => tag.id)).toEqual([keepTag.id]);
+    expect(await repository.listImageSnapshots({ imageId: 'm-delete-tag' })).toHaveLength(1);
+    await expect(service.setPlatformAssetTags(asset.id, { tagIds: [removedTag.id] }, owner)).rejects.toThrow('不存在');
+    await expect(service.createPlatformImageTag({ name: 'Remove' }, admin)).resolves.toMatchObject({ name: 'Remove' });
+  });
+
 });

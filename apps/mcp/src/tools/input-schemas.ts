@@ -24,7 +24,10 @@ export const imageListInputSchema = z.strictObject({
 });
 export const imageTagListInputSchema = z.strictObject({});
 export const imageTagCreateInputSchema = operationSchema.extend({
-  name: z.string().trim().min(1).max(32).describe('全局镜像标签名称，最多32字符；仅管理员可创建。'),
+  name: z.string().trim().min(1).max(32).describe('当前工作空间镜像标签名称，最多32字符；仅管理员可创建。'),
+}).strict();
+export const imageTagDeleteInputSchema = operationSchema.extend({
+  platformImageTagId: identifier.describe('当前工作空间中要删除的标签定义ID；同时移除全部镜像关联。'),
 }).strict();
 export const imageTagsSetInputSchema = operationSchema.extend({
   platformImageAssetId: identifier.describe('当前调用者可管理的准确镜像资产ID。'),

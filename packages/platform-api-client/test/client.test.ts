@@ -41,6 +41,17 @@ describe('PlatformApiClient', () => {
     expect(calls[2]).toMatchObject({ input: 'https://platform.example/admin/platform-images/asset%2F1/tags', init: { method: 'PUT', body: JSON.stringify({ tagIds: [] }), headers: { 'x-idempotency-key': 'set-tags', 'x-confirmation-id': 'set-confirm' } } });
   });
 
+  it('deletes the exact workspace image tag and preserves confirmation metadata', async () => {
+    const fetchMock = vi.fn(async (input: string, init?: RequestInit) => {
+      expect(input).toBe('https://platform.example/admin/platform-image-tags/tag%2F1');
+      expect(init?.method).toBe('DELETE');
+      expect(init?.headers).toMatchObject({ 'x-cloud-workspace-id': 'workspace-1', 'x-idempotency-key': 'delete-tag', 'x-confirmation-id': 'confirm-delete' });
+      return new Response(JSON.stringify({ operationId: 'op-tag', result: { removed: true, platformImageTagId: 'tag/1' } }), { status: 200 });
+    });
+    const client = new PlatformApiClient({ baseUrl: 'https://platform.example', token: 'mock', cloudWorkspaceId: 'workspace-1', fetch: fetchMock as typeof fetch });
+    await expect(client.deletePlatformImageTag('tag/1', { idempotencyKey: 'delete-tag', confirmationId: 'confirm-delete' })).resolves.toEqual({ removed: true, platformImageTagId: 'tag/1' });
+  });
+
   it.each([undefined, false, true])('only requests range network diagnostics when explicitly true (%s)', async (includeNetworkDiagnostics) => {
     const snapshot = { id: 'range/1', status: 'running', ...(includeNetworkDiagnostics === true ? {
       networkDiagnostics: {

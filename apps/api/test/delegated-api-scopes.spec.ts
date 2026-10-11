@@ -8,6 +8,7 @@ describe('delegated API permission boundary', () => {
   it.each([
     ['POST', '/admin/ranges/r1/destroy', ['ranges:read']],
     ['POST', '/admin/billing/sync', ['billing:read']],
+    ['DELETE', '/admin/platform-image-tags/tag-1', ['images:read']],
     ['POST', '/admin/cloud-workspaces/ws1/switch', ['settings:read']],
     ['GET', '/admin/cloud-workspaces', ['ranges:create']],
     ['POST', '/admin/instances/s1/actions/pack-image', ['instances:control']],
@@ -28,6 +29,9 @@ describe('delegated API permission boundary', () => {
   it('preserves safe job evidence and the supported image retry route', () => {
     expect(() => check('GET', '/admin/provision-jobs/j1', ['jobs:read'])).not.toThrow();
     expect(() => check('POST', '/admin/image-imports/import1/retry', ['images:write'])).not.toThrow();
+  });
+  it('allows tag deletion only with image write scope', () => {
+    expect(() => check('DELETE', '/admin/platform-image-tags/tag-1', ['images:write'])).not.toThrow();
   });
   it('allows the exact credential endpoint only with both scopes', () => {
     expect(() => check('GET', '/admin/instances/s1/access', ['instances:read', 'instances:credentials:read'])).not.toThrow();

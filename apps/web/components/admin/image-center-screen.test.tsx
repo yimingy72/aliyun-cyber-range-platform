@@ -1,5 +1,5 @@
 import React from 'react';
-import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { AdminApiError } from '../../lib/admin-api';
@@ -34,6 +34,7 @@ const {
   syncCustomImagesMock,
   collectPlatformImageMock,
   createPlatformImageTagMock,
+  deletePlatformImageTagMock,
   renamePlatformImageMock,
   publishPlatformImageMock,
   unpublishPlatformImageMock,
@@ -59,6 +60,7 @@ const {
   syncCustomImagesMock: vi.fn(),
   collectPlatformImageMock: vi.fn(),
   createPlatformImageTagMock: vi.fn(),
+  deletePlatformImageTagMock: vi.fn(),
   renamePlatformImageMock: vi.fn(),
   publishPlatformImageMock: vi.fn(),
   unpublishPlatformImageMock: vi.fn(),
@@ -96,6 +98,7 @@ vi.mock('../../lib/admin-api', async () => {
     syncCustomImages: syncCustomImagesMock,
     collectPlatformImage: collectPlatformImageMock,
     createPlatformImageTag: createPlatformImageTagMock,
+    deletePlatformImageTag: deletePlatformImageTagMock,
     renamePlatformImage: renamePlatformImageMock,
     publishPlatformImage: publishPlatformImageMock,
     unpublishPlatformImage: unpublishPlatformImageMock,
@@ -273,6 +276,8 @@ beforeEach(() => {
   syncCustomImagesMock.mockReset();
   collectPlatformImageMock.mockReset();
   createPlatformImageTagMock.mockReset();
+  deletePlatformImageTagMock.mockReset();
+  deletePlatformImageTagMock.mockResolvedValue({ removed: true, platformImageTagId: 'tag-critical' });
   renamePlatformImageMock.mockReset();
   publishPlatformImageMock.mockReset();
   unpublishPlatformImageMock.mockReset();
@@ -610,6 +615,54 @@ describe('ImageCenterScreen', () => {
     expect(screen.queryByText('My Base Ubuntu')).toBeNull();
   });
 
+  it('confirms deleting a tag definition and clears associations without removing images', async () => {
+    fetchPlatformImagesMock.mockResolvedValueOnce({ items: [createPlatformImageAsset({ id: 'platform-image-1', imageId: 'aliyun-linux-3', displayName: 'Alibaba Cloud Linux 3', tags: [{ id: 'tag-critical', name: '关键资产' }] })] })
+      .mockResolvedValue({ items: [createPlatformImageAsset({ id: 'platform-image-1', imageId: 'aliyun-linux-3', displayName: 'Alibaba Cloud Linux 3' })] });
+    render(<ImageCenterScreen apiBaseUrl="http://localhost:3001" />);
+    await screen.findByText('Alibaba Cloud Linux 3');
+    fireEvent.click(screen.getByRole('button', { name: '管理标签' }));
+    fireEvent.click(await screen.findByRole('button', { name: '删除标签 关键资产' }));
+    const confirmation = await screen.findByRole('dialog', { name: '确认删除镜像标签' });
+    expect(within(confirmation).getByText(/所有镜像的此标签关联，镜像和云资源会保留/)).toBeTruthy();
+    expect(deletePlatformImageTagMock).not.toHaveBeenCalled();
+    fireEvent.click(within(confirmation).getByRole('button', { name: '取消' }));
+    expect(deletePlatformImageTagMock).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('button', { name: '删除标签 关键资产' }));
+    fireEvent.click(screen.getByRole('button', { name: '确认删除标签' }));
+    await screen.findByText('暂无镜像标签');
+    expect(deletePlatformImageTagMock).toHaveBeenCalledWith('http://localhost:3001', 'dev-admin-token', 'tag-critical');
+    fireEvent.keyDown(screen.getByRole('dialog', { name: '管理镜像标签' }), { key: 'Escape' });
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    expect(screen.getByText('Alibaba Cloud Linux 3')).toBeTruthy();
+    expect(screen.queryByText('关键资产')).toBeNull();
+    expect(removePlatformImageMock).not.toHaveBeenCalled();
+    expect(deleteCustomImageSnapshotMock).not.toHaveBeenCalled();
+  });
+
+  it('keeps the tag and confirmation open when deletion fails', async () => {
+    deletePlatformImageTagMock.mockRejectedValueOnce(new Error('服务暂不可用'));
+    render(<ImageCenterScreen />);
+    fireEvent.click(await screen.findByRole('button', { name: '管理标签' }));
+    fireEvent.click(await screen.findByRole('button', { name: '删除标签 关键资产' }));
+    fireEvent.click(screen.getByRole('button', { name: '确认删除标签' }));
+    expect(await screen.findByRole('alert')).toHaveProperty('textContent', '服务暂不可用');
+    fireEvent.click(screen.getByRole('button', { name: '取消' }));
+    expect(screen.getByRole('button', { name: '删除标签 关键资产' })).toBeTruthy();
+  });
+
+  it('ignores a late unauthorized tag deletion response after leaving the workspace', async () => {
+    let rejectDelete!: (error: Error) => void;
+    deletePlatformImageTagMock.mockReturnValue(new Promise((_resolve, reject) => { rejectDelete = reject; }));
+    const view = render(<ImageCenterScreen />);
+    fireEvent.click(await screen.findByRole('button', { name: '管理标签' }));
+    fireEvent.click(await screen.findByRole('button', { name: '删除标签 关键资产' }));
+    fireEvent.click(screen.getByRole('button', { name: '确认删除标签' }));
+    expect(deletePlatformImageTagMock).toHaveBeenCalledTimes(1);
+    view.unmount();
+    await act(async () => rejectDelete(new AdminApiError(401, '旧账号响应')));
+    expect(logoutMock).not.toHaveBeenCalled();
+  });
+
   it('lets admins create and assign image tags from the inline tag dropdown', async () => {
     render(<ImageCenterScreen apiBaseUrl="http://localhost:3001" />);
 
@@ -668,6 +721,7 @@ describe('ImageCenterScreen', () => {
 
     const platformRow = (await screen.findByText('Owner Ubuntu')).closest('tr') as HTMLElement;
     expect(within(platformRow).queryByRole('button', { name: '编辑标签 Owner Ubuntu' })).toBeNull();
+    expect(screen.queryByRole('button', { name: '管理标签' })).toBeNull();
 
     fireEvent.mouseDown(screen.getByRole('tab', { name: '我的镜像' }));
     const myImageRow = (await screen.findByText('Owner Ubuntu')).closest('tr') as HTMLElement;

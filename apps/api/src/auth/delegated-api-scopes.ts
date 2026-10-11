@@ -43,6 +43,7 @@ const rules: ScopeRule[] = [
   { method: 'POST', path: /^\/admin\/billing\/sync$/, all: ['billing:sync'] },
   { method: 'GET', path: /^\/admin\/platform-image-tags$/, any: metadataScopes('images') },
   { method: 'POST', path: /^\/admin\/platform-image-tags$/, all: ['images:write'] },
+  { method: 'DELETE', path: /^\/admin\/platform-image-tags\/[^/]+$/, all: ['images:write'] },
   { method: 'GET', path: /^\/admin\/platform-images(?:\/[^/]+)?$/, any: metadataScopes('images') },
   { method: 'POST', path: /^\/admin\/platform-images(?:\/[^/]+\/(?:enable|disable|publish|unpublish))?$/, all: ['images:write'] },
   { method: 'PATCH', path: /^\/admin\/platform-images\/[^/]+$/, all: ['images:write'] },

@@ -95,7 +95,12 @@ databaseDescribe('Prisma cloud workspace isolation', () => {
       expect(await repository.getPlatformImageAssetById(second.image.id)).toBeNull();
       await expect(repository.replacePlatformImageAssetTags(first.image.id, [second.tag.id])).rejects.toThrow();
       expect((await repository.getPlatformImageAssetById(first.image.id))?.tags.map(tag => tag.id)).toEqual([first.tag.id]);
+      expect(await repository.deletePlatformImageTag(second.tag.id)).toBe(false);
+      expect(await repository.deletePlatformImageTag(first.tag.id)).toBe(true);
+      expect((await repository.getPlatformImageAssetById(first.image.id))?.tags).toEqual([]);
     });
+    expect((await runInCloudWorkspace(b, () => repository.getPlatformImageAssetById(second.image.id)))?.tags.map(tag => tag.id)).toEqual([second.tag.id]);
+    expect(await runInCloudWorkspace(b, () => repository.listPlatformImageTags())).toHaveLength(1);
   });
 
   it('rejects direct foreign workspace references and upsert attempts instead of mutating another account', async () => {

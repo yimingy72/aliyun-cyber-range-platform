@@ -2014,6 +2014,11 @@ export class PrismaAdminRepository implements AdminRepository {
     }) as Promise<PlatformImageTagRecord>;
   }
 
+  async deletePlatformImageTag(id: string): Promise<boolean> {
+    // The scoped delete and FK cascade remove the definition and all associations atomically.
+    return (await this.prisma.platformImageTag.deleteMany({ where: { id } })).count === 1;
+  }
+
   async replacePlatformImageAssetTags(id: string, tagIds: string[]): Promise<PlatformImageAssetRecord> {
     const asset = await this.prisma.platformImageAsset.update({
       where: {
