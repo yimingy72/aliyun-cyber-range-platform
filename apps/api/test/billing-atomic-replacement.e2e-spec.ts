@@ -115,4 +115,30 @@ describeDb('billing atomic replacement in isolated PostgreSQL', () => {
     expect(groups.items.every(group => group.ownerUserId === 'owner-a' && group.instance?.batchId === batch.id && group.sourceProvisionJobId === jobs[0].id && group.title === '开启单实例')).toBe(true);
     expect((await service.listUserGroups({ userId: 'owner-b', startAt: DAY, endAt: DAY })).items[0]).toMatchObject({ kind: 'range_launch', title: '开启编排实例', ownerUserId: 'owner-b', pretaxAmount: 20 });
   });
+
+  it('atomically fills a null billing origin once across concurrent writers and preserves release state', async () => {
+    const f = await createProvenBillingLedger(repository, { cloudAccountUid: '100001', regionId: 'cn-hangzhou', cloudResourceId: 'i-origin',
+      cloudResourceType: 'ecs', billingScope: 'platform', billingStartAt: new Date(DAY), releasedAt: new Date(`${DAY}T08:00:00Z`) });
+    await repository.updateProvisionJob(f.job.id, { status: 'failed' });
+    const alternate = await repository.createProvisionJob({ rangeInstanceId: f.instance.id, jobType: 'retry', triggeredBy: 'fixture-admin' });
+    const expected = await repository.updateBillingLedgerResource(f.ledger.id, { sourceProvisionJobId: null });
+    const outcomes = await Promise.all([f.job.id, alternate.id].map(sourceProvisionJobId => repository.repairBillingLedgerOrigin({ expected, sourceProvisionJobId, auditMessage: 'verified fixture creation evidence' })));
+    expect(outcomes.filter(Boolean)).toHaveLength(1);
+    const final = (await repository.listBillingLedgerResources())[0];
+    expect([f.job.id, alternate.id]).toContain(final.sourceProvisionJobId);
+    expect(final.releasedAt).toEqual(expected.releasedAt);
+    const logs = await prisma.provisionJobStepLog.findMany({ where: { stepName: 'platform_billing_origin_repair' } });
+    expect(logs).toHaveLength(1); expect(logs[0].jobId).toBe(final.sourceProvisionJobId);
+    expect(await repository.repairBillingLedgerOrigin({ expected, sourceProvisionJobId: f.job.id, auditMessage: 'stale losing writer' })).toBe(false);
+    expect(await prisma.provisionJobStepLog.count({ where: { stepName: 'platform_billing_origin_repair' } })).toBe(1);
+  });
+
+  it('rolls back the billing origin when its success audit cannot be inserted', async () => {
+    const f = await createProvenBillingLedger(repository, { cloudAccountUid: '100001', regionId: 'cn-hangzhou', cloudResourceId: 'i-rollback',
+      cloudResourceType: 'ecs', billingScope: 'platform', billingStartAt: new Date(DAY) });
+    const expected = await repository.updateBillingLedgerResource(f.ledger.id, { sourceProvisionJobId: null });
+    await expect(repository.repairBillingLedgerOrigin({ expected, sourceProvisionJobId: f.job.id, auditMessage: { invalid: 'must be a string' } as unknown as string })).rejects.toThrow();
+    expect((await repository.listBillingLedgerResources())[0]).toEqual(expected);
+    expect(await prisma.provisionJobStepLog.count({ where: { stepName: 'platform_billing_origin_repair' } })).toBe(0);
+  });
 });

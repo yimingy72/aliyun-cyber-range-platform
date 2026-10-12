@@ -59,6 +59,7 @@ import {
   UpsertCloudResourceDriftInput,
   UpsertSingleInstanceNetworkProfileInput,
   UpdateBillingLedgerResourceInput,
+  RepairBillingLedgerOriginInput,
   UpdateIdempotentOperationInput,
   UpdatePlatformUserInput,
   UpdateProvisionJobInput,
@@ -1804,6 +1805,23 @@ export function createMemoryAdminRepository(): AdminRepository {
     },
     async listBillingLedgerResources(filter = {}) {
       return cloneList(billingLedgerResources.filter(item => filter.rangeInstanceId === undefined || item.rangeInstanceId === filter.rangeInstanceId));
+    },
+    async repairBillingLedgerOrigin(input: RepairBillingLedgerOriginInput) {
+      const expected = input.expected;
+      const namespace = expected.cloudWorkspaceId ?? 'legacy-unbound';
+      if (expected.sourceProvisionJobId !== null || namespace !== (getCurrentCloudWorkspaceId() ?? 'legacy-unbound')) return false;
+      const source = provisionJobs.find(job => job.id === input.sourceProvisionJobId && (job.cloudWorkspaceId ?? 'legacy-unbound') === namespace
+        && job.rangeInstanceId === expected.rangeInstanceId && ['create', 'retry'].includes(job.jobType));
+      const record = billingLedgerResources.find(row => row.id === expected.id && row.sourceProvisionJobId === null
+        && ['cloudProvider', 'cloudAccountUid', 'regionId', 'cloudResourceId', 'cloudResourceType', 'rangeInstanceId', 'ownerUserId', 'singleInstanceBatchId', 'billingScope'].every(key => row[key as keyof BillingLedgerResourceRecord] === expected[key as keyof BillingLedgerResourceRecord])
+        && (row.cloudWorkspaceId ?? 'legacy-unbound') === namespace && row.billingStartAt.getTime() === expected.billingStartAt.getTime()
+        && (row.releasedAt?.getTime() ?? null) === (expected.releasedAt?.getTime() ?? null));
+      if (!record || !source) return false;
+      const timestamp = now();
+      provisionJobStepLogs.push({ id: nextId(), jobId: input.sourceProvisionJobId, stepName: 'platform_billing_origin_repair', status: 'succeeded',
+        message: input.auditMessage, startedAt: timestamp, finishedAt: timestamp, stdoutExcerpt: null, stderrExcerpt: null, createdAt: timestamp, updatedAt: timestamp });
+      record.sourceProvisionJobId = input.sourceProvisionJobId; record.updatedAt = timestamp;
+      return true;
     },
     async getLatestBillingLineItemDate(cloudAccountUid?: string) {
       const latest = billingLineItems.filter(item => cloudAccountUid === undefined || item.cloudAccountUid === cloudAccountUid).reduce<Date | null>(

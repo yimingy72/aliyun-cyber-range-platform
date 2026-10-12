@@ -52,6 +52,11 @@ describe('single-instance OpenTofu batch execution', () => {
       findBillingLedgerResource: jest.fn(async (query: any) => ledger.find(value => value.cloudResourceId === query.cloudResourceId && value.cloudResourceType === query.cloudResourceType) ?? null),
       createBillingLedgerResource: jest.fn(async (input: any) => { const row = { id: `ledger-${ledger.length}`, releasedAt: null, ...input }; ledger.push(row); return row; }),
       updateBillingLedgerResource: jest.fn(async (id: string, patch: object) => { const row = ledger.find(value => value.id === id); Object.assign(row, patch); return row; }),
+      repairBillingLedgerOrigin: jest.fn(async ({ expected, sourceProvisionJobId }: any) => {
+        const row = ledger.find(value => value.id === expected.id && value.sourceProvisionJobId === null);
+        if (!row) return false;
+        row.sourceProvisionJobId = sourceProvisionJobId; return true;
+      }),
     };
     if (tencent) {
       jest.spyOn(tencentRpc,'requestTencentCloud').mockResolvedValue({ RequestId: 'fixture-image-request', TotalCount: 1, ImageSet: [{ ImageId: 'img-fixture', ImageState: 'NORMAL', ImageType: 'PRIVATE_IMAGE', Architecture: 'x86_64', ImageSize: 20, SnapshotSet: [] }] } as any);
@@ -175,6 +180,50 @@ describe('single-instance OpenTofu batch execution', () => {
     expect(test.ledger.every(row => row.releasedAt)).toBe(true);
     expect(test.stepLogs).toEqual(expect.arrayContaining(inventory));
     expect(test.native.executeCreateBatch).not.toHaveBeenCalled();
+  });
+
+  it('retains exact Alibaba disk-to-host creation inventory after destruction clears active state', async () => {
+    const test = fixture(2);
+    const detached = test.items.map(item => ({ ...item, instance: structuredClone(item.instance) }));
+    await test.service.executeCreateBatch(detached, test.lease);
+    expect(test.jobs.get('job-1')).toMatchObject({ status: 'succeeded', errorSummary: null });
+    expect(test.instances[0].resourceSummary?.executionContext).toEqual({ provider: 'alibaba_cloud', cloudAccountContextId: 'ctx-a', cloudAccountUid: 'uid-a', regionId: 'cn-hangzhou', zoneId: 'cn-hangzhou-h' });
+    expect(test.ledger).toEqual(expect.arrayContaining([expect.objectContaining({ cloudAccountUid: 'uid-a', sourceProvisionJobId: 'job-1' })]));
+    const inventory = test.stepLogs.filter(log => log.stepName === 'range_resource_inventory');
+    expect(inventory).toHaveLength(2);
+    for (const [index, log] of inventory.entries()) {
+      const member = `member-${index + 1}`, host = `host-${index + 1}`;
+      expect(JSON.parse(log.message!)).toEqual({ version: 1, cloudProvider: 'alibaba_cloud', cloudWorkspaceId: 'legacy-unbound',
+        rangeInstanceId: member, sourceJobId: `job-${index + 1}`, ownerUserId: 'alice', singleInstanceBatchId: 'batch-a',
+        executionContext: { provider: 'alibaba_cloud', cloudAccountContextId: 'ctx-a', cloudAccountUid: 'uid-a', regionId: 'cn-hangzhou', zoneId: 'cn-hangzhou-h' },
+        resources: { hostIds: { [host]: `i-${member}` }, systemDiskIds: { [host]: `d-${member}` }, dataDiskIds: {}, diskOwnershipProofs: {} } });
+      expect(log.stdoutExcerpt).toBeNull(); expect(log.stderrExcerpt).toBeNull();
+      expect(log.message).not.toContain('test-Passw0rd'); expect(log.message).not.toContain('test-secret-key');
+    }
+    await test.service.executeDestroyBatch([test.queueDestroy(0), test.queueDestroy(1)], test.lease);
+    expect(test.instances.every(instance => instance.status === 'destroyed' && instance.resourceSummary === null)).toBe(true);
+    expect(test.stepLogs.filter(log => log.stepName === 'range_resource_inventory')).toEqual(inventory);
+    expect(test.ledger.every(row => row.releasedAt)).toBe(true);
+  });
+
+  it('backfills legacy null ledger sources from a failed birth job when retry reuses the existing OpenTofu member', async () => {
+    const test = fixture(1);
+    await test.service.executeCreateBatch(test.items, test.lease);
+    test.jobs.get('job-1')!.status = 'failed';
+    test.ledger.forEach(row => { row.sourceProvisionJobId = null; });
+    const retry = test.queueDestroy(0); retry.job.jobType = 'retry'; retry.instance.status = 'creating';
+    test.customPlan = () => ({ format_version: '1.2', resource_changes: [{ address: 'module.single_batch.alicloud_instance.members["member-1"]',
+      type: 'alicloud_instance', change: { actions: ['no-op'] } }] });
+    test.onApply = async () => {};
+    const originalId = test.instances[0].resourceSummary!.hostIds!['host-1'];
+    await test.service.executeCreateBatch([retry], test.lease);
+    expect(retry.job.status).toBe('succeeded');
+    expect(test.instances[0].resourceSummary!.hostIds!['host-1']).toBe(originalId);
+    expect(test.cloud.size).toBe(1);
+    expect(test.cloud.get(originalId).tags.PlatformCreateJobId).toBe('job-1');
+    expect(test.ledger).toHaveLength(2);
+    expect(test.ledger.every(row => row.sourceProvisionJobId === 'job-1')).toBe(true);
+    expect(test.jobs.get('job-1')!.status).toBe('failed');
   });
 
   it('never repeats a Tencent apply when its accepted creation outcome is unknown', async () => {

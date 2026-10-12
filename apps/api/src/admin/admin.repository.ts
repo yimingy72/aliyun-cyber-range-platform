@@ -739,6 +739,12 @@ export type UpdateBillingLedgerResourceInput = Partial<{
   tagsSnapshot: Record<string, unknown>;
 }>;
 
+export type RepairBillingLedgerOriginInput = {
+  expected: BillingLedgerResourceRecord;
+  sourceProvisionJobId: string;
+  auditMessage: string;
+};
+
 export type CreateBillingLineItemInput = {
   cloudProvider?: CloudProvider;
   cloudWorkspaceId?: string;
@@ -1302,6 +1308,7 @@ export interface AdminRepository {
   createBillingLedgerResource(input: CreateBillingLedgerResourceInput): Promise<BillingLedgerResourceRecord>;
   findBillingLedgerResource(input: FindBillingLedgerResourceInput): Promise<BillingLedgerResourceRecord | null>;
   updateBillingLedgerResource(id: string, input: UpdateBillingLedgerResourceInput): Promise<BillingLedgerResourceRecord>;
+  repairBillingLedgerOrigin(input: RepairBillingLedgerOriginInput): Promise<boolean>;
   listBillingLedgerResources(filter?: { rangeInstanceId?: string }): Promise<BillingLedgerResourceRecord[]>;
   getLatestBillingLineItemDate(cloudAccountUid?: string): Promise<Date | null>;
   replaceBillingDay(input: {
