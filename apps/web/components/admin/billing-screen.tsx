@@ -202,6 +202,17 @@ export function BillingScreen({ apiBaseUrl = 'http://localhost:3001' }: BillingS
   const [isSyncing, setIsSyncing] = useState(false);
 
   const hasPlatformBillingScope = summary?.billingScope === 'platform_resources';
+  const overviewReconciliationIssues = (summary?.reconciliationIssues ?? []).flatMap((issue) => {
+    if (issue.resourceType !== 'disk' || !issue.resources || issue.resources.length !== issue.resourceCount) return [issue];
+    const resources = issue.resources.filter((resource) => {
+      const releasedAt = resource.releasedAt ? Date.parse(resource.releasedAt) : NaN;
+      const billingStartAt = Date.parse(resource.billingStartAt);
+      return !(resource.cloudResourceType === 'disk' && resource.ledgerId?.trim() && resource.cloudResourceId?.trim()
+        && resource.proofFailureReason === 'SYSTEM_DISK_MAPPING_UNVERIFIED'
+        && Number.isFinite(releasedAt) && Number.isFinite(billingStartAt) && releasedAt >= billingStartAt && releasedAt <= Date.now());
+    });
+    return resources.length ? [{ ...issue, resourceCount: resources.length, resources }] : [];
+  });
   const users = usersResult.items;
   const groups = groupsResult.items;
   const hasOverviewSnapshot = loadedOverviewResource !== null;
@@ -685,7 +696,7 @@ export function BillingScreen({ apiBaseUrl = 'http://localhost:3001' }: BillingS
         </dl>
 
         <p className="mt-3 text-xs leading-5 text-muted-foreground">
-          明细待补齐不代表云端未出账或免费；历史盘映射待核验另列。平台待分配费用已确认属于平台，尚未计入用户或平台公共费用。
+          明细待补齐不代表云端未出账或免费。平台待分配费用已确认属于平台，尚未计入用户或平台公共费用。
           {summary && !hasPlatformBillingScope
             ? ' 账单范围尚未确认，暂不展示平台汇总。'
             : summary && (summary.billingStatus === undefined || summary.unallocatedCurrencyTotals === undefined || summary.resourcesWithoutBillCount === undefined || summary.reconciliationIssues === undefined)
@@ -695,13 +706,13 @@ export function BillingScreen({ apiBaseUrl = 'http://localhost:3001' }: BillingS
         {hasPlatformBillingScope && summary.anomalyCount > 0 ? (
           <p className="mt-3 text-sm text-muted-foreground">{summary.anomalyCount} 条平台账单待分配，汇总仅包含已归属费用。</p>
         ) : null}
-        {hasPlatformBillingScope && summary.reconciliationIssues?.length ? (
+        {hasPlatformBillingScope && overviewReconciliationIssues.length ? (
           <ul aria-label="平台资源对账提示" className="mt-2 grid gap-1 text-xs leading-5 text-muted-foreground">
-            {summary.reconciliationIssues.map((issue, index) => (
+            {overviewReconciliationIssues.map((issue, index) => (
               <li className="break-words" key={`${issue.resourceType}-${index}`}>
                 {issue.resourceType === 'unknown'
                   ? `平台资源来源待核验：${issue.resourceCount} 项。`
-                  : issue.resourceType === 'disk' ? `历史盘映射待核验：${issue.resourceCount} 项。`
+                  : issue.resourceType === 'disk' ? `磁盘映射待核验：${issue.resourceCount} 项。`
                   : `${issue.resourceType === 'snapshot' ? '快照' : 'OSS'}：${issue.resourceCount} 项平台资源待核对。`}{issue.reason}
               </li>
             ))}

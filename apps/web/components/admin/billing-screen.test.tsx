@@ -471,10 +471,47 @@ describe('BillingScreen', () => {
     expect(issues.textContent).toContain('快照：2 项平台资源待核对。等待快照分账明细。');
     expect(issues.textContent).toContain('OSS：1 项平台资源待核对。共享存储桶仍需核实费用归属。');
     expect(issues.textContent).toContain('平台资源来源待核验：2 项。历史创建记录缺少原账号证明。');
-    expect(issues.textContent).toContain('历史盘映射待核验：54 项。同实例主机系统盘费用已出现，但准确盘映射待核验。');
+    expect(issues.textContent).toContain('磁盘映射待核验：54 项。同实例主机系统盘费用已出现，但准确盘映射待核验。');
     expect(screen.getByText('资源费用明细待补齐').parentElement?.textContent).toContain('3 项');
     expect(issues.textContent).not.toContain('¥');
     expect(screen.getByText('平台待分配费用').parentElement?.textContent).toContain('无未分配记录');
+  });
+
+  it.each([
+    { name: 'all 54 released historical records', active: false, incomplete: false, invalidDate: false, expectedCount: 0 },
+    { name: 'a mixed group with a current unreleased disk', active: true, incomplete: false, invalidDate: false, expectedCount: 1 },
+    { name: 'an incomplete resource list', active: false, incomplete: true, invalidDate: false, expectedCount: 54 },
+    { name: 'an unverified release timestamp', active: false, incomplete: false, invalidDate: true, expectedCount: 1 },
+    { name: 'a future release timestamp', active: false, incomplete: false, invalidDate: false, future: true, expectedCount: 1 },
+    { name: 'a different source failure', active: false, incomplete: false, invalidDate: false, otherReason: true, expectedCount: 1 },
+  ])('keeps verified fees and other coverage notices while filtering $name', async ({ active, incomplete, invalidDate, future, otherReason, expectedCount }) => {
+    vi.spyOn(adminSessionModule, 'useAdminSession').mockReturnValue(adminSession);
+    const resources = Array.from({ length: 54 }, (_, index) => ({
+      resourceKey: `ledger:disk-${index}`, ledgerId: `disk-${index}`, cloudResourceId: `d-${index}`, cloudResourceType: 'disk',
+      billingStartAt: '2026-10-09T06:00:00.000Z', releasedAt: active && index === 0 ? null
+        : invalidDate && index === 0 ? 'unverified' : future && index === 0 ? '2099-10-09T07:00:00.000Z' : '2026-10-09T07:00:00.000Z',
+      proofFailureReason: otherReason && index === 0 ? 'SOURCE_JOB_MISSING' : 'SYSTEM_DISK_MAPPING_UNVERIFIED',
+    }));
+    const summary = { billingScope: 'platform_resources', billingStatus: 'provisional', totalPretaxAmount: 9.154876222,
+      platformPretaxAmount: 0, anomalyCount: 0, unallocatedCurrencyTotals: [], resourcesWithoutBillCount: 3,
+      reconciliationIssues: [
+        { resourceType: 'snapshot', resourceCount: 4, reason: '快照明细待补齐。' },
+        { resourceType: 'unknown', resourceCount: 2, reason: '来源仍需核验。' },
+        { resourceType: 'disk', resourceCount: 54, reason: '盘映射待核验。', resources: incomplete ? resources.slice(1) : resources },
+      ] };
+    const original = JSON.stringify(summary);
+    fetchBillingSummaryMock.mockResolvedValue(summary);
+    fetchBillingUsersMock.mockResolvedValue([]);
+    fetchBillingUserGroupsMock.mockResolvedValue([]);
+    render(<BillingScreen apiBaseUrl="http://localhost:3001" />);
+    const issues = await screen.findByLabelText('平台资源对账提示');
+    if (expectedCount) expect(issues.textContent).toContain(`磁盘映射待核验：${expectedCount} 项。`);
+    else expect(issues.textContent).not.toContain('盘映射待核验');
+    expect(issues.textContent).toContain('快照：4 项平台资源待核对。');
+    expect(issues.textContent).toContain('平台资源来源待核验：2 项。');
+    expect(screen.getByText('平台已归属费用').parentElement?.textContent).toContain('¥ 9.154876222');
+    expect(screen.getByText('资源费用明细待补齐').parentElement?.textContent).toContain('3 项');
+    expect(JSON.stringify(summary)).toBe(original);
   });
 
   it('distinguishes a reported empty coverage result from missing coverage', async () => {
