@@ -38,6 +38,33 @@ describeDb('billing atomic replacement in isolated PostgreSQL', () => {
     await prisma.platformUser.deleteMany();
   });
 
+  it.each(['alibaba_cloud', 'tencent_cloud'] as const)('preserves historical rows and unknown UID while replacing only the current %s partition', async cloudProvider => {
+    const ledger = await repository.createBillingLedgerResource({ cloudProvider, cloudAccountUid: '100001', regionId: 'cn-hangzhou',
+      cloudResourceId: 'i-known', cloudResourceType: 'ecs', billingScope: 'platform', billingStartAt: new Date('2026-09-01') });
+    await repository.upsertBillingLineItems([
+      { ...record('100001', 'historical-late-charge', 10), cloudProvider },
+      { ...record('legacy', 'unknown-history', 7), cloudProvider, cloudAccountUid: null, cloudResourceId: ledger.cloudResourceId, matchedLedgerId: ledger.id },
+      { ...record('100002', 'other-account', 20), cloudProvider },
+    ]);
+    await repository.createBillingAnomaly({ cloudProvider, cloudAccountUid: '100001', syncBatchId: 'historical-sync', sourceFingerprint: 'historical-anomaly',
+      billCycle: '2026-10', billingDate: DAY, cloudResourceId: 'snapshot-region', cloudResourceType: 'snapshot_region', pretaxAmount: 100,
+      currency: 'CNY', reason: 'old aggregate' });
+    const previous = await repository.listBillingLineItems();
+    const previousAnomalies = await repository.listBillingAnomalies();
+    const replacementSyncBatchId = `billing-current:2026-10-01T04:00:00.000Z:billing-sync:${cloudProvider}:100001:${DAY}`;
+    for (const amount of [1, 2]) {
+      const current = { ...record('100001', 'current-resource', amount), cloudProvider, syncBatchId: replacementSyncBatchId,
+        sourceFingerprint: `${replacementSyncBatchId}:current-resource` };
+      await repository.replaceBillingDay({ cloudProvider, cloudAccountUid: '100001', billingDate: DAY, replacementSyncBatchId, lineItems: [current], anomalies: [] });
+      const rows = await repository.listBillingLineItems();
+      expect(rows.filter(row => row.syncBatchId !== replacementSyncBatchId)).toEqual(previous);
+      expect(rows.filter(row => row.syncBatchId === replacementSyncBatchId)).toEqual([expect.objectContaining({ pretaxAmount: amount })]);
+      expect(await repository.listBillingAnomalies()).toEqual(previousAnomalies);
+    }
+    await expect(repository.replaceBillingDay({ cloudProvider, cloudAccountUid: '100001', billingDate: DAY, replacementSyncBatchId,
+      lineItems: [{ ...record('100001', 'wrong-partition', 99), cloudProvider }], anomalies: [] })).rejects.toThrow('scope mismatch');
+  });
+
   it('rolls back both old lines and anomalies if bulk insertion fails', async () => {
     const line = record('100001', 'before', 10);
     await repository.replaceBillingDay({ cloudAccountUid: '100001', billingDate: DAY, lineItems: [line], anomalies: [{ cloudAccountUid: '100001', syncBatchId: line.syncBatchId, sourceFingerprint: 'anomaly-before', billCycle: '2026-10', billingDate: DAY, cloudResourceId: 'snapshot-region', cloudResourceType: 'snapshot_region', pretaxAmount: 3, currency: 'CNY', reason: 'fixture' }] });

@@ -14,6 +14,7 @@ export type PlatformBillingProof = {
   cosBuckets: BillingManagedCosBucketRecord[];
   createdLedgerIds: Set<string>;
   unverifiedSourceLedgerIds: Set<string>;
+  creationJobs?: Map<string, ProvisionJobRecord>;
 };
 
 function inventoryIncludes(summary: RangeResourceSummary | null | undefined, ledger: BillingLedgerResourceRecord): boolean {
@@ -95,6 +96,7 @@ export async function loadPlatformBillingProof(repository: AdminRepository, opti
     .map(async id => [id, await repository.listProvisionJobStepLogs(id)] as const)));
   const launchInstanceIds = new Set(sourceJobs.filter(job => ['create', 'retry', 'update'].includes(job.jobType)).map(job => job.rangeInstanceId));
   const createdLedgerIds = new Set<string>();
+  const creationJobs = new Map<string, ProvisionJobRecord>();
   const unverifiedSourceLedgerIds = new Set<string>();
   for (const ledger of ledgers) {
     const sourceJob = ledger.sourceProvisionJobId ? jobs.get(ledger.sourceProvisionJobId) : null;
@@ -175,10 +177,13 @@ export async function loadPlatformBillingProof(repository: AdminRepository, opti
       && (!context?.regionId || context.regionId === ledger.regionId)
       && ledger.billingScope === (instance.ownerUserId ? 'user' : 'platform')
       && (instance.ownerUserId ?? null) === ledger.ownerUserId
-      && (instance.singleInstanceBatchId ?? null) === ledger.singleInstanceBatchId) createdLedgerIds.add(ledger.id);
+      && (instance.singleInstanceBatchId ?? null) === ledger.singleInstanceBatchId) {
+      createdLedgerIds.add(ledger.id);
+      creationJobs.set(ledger.id, job);
+    }
   }
   for (const id of createdLedgerIds) unverifiedSourceLedgerIds.delete(id);
-  return { ledgers, imageImports, packedImages, cosBuckets, createdLedgerIds, unverifiedSourceLedgerIds };
+  return { ledgers, imageImports, packedImages, cosBuckets, createdLedgerIds, unverifiedSourceLedgerIds, creationJobs };
 }
 
 // Collection and tags are not creation proof; this set was checked against persisted job/artifact identities.

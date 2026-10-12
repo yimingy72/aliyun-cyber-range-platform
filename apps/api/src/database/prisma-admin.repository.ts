@@ -2410,12 +2410,14 @@ export class PrismaAdminRepository implements AdminRepository {
     return result._max.billingDate;
   }
 
-  async replaceBillingDay(input: { cloudProvider?: CloudProvider; cloudAccountUid: string; billingDate: string; lineItems: CreateBillingLineItemInput[]; anomalies: CreateBillingAnomalyInput[] }): Promise<void> {
+  async replaceBillingDay(input: { replacementSyncBatchId?: string; cloudProvider?: CloudProvider; cloudAccountUid: string; billingDate: string; lineItems: CreateBillingLineItemInput[]; anomalies: CreateBillingAnomalyInput[] }): Promise<void> {
     const cloudProvider = input.cloudProvider ?? 'alibaba_cloud';
     const cloudWorkspaceId = getCurrentCloudWorkspaceId() ?? 'legacy-unbound';
     const scope = getCurrentCloudWorkspaceScope();
     const billingDate = new Date(`${input.billingDate}T00:00:00.000Z`);
     const records = [...input.lineItems, ...input.anomalies];
+    if (input.replacementSyncBatchId !== undefined && (!input.replacementSyncBatchId.startsWith('billing-current:')
+      || records.some(item => item.syncBatchId !== input.replacementSyncBatchId))) throw new Error('Billing replacement scope mismatch');
     if (!input.cloudAccountUid || !Number.isFinite(billingDate.getTime())
       || scope && !('system' in scope) && (scope.provider !== cloudProvider || scope.accountUid !== input.cloudAccountUid)
       || records.some(item => (item.cloudProvider ?? 'alibaba_cloud') !== cloudProvider
@@ -2425,14 +2427,15 @@ export class PrismaAdminRepository implements AdminRepository {
     }
     await this.prisma.$transaction(async tx => {
       await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${`billing:${cloudWorkspaceId}:${cloudProvider}:${input.cloudAccountUid}:${input.billingDate}`}, 0))`;
-      await tx.$executeRaw`UPDATE "BillingLineItem" b SET "cloudAccountUid" = ${input.cloudAccountUid}
+      if (!input.replacementSyncBatchId) await tx.$executeRaw`UPDATE "BillingLineItem" b SET "cloudAccountUid" = ${input.cloudAccountUid}
         FROM "BillingLedgerResource" l WHERE b."cloudAccountUid" IS NULL
         AND b."matchedLedgerId" = l."id" AND l."cloudAccountUid" = ${input.cloudAccountUid}
         AND b."cloudProvider" = ${cloudProvider}::"CloudProvider" AND l."cloudProvider" = b."cloudProvider"
         AND l."cloudResourceId" = b."cloudResourceId" AND l."cloudResourceType" = b."cloudResourceType"
         AND b."billingDate" = ${billingDate} AND b."cloudWorkspaceId" = ${cloudWorkspaceId}
         AND l."cloudWorkspaceId" = b."cloudWorkspaceId"`;
-      const where = { cloudWorkspaceId, cloudProvider, cloudAccountUid: input.cloudAccountUid, billingDate };
+      const where = { cloudWorkspaceId, cloudProvider, cloudAccountUid: input.cloudAccountUid, billingDate,
+        ...(input.replacementSyncBatchId ? { syncBatchId: input.replacementSyncBatchId } : {}) };
       await tx.billingLineItem.deleteMany({ where });
       await tx.billingAnomaly.deleteMany({ where });
       if (input.lineItems.length) {

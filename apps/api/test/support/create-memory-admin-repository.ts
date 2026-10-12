@@ -1832,6 +1832,8 @@ export function createMemoryAdminRepository(): AdminRepository {
       return latest ? new Date(latest) : null;
     },
     async replaceBillingDay(input) {
+      if (input.replacementSyncBatchId !== undefined && (!input.replacementSyncBatchId.startsWith('billing-current:')
+        || [...input.lineItems, ...input.anomalies].some(item => item.syncBatchId !== input.replacementSyncBatchId))) throw new Error('Billing replacement scope mismatch');
       const cloudProvider = input.cloudProvider ?? 'alibaba_cloud';
       const scope = getCurrentCloudWorkspaceScope();
       if (scope && !('system' in scope) && (scope.provider !== cloudProvider || scope.accountUid !== input.cloudAccountUid)) throw new Error('Billing replacement workspace, provider, account or date mismatch');
@@ -1840,9 +1842,9 @@ export function createMemoryAdminRepository(): AdminRepository {
       const oldLines = cloneList(billingLineItems);
       const oldAnomalies = cloneList(billingAnomalies);
       try {
-        for (const item of billingLineItems) if ((item.cloudProvider ?? 'alibaba_cloud') === cloudProvider && item.cloudAccountUid == null && item.billingDate.getTime() === date && billingLedgerResources.some(ledger => ledger.id === item.matchedLedgerId && ledger.cloudProvider === cloudProvider && ledger.cloudResourceId === item.cloudResourceId && ledger.cloudResourceType === item.cloudResourceType && ledger.cloudAccountUid === input.cloudAccountUid)) item.cloudAccountUid = input.cloudAccountUid;
-        for (let i = billingLineItems.length - 1; i >= 0; i--) if (visibleInWorkspace(billingLineItems[i]) && (billingLineItems[i].cloudProvider ?? 'alibaba_cloud') === cloudProvider && billingLineItems[i].cloudAccountUid === input.cloudAccountUid && billingLineItems[i].billingDate.getTime() === date) billingLineItems.splice(i, 1);
-        for (let i = billingAnomalies.length - 1; i >= 0; i--) if (visibleInWorkspace(billingAnomalies[i]) && (billingAnomalies[i].cloudProvider ?? 'alibaba_cloud') === cloudProvider && billingAnomalies[i].cloudAccountUid === input.cloudAccountUid && billingAnomalies[i].billingDate.getTime() === date) billingAnomalies.splice(i, 1);
+        for (const item of billingLineItems) if (!input.replacementSyncBatchId && (item.cloudProvider ?? 'alibaba_cloud') === cloudProvider && item.cloudAccountUid == null && item.billingDate.getTime() === date && billingLedgerResources.some(ledger => ledger.id === item.matchedLedgerId && ledger.cloudProvider === cloudProvider && ledger.cloudResourceId === item.cloudResourceId && ledger.cloudResourceType === item.cloudResourceType && ledger.cloudAccountUid === input.cloudAccountUid)) item.cloudAccountUid = input.cloudAccountUid;
+        for (let i = billingLineItems.length - 1; i >= 0; i--) if (visibleInWorkspace(billingLineItems[i]) && (billingLineItems[i].cloudProvider ?? 'alibaba_cloud') === cloudProvider && billingLineItems[i].cloudAccountUid === input.cloudAccountUid && billingLineItems[i].billingDate.getTime() === date && (!input.replacementSyncBatchId || billingLineItems[i].syncBatchId === input.replacementSyncBatchId)) billingLineItems.splice(i, 1);
+        for (let i = billingAnomalies.length - 1; i >= 0; i--) if (visibleInWorkspace(billingAnomalies[i]) && (billingAnomalies[i].cloudProvider ?? 'alibaba_cloud') === cloudProvider && billingAnomalies[i].cloudAccountUid === input.cloudAccountUid && billingAnomalies[i].billingDate.getTime() === date && (!input.replacementSyncBatchId || billingAnomalies[i].syncBatchId === input.replacementSyncBatchId)) billingAnomalies.splice(i, 1);
         await this.upsertBillingLineItems(input.lineItems);
         for (const item of input.anomalies) await this.createBillingAnomaly(item);
       } catch (error) {

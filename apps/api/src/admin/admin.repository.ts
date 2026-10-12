@@ -1312,6 +1312,7 @@ export interface AdminRepository {
   listBillingLedgerResources(filter?: { rangeInstanceId?: string }): Promise<BillingLedgerResourceRecord[]>;
   getLatestBillingLineItemDate(cloudAccountUid?: string): Promise<Date | null>;
   replaceBillingDay(input: {
+    replacementSyncBatchId?: string;
     cloudProvider?: CloudProvider;
     cloudAccountUid: string;
     billingDate: string;
