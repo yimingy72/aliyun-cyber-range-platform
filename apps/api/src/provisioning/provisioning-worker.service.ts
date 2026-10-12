@@ -1,6 +1,7 @@
 import { assertExistingHostBootstrapUnchanged } from '../admin/range-host-bootstrap-policy';
 import { buildRangeChangeApproval, rangeChangeDigest, type RangeChangeApproval } from '../admin/range-draft-change-policy';
 import { RangeDnsVerificationService } from '../admin/range-dns-verification.service';
+import { ResourceAlertsService } from '../admin/resource-alerts.service';
 import { randomUUID } from 'node:crypto';
 import { runInSystemCloudWorkspaceScope } from '../auth/cloud-workspace-scope';
 import { listExecutionCloudWorkspaces, runInExecutionCloudWorkspace } from '../auth/background-cloud-workspace';
@@ -97,6 +98,7 @@ export class ProvisioningWorkerService {
     platformResourceReconciliationService?: PlatformResourceReconciliationService,
     @Optional() singleInstanceOpenTofuExecutionService?: SingleInstanceOpenTofuExecutionService,
     @Optional() private readonly dnsVerification?: RangeDnsVerificationService,
+    @Optional() private readonly resourceAlerts?: ResourceAlertsService,
   ) {
     this.singleInstanceBatchExecutionService =
       singleInstanceBatchExecutionService ??
@@ -147,6 +149,7 @@ export class ProvisioningWorkerService {
   }
 
   async reconcilePlatformResources(now: Date) {
+    if (this.resourceAlerts) return this.resourceAlerts.scanCurrent(now);
     const spaces = await runInSystemCloudWorkspaceScope(() => listExecutionCloudWorkspaces(this.systemConfigService));
     if (!spaces) return this.platformResourceReconciliationService.reconcile(now);
     const results: Awaited<ReturnType<PlatformResourceReconciliationService['reconcile']>>[] = [];

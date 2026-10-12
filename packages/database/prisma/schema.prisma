@@ -776,15 +776,37 @@ model CloudResourceDrift {
   firstSeenAt       DateTime                   @default(now())
   lastSeenAt        DateTime
   resolvedAt        DateTime?
+  patrolStatus      String                     @default("unverified")
+  accountUid        String?
+  sourceEvidence    Json                       @default("{}")
+  remainingResources Json                      @default("[]")
+  reclaimJobId      String?
+  reclaimKey        String?
+  errorSummary      String?                    @db.Text
   createdAt         DateTime                   @default(now())
   updatedAt         DateTime                   @updatedAt
 
   @@unique([cloudWorkspaceId, cloudProvider, regionId, cloudResourceType, cloudResourceId])
   @@index([severity, resolvedAt, lastSeenAt])
+  @@index([cloudWorkspaceId, patrolStatus, lastSeenAt], map: "CloudResourceDrift_patrol_list_idx")
   @@index([rangeInstanceId])
   @@index([cloudWorkspaceId])
   cloudWorkspace CloudWorkspace @relation(fields: [cloudWorkspaceId], references: [id], onDelete: Restrict)
 
+}
+
+// The designated manager's persisted default selection is the only patrol target.
+model ResourcePatrolSettings {
+  id              String   @id
+  managerUserId   String?
+  lastScanAt      DateTime?
+  lastScanWorkspaceId String?
+  lastScanError   String?  @db.Text
+  regions         Json     @default("[]")
+  leaseToken      String?
+  leaseUntil      DateTime?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
 }
 
 model BillingLedgerResource {
