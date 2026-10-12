@@ -43,6 +43,10 @@ const line = () => ({ __platformBillingSource: 'DescribeSplitItemBill', __platfo
 const verify = (changes: Partial<Parameters<typeof verifyAliyunSnapshotEcsBillEvidence>[0]> = {}) => verifyAliyunSnapshotEcsBillEvidence({ line: line(), billingDate: '2026-10-10', cloudAccountUid: '123456', proof: proof(), history: history(), ...changes });
 
 describe('Alibaba source-ECS snapshot amount evidence', () => {
+  it('accepts the native Chinese region name using the source bill region ID', () => {
+    const native = { ...line(), RegionId: undefined, Region: '华东1（杭州）', InstanceID: 'cn-hangzhou' };
+    expect(verify({ line: native })?.sourceInstanceId).toBe('i-owned');
+  });
   it('retains the official source-host total and exact backing snapshot IDs after parent destruction', () => {
     const result = verify();
     expect(result).toMatchObject({ kind: 'snapshot_ecs', sourceLedgerId: 'ledger-host', sourceInstanceId: 'i-owned', snapshotLedgerIds: ['ledger-snapshot'], snapshotIds: ['s-owned'], artifactIds: ['artifact-owned'] });

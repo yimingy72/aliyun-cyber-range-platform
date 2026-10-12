@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import type { BillingLedgerResourceRecord, PackedImageArtifactRecord } from './admin.repository';
 import type { PlatformBillingProof } from './billing-platform-scope';
+import { billRegionConflict, billRegionId } from './billing-platform-scope';
 import { signAliyunRpcQuery } from './image-catalog-rpc-signer';
 import { billingDayText } from './billing-window';
 
@@ -199,10 +200,9 @@ export type AliyunSnapshotEcsScope = {
 
 type VerificationInput = { line: Record<string, unknown>; billingDate: string; cloudAccountUid: string; proof: PlatformBillingProof; history: AliyunSnapshotHistory | null };
 function sourceForBill({ line, cloudAccountUid, proof }: Omit<VerificationInput, 'history' | 'billingDate'>) {
-  const region = text(line.RegionId) || text(line.Region) || text(line.InstanceID).split(';')[0];
+  const region = billRegionId(line);
   if (line.__platformBillingSource !== 'DescribeSplitItemBill' || line.__platformCloudProvider != null && line.__platformCloudProvider !== 'alibaba_cloud'
-    || line.ProductCode !== 'snapshot' || !/^i-[a-z0-9]+$/i.test(text(line.SplitItemID)) || !REGION.test(region)
-    || line.RegionId && text(line.RegionId) !== region || REGION.test(text(line.Region)) && text(line.Region) !== region
+    || line.ProductCode !== 'snapshot' || !/^i-[a-z0-9]+$/i.test(text(line.SplitItemID)) || !region || billRegionConflict(line)
     || ['OwnerID', 'SplitAccountID', 'BillAccountID'].some(key => line[key] != null && line[key] !== '' && line[key] !== cloudAccountUid)) return null;
   const sources = proof.ledgers.filter(ledger => proof.createdLedgerIds.has(ledger.id) && ledger.cloudProvider === 'alibaba_cloud'
     && ledger.cloudAccountUid === cloudAccountUid && ledger.regionId === region && ledger.cloudResourceType === 'ecs' && ledger.cloudResourceId === text(line.SplitItemID));
