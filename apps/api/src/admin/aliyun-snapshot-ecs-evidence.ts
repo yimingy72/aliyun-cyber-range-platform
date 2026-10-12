@@ -138,8 +138,13 @@ function normalizeEvent(raw: unknown, accountUid: string, regionId: string, star
     resourceIds: sorted(resourceIds(raw.referencedResources)) };
 }
 
+type SnapshotScopedProof = PlatformBillingProof & { snapshotParentProof?: PlatformBillingProof };
+function snapshotParentProof(proof: PlatformBillingProof) {
+  return (proof as SnapshotScopedProof).snapshotParentProof ?? proof;
+}
+
 export function aliyunSnapshotHistoryStartAt(source: BillingLedgerResourceRecord, proof: PlatformBillingProof) {
-  const job = proof.creationJobs?.get(source.id);
+  const job = snapshotParentProof(proof).creationJobs?.get(source.id);
   const dates = [source.billingStartAt, job?.startedAt ?? job?.createdAt].filter((value): value is Date => value instanceof Date && Number.isFinite(value.getTime()));
   return dates.length ? new Date(Math.floor(Math.min(...dates.map(date => date.getTime())) / 1000) * 1000 - 1000) : null;
 }
@@ -204,27 +209,49 @@ function sourceForBill({ line, cloudAccountUid, proof }: Omit<VerificationInput,
   if (line.__platformBillingSource !== 'DescribeSplitItemBill' || line.__platformCloudProvider != null && line.__platformCloudProvider !== 'alibaba_cloud'
     || line.ProductCode !== 'snapshot' || !/^i-[a-z0-9]+$/i.test(text(line.SplitItemID)) || !region || billRegionConflict(line)
     || ['OwnerID', 'SplitAccountID', 'BillAccountID'].some(key => line[key] != null && line[key] !== '' && line[key] !== cloudAccountUid)) return null;
-  const sources = proof.ledgers.filter(ledger => proof.createdLedgerIds.has(ledger.id) && ledger.cloudProvider === 'alibaba_cloud'
+  const parent = snapshotParentProof(proof);
+  const sources = parent.ledgers.filter(ledger => parent.createdLedgerIds.has(ledger.id) && ledger.cloudProvider === 'alibaba_cloud'
     && ledger.cloudAccountUid === cloudAccountUid && ledger.regionId === region && ledger.cloudResourceType === 'ecs' && ledger.cloudResourceId === text(line.SplitItemID));
   return sources.length === 1 ? sources[0] : null;
 }
 function sourceArtifacts(source: BillingLedgerResourceRecord, proof: PlatformBillingProof, billingDate: string) {
-  return proof.packedImages.filter(artifact => (artifact.cloudProvider ?? 'alibaba_cloud') === 'alibaba_cloud' && namespace(artifact) === namespace(source)
+  return snapshotParentProof(proof).packedImages.filter(artifact => (artifact.cloudProvider ?? 'alibaba_cloud') === 'alibaba_cloud' && namespace(artifact) === namespace(source)
     && artifact.cloudAccountUid === source.cloudAccountUid && artifact.regionId === source.regionId && artifact.sourceInstanceId === source.cloudResourceId
     && artifact.sourceRangeInstanceId === source.rangeInstanceId && artifact.ownerUserId === source.ownerUserId && billingDayText(artifact.createdAt) <= billingDate);
 }
 function snapshotLedgers(source: BillingLedgerResourceRecord, proof: PlatformBillingProof, artifacts: PackedImageArtifactRecord[]) {
   const ids = artifacts.flatMap(artifact => artifact.backingSnapshotIds);
   if (!ids.length || !names(ids, 's')) return null;
-  const rows = ids.map(id => proof.ledgers.filter(ledger => proof.createdLedgerIds.has(ledger.id) && ledger.cloudProvider === 'alibaba_cloud' && ledger.cloudResourceType === 'snapshot'
+  const parent = snapshotParentProof(proof);
+  const rows = ids.map(id => parent.ledgers.filter(ledger => parent.createdLedgerIds.has(ledger.id) && ledger.cloudProvider === 'alibaba_cloud' && ledger.cloudResourceType === 'snapshot'
     && namespace(ledger) === namespace(source) && ledger.cloudAccountUid === source.cloudAccountUid && ledger.regionId === source.regionId && ledger.cloudResourceId === id
     && ledger.ownerUserId === source.ownerUserId && ledger.billingScope === source.billingScope && ledger.rangeInstanceId === source.rangeInstanceId));
   if (rows.some(row => row.length !== 1)) return null;
   return rows.map(row => row[0]);
 }
 
+function baselineMatchesHistoricalSnapshots(baseline: AliyunPackSnapshotBaseline, snapshots: BillingLedgerResourceRecord[]) {
+  const observedAt = Date.parse(baseline.observedAt);
+  const expected = snapshots.filter(snapshot => snapshot.billingStartAt.getTime() <= observedAt
+    && (!snapshot.releasedAt || snapshot.releasedAt.getTime() >= observedAt)).map(snapshot => snapshot.cloudResourceId);
+  const observed = [...new Set(baseline.sourceDisks.flatMap(disk => disk.snapshotIds))];
+  return sameIds(expected, observed);
+}
+
+// A pre-cutoff platform ECS can prove the source of a new snapshot. Its full historical
+// snapshot set remains evidence, while every snapshot chargeable on this bill day must belong
+// to the current creation scope. A mixed old/new source-host total cannot be split safely.
+function snapshotsInCurrentBillingScope(snapshots: BillingLedgerResourceRecord[], proof: PlatformBillingProof, billingDate: string) {
+  const chargeable = snapshots.filter(snapshot => billingDayText(snapshot.billingStartAt) <= billingDate
+    && (!snapshot.releasedAt || billingDayText(snapshot.releasedAt) >= billingDate));
+  return chargeable.length > 0 && chargeable.every(snapshot => proof.createdLedgerIds.has(snapshot.id)
+    && proof.ledgers.some(current => current.id === snapshot.id && current.cloudResourceType === 'snapshot'
+      && current.cloudResourceId === snapshot.cloudResourceId && namespace(current) === namespace(snapshot)
+      && current.cloudAccountUid === snapshot.cloudAccountUid && current.regionId === snapshot.regionId));
+}
+
 export function verifyAliyunSnapshotEcsBillEvidence(input: VerificationInput): AliyunSnapshotEcsScope | null {
-  const { proof, history, billingDate } = input, source = sourceForBill(input), end = billingEnd(billingDate);
+  const { proof, history, billingDate } = input, source = sourceForBill(input), end = billingEnd(billingDate), parent = snapshotParentProof(proof);
   if (!source || !history || !end || !instant(history.startAt) || !instant(history.endAt) || !instant(history.observedAt) || history.version !== 1 || history.provider !== 'alibaba_cloud'
     || history.cloudWorkspaceId !== namespace(source) || history.cloudAccountUid !== source.cloudAccountUid || history.regionId !== source.regionId || history.sourceInstanceId !== source.cloudResourceId
     || !names(history.requestIds) || !history.requestIds.length || Date.parse(history.endAt) !== end.getTime() || Date.parse(history.observedAt) - end.getTime() < AUDIT_DELAY
@@ -236,7 +263,7 @@ export function verifyAliyunSnapshotEcsBillEvidence(input: VerificationInput): A
     || !names(artifact.backingSnapshotIds, 's') || artifact.backingSnapshotIds.length !== artifact.sourceDiskIds.length)) return null;
   const diskIds = new Set(artifacts.flatMap(artifact => artifact.sourceDiskIds));
   for (const diskId of diskIds) {
-    const disks = proof.ledgers.filter(ledger => proof.createdLedgerIds.has(ledger.id) && ledger.cloudProvider === 'alibaba_cloud' && ledger.cloudResourceType === 'disk'
+    const disks = parent.ledgers.filter(ledger => parent.createdLedgerIds.has(ledger.id) && ledger.cloudProvider === 'alibaba_cloud' && ledger.cloudResourceType === 'disk'
       && ledger.cloudResourceId === diskId && namespace(ledger) === namespace(source) && ledger.cloudAccountUid === source.cloudAccountUid && ledger.regionId === source.regionId
       && ledger.ownerUserId === source.ownerUserId && ledger.rangeInstanceId === source.rangeInstanceId && ledger.sourceProvisionJobId === source.sourceProvisionJobId);
     if (disks.length !== 1) return null;
@@ -246,7 +273,7 @@ export function verifyAliyunSnapshotEcsBillEvidence(input: VerificationInput): A
   const baselines = artifacts.map(readAliyunPackSnapshotBaseline).filter((baseline): baseline is AliyunPackSnapshotBaseline => Boolean(baseline));
   const baseline = baselines.filter(item => Date.parse(item.observedAt) <= end.getTime() - AUDIT_DELAY && !item.autoSnapshotPolicyIds.length)
     .sort((a, b) => a.observedAt.localeCompare(b.observedAt))[0];
-  if (!baseline || baseline.sourceDisks.some(disk => disk.snapshotIds.some(id => !snapshots.some(snapshot => snapshot.cloudResourceId === id)))) return null;
+  if (!baseline || !baselineMatchesHistoricalSnapshots(baseline, snapshots)) return null;
   const imageArtifacts = new Map(artifacts.map(artifact => [artifact.imageId!, artifact]));
   const knownSnapshots = new Set(snapshots.map(snapshot => snapshot.cloudResourceId));
   const recordedImages = new Set<string>(), recordedSnapshots = new Set<string>();
@@ -287,7 +314,7 @@ export function verifyAliyunSnapshotEcsBillEvidence(input: VerificationInput): A
     if (touchesSource && event.failed && /Snapshot|Image|Disk/.test(event.name)) return null;
   }
   if (!sourceBorn || artifacts.some(artifact => !recordedImages.has(artifact.imageId!)) || snapshots.some(snapshot => !recordedSnapshots.has(snapshot.cloudResourceId))
-    || !snapshots.some(snapshot => billingDayText(snapshot.billingStartAt) <= billingDate && (!snapshot.releasedAt || billingDayText(snapshot.releasedAt) >= billingDate))) return null;
+    || !snapshotsInCurrentBillingScope(snapshots, proof, billingDate)) return null;
   return { version: 1, kind: 'snapshot_ecs', cloudWorkspaceId: namespace(source), cloudAccountUid: input.cloudAccountUid, regionId: source.regionId,
     sourceInstanceId: source.cloudResourceId, sourceLedgerId: source.id, snapshotLedgerIds: sorted(snapshots.map(snapshot => snapshot.id)),
     snapshotIds: sorted([...knownSnapshots]), artifactIds: sorted(artifacts.map(artifact => artifact.id)), history: { startAt: history.startAt, endAt: history.endAt,
@@ -309,10 +336,11 @@ export function readAliyunSnapshotEcsScope(line: Record<string, unknown>, proof:
   if (!end || !start || Date.parse(value.history.endAt) !== end.getTime() || Date.parse(value.history.startAt) > start.getTime()
     || Date.parse(value.history.observedAt) - end.getTime() < AUDIT_DELAY) return null;
   const artifacts = sourceArtifacts(source, proof, billingDate), snapshots = snapshotLedgers(source, proof, artifacts);
-  if (!snapshots || !sameIds(value.snapshotLedgerIds, snapshots.map(snapshot => snapshot.id)) || !sameIds(value.snapshotIds, snapshots.map(snapshot => snapshot.cloudResourceId))
+  if (!snapshots || !snapshotsInCurrentBillingScope(snapshots, proof, billingDate) || !sameIds(value.snapshotLedgerIds, snapshots.map(snapshot => snapshot.id)) || !sameIds(value.snapshotIds, snapshots.map(snapshot => snapshot.cloudResourceId))
     || !sameIds(value.artifactIds, artifacts.map(artifact => artifact.id)) || !artifacts.some(artifact => {
       const baseline = readAliyunPackSnapshotBaseline(artifact);
-      return baseline && !baseline.autoSnapshotPolicyIds.length && Date.parse(baseline.observedAt) <= end.getTime() - AUDIT_DELAY;
+      return baseline && !baseline.autoSnapshotPolicyIds.length && Date.parse(baseline.observedAt) <= end.getTime() - AUDIT_DELAY
+        && baselineMatchesHistoricalSnapshots(baseline, snapshots);
     })) return null;
   return value as AliyunSnapshotEcsScope;
 }

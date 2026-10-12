@@ -53,6 +53,49 @@ describe('Alibaba source-ECS snapshot amount evidence', () => {
     expect(result).not.toHaveProperty('amount');
     expect(readAliyunSnapshotEcsScope({ ...line(), __platformSnapshotEcsScope: result }, proof(), '2026-10-10', '123456')).toEqual(result);
   });
+  it('attributes an October snapshot from a pre-October platform ECS without admitting the old ECS ordinary fees', () => {
+    const full = proof();
+    for (const row of full.ledgers.filter(item => item.cloudResourceType !== 'snapshot')) {
+      row.billingStartAt = new Date('2026-09-15T00:00:00Z'); row.createdAt = new Date('2026-09-15T00:00:30Z');
+    }
+    full.creationJobs!.get('ledger-host')!.createdAt = new Date('2026-09-15T00:00:00Z');
+    full.creationJobs!.get('ledger-host')!.startedAt = new Date('2026-09-15T00:00:00Z');
+    const current: PlatformBillingProof & { snapshotParentProof: PlatformBillingProof } = { ...full,
+      ledgers: full.ledgers.filter(row => row.cloudResourceType === 'snapshot'), createdLedgerIds: new Set(['ledger-snapshot']), creationJobs: new Map(), snapshotParentProof: full };
+    const value = history(); value.startAt = '2026-09-14T23:59:59Z'; value.events[0].time = '2026-09-15T00:00:10Z';
+    const scope = verify({ proof: current, history: value });
+    expect(scope).toMatchObject({ sourceLedgerId: 'ledger-host', snapshotLedgerIds: ['ledger-snapshot'] });
+    expect(current.createdLedgerIds.has('ledger-host')).toBe(false);
+    expect(aliyunSnapshotHistoryStartAt(full.ledgers[0], current)?.toISOString()).toBe('2026-09-14T23:59:59.000Z');
+    expect(readAliyunSnapshotEcsScope({ ...line(), __platformSnapshotEcsScope: scope }, current, '2026-10-10', '123456')).toEqual(scope);
+  });
+  it('retains the complete history but refuses a source-host total containing still-chargeable pre-October snapshots', () => {
+    const full = proof(), oldImage = artifact();
+    oldImage.id = 'artifact-old'; oldImage.imageId = 'm-old'; oldImage.backingSnapshotIds = ['s-old']; oldImage.createdAt = new Date('2026-09-20T01:00:00Z');
+    oldImage.sourceSnapshotBaseline = null; full.packedImages.push(oldImage);
+    const oldSnapshot: BillingLedgerResourceRecord = { ...full.ledgers[2], id: 'ledger-oldsnapshot', cloudResourceId: 's-old', billingStartAt: new Date('2026-09-20T01:00:00Z'), releasedAt: null };
+    full.ledgers.push(oldSnapshot); full.createdLedgerIds.add(oldSnapshot.id);
+    (full.packedImages[0].sourceSnapshotBaseline!.sourceDisks as any[])[0].snapshotIds = ['s-old'];
+    for (const row of full.ledgers.filter(item => ['ecs', 'disk'].includes(item.cloudResourceType))) {
+      row.billingStartAt = new Date('2026-09-15T00:00:00Z'); row.createdAt = new Date('2026-09-15T00:00:30Z');
+    }
+    full.creationJobs!.get('ledger-host')!.createdAt = new Date('2026-09-15T00:00:00Z');
+    full.creationJobs!.get('ledger-host')!.startedAt = new Date('2026-09-15T00:00:00Z');
+    const current: PlatformBillingProof & { snapshotParentProof: PlatformBillingProof } = { ...full,
+      ledgers: full.ledgers.filter(row => row.id === 'ledger-snapshot'), packedImages: full.packedImages.filter(row => row.id !== oldImage.id),
+      createdLedgerIds: new Set(['ledger-snapshot']), creationJobs: new Map(), snapshotParentProof: full };
+    const value = history(); value.startAt = '2026-09-14T23:59:59Z'; value.events[0].time = '2026-09-15T00:00:10Z';
+    value.events.push(event({ id: 'event-oldimage', time: '2026-09-20T01:00:01Z', responseResourceIds: ['m-old'] }));
+    const historicalScope = verify({ proof: full, history: value });
+    expect(historicalScope?.snapshotIds).toEqual(['s-old', 's-owned']);
+    expect(verify({ proof: current, history: value })).toBeNull();
+    expect(readAliyunSnapshotEcsScope({ ...line(), __platformSnapshotEcsScope: historicalScope }, current, '2026-10-10', '123456')).toBeNull();
+    oldSnapshot.releasedAt = new Date('2026-09-30T01:00:00Z');
+    (full.packedImages[0].sourceSnapshotBaseline!.sourceDisks as any[])[0].snapshotIds = [];
+    const scope = verify({ proof: current, history: value });
+    expect(scope?.snapshotIds).toEqual(['s-old', 's-owned']);
+    expect(readAliyunSnapshotEcsScope({ ...line(), __platformSnapshotEcsScope: scope }, current, '2026-10-10', '123456')).toEqual(scope);
+  });
   it('does not treat a platform-created ECS as proof of a manual snapshot that was subsequently deleted', () => {
     const value = history();
     value.events.push(event({ id: 'event-manual', name: 'CreateSnapshot', requestResourceIds: ['d-owned'], responseResourceIds: ['s-foreign'] }),
