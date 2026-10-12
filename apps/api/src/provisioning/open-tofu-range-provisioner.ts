@@ -5,6 +5,7 @@ import { prepareOpenTofuProviderEnv, migrateAliCloudWorkspaceProvider } from './
 import { createHash, createHmac, randomUUID } from 'node:crypto';
 import { requestTencentCloud } from '../admin/tencent-cloud-client';
 import { assertApprovedRangeUpdatePlan, assertRangeStateOwnership, assertRangeStateMatchesInventory, preserveDeployedRangeHostFacts } from './range-update-plan-safety';
+import { createHostCloudReleaseDeadline, assertCloudReleaseDeadlineCanCreate, verifyCloudReleaseDeadlines } from './cloud-release-deadlines';
 
 import {
   OpenTofuRunner,
@@ -25,6 +26,7 @@ import type {
   RangeTemplateCompiledSpec,
   SingleInstanceConfig,
   SingleInstanceNetworkProfileRecord,
+  HostCloudReleaseDeadline,
 } from '../admin/admin.repository';
 import { selectZoneAndHostInstanceTypes } from './aliyun-zone-instance-scheduler';
 import { DryRunRangeProvisioner } from './dry-run-range-provisioner';
@@ -366,11 +368,58 @@ export class OpenTofuRangeProvisioner implements RangeProvisioner {
       };
     });
     await runProvisionStep(input.reportStep, 'tofu_apply', async () => {
-      const planned = await this.runner.showPlan({ workspaceDir: workspace.workspaceDir,
+      let planned = await this.runner.showPlan({ workspaceDir: workspace.workspaceDir,
         signal: input.signal, env: workspace.runnerEnv, planFilePath: workspace.planFilePath });
       if (input.instanceMode !== 'single' && workspace.priorState?.instances.some(resource => ['alicloud_instance','tencentcloud_instance'].includes(resource.type))) {
         assertApprovedRangeUpdatePlan({ plan: planned, state: workspace.priorState, priorVariables: workspace.priorVariables!,
           nextVariables: workspace.renderedVariables!, approval: input.changeApproval!, account: input.runtimeConfig!, rangeInstanceId: input.rangeInstanceId, billingTags: input.billingTags, knownResourceSummary: input.knownResourceSummary });
+      }
+      if (input.instanceMode !== 'single' && input.expiresAt) {
+        const originalState = workspace.priorState;
+        const variables = workspace.renderedVariables!;
+        const deployed = new Set(originalState?.instances.filter(resource => ['alicloud_instance','tencentcloud_instance'].includes(resource.type)).map(resource => resourceInstanceKey(resource.address)) ?? []);
+        const added = variables.hosts.filter((host: any) => !deployed.has(host.key));
+        if (added.length) {
+          if (Date.parse(input.expiresAt) <= Date.now()) throw new Error('Range expired before network preparation');
+          const targets = networkPreparationTargets(planned);
+          if (targets.length) {
+            await runProvisionStep(input.reportStep, 'prepare_host_network', async () => {
+              const networkPlanPath = path.join(workspace.workspaceDir, 'host-network.tfplan');
+              await this.runner.plan({ workspaceDir: workspace.workspaceDir, signal: input.signal, env: workspace.runnerEnv,
+                planFilePath: networkPlanPath, varsFilePath: workspace.varsFilePath, targets });
+              const networkPlan = await this.runner.showPlan({ workspaceDir: workspace.workspaceDir, signal: input.signal, env: workspace.runnerEnv, planFilePath: networkPlanPath });
+              assertNetworkPreparationPlan(networkPlan, planned);
+              await input.onApplyStart?.();
+              await recordApplyPlan(workspace.workspaceDir, networkPlan, input.billingTags?.PlatformCreateJobId);
+              const command = await this.runner.apply({ workspaceDir: workspace.workspaceDir, signal: input.signal, env: workspace.runnerEnv, planFilePath: networkPlanPath });
+              await completeApply(workspace.workspaceDir);
+              return { result: command, message: 'New host network resources are ready.', stdoutExcerpt: command.stdout, stderrExcerpt: command.stderr };
+            });
+          }
+          const deadlines = await this.freezeHostDeadlines(input, workspace, added.map((host: any) => host.key));
+          for (const host of added) {
+            const deadline = deadlines[host.key];
+            assertCloudReleaseDeadlineCanCreate(deadline);
+            if (input.runtimeConfig?.provider === 'tencent_cloud') {
+              host.terminate_at = deadline.cloudReleaseAt;
+              const frozen = Object.fromEntries(['image_id','instance_type','private_ip','zone_key','system_disk_type','system_disk_size','terminate_at'].map(key => [key, host[key]]));
+              host.creation_intent_id = createHash('sha256').update(JSON.stringify(['tencent_cloud',input.runtimeConfig.cloudAccountContextId,input.runtimeConfig.accountUid,input.runtimeConfig.defaultRegion,input.runtimeConfig.defaultZoneId,input.rangeInstanceId,deadline.sourceProvisionJobId,host.key,frozen])).digest('hex').slice(0,32);
+            } else host.auto_release_time = deadline.cloudReleaseAt;
+          }
+          await fs.writeFile(workspace.varsFilePath, `${JSON.stringify(variables, null, 2)}\n`, { mode: 0o600 });
+          await this.runner.plan({ workspaceDir: workspace.workspaceDir, signal: input.signal, env: workspace.runnerEnv,
+            planFilePath: workspace.planFilePath, varsFilePath: workspace.varsFilePath });
+          planned = await this.runner.showPlan({ workspaceDir: workspace.workspaceDir, signal: input.signal, env: workspace.runnerEnv, planFilePath: workspace.planFilePath });
+          if (originalState?.instances.some(resource => ['alicloud_instance','tencentcloud_instance'].includes(resource.type))) {
+            const preparedState = (await readWorkspaceState(workspace.workspaceDir, true))!;
+            const preparedInventory = await this.inspectResources(input);
+            assertApprovedRangeUpdatePlan({ plan: planned, state: preparedState,
+              priorVariables: preparedNetworkVariables(workspace.priorVariables!, variables), nextVariables: variables,
+              approval: input.changeApproval!, account: input.runtimeConfig!, rangeInstanceId: input.rangeInstanceId, billingTags: input.billingTags,
+              knownResourceSummary: { ...input.knownResourceSummary!, ...preparedInventory, executionContext: input.knownResourceSummary!.executionContext } });
+          }
+          for (const host of added) assertCloudReleaseDeadlineCanCreate(deadlines[host.key]);
+        }
       }
       await input.onApplyStart?.();
       await recordApplyPlan(workspace.workspaceDir, planned,input.billingTags?.PlatformCreateJobId);
@@ -436,6 +485,12 @@ export class OpenTofuRangeProvisioner implements RangeProvisioner {
       throw new Error('OpenTofu outputs conflict with persisted VPC identity');
     const routeTableIds = mergeIds(resourceSummary?.route_table_ids, stateResources?.routeTableIds);
 
+    const deadlineFile = path.join(workspace.workspaceDir, 'host-cloud-release-deadlines.json');
+    const persistedDeadlines: Record<string, HostCloudReleaseDeadline> = await fileExists(deadlineFile)
+      ? JSON.parse(await fs.readFile(deadlineFile, 'utf8')) : input.knownResourceSummary?.cloudReleaseDeadlines ?? {};
+    const cloudReleaseDeadlines = input.runtimeConfig && Object.keys(persistedDeadlines).length
+      ? await verifyCloudReleaseDeadlines({ account: input.runtimeConfig, hostIds: mergeIds(resourceSummary?.host_ids, stateResources?.hostIds) ?? {}, deadlines: persistedDeadlines }) : persistedDeadlines;
+
     return {
       accessEntry: {
         hostRole: publicEntry?.host_role ?? 'dmz',
@@ -446,6 +501,7 @@ export class OpenTofuRangeProvisioner implements RangeProvisioner {
       },
       resourceSummary: {
         mode: 'opentofu',
+        ...(Object.keys(cloudReleaseDeadlines).length ? { cloudReleaseDeadlines } : {}),
         workspaceDir: workspace.workspaceDir,
         outputFilePath: workspace.outputsFilePath,
         vpcId: stateResources?.vpcId ?? resourceSummary?.vpc_id ?? null,
@@ -476,6 +532,31 @@ export class OpenTofuRangeProvisioner implements RangeProvisioner {
         ...(plan ? { topologySpec: plan.topologySummary } : {}),
       },
     };
+  }
+
+  private async freezeHostDeadlines(input: RangeProvisionCreateInput, workspace: PreparedWorkspace, addedHostKeys: string[]) {
+    if (!input.expiresAt || !input.billingTags?.PlatformCreateJobId || !input.runtimeConfig?.provider)
+      throw new Error('Host creation requires its frozen provider, platform expiry and original source job');
+    const file = path.join(workspace.workspaceDir, 'host-cloud-release-deadlines.json');
+    const recorded = await fileExists(file) ? JSON.parse(await fs.readFile(file, 'utf8')) : {};
+    if (!recorded || typeof recorded !== 'object' || Array.isArray(recorded)) throw new Error('Persisted host release deadline is malformed');
+    const records: Record<string, HostCloudReleaseDeadline> = { ...input.knownResourceSummary?.cloudReleaseDeadlines, ...recorded };
+    for (const [key, known] of Object.entries(input.knownResourceSummary?.cloudReleaseDeadlines ?? {})) {
+      const original = recorded[key];
+      if (original && ['provider','platformExpiresAt','creationPhaseStartedAt','cloudReleaseAt','sourceProvisionJobId'].some(field => original[field] !== (known as any)[field]))
+        throw new Error('Persisted cloud release deadline conflicts with the platform inventory');
+    }
+    const startedAt = new Date().toISOString();
+    for (const key of addedHostKeys) {
+      records[key] ??= createHostCloudReleaseDeadline({ provider: input.runtimeConfig.provider, platformExpiresAt: input.expiresAt,
+        creationPhaseStartedAt: startedAt, sourceProvisionJobId: input.billingTags.PlatformCreateJobId });
+      if (records[key].provider !== input.runtimeConfig.provider || Date.parse(records[key].platformExpiresAt) !== Date.parse(input.expiresAt))
+        throw new Error('Host cloud release deadline differs from its frozen provider or platform expiry');
+      assertCloudReleaseDeadlineCanCreate(records[key]);
+    }
+    await fs.writeFile(file, JSON.stringify(records), { mode: 0o600 });
+    await input.onHostCreationPhase?.(records);
+    return records;
   }
 
   async destroy(input: RangeProvisionDestroyInput): Promise<void> {
@@ -980,6 +1061,7 @@ export class OpenTofuRangeProvisioner implements RangeProvisioner {
       outputsFilePath,
       varsFilePath,
       runnerEnv,
+      renderedVariables: variables,
       ...(priorState && priorVariables ? { priorState, priorVariables, renderedVariables: variables } : {}),
     };
   }
@@ -2347,4 +2429,47 @@ function addResourceId(values: Record<string, string>, address: string, id: stri
   let suffix = 1;
   while (values[key] && values[key] !== id) key = `${address}#${suffix++}`;
   values[key] = id;
+}
+
+const HOST_NETWORK_PREPARATION_TYPES = new Set([
+  'alicloud_vpc','alicloud_vpc_ipv4_cidr_block','alicloud_vswitch','alicloud_security_group','alicloud_security_group_rule',
+  'alicloud_network_acl','alicloud_network_interface','alicloud_nat_gateway','alicloud_eip_address',
+  'tencentcloud_vpc','tencentcloud_subnet','tencentcloud_security_group','tencentcloud_security_group_rule_set',
+  'tencentcloud_vpc_acl','tencentcloud_vpc_acl_attachment','tencentcloud_eni','tencentcloud_nat_gateway','tencentcloud_eip',
+  'tencentcloud_route_table','tencentcloud_route_table_association',
+]);
+
+export function networkPreparationTargets(plan: unknown): string[] {
+  const changes = (plan as any)?.resource_changes;
+  if (!Array.isArray(changes)) throw new Error('Host network preparation requires a complete resource plan');
+  return changes.filter(resource => resource.mode === 'managed' && HOST_NETWORK_PREPARATION_TYPES.has(resource.type)
+    && resource.change?.actions?.length === 1 && resource.change.actions[0] === 'create')
+    .map(resource => { if (typeof resource.address !== 'string' || !resource.address.startsWith('module.range.')) throw new Error('Host network preparation has a foreign resource address'); return resource.address; });
+}
+
+export function assertNetworkPreparationPlan(plan: unknown, fullPlan: unknown) {
+  const changes = (plan as any)?.resource_changes;
+  const approved = new Map<string, any>(((fullPlan as any)?.resource_changes ?? []).map((resource: any) => [resource.address, resource]));
+  if (!Array.isArray(changes) || (plan as any).errored || (plan as any).complete === false) throw new Error('Host network preparation plan is incomplete');
+  for (const resource of changes) {
+    if (resource.mode === 'data' || resource.change?.actions?.length === 1 && resource.change.actions[0] === 'no-op') continue;
+    const original = approved.get(resource.address);
+    if (resource.mode !== 'managed' || !HOST_NETWORK_PREPARATION_TYPES.has(resource.type) || !original || resource.type !== original.type
+      || resource.change?.actions?.length !== 1 || !['create','update'].includes(resource.change.actions[0])
+      || JSON.stringify(resource.change.actions) !== JSON.stringify(original.change?.actions)
+      || resource.change.actions[0] === 'update' && JSON.stringify(resource.change.before) !== JSON.stringify(original.change.before))
+      throw new Error('Host network preparation attempted a host, delete, replacement or unapproved change');
+  }
+}
+
+// The second full plan treats only the already-created network additions as its new baseline.
+function preparedNetworkVariables(prior: Record<string, any>, next: Record<string, any>) {
+  const combined = structuredClone(prior);
+  for (const [key, value] of Object.entries(next)) if (Array.isArray(value) && Array.isArray(combined[key])) {
+    const identity = (entry: any) => entry?.key ?? entry?.host_key;
+    const seen = new Set(combined[key].map(identity));
+    for (const entry of value) if (!seen.has(identity(entry))) { combined[key].push(structuredClone(entry)); seen.add(identity(entry)); }
+  }
+  combined.host_passwords = { ...next.host_passwords, ...prior.host_passwords };
+  return combined;
 }

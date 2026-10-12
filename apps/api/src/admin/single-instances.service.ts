@@ -333,7 +333,7 @@ export class SingleInstancesService {
             cloudAccountContextId: accountContext.cloudAccountContextId,
             cloudAccountUid: accountContext.accountUid, regionId: profile.regionId, zoneId: profile.zoneId,
             networkProfileId: profile.id, resolvedInstanceType: availability.matches[0].instanceTypeId,
-            autoReleaseTime: accountContext.provider === 'tencent_cloud' ? new Date(input.expiresAt).toISOString().replace(/\.\d{3}Z$/, 'Z') : new Date(input.expiresAt).getTime()-Date.now()>=30*60_000 ? new Date(input.expiresAt).toISOString().replace(/\.\d{3}Z$/, 'Z') : null,
+            autoReleaseTime: null,
             baseName: input.name,
             quantityIndex,
             hostKey,

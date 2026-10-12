@@ -173,6 +173,7 @@ variable "hosts" {
     instance_type = optional(string)
     image_id      = optional(string)
     system_disk_size = optional(number)
+    auto_release_time = optional(string)
   }))
   description = "Structured host definitions forwarded to the enterprise range module."
   default     = []

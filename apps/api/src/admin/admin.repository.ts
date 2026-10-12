@@ -156,7 +156,21 @@ export type RangeResourceTopologySummary = {
   hostKeys: string[];
 };
 
+export type HostCloudReleaseDeadline = {
+  provider: CloudProvider;
+  platformExpiresAt: string;
+  creationPhaseStartedAt: string;
+  cloudReleaseAt: string;
+  sourceProvisionJobId: string;
+  status: 'not_configured' | 'unverified' | 'verified';
+  instanceId?: string;
+  verifiedAt?: string;
+  lastCheckedAt?: string;
+  reason?: string;
+};
+
 export type RangeResourceSummary = {
+  cloudReleaseDeadlines?: Record<string, HostCloudReleaseDeadline>;
   retiredResources?: RangeResourceSummary | null;
   creationAttempted?: boolean;
   executionContext?: { provider?: CloudProvider; cloudAccountContextId: string; cloudAccountUid: string; regionId: string; zoneId: string };
@@ -208,6 +222,7 @@ export type SingleInstanceConfig = {
   nativeCreateJobId?: string;
   opentofuCreateJobId?: string | null;
   autoReleaseTime?: string | null;
+  cloudReleaseDeadline?: HostCloudReleaseDeadline | null;
   baseName: string;
   quantityIndex: number;
   hostKey: string;

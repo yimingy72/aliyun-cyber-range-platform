@@ -561,7 +561,9 @@ export class ProvisioningWorkerService {
         if (frozen) await this.assertRangeSnapshotImages(instance, frozen);
         const result = await this.rangeProvisioner.create({
           ...failedCreateCleanupInput,
+          knownResourceSummary: (await this.adminRepository.getRangeInstanceById(instance.id))?.resourceSummary ?? undefined,
           preserveWorkspaceState: job.jobType === 'retry' || job.retryCount > 0,
+          onHostCreationPhase: deadlines => this.persistHostCloudReleaseDeadlines(job, deadlines, signal),
           onApplyStart: async () => {
             await this.recordRangeApplyStart(instance, job, accountContext, signal);
             failedCreateCleanupInput!.requirePersistedState = true;
@@ -749,6 +751,7 @@ export class ProvisioningWorkerService {
       templateModulePath: topologySnapshot.templateModulePath,
       allocatedCidr: input.instance.allocatedCidr,
       preserveWorkspaceState: true,
+      onHostCreationPhase: deadlines => this.persistHostCloudReleaseDeadlines(input.job, deadlines, input.signal),
       requirePersistedState: true,
       signal: input.signal,
       onApplyStart: async () => {
@@ -981,8 +984,25 @@ export class ProvisioningWorkerService {
     signal?.throwIfAborted();
   }
 
+  private async persistHostCloudReleaseDeadlines(job: ProvisionJobRecord, deadlines: NonNullable<RangeResourceSummary['cloudReleaseDeadlines']>, signal?: AbortSignal) {
+    signal?.throwIfAborted();
+    if (!(await this.ownsProvisionJobClaim(job))) throw new Error('Range operation claim is no longer active');
+    const current = await this.adminRepository.getRangeInstanceById(job.rangeInstanceId);
+    if (!current?.expiresAt || current.expiresAt <= new Date()) throw new Error('Range expired before host creation');
+    for (const [key, record] of Object.entries(deadlines)) {
+      const previous = current.resourceSummary?.cloudReleaseDeadlines?.[key];
+      if (Date.parse(record.platformExpiresAt) !== current.expiresAt.getTime()
+        || previous && ['provider','platformExpiresAt','creationPhaseStartedAt','cloudReleaseAt','sourceProvisionJobId'].some(field => (previous as any)[field] !== (record as any)[field]))
+        throw new Error('Frozen host deadline changed before cloud creation');
+    }
+    await this.updateRangeForClaim(job, { resourceSummary: { ...current.resourceSummary, mode: 'opentofu', cloudReleaseDeadlines: deadlines } });
+    const now = new Date();
+    await this.adminRepository.createProvisionJobStepLog({ jobId: job.id, stepName: 'host_cloud_release_deadlines', status: 'succeeded',
+      message: JSON.stringify({ version: 1, deadlines }), startedAt: now, finishedAt: now, stdoutExcerpt: null, stderrExcerpt: null });
+  }
+
   private async recordRangeResourceInventory(job: ProvisionJobRecord, summary: RangeResourceSummary) {
-    const inventory = Object.fromEntries(['retiredResources','vpcId','routeTableIds','subnetIds','networkAclIds','securityGroupIds','hostIds','systemDiskIds','dataDiskIds','unverifiedDiskIds','diskOwnershipProofs','diskInventoryHostIds',
+    const inventory = Object.fromEntries(['cloudReleaseDeadlines','retiredResources','vpcId','routeTableIds','subnetIds','networkAclIds','securityGroupIds','hostIds','systemDiskIds','dataDiskIds','unverifiedDiskIds','diskOwnershipProofs','diskInventoryHostIds',
       'secondaryNetworkInterfaceIds','natGatewayIds','snatEntryIds','dnatEntryIds','eipAllocationId','eipAllocationIds']
       .filter(key => (summary as any)[key] != null).map(key => [key, (summary as any)[key]]));
     const now = new Date();

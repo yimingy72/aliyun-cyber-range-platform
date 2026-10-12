@@ -26,6 +26,7 @@ export type AlibabaCloudOpenTofuRenderedVariables = {
     instance_type: string;
     system_disk_size?: number;
     image_id?: string;
+    auto_release_time?: string;
   }>;
   host_network_interfaces: Array<{
     host_key: string;
@@ -137,6 +138,7 @@ export type AlibabaCloudOpenTofuRendererInput = {
   hostImageIds?: Record<string, string>;
   hostWindows?: Record<string, boolean>;
   hostPasswords: Record<string, string>;
+  hostCloudReleaseTimes?: Record<string, string>;
   instancePassword: string;
   allowedIngressCidr: string;
   internetMaxBandwidthOut?: number;
@@ -207,6 +209,7 @@ export class AlibabaCloudOpenTofuRenderer {
           instance_type: hostInstanceType,
           ...(input.hostSystemDiskSizes?.[host.key] !== undefined ? { system_disk_size: input.hostSystemDiskSizes[host.key] } : {}),
           ...(hostImageId ? { image_id: hostImageId } : {}),
+          ...(input.hostCloudReleaseTimes?.[host.key] ? { auto_release_time: input.hostCloudReleaseTimes[host.key] } : {}),
         };
       }),
       host_network_interfaces: plan.hostNetworkInterfaces.map((item) => ({

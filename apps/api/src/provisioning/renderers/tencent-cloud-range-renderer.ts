@@ -17,11 +17,12 @@ export function tencentNicCapacity(cpu: number) {
 export function renderTencentRangeVariables(input: { plan: EnterpriseProvisionPlan; rangeInstanceId: string; account: ResolvedProvisioningRuntimeConfig;
   hostInstanceTypes: Record<string, { instanceType: string; cpu: number }>; hostImageIds: Record<string, string>; hostPasswords: Record<string, string>; tags: Record<string, string>; expiresAt: string;
   hostWindows?: Record<string,boolean>;
+  hostCloudReleaseTimes?: Record<string,string>;
   systemDiskType?: string; systemDiskSize?: number; hostSystemDiskSizes?: Record<string, number> }) {
   const { plan, account } = input;
   if (account.provider !== 'tencent_cloud' || !account.accountUid || !account.cloudAccountContextId || !account.defaultZoneId.startsWith(`${account.defaultRegion}-`))
     throw new Error('Tencent range requires a verified frozen cloud identity');
-  if (!input.expiresAt || new Date(input.expiresAt).getTime() - Date.now() <= 5 * 60_000) throw new Error('Tencent scheduled termination must be more than five minutes in the future');
+  if (!input.expiresAt || !Number.isFinite(Date.parse(input.expiresAt))) throw new Error('Tencent range requires its platform expiry');
   if (!input.tags.PlatformCreateJobId) throw new Error('Tencent range requires a persisted creation job');
   const diskType = input.systemDiskType ?? 'CLOUD_PREMIUM';
   if (!['CLOUD_PREMIUM','CLOUD_SSD','CLOUD_BSSD','CLOUD_HSSD','CLOUD_TSSD'].includes(diskType)) throw new Error('Tencent range requires managed cloud system disks');
@@ -60,7 +61,7 @@ export function renderTencentRangeVariables(input: { plan: EnterpriseProvisionPl
     return { key: rule.key, ...('targetHostKey' in rule ? { host_key: rule.targetHostKey, device_index: rule.targetDeviceIndex ?? null } : { zone_key: rule.zoneKey }),
       direction: rule.direction, action: ['allow','accept'].includes(rule.policy) ? 'ACCEPT' : 'DROP', protocol, port, cidr_block: rule.sourceCidr, priority: rule.priority, description: isAcl ? rule.name.slice(0,60).toUpperCase() : rule.name.slice(0,60) };
   });
-  const terminateAt = new Date(input.expiresAt).toISOString().replace(/\.\d{3}Z$/, 'Z');
+  const terminateAt = new Date(Date.parse(input.expiresAt) + 5 * 60_000).toISOString().replace(/\.\d{3}Z$/, 'Z');
   const hosts = plan.hostDefinitions.map(host => {
     const scripts = plan.bootstrapScripts.filter(script => script.targetHostKeys.includes(host.key));
     const dns = host.dns;
@@ -72,7 +73,7 @@ export function renderTencentRangeVariables(input: { plan: EnterpriseProvisionPl
     const primary = interfaces.find(nic => nic.host_key === host.key && nic.device_index === 0)!;
     const password = input.hostPasswords[host.key];
     assertTencentInstanceLogin(password,host.hostName ?? '',input.hostWindows?.[host.key]);
-    const frozen = { image_id: input.hostImageIds[host.key], instance_type: input.hostInstanceTypes[host.key].instanceType, private_ip: primary.private_ip, zone_key: primary.zone_key, system_disk_type: diskType, system_disk_size: input.hostSystemDiskSizes?.[host.key] ?? input.systemDiskSize ?? 40, terminate_at: terminateAt };
+    const frozen = { image_id: input.hostImageIds[host.key], instance_type: input.hostInstanceTypes[host.key].instanceType, private_ip: primary.private_ip, zone_key: primary.zone_key, system_disk_type: diskType, system_disk_size: input.hostSystemDiskSizes?.[host.key] ?? input.systemDiskSize ?? 40, terminate_at: input.hostCloudReleaseTimes?.[host.key] ?? terminateAt };
     const intent = createHash('sha256').update(JSON.stringify(['tencent_cloud',account.cloudAccountContextId,account.accountUid,account.defaultRegion,account.defaultZoneId,input.rangeInstanceId,input.tags.PlatformCreateJobId,host.key,frozen])).digest('hex').slice(0,32);
     return { key: host.key, name: Array.from(host.name).slice(0,60).join(''), host_name: host.hostName ?? '', ...frozen, creation_intent_id: intent, user_data: userData };
   });

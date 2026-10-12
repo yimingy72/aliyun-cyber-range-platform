@@ -29,8 +29,8 @@ variables {
     { key = "private", name = "Private", cidr = "10.0.2.0/24", purpose = "internal", is_public_entry = false }
   ]
   hosts = [
-    { key = "entry", name = "Entry", host_name = "entry-host", zone_key = "dmz", private_ip = "10.0.1.10", role = "entry", expose_public = true },
-    { key = "internal", name = "Internal", host_name = "internal-host", zone_key = "private", private_ip = "10.0.2.20", role = "internal", expose_public = false }
+    { key = "entry", name = "Entry", host_name = "entry-host", zone_key = "dmz", private_ip = "10.0.1.10", role = "entry", expose_public = true, auto_release_time = "2100-01-01T00:00:00Z" },
+    { key = "internal", name = "Internal", host_name = "internal-host", zone_key = "private", private_ip = "10.0.2.20", role = "internal", expose_public = false, auto_release_time = "2100-01-01T00:00:00Z" }
   ]
   host_network_interfaces = [{
     host_key = "entry"
@@ -146,4 +146,18 @@ run "rejects_unowned_dnat_address" {
     dnat_entries = [{ key = "http", name = "Unowned", nat_gateway_key = "nat", eip_key = "dnat", backend_host_key = "entry", backend_private_ip = "10.0.2.99", external_port = 80, internal_port = 80, protocol = "tcp" }]
   }
   expect_failures = [check.dnat_owned_nic_targets]
+}
+
+run "preserves_release_deadline_when_rendered_field_is_absent" {
+  command = plan
+  variables {
+    hosts = [
+      { key = "entry", name = "Entry", host_name = "entry-host", zone_key = "dmz", private_ip = "10.0.1.10", role = "entry", expose_public = true },
+      { key = "internal", name = "Internal", host_name = "internal-host", zone_key = "private", private_ip = "10.0.2.20", role = "internal", expose_public = false }
+    ]
+  }
+  assert {
+    condition     = alicloud_instance.hosts["entry"].auto_release_time == "2100-01-01T00:00:00Z" && alicloud_instance.hosts["internal"].auto_release_time == "2100-01-01T00:00:00Z"
+    error_message = "An ordinary network or template update must not clear the existing host timers."
+  }
 }

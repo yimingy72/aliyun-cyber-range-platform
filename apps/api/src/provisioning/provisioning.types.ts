@@ -7,6 +7,7 @@ import type {
   RangeTemplateCompiledSpec,
   RangeResourceSummary,
   RangeTemplateTopologySpec,
+  HostCloudReleaseDeadline,
 } from '../admin/admin.repository';
 import type { RangeChangeApproval } from './range-update-plan-safety';
 
@@ -56,6 +57,7 @@ export type RangeProvisionCreateInput = {
   preserveWorkspaceState?: boolean;
   requirePersistedState?: boolean;
   onApplyStart?: () => Promise<void>;
+  onHostCreationPhase?: (deadlines: Record<string, HostCloudReleaseDeadline>) => Promise<void>;
   runtimeConfig?: ResolvedProvisioningRuntimeConfig;
   runtimeCredentials?: RangeRuntimeCredentials;
   topologyGraph?: Record<string, unknown> | null;

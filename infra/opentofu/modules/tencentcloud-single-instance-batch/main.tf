@@ -21,4 +21,8 @@ resource "tencentcloud_instance" "members" {
   disable_monitor_service    = true
   disable_security_service   = true
   tags                       = each.value.tags
+
+  lifecycle {
+    ignore_changes = [action_timer_terminate_at]
+  }
 }

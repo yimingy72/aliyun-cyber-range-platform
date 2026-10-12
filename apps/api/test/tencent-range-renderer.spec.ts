@@ -16,7 +16,7 @@ function input() {
 afterEach(() => jest.restoreAllMocks());
 it('retains frozen range identity, deterministic intent, NIC rules and atomic expiry', () => {
   const request = input(); const vars = renderTencentRangeVariables(request);
-  expect(vars.hosts[0]).toMatchObject({ terminate_at: '2100-01-01T00:00:00Z', private_ip: '10.0.1.10', creation_intent_id: expect.stringMatching(/^[0-9a-f]{32}$/) });
+  expect(vars.hosts[0]).toMatchObject({ terminate_at: '2100-01-01T00:05:00Z', private_ip: '10.0.1.10', creation_intent_id: expect.stringMatching(/^[0-9a-f]{32}$/) });
   expect(vars.network_interfaces[1]).toMatchObject({ device_index: 1, secondary_ips: ['10.0.1.21'] });
   expect(vars.security_group_rules[0]).toMatchObject({ action: 'ACCEPT', protocol: 'TCP', port: '80', host_key: 'entry' });
   expect(vars.tags).toMatchObject({ CloudProvider: 'tencent_cloud', CloudAccountUid: '100000000001', CloudAccountContextId: 'context-a' });
@@ -57,7 +57,7 @@ it('rejects excessive NICs, unknown quota, mixed bootstrap and missing expiry be
   const request = input(); request.plan.hostNetworkInterfaces[0].interfaces = Array.from({ length: 5 },(_,index) => ({ deviceIndex: index, zoneKey: 'dmz', privateIp: `10.0.1.${10+index}` }));
   expect(() => renderTencentRangeVariables(request)).toThrow('capacity');
   expect(() => tencentNicCapacity(5)).toThrow('not documented');
-  expect(() => renderTencentRangeVariables({ ...input(), expiresAt: '' })).toThrow('termination');
+  expect(() => renderTencentRangeVariables({ ...input(), expiresAt: '' })).toThrow('expiry');
   const scripts = input(); scripts.plan.bootstrapScripts = [{ key: 'one', name: '', type: 'shell', content: '#!/bin/sh', targetHostKeys: ['entry'] },{ key: 'two', name: '', type: 'cloud-init', content: '#cloud-config', targetHostKeys: ['entry'] }];
   expect(() => renderTencentRangeVariables(scripts)).toThrow('mix');
 });
