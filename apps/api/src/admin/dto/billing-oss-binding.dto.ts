@@ -1,6 +1,11 @@
 import { Equals, IsISO8601, IsString, Matches, MaxLength } from 'class-validator';
 import { OSS_BUCKET_NAME_PATTERN } from '../billing-oss-binding-proof';
 
+export class CreateBillingOssBucketDto {
+  @Equals(true)
+  dedicated!: true;
+}
+
 export class BindBillingOssBucketDto {
   @IsString()
   @Matches(OSS_BUCKET_NAME_PATTERN)

@@ -3,13 +3,16 @@ import { Body, Controller, ForbiddenException, Get, Param, Post, Req, UseGuards 
 import type { AuthenticatedPlatformRequest } from '../auth/request-auth-context';
 import { OperationControlService, readOperationRequestMetadata } from '../operations/operation-control.service';
 import { AdminAuthGuard } from './admin-auth.guard';
+import { AliyunOssManagedBucketService } from './aliyun-oss-managed-bucket.service';
+import { requireCurrentCloudWorkspaceId } from '../auth/cloud-workspace-scope';
 import { BillingOssBindingService } from './billing-oss-binding.service';
-import { BindBillingOssBucketDto } from './dto/billing-oss-binding.dto';
+import { BindBillingOssBucketDto, CreateBillingOssBucketDto } from './dto/billing-oss-binding.dto';
 
 @Controller('admin/billing/oss-binding')
 @UseGuards(AdminAuthGuard)
 export class BillingOssBindingController {
-  constructor(private readonly bindings: BillingOssBindingService, private readonly operations: OperationControlService) {}
+  constructor(private readonly bindings: BillingOssBindingService, private readonly operations: OperationControlService,
+    private readonly managedBuckets?: AliyunOssManagedBucketService) {}
 
   @Get()
   list() { return this.bindings.list(); }
@@ -18,6 +21,12 @@ export class BillingOssBindingController {
   bind(@Req() request: AuthenticatedPlatformRequest, @Body() payload: BindBillingOssBucketDto) {
     return this.mutate(request, 'billing_oss_bucket_bind', { ...payload }, payload.bucketName,
       () => this.bindings.confirmation(payload), () => this.bindings.bind(payload));
+  }
+
+  @Post('create')
+  create(@Req() request: AuthenticatedPlatformRequest, @Body() payload: CreateBillingOssBucketDto) {
+    return this.mutate(request, 'billing_oss_bucket_create', { ...payload }, requireCurrentCloudWorkspaceId(),
+      () => this.managedBuckets!.confirmation(payload), () => this.managedBuckets!.create(payload));
   }
 
   @Post(':ledgerId/end')

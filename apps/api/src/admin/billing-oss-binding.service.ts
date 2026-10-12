@@ -3,7 +3,7 @@ import { BadGatewayException, BadRequestException, ConflictException, ForbiddenE
 import { getCurrentCloudWorkspaceScope, requireCurrentCloudWorkspaceId } from '../auth/cloud-workspace-scope';
 import { ADMIN_REPOSITORY, type AdminRepository, type BillingLedgerResourceRecord } from './admin.repository';
 import { readPlatformBillingStartedAt } from './billing-current-scope';
-import { ALIYUN_OSS_DEDICATED_BILLING_KEY, OSS_BUCKET_NAME_PATTERN, readAliyunOssBucketIdentity, readAliyunOssDedicatedBilling, type AliyunOssDedicatedBillingProof } from './billing-oss-binding-proof';
+import { ALIYUN_OSS_DEDICATED_BILLING_KEY, OSS_BUCKET_NAME_PATTERN, readAliyunOssBucketIdentity, readAliyunOssDedicatedBilling, type AliyunOssDedicatedBillingProof, type AliyunOssBucketIdentity, type AliyunOssPlatformCreationProof } from './billing-oss-binding-proof';
 import type { BindBillingOssBucketDto, OssBillingBindingDto } from './dto/billing-oss-binding.dto';
 import { SystemConfigService, type SystemCloudAccountContext } from './system-config.service';
 
@@ -34,15 +34,29 @@ export class BillingOssBindingService {
     let identity;
     try { identity = await readAliyunOssBucketIdentity(context, payload.bucketName); }
     catch { throw new BadGatewayException('无法取得与当前账号及地域一致的官方 OSS 桶身份，未绑定费用。'); }
-    const billingStartAt = new Date(Math.max(Date.parse(payload.effectiveStartAt), Date.parse(identity.bucketCreatedAt), readPlatformBillingStartedAt()?.getTime() ?? 0));
+    return this.persistBinding(context, identity, payload.effectiveStartAt);
+  }
+
+  async bindPlatformCreated(context: SystemCloudAccountContext, identity: AliyunOssBucketIdentity, platformCreation: AliyunOssPlatformCreationProof): Promise<OssBillingBindingDto> {
+    this.assertManager();
+    if (identity.ownerUid !== context.accountUid || identity.regionId !== context.defaultRegion || platformCreation.ownerUid !== context.accountUid) {
+      throw new ConflictException('平台创建桶的计费身份存在冲突。');
+    }
+    return this.persistBinding(context, identity, identity.bucketCreatedAt, platformCreation);
+  }
+
+  private async persistBinding(context: SystemCloudAccountContext, identity: AliyunOssBucketIdentity, effectiveStartAt: string,
+    platformCreation?: AliyunOssPlatformCreationProof): Promise<OssBillingBindingDto> {
+    const billingStartAt = new Date(Math.max(Date.parse(effectiveStartAt), Date.parse(identity.bucketCreatedAt), readPlatformBillingStartedAt()?.getTime() ?? 0));
     const workspaceId = requireCurrentCloudWorkspaceId();
     const find = { cloudWorkspaceId: workspaceId, cloudProvider: 'alibaba_cloud' as const, regionId: context.defaultRegion,
-      cloudResourceId: payload.bucketName, cloudResourceType: 'oss_bucket' as const };
+      cloudResourceId: identity.bucketName, cloudResourceType: 'oss_bucket' as const };
     const acceptExisting = (ledger: BillingLedgerResourceRecord): OssBillingBindingDto => {
       const proof = readAliyunOssDedicatedBilling(ledger);
       if (!proof || proof.effectiveEndAt !== null || proof.cloudAccountUid !== context.accountUid
         || proof.cloudAccountContextId !== context.cloudAccountContextId || proof.bucketCreatedAt !== identity.bucketCreatedAt
-        || proof.effectiveStartAt !== billingStartAt.toISOString()) throw new ConflictException('该桶已有不同来源或已终止的费用声明，不能覆盖历史归属。');
+        || proof.effectiveStartAt !== billingStartAt.toISOString()
+        || platformCreation && proof.platformCreation?.managedBucketId !== platformCreation.managedBucketId) throw new ConflictException('该桶已有不同来源或已终止的费用声明，不能覆盖历史归属。');
       return this.dto(ledger, proof);
     };
     const existing = await this.repository.findBillingLedgerResource(find);
@@ -50,10 +64,10 @@ export class BillingOssBindingService {
     const declaredAt = new Date().toISOString();
     const scope = getCurrentCloudWorkspaceScope();
     const proof: AliyunOssDedicatedBillingProof = { version: 1, dedicated: true, cloudWorkspaceId: workspaceId,
-      cloudAccountUid: context.accountUid!, cloudAccountContextId: context.cloudAccountContextId!, bucketName: payload.bucketName,
+      cloudAccountUid: context.accountUid!, cloudAccountContextId: context.cloudAccountContextId!, bucketName: identity.bucketName,
       regionId: context.defaultRegion, bucketCreatedAt: identity.bucketCreatedAt, verifiedAt: identity.verifiedAt,
       officialRequestId: identity.officialRequestId, declaredAt, declaredByUserId: scope && !('system' in scope) ? scope.actorUserId! : '',
-      effectiveStartAt: billingStartAt.toISOString(), effectiveEndAt: null };
+      effectiveStartAt: billingStartAt.toISOString(), effectiveEndAt: null, ...(platformCreation ? { platformCreation } : {}) };
     try {
       const ledger = await this.repository.createBillingLedgerResource({ ...find, cloudAccountUid: context.accountUid,
         billingScope: 'platform', billingStartAt, tagsSnapshot: { [ALIYUN_OSS_DEDICATED_BILLING_KEY]: proof } });
@@ -92,12 +106,12 @@ export class BillingOssBindingService {
     return scope;
   }
 
-  private async contextForWrite(): Promise<SystemCloudAccountContext> {
+  async contextForWrite(requireConfiguredBucket = true): Promise<SystemCloudAccountContext> {
     const scope = this.assertManager();
     const context = await this.config.getSelectedAccountContext();
     if (scope.provider !== 'alibaba_cloud' || context.provider !== 'alibaba_cloud' || !context.accountUidResolved
       || !context.accountUid || context.accountUid !== scope.accountUid || !context.cloudAccountContextId
-      || context.cloudAccountContextId !== scope.cloudAccountContextId || !context.imageImportBucket) {
+      || context.cloudAccountContextId !== scope.cloudAccountContextId || requireConfiguredBucket && !context.imageImportBucket) {
       throw new BadRequestException('请选择已验证的阿里云账号并配置 OSS 导入桶。');
     }
     return context;

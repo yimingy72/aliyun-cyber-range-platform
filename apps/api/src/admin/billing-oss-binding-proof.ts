@@ -4,10 +4,16 @@ import type { BillingLedgerResourceRecord } from './admin.repository';
 import type { SystemCloudAccountContext } from './system-config.service';
 
 export const ALIYUN_OSS_DEDICATED_BILLING_KEY = 'aliyunOssDedicatedBilling';
+export type AliyunOssPlatformCreationProof = {
+  version: 1; managedBucketId: string; creationNonce: string; preflightAbsentAt: string; preflightRequestId: string;
+  creationStartedAt: string; creationRequestId: string | null; aclVerifiedAt: string; aclRequestId: string;
+  ownerUid: string; storageClass: 'Standard';
+};
 export type AliyunOssDedicatedBillingProof = {
   version: 1; dedicated: true; cloudWorkspaceId: string; cloudAccountUid: string; cloudAccountContextId: string;
   bucketName: string; regionId: string; bucketCreatedAt: string; verifiedAt: string; officialRequestId: string;
   declaredAt: string; declaredByUserId: string; effectiveStartAt: string; effectiveEndAt: string | null;
+  platformCreation?: AliyunOssPlatformCreationProof;
 };
 export type AliyunOssBucketIdentity = { bucketName: string; regionId: string; ownerUid: string; bucketCreatedAt: string; officialRequestId: string; verifiedAt: string };
 export const OSS_BUCKET_NAME_PATTERN = /^[a-z0-9][a-z0-9-]{1,61}[a-z0-9]$/;
@@ -35,7 +41,24 @@ export function readAliyunOssDedicatedBilling(ledger: BillingLedgerResourceRecor
     || Date.parse(proof.effectiveStartAt) > Date.parse(proof.declaredAt) || Date.parse(proof.declaredAt) > ledger.createdAt.getTime()
     || proof.effectiveEndAt !== null && (!isoTimestamp(proof.effectiveEndAt) || Date.parse(proof.effectiveEndAt) < Date.parse(proof.effectiveStartAt)
       || Date.parse(proof.effectiveEndAt) > ledger.updatedAt.getTime())) return null;
+  if (proof.platformCreation && !validPlatformCreation(proof)) return null;
   return proof;
+}
+
+function validPlatformCreation(proof: AliyunOssDedicatedBillingProof): boolean {
+  const birth = proof.platformCreation!;
+  return birth.version === 1 && typeof birth.managedBucketId === 'string' && !!birth.managedBucketId
+    && typeof birth.creationNonce === 'string' && /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/.test(birth.creationNonce)
+    && proof.bucketName === `for-platform-${birth.creationNonce.replaceAll('-', '')}`
+    && typeof birth.preflightRequestId === 'string' && !!birth.preflightRequestId
+    && (birth.creationRequestId === null || typeof birth.creationRequestId === 'string' && !!birth.creationRequestId)
+    && typeof birth.aclRequestId === 'string' && !!birth.aclRequestId && birth.ownerUid === proof.cloudAccountUid
+    && birth.storageClass === 'Standard' && isoTimestamp(birth.preflightAbsentAt) && isoTimestamp(birth.creationStartedAt)
+    && isoTimestamp(birth.aclVerifiedAt) && Date.parse(birth.preflightAbsentAt) <= Date.parse(birth.creationStartedAt)
+    // OSS CreationDate has second precision, while the durable preflight uses milliseconds.
+    && Date.parse(birth.creationStartedAt) <= Date.parse(proof.bucketCreatedAt) + 1000
+    && Date.parse(proof.bucketCreatedAt) <= Date.parse(birth.aclVerifiedAt)
+    && Date.parse(birth.aclVerifiedAt) <= Date.parse(proof.declaredAt);
 }
 
 export function aliyunOssBindingCoversBillingDay(proof: AliyunOssDedicatedBillingProof, billingDate: Date | string): boolean {
@@ -43,7 +66,10 @@ export function aliyunOssBindingCoversBillingDay(proof: AliyunOssDedicatedBillin
   if (!Number.isFinite(time)) return false;
   const date = new Date(time + 8 * 60 * 60 * 1000).toISOString().slice(0, 10);
   const dayStart = Date.parse(`${date}T00:00:00+08:00`);
-  return Date.parse(proof.effectiveStartAt) <= dayStart
+  const createdDuringDay = !!proof.platformCreation && validPlatformCreation(proof) && !!proof.platformCreation.creationRequestId
+    && proof.effectiveStartAt === proof.bucketCreatedAt && Date.parse(proof.bucketCreatedAt) >= dayStart
+    && Date.parse(proof.bucketCreatedAt) < dayStart + 86_400_000;
+  return (Date.parse(proof.effectiveStartAt) <= dayStart || createdDuringDay)
     && (proof.effectiveEndAt === null || Date.parse(proof.effectiveEndAt) >= dayStart + 24 * 60 * 60 * 1000);
 }
 
