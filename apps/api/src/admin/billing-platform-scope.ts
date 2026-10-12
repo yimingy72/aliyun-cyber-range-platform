@@ -3,6 +3,7 @@ import { classifyBillLine } from './billing-classifier';
 import { ownedCosBucketProof } from './tencent-cos-proof';
 import { billingDayText } from './billing-window';
 import { readTencentPackBaseline } from './tencent-pack-snapshot-baseline';
+import { readAliyunOssDedicatedBilling, aliyunOssBindingCoversBillingDay, aliyunOssBindingOverlapsBillingDay } from './billing-oss-binding-proof';
 
 const REGION_ID = /^(cn|ap|eu|us|na|me|af|sa)-[a-z0-9-]+$/;
 const text = (value: unknown) => typeof value === 'string' ? value.trim() : '';
@@ -15,6 +16,7 @@ export type PlatformBillingProof = {
   createdLedgerIds: Set<string>;
   unverifiedSourceLedgerIds: Set<string>;
   creationJobs?: Map<string, ProvisionJobRecord>;
+  snapshotParentProof?: PlatformBillingProof;
 };
 
 function inventoryIncludes(summary: RangeResourceSummary | null | undefined, ledger: BillingLedgerResourceRecord): boolean {
@@ -110,6 +112,10 @@ export async function loadPlatformBillingProof(repository: AdminRepository, opti
       || !ledger.cloudAccountUid || !REGION_ID.test(ledger.regionId) || !ledger.cloudResourceId.trim()
       || ['snapshot_region', 'unknown'].includes(ledger.cloudResourceType)) continue;
     if (ledger.cloudResourceType === 'oss_bucket') {
+      if (ledger.cloudProvider === 'alibaba_cloud' && readAliyunOssDedicatedBilling(ledger)) {
+        createdLedgerIds.add(ledger.id);
+        continue;
+      }
       const bucket = cosBuckets.find(bucket => bucket.id === ledger.tagsSnapshot.PlatformManagedImportBucketId && bucket.cloudProvider === 'tencent_cloud'
         && ledger.cloudProvider === 'tencent_cloud' && bucket.cloudWorkspaceId === (ledger.cloudWorkspaceId ?? 'legacy-unbound') && bucket.cloudAccountUid === ledger.cloudAccountUid
         && bucket.regionId === ledger.regionId && bucket.bucketName === ledger.cloudResourceId && ownedCosBucketProof(bucket));
@@ -199,6 +205,10 @@ export function isAlibabaBillingPayload(line: Record<string, unknown>) {
 
 export function classifyPlatformBillLine(line: Record<string, unknown>) {
   if (!isAlibabaBillingPayload(line)) return classifyBillLine({});
+  if (line.__platformBillingSource === 'DescribeSplitItemBill' && line.ProductCode === 'oss'
+    && /^[a-z0-9][a-z0-9-]{1,61}[a-z0-9]$/.test(text(line.SplitItemID))) {
+    return { kind: 'direct' as const, cloudResourceType: 'oss_bucket' as const, cloudResourceId: text(line.SplitItemID) };
+  }
   return classifyBillLine(line.__platformBillingSource === 'DescribeSplitItemBill' && line.ProductCode === 'snapshot' && /^s-[a-z0-9-]+$/i.test(text(line.SplitItemID))
     ? { ...line, InstanceID: text(line.SplitItemID) } : line);
 }
@@ -249,7 +259,20 @@ export function pendingPlatformBillingEvidence(input: {
   if (classification.kind !== 'aggregated') {
     // A late charge for a known released resource still needs investigation; do not silently drop it.
     const exact = owned.filter(ledger => ledger.cloudResourceId === classification.cloudResourceId);
-    if (!exact.length) return null;
+    if (!exact.length) {
+      const imports = classification.cloudResourceType === 'oss_bucket' ? input.proof.imageImports.filter(job => job.cloudAccountUid === input.cloudAccountUid
+        && job.regionId === regionId && job.imageImportBucket === classification.cloudResourceId && job.objectKey
+        && billingDayText(job.createdAt) <= input.billingDate && (!job.temporaryObjectDeletedAt || correction || input.billingDate <= billingDayText(job.temporaryObjectDeletedAt))) : [];
+      return imports.length ? { kind: 'aggregate_pending', ledgerIds: [], imageImportJobIds: imports.map(job => job.id) } : null;
+    }
+    if (classification.cloudResourceType === 'oss_bucket') {
+      const binding = readAliyunOssDedicatedBilling(exact[0]);
+      if (binding && correction) return { kind: 'aggregate_pending', ledgerIds: exact.map(ledger => ledger.id), imageImportJobIds: [] };
+      if (binding && !aliyunOssBindingCoversBillingDay(binding, input.billingDate)) {
+        return aliyunOssBindingOverlapsBillingDay(binding, input.billingDate)
+          ? { kind: 'aggregate_pending', ledgerIds: exact.map(ledger => ledger.id), imageImportJobIds: [] } : null;
+      }
+    }
     const scoped = exact.filter(ledger => !regionId || ledger.regionId === regionId);
     return { kind: accountConflict || billRegionConflict(input.line) || scoped.length !== 1 ? 'source_pending' : 'resource_pending',
       ledgerIds: (scoped.length ? scoped : exact).map(ledger => ledger.id), imageImportJobIds: [] };
@@ -264,6 +287,11 @@ export function pendingPlatformBillingEvidence(input: {
     return snapshots.length ? { kind: 'aggregate_pending', ledgerIds: snapshots.map(ledger => ledger.id), imageImportJobIds: [] } : null;
   }
   const identifiers = (text(input.line.SplitItemID) ? ['SplitItemID'] : ['InstanceID', 'InstanceName', 'NickName', 'ResourceId', 'ResourceName']).map(key => text(input.line[key])).filter(Boolean);
+  const buckets = candidates.filter(ledger => {
+    const binding = readAliyunOssDedicatedBilling(ledger);
+    return binding && aliyunOssBindingOverlapsBillingDay(binding, input.billingDate)
+      && identifiers.some(value => value === ledger.regionId || value.startsWith(`${ledger.regionId};`) || value === ledger.cloudResourceId);
+  });
   const imports = input.proof.imageImports.filter(job => job.cloudAccountUid === input.cloudAccountUid
     && job.regionId === regionId && job.imageImportBucket && job.objectKey
     && billingDayText(job.createdAt) <= input.billingDate
@@ -271,7 +299,7 @@ export function pendingPlatformBillingEvidence(input: {
     && identifiers.some(value => value === regionId || value.startsWith(`${regionId};`)
       || value === job.imageImportBucket || value.startsWith(`${job.imageImportBucket};`)
       || value === `${job.imageImportBucket}/${job.objectKey}`));
-  return imports.length ? { kind: 'aggregate_pending', ledgerIds: [], imageImportJobIds: imports.map(job => job.id) } : null;
+  return imports.length || buckets.length ? { kind: 'aggregate_pending', ledgerIds: buckets.map(ledger => ledger.id), imageImportJobIds: imports.map(job => job.id) } : null;
 }
 
 export function readPlatformBillingEvidence(rawPayload: Record<string, unknown>): PlatformBillingEvidence | null {

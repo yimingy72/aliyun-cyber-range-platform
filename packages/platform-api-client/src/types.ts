@@ -158,6 +158,12 @@ export type BillingUserSummary = Record<string, unknown> & {
 export type BillingLaunchGroup = Record<string, unknown> & { id: string };
 export type BillingLineItem = Record<string, unknown> & { id: string };
 export type BillingAnomaly = Record<string, unknown> & { id: string };
+export type OssBillingBinding = {
+  ledgerId: string; bucketName: string; cloudWorkspaceId: string; cloudAccountUid: string; regionId: string;
+  effectiveStartAt: string; effectiveEndAt: string | null; declaredAt: string; declaredByUserId: string;
+  bucketCreatedAt: string; verifiedAt: string; officialRequestId: string; status: 'active' | 'ended';
+};
+export type BindOssBillingInput = { bucketName: string; effectiveStartAt: string; dedicated: true };
 export type BillingSyncResult = {
   syncInProgress?: boolean;
   deferredDates?: string[];
@@ -493,6 +499,10 @@ export type PlatformApiClientLike = {
   listBillingPlatformItems(input?: BillingWindowInput): Promise<BillingLineItem[]>;
   listBillingAnomalies(input?: BillingWindowInput): Promise<BillingAnomaly[]>;
   syncBilling(input?: Pick<BillingWindowInput, 'startAt' | 'endAt'>): Promise<BillingSyncResult>;
+  listOssBillingBindings(): Promise<OssBillingBinding[]>;
+  bindOssBilling(payload: BindOssBillingInput, operation?: OperationRequest): Promise<OssBillingBinding>;
+  createDedicatedOssBucket(payload: { dedicated: true }, operation?: OperationRequest): Promise<OssBillingBinding>;
+  endOssBillingBinding(ledgerId: string, operation?: OperationRequest): Promise<OssBillingBinding>;
   exportPlatformBillingCsv(input?: Pick<BillingWindowInput, 'startAt' | 'endAt'>): Promise<string>;
   exportBillingUsersCsv(input?: Pick<BillingWindowInput, 'startAt' | 'endAt'>): Promise<string>;
   exportBillingUserItemsCsv(userId: string, input?: Pick<BillingWindowInput, 'startAt' | 'endAt'>): Promise<string>;

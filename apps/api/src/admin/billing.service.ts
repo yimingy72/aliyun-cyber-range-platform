@@ -15,6 +15,8 @@ import {
 import { billingDayText, resolveBillingWindow } from './billing-window';
 import { currentBillingRows, currentPlatformBillingProof, readPlatformBillingStartedAt } from './billing-current-scope';
 import { systemDiskBillingCoverage } from './billing-system-disk-coverage';
+import { readAliyunSnapshotEcsScope } from './aliyun-snapshot-ecs-evidence';
+import { readAliyunOssDedicatedBilling, aliyunOssBindingCoversBillingDay, aliyunOssBindingOverlapsBillingDay } from './billing-oss-binding-proof';
 import { getCurrentCloudWorkspaceScope } from '../auth/cloud-workspace-scope';
 import { billRegionConflict, billRegionId, isAlibabaBillingPayload, isPlatformCreatedLedger, loadPlatformBillingProof, pendingPlatformBillingEvidence, type PlatformBillingProof, isTencentBillingPayload, tencentBillRegionId, classifyTencentBillLine, pendingTencentBillingEvidence, tencentCosBillLifetimeMatches } from './billing-platform-scope';
 
@@ -81,11 +83,23 @@ function moneySummary(items: Array<{ currency: string; pretaxAmount: number }>) 
   return { currency: amounts.length > 1 ? null : amounts[0]?.currency ?? 'CNY', pretaxAmount: amounts.length > 1 ? null : amounts[0]?.pretaxAmount ?? 0, amounts };
 }
 
+function snapshotIdsCoveredOnBillingDay(item: BillingLineItemRecord, proof: PlatformBillingProof) {
+  if (item.productCode !== 'snapshot' || !item.cloudAccountUid) return null;
+  const day = toIsoDate(item.billingDate), scope = readAliyunSnapshotEcsScope(item.rawPayload, proof, day, item.cloudAccountUid);
+  return scope ? scope.snapshotLedgerIds.filter(id => {
+    const ledger = proof.ledgers.find(row => row.id === id);
+    return Boolean(ledger && billingDayText(ledger.billingStartAt) <= day && (!ledger.releasedAt || billingDayText(ledger.releasedAt) >= day));
+  }) : null;
+}
+
 function platformBillingItems(items: BillingLineItemRecord[], proof: PlatformBillingProof) {
   const ledgers = new Map(proof.ledgers.map(ledger => [ledger.id, ledger]));
   return items.flatMap(item => {
-    const ledger = item.matchedLedgerId ? ledgers.get(item.matchedLedgerId) : null;
-    if (!ledger || !isPlatformCreatedLedger(ledger, proof)
+    const snapshotScope = item.productCode === 'snapshot' && item.cloudResourceType === 'ecs' && item.cloudAccountUid
+      ? readAliyunSnapshotEcsScope(item.rawPayload, proof, toIsoDate(item.billingDate), item.cloudAccountUid) : null;
+    const ledger = item.matchedLedgerId ? ledgers.get(item.matchedLedgerId)
+      ?? (snapshotScope?.sourceLedgerId === item.matchedLedgerId ? proof.snapshotParentProof?.ledgers.find(row => row.id === item.matchedLedgerId) : null) : null;
+    if (!ledger || !isPlatformCreatedLedger(ledger, proof) && !snapshotScope
       || (item.cloudWorkspaceId ?? 'legacy-unbound') !== (ledger.cloudWorkspaceId ?? 'legacy-unbound')
       || (item.cloudProvider ?? 'alibaba_cloud') !== ledger.cloudProvider
       || (ledger.cloudProvider === 'alibaba_cloud' ? !isAlibabaBillingPayload(item.rawPayload) : !verifiedTencentItem(item, ledger))
@@ -93,6 +107,14 @@ function platformBillingItems(items: BillingLineItemRecord[], proof: PlatformBil
       || item.cloudAccountUid && item.cloudAccountUid !== ledger.cloudAccountUid
       || item.rawPayload.OwnerID != null && String(item.rawPayload.OwnerID) !== ledger.cloudAccountUid
       || ledger.cloudProvider === 'alibaba_cloud' && (billRegionConflict(item.rawPayload) || billRegionId(item.rawPayload) && billRegionId(item.rawPayload) !== ledger.regionId)
+      || ledger.cloudProvider === 'alibaba_cloud' && item.productCode === 'snapshot' && item.cloudResourceType === 'ecs'
+        && (!snapshotScope || snapshotScope.sourceLedgerId !== ledger.id || snapshotScope.sourceInstanceId !== item.cloudResourceId)
+      || ledger.cloudProvider === 'alibaba_cloud' && item.cloudResourceType === 'oss_bucket'
+        && (item.rawPayload.__platformBillingSource !== 'DescribeSplitItemBill' || item.rawPayload.ProductCode !== 'oss'
+          || ['Refund', 'Adjustment'].includes(String(item.rawPayload.Item))
+          || !billRegionId(item.rawPayload) || billRegionId(item.rawPayload) !== ledger.regionId
+          || item.rawPayload.SplitItemID !== ledger.cloudResourceId || !readAliyunOssDedicatedBilling(ledger)
+          || !aliyunOssBindingCoversBillingDay(readAliyunOssDedicatedBilling(ledger)!, toIsoDate(item.billingDate)))
       || toIsoDate(item.billingDate) < billingDayText(ledger.billingStartAt)) return [];
     // Historical catalog collection could overwrite attribution; use the verified creation ledger.
     return [{ ...item, cloudAccountUid: ledger.cloudAccountUid, billingScope: ledger.billingScope, ownerUserId: ledger.ownerUserId }];
@@ -194,13 +216,24 @@ export class BillingService {
       .map(item => [item.sourceFingerprint, item])).values()].map(item => ({ item, evidence: pendingEvidence(item, proof) }));
     const unallocatedItems = pending.filter(row => row.evidence?.kind === 'resource_pending').map(row => row.item);
     const pendingResources = new Map<'snapshot' | 'oss' | 'unknown' | 'disk', Set<string>>();
+    for (const ledger of ledgerResources) {
+      const binding = readAliyunOssDedicatedBilling(ledger);
+      if (!binding) continue;
+      const boundaryDays = [billingDayText(new Date(binding.effectiveStartAt)), ...(binding.effectiveEndAt ? [billingDayText(new Date(binding.effectiveEndAt))] : [])];
+      if (boundaryDays.some(day => day >= window.startAtText && day <= window.endAtText
+        && aliyunOssBindingOverlapsBillingDay(binding, day) && !aliyunOssBindingCoversBillingDay(binding, day))) {
+        const ids = pendingResources.get('oss') ?? new Set<string>();
+        ids.add(`ledger:${ledger.id}`);
+        pendingResources.set('oss', ids);
+      }
+    }
     const deferredProducts = new Set<string>();
     for (const item of trackedLineItems) {
       if (item.rawPayload.__platformBillingSyncDeferred !== true || !['snapshot', 'oss'].includes(item.productCode)) continue;
       const type = item.productCode as 'snapshot' | 'oss';
       deferredProducts.add(type);
       const ids = pendingResources.get(type) ?? new Set<string>();
-      ids.add(`ledger:${item.matchedLedgerId}`);
+      for (const id of snapshotIdsCoveredOnBillingDay(item, proof) ?? [item.matchedLedgerId!]) ids.add(`ledger:${id}`);
       pendingResources.set(type, ids);
     }
     for (const { item, evidence } of pending) {
@@ -235,18 +268,33 @@ export class BillingService {
       ids.add(`image-source:${source.id}`);
       pendingResources.set(type, ids);
     }
-    const billedResourceIds = new Set(trackedLineItems.map(item => item.matchedLedgerId));
+    const billedResourceIds = new Set(trackedLineItems.flatMap(item => [item.matchedLedgerId,
+      ...(snapshotIdsCoveredOnBillingDay(item, proof) ?? [])]));
     const resourcesWithoutBill = ledgerResources.filter(item => !['snat_entry', 'dnat_entry', 'unknown', 'snapshot_region'].includes(item.cloudResourceType)
       && !(item.cloudProvider === 'alibaba_cloud' && item.cloudResourceType === 'image')
       && billingDayText(item.billingStartAt) <= window.endAtText
       && (!item.releasedAt || billingDayText(item.releasedAt) >= window.startAtText)
+      && (() => {
+        const binding = readAliyunOssDedicatedBilling(item);
+        if (!binding) return true;
+        const day = 86_400_000;
+        const from = Math.max(Date.parse(`${window.startAtText}T00:00:00+08:00`), Date.parse(binding.effectiveStartAt));
+        const to = Math.min(Date.parse(`${window.endAtText}T00:00:00+08:00`) + day, binding.effectiveEndAt ? Date.parse(binding.effectiveEndAt) : Infinity);
+        return to > from;
+      })()
       && !billedResourceIds.has(item.id));
+    for (const ledger of resourcesWithoutBill.filter(item => ['snapshot', 'oss_bucket'].includes(item.cloudResourceType))) {
+      const type = ledger.cloudResourceType === 'snapshot' ? 'snapshot' : 'oss';
+      const ids = pendingResources.get(type) ?? new Set<string>();
+      ids.add(`ledger:${ledger.id}`);
+      pendingResources.set(type, ids);
+    }
     const diskCoverage = await systemDiskBillingCoverage(this.adminRepository,
       resourcesWithoutBill.filter(item => item.cloudResourceType === 'disk'), ledgerResources, trackedLineItems);
     if (diskCoverage.mappingPending.size) pendingResources.set('disk', new Set([...diskCoverage.mappingPending].map(id => `ledger:${id}`)));
     const reasons = {
       snapshot: '平台镜像或快照仍需补齐资源清单及费用明细；源 ECS 汇总可能包含其它快照，未将整组金额计入平台。',
-      oss: '平台导入对象仍需可核验的费用明细；配置或使用 Bucket 不代表整桶由平台独占，未将整桶金额计入平台。',
+      oss: '平台专用桶或导入对象尚待官方桶级费用明细；只纳入已核验专用范围，不计入混用桶或地域汇总费用。',
       unknown: '已找到平台创建记录，但历史云账号或归属证明尚未核实；记录继续保留，不按零费用处理。',
       disk: '同实例主机已有系统盘收费组件，但历史盘与主机的准确对应关系缺失或冲突；不能据此确认每块盘已出账，也不重复添加费用。',
     };
@@ -281,16 +329,15 @@ export class BillingService {
   }
 
   private readableProof(fullProof: PlatformBillingProof): PlatformBillingProof {
-    const proof = currentPlatformBillingProof(fullProof, this.platformBillingStartedAt);
     const scope = getCurrentCloudWorkspaceScope();
-    if (!scope && process.env.NODE_ENV === 'test') return proof;
+    if (!scope && process.env.NODE_ENV === 'test') return currentPlatformBillingProof(fullProof, this.platformBillingStartedAt);
     const visible = (record: { cloudWorkspaceId?: string; ownerUserId?: string | null }) => scope && !('system' in scope)
       && record.cloudWorkspaceId === scope.cloudWorkspaceId && (scope.isPlatformManager === true || Boolean(scope.actorUserId) && record.ownerUserId === scope.actorUserId);
-    const ledgers = proof.ledgers.filter(visible), ids = new Set(ledgers.map(row => row.id));
-    return { ...proof, ledgers, imageImports: proof.imageImports.filter(visible), packedImages: proof.packedImages.filter(visible),
-      cosBuckets: scope && !('system' in scope) && scope.isPlatformManager === true ? proof.cosBuckets.filter(row => row.cloudWorkspaceId === scope.cloudWorkspaceId) : [],
-      createdLedgerIds: new Set([...proof.createdLedgerIds].filter(id => ids.has(id))),
-      unverifiedSourceLedgerIds: new Set([...proof.unverifiedSourceLedgerIds].filter(id => ids.has(id))) };
+    const ledgers = fullProof.ledgers.filter(visible), ids = new Set(ledgers.map(row => row.id));
+    return currentPlatformBillingProof({ ...fullProof, ledgers, imageImports: fullProof.imageImports.filter(visible), packedImages: fullProof.packedImages.filter(visible),
+      cosBuckets: scope && !('system' in scope) && scope.isPlatformManager === true ? fullProof.cosBuckets.filter(row => row.cloudWorkspaceId === scope.cloudWorkspaceId) : [],
+      createdLedgerIds: new Set([...fullProof.createdLedgerIds].filter(id => ids.has(id))),
+      unverifiedSourceLedgerIds: new Set([...fullProof.unverifiedSourceLedgerIds].filter(id => ids.has(id))) }, this.platformBillingStartedAt);
   }
 
   private async reconciliationResourceDetails(keys: Set<string>, proof: PlatformBillingProof, deferred: boolean, diskMappingPending = false) {
@@ -527,8 +574,9 @@ export class BillingService {
   }
 
   private groupByResourceType(lineItems: BillingLineItemRecord[]) {
-    const types = [...new Set(lineItems.map(item => item.cloudResourceType))];
-    return types.flatMap(resourceType => currencyAmounts(lineItems.filter(item => item.cloudResourceType === resourceType)).map(amount => ({ resourceType, ...amount })))
+    const type = (item: BillingLineItemRecord) => item.productCode === 'snapshot' ? 'snapshot' : item.cloudResourceType;
+    const types = [...new Set(lineItems.map(type))];
+    return types.flatMap(resourceType => currencyAmounts(lineItems.filter(item => type(item) === resourceType)).map(amount => ({ resourceType, ...amount })))
       .sort((a, b) => a.currency.localeCompare(b.currency) || b.pretaxAmount - a.pretaxAmount);
   }
 

@@ -51,6 +51,15 @@ describe('delegated API permission boundary', () => {
     expect(resolveDelegatedScopes('admin', ['openid', 'some-unknown-scope']).size).toBe(0);
     expect(resolveDelegatedScopes('user', ['openid', 'profile']).has('ranges:create')).toBe(true);
   });
+  it('requires settings write and billing sync together to declare or end a dedicated OSS scope', () => {
+    for (const path of ['/admin/billing/oss-binding', '/admin/billing/oss-binding/create', '/admin/billing/oss-binding/ledger-owned/end']) {
+      expect(() => check('POST', path, ['billing:sync'])).toThrow();
+      expect(() => check('POST', path, ['settings:write'])).toThrow();
+      expect(() => check('POST', path, ['billing:sync', 'settings:write'])).not.toThrow();
+    }
+    expect(() => check('GET', '/admin/billing/oss-binding', ['billing:read'])).not.toThrow();
+    expect(() => check('GET', '/admin/billing/oss-binding', ['settings:write'])).toThrow();
+  });
   it.each(['mcp-gateway', 'platform-web'])('enforces verified scoped JWT for %s before controller side effects', async azp => {
     const guard = new AdminAuthGuard({ verifyAccessToken: async () => ({ issuer: 'https://issuer', subject: 's1', authorizedParty: azp, scopes: ['ranges:read'] }) } as never,
       { resolve: async () => ({ id: 'u1', username: 'reader', role: 'admin', isPlatformManager: true }) } as never);

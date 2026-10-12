@@ -8,6 +8,8 @@ import type {
   BillingSyncResult,
   BillingUserSummary,
   BillingWindowInput,
+  BindOssBillingInput,
+  OssBillingBinding,
   CloudConfigSnapshot,
   CloudAccountContext,
   SaveTencentCloudAccountInput,
@@ -462,6 +464,20 @@ export class PlatformApiClient implements PlatformApiClientLike {
       method: 'POST',
       body: JSON.stringify(input),
     });
+  }
+
+  listOssBillingBindings() { return this.request<OssBillingBinding[]>('/admin/billing/oss-binding'); }
+
+  bindOssBilling(payload: BindOssBillingInput, operation?: OperationRequest) {
+    return this.request<OssBillingBinding>('/admin/billing/oss-binding', { method: 'POST', body: JSON.stringify(payload), operation });
+  }
+
+  createDedicatedOssBucket(payload: { dedicated: true }, operation?: OperationRequest) {
+    return this.request<OssBillingBinding>('/admin/billing/oss-binding/create', { method: 'POST', body: JSON.stringify(payload), operation });
+  }
+
+  endOssBillingBinding(ledgerId: string, operation?: OperationRequest) {
+    return this.request<OssBillingBinding>(`/admin/billing/oss-binding/${encodeURIComponent(ledgerId)}/end`, { method: 'POST', body: '{}', operation });
   }
 
   exportPlatformBillingCsv(input: Pick<BillingWindowInput, 'startAt' | 'endAt'> = {}) {

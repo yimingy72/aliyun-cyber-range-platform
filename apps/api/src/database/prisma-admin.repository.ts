@@ -2375,6 +2375,22 @@ export class PrismaAdminRepository implements AdminRepository {
     }) as Promise<BillingLedgerResourceRecord[]>;
   }
 
+  async endOssBillingBinding(expected: BillingLedgerResourceRecord, endedAt: Date): Promise<boolean> {
+    const proof = expected.tagsSnapshot.aliyunOssDedicatedBilling as Record<string, unknown> | undefined;
+    const cloudWorkspaceId = getCurrentCloudWorkspaceId();
+    if (!cloudWorkspaceId || expected.cloudWorkspaceId !== cloudWorkspaceId || expected.cloudProvider !== 'alibaba_cloud'
+      || expected.cloudResourceType !== 'oss_bucket' || expected.billingScope !== 'platform' || !proof || proof.effectiveEndAt !== null
+      || !Number.isFinite(endedAt.getTime()) || endedAt < expected.billingStartAt) return false;
+    const updated = await this.prisma.billingLedgerResource.updateMany({ where: { id: expected.id, cloudWorkspaceId,
+      cloudProvider: expected.cloudProvider, cloudAccountUid: expected.cloudAccountUid, regionId: expected.regionId,
+      cloudResourceId: expected.cloudResourceId, cloudResourceType: 'oss_bucket', billingScope: 'platform',
+      billingStartAt: expected.billingStartAt, releasedAt: null, ownerUserId: null, rangeInstanceId: null,
+      singleInstanceBatchId: null, platformImageAssetId: null, sourceProvisionJobId: null,
+      tagsSnapshot: { equals: expected.tagsSnapshot as Prisma.InputJsonValue } },
+      data: { tagsSnapshot: { ...expected.tagsSnapshot, aliyunOssDedicatedBilling: { ...proof, effectiveEndAt: endedAt.toISOString() } } as Prisma.InputJsonValue } });
+    return updated.count === 1;
+  }
+
   async repairBillingLedgerOrigin(input: RepairBillingLedgerOriginInput): Promise<boolean> {
     const ledger = input.expected;
     const cloudWorkspaceId = getCurrentCloudWorkspaceId() ?? 'legacy-unbound';

@@ -145,7 +145,7 @@ export const settingsTools: ToolDefinition[] = [
   {
     name: 'cloud_config_update',
     title: '更新云基础配置',
-    description: '对应基础配置页的配置保存。只更新明确传入的默认地域、可用区或云凭据字段，影响后续资源创建，调用前必须取得用户确认。',
+    description: '对应基础配置页的配置保存。只更新明确传入的默认地域、可用区、阿里云导入桶或云凭据字段，影响后续资源创建。配置导入桶不等于声明专用费用归属，后者使用billing_oss_bucket_bind；按用户授权完成平台确认。',
     requiredScopes: ['settings:write'], adminOnly: true,
     inputSchema: cloudConfigUpdateInputSchema,
     outputSchema: resultOutputSchema(

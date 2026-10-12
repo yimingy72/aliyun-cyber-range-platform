@@ -86,6 +86,8 @@ function createClientStub(): ClientStub {
     listBillingUserItems: vi.fn().mockResolvedValue([]),
     listBillingPlatformItems: vi.fn().mockResolvedValue([]),
     listBillingAnomalies: vi.fn().mockResolvedValue([]),
+    listOssBillingBindings: vi.fn().mockResolvedValue([]), bindOssBilling: vi.fn(), endOssBillingBinding: vi.fn(),
+    createDedicatedOssBucket: vi.fn(),
     syncBilling: vi.fn().mockResolvedValue({ syncedDays: 0, importedLineItems: 0, anomalyCount: 0, deferredCount: 0 }),
     exportPlatformBillingCsv: vi.fn().mockResolvedValue(''),
     exportBillingUsersCsv: vi.fn().mockResolvedValue(''),

@@ -41,6 +41,8 @@ const rules: ScopeRule[] = [
   { method: 'PATCH', path: /^\/admin\/users\/[^/]+\/(?:role|status)$/, all: ['users:write'] },
   { method: 'GET', path: /^\/admin\/billing\/(?:summary|users|user-groups|users\/[^/]+(?:\/items)?|platform\/(?:items|groups)|anomalies|export\/(?:platform\.csv|users\.csv|users\/[^/]+\.csv))$/, all: ['billing:read'] },
   { method: 'POST', path: /^\/admin\/billing\/sync$/, all: ['billing:sync'] },
+  { method: 'GET', path: /^\/admin\/billing\/oss-binding$/, all: ['billing:read'] },
+  { method: 'POST', path: /^\/admin\/billing\/oss-binding(?:\/create|\/[^/]+\/end)?$/, all: ['billing:sync', 'settings:write'] },
   { method: 'GET', path: /^\/admin\/platform-image-tags$/, any: metadataScopes('images') },
   { method: 'POST', path: /^\/admin\/platform-image-tags$/, all: ['images:write'] },
   { method: 'DELETE', path: /^\/admin\/platform-image-tags\/[^/]+$/, all: ['images:write'] },

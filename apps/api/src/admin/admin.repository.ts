@@ -1308,6 +1308,7 @@ export interface AdminRepository {
   createBillingLedgerResource(input: CreateBillingLedgerResourceInput): Promise<BillingLedgerResourceRecord>;
   findBillingLedgerResource(input: FindBillingLedgerResourceInput): Promise<BillingLedgerResourceRecord | null>;
   updateBillingLedgerResource(id: string, input: UpdateBillingLedgerResourceInput): Promise<BillingLedgerResourceRecord>;
+  endOssBillingBinding(expected: BillingLedgerResourceRecord, endedAt: Date): Promise<boolean>;
   repairBillingLedgerOrigin(input: RepairBillingLedgerOriginInput): Promise<boolean>;
   listBillingLedgerResources(filter?: { rangeInstanceId?: string }): Promise<BillingLedgerResourceRecord[]>;
   getLatestBillingLineItemDate(cloudAccountUid?: string): Promise<Date | null>;

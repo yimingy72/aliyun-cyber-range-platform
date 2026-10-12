@@ -22,6 +22,8 @@ import { billingDayText, resolveBillingWindow } from './billing-window';
 import { getCurrentCloudWorkspaceId, getCurrentCloudWorkspaceScope, runInSystemCloudWorkspaceScope } from '../auth/cloud-workspace-scope';
 import { listExecutionCloudWorkspaces, runInExecutionCloudWorkspace } from '../auth/background-cloud-workspace';
 import { repairAlibabaLedgerOrigins } from './billing-ledger-origin-repair';
+import { aliyunSnapshotHistoryStartAt, collectAliyunSnapshotHistory, readAliyunPackSnapshotBaseline, readAliyunSnapshotEcsScope, verifyAliyunSnapshotEcsBillEvidence } from './aliyun-snapshot-ecs-evidence';
+import { readAliyunOssDedicatedBilling, aliyunOssBindingCoversBillingDay, refreshAliyunOssBindingVerification } from './billing-oss-binding-proof';
 
 type RawBillLine = Record<string, unknown>;
 
@@ -184,20 +186,26 @@ export class BillingSyncService implements OnModuleInit, OnModuleDestroy {
           proof = await this.loadCurrentProof();
         }
         const previous: BillingLineItemRecord[] = currentBillingRows(await this.adminRepository.listBillingLineItems({ cloudProvider: 'alibaba_cloud', cloudAccountUid, startAt: billingDate, endAt: billingDate }), this.platformBillingStartedAt)
-          .filter(line => proof.ledgers.some(ledger => ledger.id === line.matchedLedgerId && isPlatformCreatedLedger(ledger, proof)
-            && ledger.cloudProvider === 'alibaba_cloud' && isAlibabaBillingPayload(line.rawPayload)
-            && ledger.cloudAccountUid === cloudAccountUid && ledger.cloudResourceId === line.cloudResourceId && ledger.cloudResourceType === line.cloudResourceType));
+          .filter(line => Boolean(this.previousVerifiedLedger(line, proof, billingDate, cloudAccountUid)));
         const resolved = await this.resolveSplitItems(items, billingDate, cloudAccountUid, cloudConfig, proof, previous);
         const dayItems = new Map<string, CreateBillingLineItemInput>();
         const dayAnomalies = new Map<string, CreateBillingAnomalyInput>();
 
         for (const line of resolved.items) {
           const classification = classifyPlatformBillLine(line);
+          const snapshotScope = readAliyunSnapshotEcsScope(line, proof, billingDate, cloudAccountUid);
+          if (snapshotScope && !resolved.retainedProducts.has('snapshot')) {
+            const source = (proof.snapshotParentProof ?? proof).ledgers.find(ledger => ledger.id === snapshotScope.sourceLedgerId)!;
+            const matched = this.buildMatchedBillLine({ cloudAccountUid, syncBatchId, billingDate, line, ledger: source,
+              cloudResourceId: source.cloudResourceId, cloudResourceType: 'ecs' });
+            dayItems.set(matched.sourceFingerprint, matched);
+            continue;
+          }
           // A deferred product is one coherent previous revision, never a mixture of old splits and new direct charges.
           if (resolved.retainedProducts.has(readString(line, 'ProductCode')) && classification.kind === 'direct') continue;
 
           if (classification.kind === 'direct' && !billRegionConflict(line)) {
-            const matchedLedger =
+            const matchedLedger = classification.cloudResourceType === 'oss_bucket' && ['Refund', 'Adjustment'].includes(readString(line, 'Item')) ? null :
               this.findActiveLedgerResource(
                 proof,
                 classification.cloudResourceId,
@@ -245,7 +253,7 @@ export class BillingSyncService implements OnModuleInit, OnModuleDestroy {
         }
         if (resolved.retainedProducts.size) {
           for (const line of previous) {
-            const ledger = proof.ledgers.find(item => item.id === line.matchedLedgerId && isPlatformCreatedLedger(item, proof));
+            const ledger = this.previousVerifiedLedger(line, proof, billingDate, cloudAccountUid);
             if (resolved.retainedProducts.has(line.productCode)
               && ledger?.cloudAccountUid === cloudAccountUid && ledger.cloudResourceId === line.cloudResourceId && ledger.cloudResourceType === line.cloudResourceType) {
               dayItems.set(line.sourceFingerprint, { ...line, billingDate, cloudAccountUid, ownerUserId: ledger.ownerUserId, billingScope: ledger.billingScope,
@@ -366,6 +374,16 @@ export class BillingSyncService implements OnModuleInit, OnModuleDestroy {
     };
   }
 
+  private previousVerifiedLedger(line: BillingLineItemRecord, proof: PlatformBillingProof, billingDate: string, cloudAccountUid: string) {
+    const sourceFee = line.productCode === 'snapshot' && line.cloudResourceType === 'ecs'
+      ? readAliyunSnapshotEcsScope(line.rawPayload, proof, billingDate, cloudAccountUid) : null;
+    if (line.productCode === 'snapshot' && line.cloudResourceType === 'ecs' && !sourceFee) return undefined;
+    const sourceProof = sourceFee ? proof.snapshotParentProof ?? proof : proof;
+    return sourceProof.ledgers.find(ledger => ledger.id === line.matchedLedgerId && isPlatformCreatedLedger(ledger, sourceProof)
+      && (!sourceFee || sourceFee.sourceLedgerId === ledger.id) && ledger.cloudProvider === 'alibaba_cloud' && isAlibabaBillingPayload(line.rawPayload)
+      && ledger.cloudAccountUid === cloudAccountUid && ledger.cloudResourceId === line.cloudResourceId && ledger.cloudResourceType === line.cloudResourceType);
+  }
+
   private async resolveSplitItems(items: RawBillLine[], billingDate: string, cloudAccountUid: string,
     context: Awaited<ReturnType<SystemConfigService['getExecutionAccountContext']>>, proof: PlatformBillingProof, previous: BillingLineItemRecord[]) {
     let resolved = items;
@@ -386,8 +404,61 @@ export class BillingSyncService implements OnModuleInit, OnModuleDestroy {
         if (original.some(line => classifyPlatformBillLine(line).kind !== 'aggregated') || !this.splitTotalsMatch(original, split)) {
           throw new Error('Resource split bills do not reconcile with their source bill');
         }
-        resolved = [...resolved.filter(line => readString(line, 'ProductCode') !== productCode),
-          ...split.map(line => ({ ...line, __platformBillingSource: 'DescribeSplitItemBill' }))];
+        const scopedSplit: RawBillLine[] = [];
+        const histories = new Map<string, Awaited<ReturnType<typeof collectAliyunSnapshotHistory>>>();
+        const verifiedBuckets = new Set<string>();
+        for (const raw of split) {
+          const line = { ...raw, __platformBillingSource: 'DescribeSplitItemBill' };
+          if (productCode === 'oss') {
+            const classification = classifyPlatformBillLine(line);
+            const bucket = proof.ledgers.find(ledger => isPlatformCreatedLedger(ledger, proof) && ledger.cloudProvider === 'alibaba_cloud'
+              && ledger.cloudAccountUid === cloudAccountUid
+              && ledger.cloudResourceType === 'oss_bucket' && ledger.cloudResourceId === classification.cloudResourceId);
+            const binding = bucket && readAliyunOssDedicatedBilling(bucket);
+            if (bucket && binding && aliyunOssBindingCoversBillingDay(binding, billingDate)) {
+              if (billRegionConflict(line) || !billRegionId(line) || bucket.regionId !== billRegionId(line)) {
+                throw new Error('Dedicated OSS split region is unverified; prior bills were retained');
+              }
+              if (!verifiedBuckets.has(bucket.id)) {
+                const verification = await refreshAliyunOssBindingVerification(bucket, context);
+                if (!verification.verified) throw new Error('Dedicated OSS bucket identity is unverified; prior bills were retained');
+                verifiedBuckets.add(bucket.id);
+              }
+            }
+          }
+          if (productCode === 'snapshot' && /^i-[a-z0-9]+$/i.test(readString(line, 'SplitItemID'))) {
+            const parent = proof.snapshotParentProof ?? proof;
+            const source = parent.ledgers.find(ledger => isPlatformCreatedLedger(ledger, parent) && ledger.cloudProvider === 'alibaba_cloud'
+              && ledger.cloudAccountUid === cloudAccountUid && ledger.regionId === billRegionId(line)
+              && ledger.cloudResourceType === 'ecs' && ledger.cloudResourceId === readString(line, 'SplitItemID'));
+            const start = source && aliyunSnapshotHistoryStartAt(source, proof);
+            const end = Date.parse(`${billingDate}T16:00:00.000Z`) - 1000;
+            const baselineReady = source && parent.packedImages.some(artifact => {
+              const baseline = readAliyunPackSnapshotBaseline(artifact);
+              return artifact.sourceInstanceId === source.cloudResourceId && artifact.cloudAccountUid === cloudAccountUid
+                && artifact.regionId === source.regionId && (artifact.cloudWorkspaceId ?? 'legacy-unbound') === (source.cloudWorkspaceId ?? 'legacy-unbound')
+                && baseline && !baseline.autoSnapshotPolicyIds.length && Date.parse(baseline.observedAt) <= end - 15 * 60_000;
+            });
+            if (source && start && baselineReady) {
+              if (!histories.has(source.id)) histories.set(source.id, await collectAliyunSnapshotHistory(context,
+                { sourceLedger: source, sourceCreatedAt: start, billingDate }));
+              const scope = verifyAliyunSnapshotEcsBillEvidence({ line, billingDate, cloudAccountUid, proof, history: histories.get(source.id) ?? null });
+              if (scope) Object.assign(line, { __platformSnapshotEcsScope: scope });
+            }
+          }
+          scopedSplit.push(line);
+        }
+        if (previousProduct.some(previousLine => previousLine.rawPayload.__platformSnapshotEcsScope
+          && !scopedSplit.some(line => readString(line, 'SplitItemID') === previousLine.cloudResourceId
+            && readAliyunSnapshotEcsScope(line, proof, billingDate, cloudAccountUid)))) {
+          throw new Error('Source ECS snapshot evidence is incomplete; previous verified revision was retained');
+        }
+        if (productCode === 'oss' && previousProduct.length && scopedSplit.some(line => ['Refund', 'Adjustment'].includes(readString(line, 'Item'))
+          && proof.ledgers.some(ledger => readAliyunOssDedicatedBilling(ledger) && ledger.cloudAccountUid === cloudAccountUid
+            && ledger.cloudResourceId === readString(line, 'SplitItemID')))) {
+          throw new Error('OSS correction usage interval is unknown; prior verified revision was retained');
+        }
+        resolved = [...resolved.filter(line => readString(line, 'ProductCode') !== productCode), ...scopedSplit];
       } catch {
         // Split billing can be disabled or settle later; preserve proven earlier allocations and expose coverage work.
         if (previousProduct.length) retainedProducts.add(productCode);
@@ -456,7 +527,9 @@ export class BillingSyncService implements OnModuleInit, OnModuleDestroy {
     const matches = proof.ledgers.filter(item => isPlatformCreatedLedger(item, proof)
       && item.cloudProvider === 'alibaba_cloud'
       && item.cloudAccountUid === cloudAccountUid && item.cloudResourceId === cloudResourceId
-      && item.cloudResourceType === cloudResourceType && (!regionId || item.regionId === regionId));
+      && item.cloudResourceType === cloudResourceType && (!regionId || item.regionId === regionId)
+      && (item.cloudResourceType !== 'oss_bucket' || Boolean(regionId && readAliyunOssDedicatedBilling(item)
+        && aliyunOssBindingCoversBillingDay(readAliyunOssDedicatedBilling(item)!, billingDate))));
     // Without an explicit region a colliding physical ID is ambiguous, not permission to take the first row.
     if (matches.length !== 1) return null;
     return billingDate >= billingDayText(matches[0].billingStartAt) ? matches[0] : null;

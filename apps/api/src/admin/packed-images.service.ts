@@ -13,6 +13,7 @@ import { randomUUID } from 'node:crypto';
 import { TencentCloudRequestError } from './tencent-cloud-client';
 import { PackedImageCloudError, PackedImageVerificationError, safePackedCloudCode, packedImageDiagnostic, readPackedImageDiagnostic, encodePackedImageDiagnostic, type PackedImagePhase } from './packed-image-diagnostic';
 import { TENCENT_PACK_BASELINE_KIND, readTencentPackBaseline, validTencentPackBaseline } from './tencent-pack-snapshot-baseline';
+import { collectAliyunPackSnapshotBaseline } from './aliyun-snapshot-ecs-evidence';
 
 type Image = { ImageType?: string; ImageSize?: number | null; ImageId: string; ImageName?: string; Status: string; Progress?: string; Tags?: unknown; DiskDeviceMappings?: { DiskDeviceMapping?: Array<{ SnapshotId?: string }> } };
 type Snapshot = { SnapshotId: string; SourceDiskId?: string; SourceSnapshotId?: string; RegionId?: string; CreationTime?: string; Usage?: string; Tags?: unknown };
@@ -38,8 +39,14 @@ export class PackedImagesService {
       const existing = (await this.repository.listPackedImageArtifacts()).find(item => (item.cloudProvider ?? 'alibaba_cloud') === context.provider && ACTIVE.includes(item.status)
         && item.cloudAccountUid === input.cloudAccountUid && item.regionId === input.regionId && item.sourceInstanceId === input.sourceInstanceId);
       if (existing) throw new ConflictException({ message: '该实例已有尚未确认或清理中的打包任务，请先核验原任务，避免重复生成计费快照。', packedImageArtifactId: existing.id });
-      if (context.provider !== 'tencent_cloud') return this.repository.createPackedImageArtifact({ ...input, cloudProvider: context.provider, sourceDiskIds });
       const source = await this.repository.getRangeInstanceById(input.sourceRangeInstanceId);
+      if (context.provider !== 'tencent_cloud') {
+        const identity = { ...input, id: randomUUID(), cloudProvider: 'alibaba_cloud' as const, cloudWorkspaceId: source?.cloudWorkspaceId ?? 'legacy-unbound', sourceDiskIds };
+        const sourceSnapshotBaseline = await collectAliyunPackSnapshotBaseline({ ...context, cloudAccountContextId: context.id }, identity);
+        // Missing audit permissions or inventory cannot block a pack or trigger another create.
+        // Keep the artifact; source-ECS billing remains pending without this historical baseline.
+        return this.repository.createPackedImageArtifact({ ...input, id: identity.id, cloudProvider: context.provider, sourceDiskIds, ...(sourceSnapshotBaseline ? { sourceSnapshotBaseline } : {}) });
+      }
       const identity = { ...input, id: randomUUID(), cloudProvider: 'tencent_cloud' as const, cloudWorkspaceId: source?.cloudWorkspaceId ?? 'legacy-unbound', sourceDiskIds };
       const account = { ...context, accountUidResolved: true, cloudAccountContextId: context.id, defaultRegion: context.regionId, defaultZoneId: context.zoneId };
       const sourceDisks = [];

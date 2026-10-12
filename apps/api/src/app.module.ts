@@ -27,6 +27,9 @@ import { BillingController } from './admin/billing.controller';
 import { BillingService } from './admin/billing.service';
 import { TencentBillingClient } from './admin/tencent-billing-client';
 import { BillingSyncService } from './admin/billing-sync.service';
+import { BillingOssBindingController } from './admin/billing-oss-binding.controller';
+import { BillingOssBindingService } from './admin/billing-oss-binding.service';
+import { AliyunOssManagedBucketService } from './admin/aliyun-oss-managed-bucket.service';
 import { PlatformImagesController } from './admin/platform-images.controller';
 import { PlatformImageTagsController } from './admin/platform-image-tags.controller';
 import { AdminUsersController } from './admin/admin-users.controller';
@@ -98,6 +101,7 @@ function resolveProjectRootDir() {
     TencentCloudCatalogController,
     ImageImportsController,
     BillingController,
+    BillingOssBindingController,
     PlatformImagesController,
     PlatformImageTagsController,
     SingleInstancesController,
@@ -119,6 +123,8 @@ function resolveProjectRootDir() {
     PackedImagesWorkerService,
     BillingService,
     BillingSyncService,
+    BillingOssBindingService,
+    AliyunOssManagedBucketService,
     TencentBillingClient,
     AdminUsersService,
     KeycloakAdminService,
