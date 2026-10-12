@@ -1806,6 +1806,21 @@ export function createMemoryAdminRepository(): AdminRepository {
     async listBillingLedgerResources(filter = {}) {
       return cloneList(billingLedgerResources.filter(item => filter.rangeInstanceId === undefined || item.rangeInstanceId === filter.rangeInstanceId));
     },
+    async endOssBillingBinding(expected, endedAt) {
+      const proof = expected.tagsSnapshot.aliyunOssDedicatedBilling as Record<string, unknown> | undefined;
+      const namespace = getCurrentCloudWorkspaceId();
+      const row = billingLedgerResources.find(item => item.id === expected.id);
+      if (!namespace || expected.cloudWorkspaceId !== namespace || !row || row.cloudProvider !== 'alibaba_cloud'
+        || row.cloudResourceType !== 'oss_bucket' || row.billingScope !== 'platform' || row.cloudAccountUid !== expected.cloudAccountUid
+        || row.regionId !== expected.regionId || row.cloudResourceId !== expected.cloudResourceId
+        || row.billingStartAt.getTime() !== expected.billingStartAt.getTime() || row.releasedAt !== null || row.ownerUserId !== null
+        || row.rangeInstanceId !== null || row.singleInstanceBatchId !== null || row.platformImageAssetId !== null || row.sourceProvisionJobId !== null
+        || JSON.stringify(row.tagsSnapshot) !== JSON.stringify(expected.tagsSnapshot) || !proof || proof.effectiveEndAt !== null
+        || !Number.isFinite(endedAt.getTime()) || endedAt < expected.billingStartAt) return false;
+      row.tagsSnapshot = clone({ ...row.tagsSnapshot, aliyunOssDedicatedBilling: { ...proof, effectiveEndAt: endedAt.toISOString() } });
+      row.updatedAt = now();
+      return true;
+    },
     async repairBillingLedgerOrigin(input: RepairBillingLedgerOriginInput) {
       const expected = input.expected;
       const namespace = expected.cloudWorkspaceId ?? 'legacy-unbound';
