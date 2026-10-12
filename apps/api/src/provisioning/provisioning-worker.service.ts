@@ -87,6 +87,7 @@ export class ProvisioningWorkerService {
   private readonly singleInstanceOpenTofuExecutionService: SingleInstanceOpenTofuExecutionService;
   private readonly platformResourceReconciliationService: PlatformResourceReconciliationService;
   private nextResourceReconciliationAt = 0;
+  private resourceReconciliationTask: Promise<void> | null = null;
 
   constructor(
     @Inject(ADMIN_REPOSITORY) private readonly adminRepository: AdminRepository,
@@ -118,14 +119,13 @@ export class ProvisioningWorkerService {
 
   async runLoop(): Promise<void> {
     await this.recoverInterruptedJobs(new Date());
-    await this.reconcilePlatformResourcesSafely(new Date());
 
     while (true) {
       const now = new Date();
       await this.recoverInterruptedJobs(now);
       await this.processExpiredInstances(now);
-      await this.reconcilePlatformResourcesIfDue(now);
       const started = await this.startEligiblePendingJobs();
+      this.reconcilePlatformResourcesIfDue(now);
 
       if (started > 0) {
         continue;
@@ -195,12 +195,16 @@ export class ProvisioningWorkerService {
     this.logger.error(JSON.stringify({ provider: space.provider, workspaceId: space.id, contextId, error: { code, ...request } }));
   }
 
-  private async reconcilePlatformResourcesIfDue(now: Date) {
-    if (now.getTime() < this.nextResourceReconciliationAt) {
+  private reconcilePlatformResourcesIfDue(now: Date) {
+    if (this.resourceReconciliationTask || now.getTime() < this.nextResourceReconciliationAt) {
       return;
     }
 
-    await this.reconcilePlatformResourcesSafely(now);
+    // Do not hold up expiry scans or job dispatch while cloud inventory is slow.
+    // Keep the slot until the actual scan settles: a timeout race must not spawn overlapping scans.
+    this.resourceReconciliationTask = this.reconcilePlatformResourcesSafely(now).finally(() => {
+      this.resourceReconciliationTask = null;
+    });
   }
 
   private async reconcilePlatformResourcesSafely(now: Date) {
@@ -208,9 +212,8 @@ export class ProvisioningWorkerService {
 
     try {
       await this.reconcilePlatformResources(now);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      this.logger.error(`Platform cloud resource reconciliation failed: ${message}`);
+    } catch {
+      this.logger.error('Platform cloud resource reconciliation failed; recorded inventory was retained for retry.');
     }
   }
 
@@ -238,15 +241,7 @@ export class ProvisioningWorkerService {
       return;
     }
     if (instance.instanceMode === 'single' && instance.expiresAt && instance.expiresAt <= now && ['running','creating'].includes(instance.status)) {
-      await this.adminRepository.withSingleInstanceControlLock(async () => {
-        const current=await this.adminRepository.getRangeInstanceById(instance.id);
-        if(!current || !['running','creating'].includes(current.status)) return;
-        const last=current.lastJobId?await this.adminRepository.getProvisionJobById(current.lastJobId):null;
-        if(last?.status === 'running' && last.jobType !== 'refresh_status') return;
-        if(last && ['pending','running'].includes(last.status)) await this.adminRepository.updateProvisionJob(last.id,{status:'failed',finishedAt:new Date(),errorSummary:'Expired before access refresh completed'});
-        const job=await this.adminRepository.createProvisionJob({rangeInstanceId:current.id,jobType:'destroy',triggeredBy:'system:auto-expire'});
-        await this.adminRepository.updateRangeInstance(current.id,{status:'pending_destroy',lastJobId:job.id});
-      });
+      await this.adminRepository.queueExpiredSingleInstanceDestroy({ rangeInstanceId: instance.id, now });
       return;
     }
     if (instance.status !== 'running' || !instance.expiresAt || instance.expiresAt > now) {
@@ -296,18 +291,14 @@ export class ProvisioningWorkerService {
     const queue = async () => {
       const current = await this.adminRepository.getRangeInstanceById(instance.id);
       if (!current || current.status !== 'destroy_failed' || current.lastJobId !== previous.id) return;
-      if (current.instanceMode === 'range') {
-        await this.adminRepository.queueRangeInstanceJob({ rangeInstanceId: current.id, jobType: 'destroy',
-          triggeredBy: 'system:auto-expire', retryCount: previous.retryCount + 1,
-          expectedStatus: 'destroy_failed', expectedOwnerUserId: current.ownerUserId, nextStatus: 'pending_destroy' });
-      } else {
-        const job = await this.adminRepository.createProvisionJob({ rangeInstanceId: current.id, jobType: 'destroy',
-          triggeredBy: 'system:auto-expire', retryCount: previous.retryCount + 1 });
-        await this.adminRepository.updateRangeInstance(current.id, { status: 'pending_destroy', lastJobId: job.id });
-      }
+      if (current.instanceMode !== 'range') return;
+      await this.adminRepository.queueRangeInstanceJob({ rangeInstanceId: current.id, jobType: 'destroy',
+        triggeredBy: 'system:auto-expire', retryCount: previous.retryCount + 1,
+        expectedStatus: 'destroy_failed', expectedOwnerUserId: current.ownerUserId, nextStatus: 'pending_destroy' });
     };
-    if (instance.instanceMode === 'single') await this.adminRepository.withSingleInstanceControlLock(queue);
-    else await queue();
+    if (instance.instanceMode === 'single') {
+      await this.adminRepository.queueExpiredSingleInstanceDestroy({ rangeInstanceId: instance.id, now });
+    } else await queue();
   }
 
   async process(jobId: string) {
