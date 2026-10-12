@@ -34,7 +34,7 @@ export function currentPlatformBillingProof(proof: PlatformBillingProof, started
     return billingStartAt >= startedAt ? [{ ...ledger, billingStartAt }] : [];
   });
   const ids = new Set(ledgers.map(ledger => ledger.id));
-  return { ...proof, ledgers,
+  return { ...proof, ledgers, snapshotParentProof: proof,
     imageImports: proof.imageImports.filter(job => (job.uploadCompletedAt ?? job.createdAt) >= startedAt),
     packedImages: proof.packedImages.filter(artifact => artifact.createdAt >= startedAt),
     createdLedgerIds: new Set([...proof.createdLedgerIds].filter(id => ids.has(id))),

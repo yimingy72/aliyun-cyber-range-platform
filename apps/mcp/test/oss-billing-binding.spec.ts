@@ -1,0 +1,43 @@
+import { describe, expect, it, vi } from 'vitest';
+import { PlatformApiClient } from '@aliyun-cyber-range/platform-api-client';
+import { createToolRegistry } from '../src/server';
+
+const scopes = ['billing:read', 'billing:sync', 'settings:write'];
+const value = { ledgerId: 'ledger-owned', bucketName: 'platform-owned-bucket', cloudWorkspaceId: 'space-owned', cloudAccountUid: '123456', regionId: 'cn-hangzhou',
+  effectiveStartAt: '2026-09-30T16:00:00.000Z', effectiveEndAt: null, declaredAt: '2026-10-12T12:00:00.000Z', declaredByUserId: 'admin',
+  bucketCreatedAt: '2026-09-01T00:00:00.000Z', verifiedAt: '2026-10-12T12:00:00.000Z', officialRequestId: 'request-owned', status: 'active' };
+const input = { bucketName: value.bucketName, effectiveStartAt: value.effectiveStartAt, dedicated: true };
+describe('dedicated Alibaba OSS billing tool contract', () => {
+  it('requires admin role and both settings write and billing sync for fee-scope writes', async () => {
+    const registry = createToolRegistry({} as never);
+    for (const name of ['billing_oss_bucket_bind', 'billing_oss_bucket_binding_end']) {
+      for (const permissions of [['billing:sync'], ['settings:write']]) expect(registry.listTools(permissions, 'admin').map(tool => tool.name)).not.toContain(name);
+      expect(registry.listTools(scopes, 'user').map(tool => tool.name)).not.toContain(name);
+      await expect(registry.callTool(name, scopes, input, 'user')).rejects.toThrow('Forbidden tool');
+    }
+    expect(registry.listTools(['billing:read'], 'admin').find(tool => tool.name === 'billing_oss_bucket_binding_list')?.annotations.readOnlyHint).toBe(true);
+  });
+  it.each([{ ...input, dedicated: false }, { ...input, effectiveStartAt: 'now' }, { ...input, bucketName: 'other.example.invalid/path' },
+    { ...input, accessKeySecret: 'not-accepted' }])('rejects invalid or undeclared scope before API use', async invalid => {
+    const bind = vi.fn();
+    await expect(createToolRegistry({ bindOssBilling: bind } as never).callTool('billing_oss_bucket_bind', scopes, invalid, 'admin')).rejects.toThrow('Invalid input');
+    expect(bind).not.toHaveBeenCalled();
+  });
+  it('forwards workspace and exact confirmation through the SDK and strips private output fields', async () => {
+    const fetch = vi.fn().mockResolvedValueOnce(Response.json({ code: 'CONFIRMATION_REQUIRED', confirmationId: 'confirmation-owned', idempotencyKey: 'stable-key' }, { status: 409 }))
+      .mockResolvedValueOnce(Response.json({ ...value, accessKeySecret: 'private-secret' }));
+    const registry = createToolRegistry(new PlatformApiClient({ baseUrl: 'https://fixture.invalid', token: 'fixture-token', cloudWorkspaceId: value.cloudWorkspaceId, fetch }));
+    expect(await registry.callTool('billing_oss_bucket_bind', scopes, { ...input, idempotencyKey: 'stable-key' }, 'admin')).toMatchObject({ isError: true });
+    expect((await registry.callTool('billing_oss_bucket_bind', scopes, { ...input, idempotencyKey: 'stable-key', confirmationId: 'confirmation-owned' }, 'admin')).structuredContent.result).toEqual(value);
+    expect(fetch.mock.calls[1]).toEqual(['https://fixture.invalid/admin/billing/oss-binding', expect.objectContaining({ body: JSON.stringify(input),
+      headers: expect.objectContaining({ 'x-cloud-workspace-id': value.cloudWorkspaceId, 'x-confirmation-id': 'confirmation-owned', 'x-idempotency-key': 'stable-key' }) })]);
+  });
+  it('lists and ends only the exact declaration without accepting client-controlled termination time', async () => {
+    const list = vi.fn(async () => [value]), end = vi.fn(async () => ({ ...value, status: 'ended', effectiveEndAt: '2026-10-12T12:01:00.000Z' }));
+    const registry = createToolRegistry({ listOssBillingBindings: list, endOssBillingBinding: end } as never);
+    expect((await registry.callTool('billing_oss_bucket_binding_list', scopes, {}, 'admin')).structuredContent.result).toEqual([value]);
+    await expect(registry.callTool('billing_oss_bucket_binding_end', scopes, { ledgerId: value.ledgerId, endedAt: '2026-10-01' }, 'admin')).rejects.toThrow('Invalid input');
+    await registry.callTool('billing_oss_bucket_binding_end', scopes, { ledgerId: value.ledgerId, confirmationId: 'end-confirmation', idempotencyKey: 'end-key' }, 'admin');
+    expect(end).toHaveBeenCalledWith(value.ledgerId, { confirmationId: 'end-confirmation', idempotencyKey: 'end-key' });
+  });
+});

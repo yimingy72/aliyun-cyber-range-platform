@@ -47,6 +47,12 @@ export function aliyunOssBindingCoversBillingDay(proof: AliyunOssDedicatedBillin
     && (proof.effectiveEndAt === null || Date.parse(proof.effectiveEndAt) >= dayStart + 24 * 60 * 60 * 1000);
 }
 
+export function aliyunOssBindingOverlapsBillingDay(proof: AliyunOssDedicatedBillingProof, billingDate: string): boolean {
+  const start = Date.parse(`${billingDate}T00:00:00+08:00`);
+  return Number.isFinite(start) && Date.parse(proof.effectiveStartAt) < start + 86_400_000
+    && (proof.effectiveEndAt === null || Date.parse(proof.effectiveEndAt) > start);
+}
+
 function element(xml: string, name: string) {
   const matches = [...xml.matchAll(new RegExp(`<${name}>([^<]*)</${name}>`, 'g'))];
   if (matches.length !== 1 || /&/.test(matches[0][1])) throw new Error('OSS_BUCKET_IDENTITY_INVALID');

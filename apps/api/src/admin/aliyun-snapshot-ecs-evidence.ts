@@ -145,7 +145,8 @@ function snapshotParentProof(proof: PlatformBillingProof) {
 
 export function aliyunSnapshotHistoryStartAt(source: BillingLedgerResourceRecord, proof: PlatformBillingProof) {
   const job = snapshotParentProof(proof).creationJobs?.get(source.id);
-  const dates = [source.billingStartAt, job?.startedAt ?? job?.createdAt].filter((value): value is Date => value instanceof Date && Number.isFinite(value.getTime()));
+  const dates = [source.billingStartAt, job?.startedAt ?? job?.createdAt].filter((value): value is Date => Boolean(value)
+    && Object.prototype.toString.call(value) === '[object Date]' && Number.isFinite(value!.getTime()));
   return dates.length ? new Date(Math.floor(Math.min(...dates.map(date => date.getTime())) / 1000) * 1000 - 1000) : null;
 }
 const billingEnd = (billingDate: string) => /^\d{4}-\d{2}-\d{2}$/.test(billingDate) && Number.isFinite(Date.parse(billingDate))
@@ -208,6 +209,7 @@ function sourceForBill({ line, cloudAccountUid, proof }: Omit<VerificationInput,
   const region = billRegionId(line);
   if (line.__platformBillingSource !== 'DescribeSplitItemBill' || line.__platformCloudProvider != null && line.__platformCloudProvider !== 'alibaba_cloud'
     || line.ProductCode !== 'snapshot' || !/^i-[a-z0-9]+$/i.test(text(line.SplitItemID)) || !region || billRegionConflict(line)
+    || ['Refund', 'Adjustment'].includes(text(line.Item))
     || ['OwnerID', 'SplitAccountID', 'BillAccountID'].some(key => line[key] != null && line[key] !== '' && line[key] !== cloudAccountUid)) return null;
   const parent = snapshotParentProof(proof);
   const sources = parent.ledgers.filter(ledger => parent.createdLedgerIds.has(ledger.id) && ledger.cloudProvider === 'alibaba_cloud'

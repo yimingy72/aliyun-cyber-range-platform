@@ -47,6 +47,9 @@ describe('Alibaba source-ECS snapshot amount evidence', () => {
     const native = { ...line(), RegionId: undefined, Region: '华东1（杭州）', InstanceID: 'cn-hangzhou' };
     expect(verify({ line: native })?.sourceInstanceId).toBe('i-owned');
   });
+  it.each(['Refund', 'Adjustment'])('keeps source-wide %s pending without an original usage interval', Item => {
+    expect(verify({ line: { ...line(), Item } })).toBeNull();
+  });
   it('retains the official source-host total and exact backing snapshot IDs after parent destruction', () => {
     const result = verify();
     expect(result).toMatchObject({ kind: 'snapshot_ecs', sourceLedgerId: 'ledger-host', sourceInstanceId: 'i-owned', snapshotLedgerIds: ['ledger-snapshot'], snapshotIds: ['s-owned'], artifactIds: ['artifact-owned'] });

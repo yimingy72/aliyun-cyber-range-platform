@@ -1,4 +1,5 @@
-import type { BillingGroupInput, BillingWindowInput } from '@aliyun-cyber-range/platform-api-client';
+import type { BillingGroupInput, BillingWindowInput, BindOssBillingInput } from '@aliyun-cyber-range/platform-api-client';
+import * as z from 'zod/v4';
 
 import {
   billingAnomaliesInputSchema,
@@ -13,6 +14,7 @@ import {
   billingUserItemsInputSchema,
   billingUserSummaryInputSchema,
   billingUsersInputSchema,
+  operationSchema,
 } from './input-schemas';
 import {
   billingAnomalyListOutputSchema,
@@ -49,11 +51,42 @@ function toCsvExport(fileName: string, csv: string) {
   };
 }
 
+const ossBindingSchema = z.object({ ledgerId: z.string(), bucketName: z.string(), cloudWorkspaceId: z.string(), cloudAccountUid: z.string(), regionId: z.string(),
+  effectiveStartAt: z.iso.datetime({ offset: true }), effectiveEndAt: z.iso.datetime({ offset: true }).nullable(), declaredAt: z.iso.datetime({ offset: true }),
+  declaredByUserId: z.string(), bucketCreatedAt: z.iso.datetime({ offset: true }), verifiedAt: z.iso.datetime({ offset: true }), officialRequestId: z.string(),
+  status: z.enum(['active', 'ended']) });
+const operation = (args: Record<string, unknown>) => ({ idempotencyKey: args.idempotencyKey as string | undefined, confirmationId: args.confirmationId as string | undefined });
+
 export const billingTools: ToolDefinition[] = [
+  {
+    name: 'billing_oss_bucket_binding_list', title: '查询阿里云专用 OSS 桶费用归属',
+    description: '返回当前空间的专用OSS桶声明、生效区间及官方身份核验证据。不含凭据；绑定不代表费用已出账。',
+    requiredScopes: ['billing:read'], adminOnly: true, readOnlyHint: true,
+    inputSchema: z.object({}).strict(), outputSchema: resultOutputSchema(z.array(ossBindingSchema)),
+    async call(context) { return z.array(ossBindingSchema).parse(await context.client.listOssBillingBindings()); },
+  },
+  {
+    name: 'billing_oss_bucket_bind', title: '登记阿里云平台专用 OSS 桶费用归属',
+    description: '仅平台超管可声明当前配置桶专供平台使用，并指定固定生效时间。核对官方桶Owner、地域和出生信息，费用起点不能早于平台计费起点。只认完整生效账日的官方桶级分账，地域汇总和其他桶费用不计入；明细缺失保留待对账并由定时同步补齐。混用桶不可声明为专用。不会创建或删除云资源。',
+    requiredScopes: ['billing:sync', 'settings:write'], adminOnly: true, annotations: { idempotentHint: true },
+    inputSchema: operationSchema.extend({ bucketName: z.string().regex(/^[a-z0-9][a-z0-9-]{1,61}[a-z0-9]$/), effectiveStartAt: z.iso.datetime({ offset: true }), dedicated: z.literal(true) }).strict(),
+    outputSchema: resultOutputSchema(ossBindingSchema),
+    async call(context, args) {
+      const { idempotencyKey, confirmationId, ...payload } = args;
+      return ossBindingSchema.parse(await context.client.bindOssBilling(payload as BindOssBillingInput, operation({ idempotencyKey, confirmationId })));
+    },
+  },
+  {
+    name: 'billing_oss_bucket_binding_end', title: '结束阿里云专用 OSS 桶费用归属',
+    description: '仅平台超管可结束准确ledgerId的专用归属声明。结束时间由服务器确定，保留历史已核验费用与审计；不删除存储桶或对象。结束后不自动恢复或认领完整性未知的部分账日。',
+    requiredScopes: ['billing:sync', 'settings:write'], adminOnly: true, annotations: { idempotentHint: true },
+    inputSchema: operationSchema.extend({ ledgerId: z.string().trim().min(1).max(192) }).strict(), outputSchema: resultOutputSchema(ossBindingSchema),
+    async call(context, args) { return ossBindingSchema.parse(await context.client.endOssBillingBinding(args.ledgerId as string, operation(args))); },
+  },
   {
     name: 'billing_summary_get',
     title: '查询账单费用汇总',
-    description: '对应账单费用页的概览。billingScope=platform_resources表示仅统计有平台创建来源证明的资源。若返回platformBillingStartedAt，仅包含固定起点后平台创建的资源，旧资源迟到账也不纳入当前范围；历史记录保留作审计。返回已归属费用，多币种总金额为null并读取currencyTotals。unallocatedCurrencyTotals仅含已证明属于平台但待分配的精确金额，禁止加入外部或账号混合聚合费用；resourcesWithoutBillCount统计平台资源缺少独立费用明细的数量，不含SNAT/DNAT、阿里云镜像和准确核实已含于主机系统盘组件的盘。reconciliationIssues指出快照/OSS待细分、unknown来源待核验、disk历史盘映射待核验；映射未知不能宣称该盘已出账，均不含账号聚合金额。待出账不代表免费，billingStatus=provisional表示金额可能补账或调整；旧接口缺失scope或对账字段表示范围/覆盖未知，不能当作零或平台支出。',
+    description: '对应账单费用页的概览。billingScope=platform_resources统计有平台创建来源证明的资源，以及超管明确声明且官方身份已核验的阿里云专用OSS桶。platformBillingStartedAt限定新资源出生和专用桶生效起点，旧资源迟到账不纳入；历史记录保留审计。源ECS快照分账须完整来源证明，金额记录一次并关联快照集合，不拆算每个快照。缺明细、缺证明或部分专用账日保留reconciliationIssues；官方完整分账和证明到齐后定时同步补账。多币种读取currencyTotals；unallocatedCurrencyTotals只含已证明平台费用，不能加账号/地域混合金额。resourcesWithoutBillCount不含SNAT/DNAT、阿里云镜像和已核实主机系统盘组件。disk历史映射未知不代表另有费用。billingStatus=provisional表示金额可能补账调整；缺字段表示未知，不能当作零。',
     requiredScopes: ['billing:read'], adminOnly: true,
     readOnlyHint: true,
     inputSchema: billingSummaryInputSchema,
