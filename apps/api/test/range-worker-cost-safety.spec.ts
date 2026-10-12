@@ -102,6 +102,25 @@ describe('range worker durable cost safety', () => {
     expect(await f.repository.getRangeInstanceById(f.instance.id)).toMatchObject({ status: 'destroy_failed', resourceSummary: { hostIds: resources.hostIds, executionContext: binding } });
     expect((await f.repository.listBillingLedgerResources()).every(row => !row.releasedAt)).toBe(true);
   });
+  it('continues range network destruction after the recorded host and system disk were released by the cloud', async () => {
+    const f = await fixture('destroy');
+    const summary = { ...resources, executionContext: binding, diskInventoryHostIds: { entry: 'i-owned' },
+      securityGroupIds: { entry: 'sg-owned' }, networkAclIds: { zone: 'nacl-owned' },
+      snatEntryIds: { zone: 'stb-owned:snat-owned' }, dnatEntryIds: { entry: 'ftb-owned:fwd-owned' } };
+    await f.repository.updateRangeInstance(f.instance.id, { resourceSummary: summary }); f.provisioner.inspectResources.mockResolvedValue(summary);
+    const collections: Record<string, [string, string]> = { DescribeInstances: ['Instances', 'Instance'], DescribeDisks: ['Disks', 'Disk'], DescribeEipAddresses: ['EipAddresses', 'EipAddress'],
+      DescribeSecurityGroups: ['SecurityGroups', 'SecurityGroup'], DescribeNetworkAcls: ['NetworkAcls', 'NetworkAcl'], DescribeSnatTableEntries: ['SnatTableEntries', 'SnatTableEntry'], DescribeForwardTableEntries: ['ForwardTableEntries', 'ForwardTableEntry'] };
+    f.query.mockImplementation(async (input: any) => {
+      const [collection, item] = collections[input.action];
+      return { RequestId: 'receipt', TotalCount: 0, PageNumber: 1, PageSize: 100, [collection]: { [item]: [] } };
+    });
+    await f.worker.process(f.job.id);
+    expect(f.provisioner.create).not.toHaveBeenCalled(); expect(f.provisioner.destroy).toHaveBeenCalledTimes(1);
+    expect(await f.repository.getRangeInstanceById(f.instance.id)).toMatchObject({ status: 'destroyed' });
+    expect(f.query.mock.calls.map(([input]: any[]) => input.action)).toEqual(expect.arrayContaining(['DescribeSecurityGroups', 'DescribeNetworkAcls', 'DescribeSnatTableEntries', 'DescribeForwardTableEntries']));
+    expect((await f.repository.listBillingLedgerResources()).every(row => row.releasedAt)).toBe(true);
+    expect((await f.repository.listProvisionJobStepLogs(f.job.id)).some(log => log.stepName === 'range_resource_inventory' && log.message?.includes('i-owned'))).toBe(true);
+  });
 
   it('keeps the resource inventory if releasing billing fails after verified cloud deletion', async () => {
     const f = await fixture('destroy');

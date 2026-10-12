@@ -5,6 +5,7 @@ const descriptions: Record<string, string> = {
   prepare: 'Prepare the recorded operation', tofu_init: 'Initialize OpenTofu', tofu_apply: 'Apply the recorded topology',
   tofu_destroy: 'Destroy the recorded topology', verify_destroy: 'Platform cloud absence verification',
   persist_access_entry: 'Persist cloud resources and billing sources', range_resource_inventory: 'Persist resource identities',
+  single_instance_creation_receipt: 'Persist exact provider creation identity',
   platform_billing_origin_repair: 'Restore a verified billing creation source',
   cleanup_failed_create_resources: 'Clean up partial creation',
 };
@@ -60,7 +61,7 @@ export function buildProvisionJobEvidence(job: ProvisionJobRecord, steps: Provis
   const scopedSteps = steps.filter(step => step.jobId === job.id && step.cloudWorkspaceId === job.cloudWorkspaceId);
   const inventories: ReturnType<typeof inventory>[] = [];
   let invalidInventoryCount = 0;
-  for (const step of scopedSteps.filter(step => step.stepName === 'range_resource_inventory' && step.status === 'succeeded')) {
+  for (const step of scopedSteps.filter(step => ['range_resource_inventory', 'single_instance_creation_receipt'].includes(step.stepName) && step.status === 'succeeded')) {
     try { inventories.push(inventory(step, job.rangeInstanceId)); } catch { invalidInventoryCount++; }
   }
   return { coverage: 'platform_recorded_job_evidence' as const, inventories, invalidInventoryCount,

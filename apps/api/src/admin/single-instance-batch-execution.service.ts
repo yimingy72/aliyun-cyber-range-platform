@@ -6,6 +6,7 @@ import { releaseRangeInstanceBillingLedger, syncRangeInstanceBillingLedger } fro
 import { SystemConfigService, type SystemCloudAccountContext } from './system-config.service';
 import { describeTencentInstances, describeTencentResourceInventory, readTencentAttachedDiskInventory, assertTencentOwnedInstance, terminateTencentInstances } from './tencent-cloud-resources';
 import { readAttachedDiskInventory, mergeDiskInventory, assertDiskInventorySafe, findExistingInventoryDiskIds, inventoryDiskIds } from './instance-disk-inventory';
+import { readProvenSingleInstanceIds } from './single-instance-resource-origin';
 const ALICLOUD_ECS_API_VERSION = '2014-05-26';
 const ALICLOUD_SIGNATURE_METHOD = 'HMAC-SHA1';
 const ALICLOUD_SIGNATURE_VERSION = '1.0';
@@ -161,11 +162,8 @@ export class SingleInstanceBatchExecutionService {
               const expectedHostName = item.instance.singleInstanceConfig?.hostName?.trim();
               if (!previousRequest && !(await this.adminRepository.commitSingleInstanceClaim(item.job,{singleInstanceConfig:{...item.instance.singleInstanceConfig!,resolvedInstanceType:memberType,nativeCreateJobId:item.job.id}}))) throw new LostSingleInstanceClaimError();
               if (previousRequest && !knownIds.length) {
-                knownIds = await this.findSingleInstanceIdsByRangeInstanceTag({ accessKeyId: accountContext.accessKeyId,
-                  accessKeySecret: accountContext.accessKeySecret, regionId: accountContext.defaultRegion, rangeInstanceId: item.instance.id });
                 // The cloud token has a finite lifetime; replaying an old accepted request can create another ECS.
-                if (!knownIds.length) throw new Error('Previous ECS creation outcome is unknown; creation will not be replayed');
-                if (knownIds.length !== 1) throw new Error('Previous ECS creation has multiple physical instances and requires cleanup');
+                throw new Error('Previous ECS creation outcome has no durable physical identity; tags cannot authorize adoption or replay');
               }
               if (!knownIds.length) {
                 createRequestStarted = true;
@@ -239,6 +237,9 @@ export class SingleInstanceBatchExecutionService {
           const instanceIds = [...new Set([...Object.values(item.instance.resourceSummary?.hostIds ?? {}), ...taggedIds])];
           await this.assertCurrent(item);
           if (instanceIds.length) {
+            const current = await this.adminRepository.getRangeInstanceById(item.instance.id) ?? item.instance;
+            const proven = await readProvenSingleInstanceIds(this.adminRepository, current);
+            if (instanceIds.some(id => !proven.has(id))) throw new Error('Tagged native ECS candidate has no independent persisted physical creation identity');
             await this.rememberCleanupResources(item, accountContext, instanceIds);
             await this.deleteInstancesWithRetry({ accessKeyId: accountContext.accessKeyId,
               accessKeySecret: accountContext.accessKeySecret, regionId: accountContext.defaultRegion, instanceIds,
@@ -360,9 +361,28 @@ export class SingleInstanceBatchExecutionService {
     await assertLease();
     await syncRangeInstanceBillingLedger({ repository: this.adminRepository, instance: item.instance, resourceSummary: summary,
       regionId: account.defaultRegion, cloudAccountUid: account.accountUid, sourceProvisionJobId: item.job.id, billingStartAt: item.instance.createdAt });
+    await this.recordInstanceCreationInventory(item, account, summary);
     await assertLease();
     for (const disks of inventories) assertDiskInventorySafe(disks, destroying);
     return summary;
+  }
+  private async recordInstanceCreationInventory(item: SingleInstanceExecutionItem, account: SystemCloudAccountContext, summary: RangeResourceSummary) {
+    const current = await this.adminRepository.getRangeInstanceById(item.instance.id) ?? item.instance;
+    const config = current.singleInstanceConfig;
+    const sourceId = config?.opentofuCreateJobId ?? config?.nativeCreateJobId;
+    const source = sourceId ? await this.adminRepository.getProvisionJobById(sourceId) : null;
+    if (!source || !source.startedAt || source.rangeInstanceId !== current.id || !['create', 'retry'].includes(source.jobType)
+      || (source.cloudWorkspaceId ?? 'legacy-unbound') !== (current.cloudWorkspaceId ?? 'legacy-unbound')) return;
+    const message = JSON.stringify({ version: 1, cloudProvider: current.cloudProvider, cloudWorkspaceId: current.cloudWorkspaceId ?? 'legacy-unbound',
+      rangeInstanceId: current.id, sourceJobId: source.id, ownerUserId: current.ownerUserId, singleInstanceBatchId: current.singleInstanceBatchId,
+      executionContext: { provider: current.cloudProvider, cloudAccountContextId: account.cloudAccountContextId, cloudAccountUid: account.accountUid,
+        regionId: account.defaultRegion, zoneId: config?.zoneId ?? account.defaultZoneId },
+      resources: { hostIds: summary.hostIds ?? {}, systemDiskIds: summary.systemDiskIds ?? {}, dataDiskIds: summary.dataDiskIds ?? {},
+        diskInventoryHostIds: summary.diskInventoryHostIds ?? {}, diskOwnershipProofs: summary.diskOwnershipProofs ?? {} } });
+    if ((await this.adminRepository.listProvisionJobStepLogs(source.id)).some(log => log.stepName === 'range_resource_inventory' && log.status === 'succeeded' && log.message === message)) return;
+    const now = new Date();
+    await this.adminRepository.createProvisionJobStepLog({ jobId: source.id, stepName: 'range_resource_inventory', status: 'succeeded',
+      message, startedAt: now, finishedAt: now, stdoutExcerpt: null, stderrExcerpt: null });
   }
   async assertInstanceDisksAbsent(instance: RangeInstanceRecord, account: SystemCloudAccountContext) {
     const current = await this.adminRepository.getRangeInstanceById(instance.id);
@@ -420,6 +440,9 @@ export class SingleInstanceBatchExecutionService {
     await this.assertCurrent(item);
     const before = await this.describeInstances({ accountContext: account, instanceIds: ids });
     if (before.some((detail) => !matches(detail))) throw new Error('Emergency cleanup ownership could not be verified');
+    const original = await this.adminRepository.getRangeInstanceById(item.instance.id) ?? item.instance;
+    const proven = await readProvenSingleInstanceIds(this.adminRepository, original);
+    if (ids.some(id => !proven.has(id))) throw new Error('Emergency cleanup ownership has no independent persisted physical creation identity');
     await assertLease();
     await this.assertCurrent(item);
     if (ids.length) await this.deleteInstancesWithRetry({ accessKeyId: account.accessKeyId,
@@ -533,11 +556,7 @@ export class SingleInstanceBatchExecutionService {
         consecutiveEmpty = 0;
         const lateIds = byTag.filter(id => !knownIds.includes(id));
         if (lateIds.length) {
-          await this.assertCurrent(item);
-          knownIds.push(...lateIds);
-          await this.rememberCleanupResources(item, account, knownIds);
-          await this.deleteInstancesWithRetry({accessKeyId:account.accessKeyId,accessKeySecret:account.accessKeySecret,regionId:account.defaultRegion,instanceIds:lateIds,
-            assertCurrent: () => this.assertCurrent(item) });
+          throw new Error('Late tagged ECS has no independent recorded identity; retain the unknown creation outcome for recovery');
         }
       }
       if (attempt < DESTROY_RETRY_ATTEMPTS - 1)
@@ -770,6 +789,7 @@ export class SingleInstanceBatchExecutionService {
     try {
       await this.assertCurrent(item);
       const taggedIds = await this.findSingleInstanceIdsByRangeInstanceTag({ accessKeyId: account.accessKeyId, accessKeySecret: account.accessKeySecret, regionId: account.defaultRegion, rangeInstanceId: item.instance.id });
+      if (taggedIds.some(id => !knownIds.includes(id))) throw new Error('Tagged candidate has no exact native RunInstances receipt or prior inventory; automatic cleanup requires recovery');
       const ids = [...new Set([...knownIds, ...taggedIds])];
       if (ids.length) {
         await this.assertCurrent(item);

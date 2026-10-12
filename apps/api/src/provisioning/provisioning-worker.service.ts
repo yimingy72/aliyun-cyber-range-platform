@@ -1723,6 +1723,14 @@ export class ProvisioningWorkerService {
     for (const id of new Set(Object.values(resourceSummary.natGatewayIds ?? {}).filter(Boolean))) {
       checks.push(async () => await this.checkNatGatewayExists(id, runtimeConfig, regionId) ? [`nat:${id}`] : []);
     }
+    // A missing ECS (including a cloud scheduled release) does not prove that
+    // its range-owned firewall or NAT rules have disappeared.
+    for (const [field, kind] of [['securityGroupIds', 'security_group'], ['networkAclIds', 'network_acl'],
+      ['snatEntryIds', 'snat_entry'], ['dnatEntryIds', 'dnat_entry']] as const) {
+      for (const id of new Set(Object.values(resourceSummary[field] ?? {}).filter(Boolean))) {
+        checks.push(async () => await this.checkAliyunRecordedNetworkResource(kind, id, runtimeConfig, regionId) ? [`${kind}:${id}`] : []);
+      }
+    }
     const eipIds = new Set([resourceSummary.eipAllocationId, ...Object.values(resourceSummary.eipAllocationIds ?? {})].filter((id): id is string => Boolean(id)));
     for (const id of eipIds) {
       checks.push(async () => await this.checkEipExists(id, runtimeConfig, regionId) ? [`eip:${id}`] : []);
@@ -2101,6 +2109,46 @@ export class ProvisioningWorkerService {
     });
 
     return this.readVerificationPage(payload, payload.EipAddresses?.EipAddress, 'AllocationId', [allocationId]).length > 0;
+  }
+
+  private async checkAliyunRecordedNetworkResource(kind: 'security_group' | 'network_acl' | 'snat_entry' | 'dnat_entry',
+    recordedId: string, runtimeConfig: { accessKeyId: string; accessKeySecret: string }, regionId: string) {
+    const specs = {
+      security_group: { service: 'ecs', action: 'DescribeSecurityGroups', collection: 'SecurityGroups', item: 'SecurityGroup', field: 'SecurityGroupId', prefix: 'sg', parent: null },
+      network_acl: { service: 'vpc', action: 'DescribeNetworkAcls', collection: 'NetworkAcls', item: 'NetworkAcl', field: 'NetworkAclId', prefix: 'nacl', parent: null },
+      snat_entry: { service: 'vpc', action: 'DescribeSnatTableEntries', collection: 'SnatTableEntries', item: 'SnatTableEntry', field: 'SnatEntryId', prefix: 'snat', parent: 'SnatTableId' },
+      dnat_entry: { service: 'vpc', action: 'DescribeForwardTableEntries', collection: 'ForwardTableEntries', item: 'ForwardTableEntry', field: 'ForwardEntryId', prefix: 'fwd', parent: 'ForwardTableId' },
+    } as const;
+    const spec = specs[kind], parts = recordedId.split(':'), id = parts.at(-1)!;
+    if (parts.length > 2 || !new RegExp(`^${spec.prefix}-[a-zA-Z0-9]+$`).test(id)
+      || (!spec.parent && parts.length !== 1)
+      || (spec.parent && parts.length === 2 && !new RegExp(`^${kind === 'snat_entry' ? 'stb' : 'ftb'}-[a-zA-Z0-9]+$`).test(parts[0]))) {
+      throw new Error('Cloud network verification requires an exact recorded resource and parent identity');
+    }
+    const parameters: Record<string, string> = { RegionId: regionId, [spec.field]: id, PageSize: '50', PageNumber: '1' };
+    if (spec.parent && parts.length === 2) parameters[spec.parent] = parts[0];
+    let payload: Record<string, any>;
+    try {
+      payload = await this.performAliyunRpcRequest({ endpoint: `${spec.service}.${regionId}.aliyuncs.com`,
+        version: spec.service === 'ecs' ? ALICLOUD_ECS_API_VERSION : ALICLOUD_VPC_API_VERSION,
+        action: spec.action, ...runtimeConfig, parameters });
+    } catch (error) {
+      // Only a typed receipt for this exact queried resource (or its frozen
+      // parent table) proves absence. Permission and region errors do not.
+      if (error instanceof AliyunVerificationRequestError && error.requestId
+        && error.action === spec.action && [400, 404].includes(error.status)
+        && (error.code === `Invalid${spec.field}.NotFound`
+          || spec.parent && parts.length === 2 && error.code === `Invalid${spec.parent}.NotFound`)) return false;
+      throw error;
+    }
+    const numeric = (value: unknown) => (typeof value === 'number' || typeof value === 'string') && /^\d+$/.test(String(value))
+      && Number.isSafeInteger(Number(value)) ? Number(value) : NaN;
+    const rows = Array.isArray(payload[spec.collection]) ? payload[spec.collection] : payload[spec.collection]?.[spec.item];
+    const checked = this.readVerificationPage({ ...payload, TotalCount: numeric(payload.TotalCount), PageNumber: numeric(payload.PageNumber), PageSize: numeric(payload.PageSize) },
+      rows, spec.field, [id]);
+    if (checked.some(row => spec.parent && row[spec.parent] !== undefined && row[spec.parent] !== parameters[spec.parent]
+      || row.RegionId !== undefined && row.RegionId !== regionId)) throw new Error('Cloud network verification returned a foreign region or parent identity');
+    return checked.length > 0;
   }
 
   private readVerificationPage(payload: unknown, items: unknown, field: string, ids: string[]): Record<string, string>[] {

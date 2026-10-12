@@ -1,4 +1,4 @@
-import { readAttachedDiskInventory, findExistingInventoryDiskIds, mergeDiskInventory, assertDiskInventorySafe } from '../src/admin/instance-disk-inventory';
+import { readAttachedDiskInventory, findExistingInventoryDiskIds, mergeDiskInventory, assertDiskInventorySafe, hasVerifiedSystemDiskReleasePolicy } from '../src/admin/instance-disk-inventory';
 
 const expectedTags = { CreatedBy: 'cyber-range-platform', RangeInstanceId: 'range-a', PlatformScope: 'user', PlatformUserId: 'alice', CloudAccountUid: 'uid-a', CloudAccountContextId: 'ctx-a' };
 const tags = (patch = {}) => ({ Tag: Object.entries({ ...expectedTags, ...patch }).map(([TagKey, TagValue]) => ({ TagKey, TagValue })) });
@@ -11,11 +11,19 @@ describe('owned ECS disk inventory', () => {
     const rpc = jest.fn(async () => page([disk('d-system','system'), disk('d-data1','data', { Tags: tags({ PlatformResourceType: 'ecs' }) }), disk('d-data2','data')]));
     const result = await read(rpc);
     expect(result.systemDiskIds).toEqual(['d-system']); expect(result.dataDiskIds).toEqual(['d-data1','d-data2']);
-    expect(result.unverifiedDisks).toEqual([]); expect(result.proofs['d-data1']).toEqual({ instanceId: 'i-owned', method: 'tags' });
+    expect(result.unverifiedDisks).toEqual([]); expect(result.proofs['d-data1']).toEqual({ instanceId: 'i-owned', method: 'tags', deleteWithInstance: true });
     expect(rpc).toHaveBeenCalledWith('DescribeDisks', { InstanceId: 'i-owned', PageNumber: '1', PageSize: '100' });
   });
   it('accepts a persisted system disk without requiring mutable image metadata or tags', async () => {
     expect((await read(async () => page([disk('d-system','system', { Tags: undefined })]), { knownSystemDiskIds: ['d-system'] })).systemDiskIds).toEqual(['d-system']);
+  });
+  it.each([true, false, undefined])('records the actual system-disk release policy without reconstructing the host: %s', async policy => {
+    const inventory = await read(async () => page([disk('d-system', 'system', { Tags: undefined, DeleteWithInstance: policy })]), { knownSystemDiskIds: ['d-system'] });
+    const summary = mergeDiskInventory({ mode: 'opentofu' }, 'host', inventory, 'i-owned');
+    expect(summary.diskOwnershipProofs?.['d-system'].deleteWithInstance).toBe(policy ?? null);
+    expect(hasVerifiedSystemDiskReleasePolicy(summary, 'i-owned')).toBe(policy === true);
+    expect(hasVerifiedSystemDiskReleasePolicy(summary, 'i-other')).toBe(false);
+    expect(() => assertDiskInventorySafe(inventory, false)).not.toThrow();
   });
   it.each([{}, { ImageId: 'm-shared', SourceSnapshotId: 's-shared', CreationTime: '2026-10-09T08:00:00Z', AttachedTime: '2026-10-09T08:00:00Z' }])('does not infer untagged disk ownership from attachment or source metadata %j', async patch => {
     const inventory = await read(async () => page([disk('d-foreign','data',{ Tags: undefined, ...patch })]));

@@ -188,7 +188,7 @@ export type RangeResourceSummary = {
   dataDiskIds?: Record<string, string> | null;
   unverifiedDiskIds?: Record<string, string> | null;
   diskInventoryHostIds?: Record<string, string> | null;
-  diskOwnershipProofs?: Record<string, { instanceId: string | null; method: 'persisted' | 'tags' }> | null;
+  diskOwnershipProofs?: Record<string, { instanceId: string | null; method: 'persisted' | 'tags'; deleteWithInstance?: boolean | null }> | null;
   secondaryNetworkInterfaceIds?: Record<string, string> | null;
   natGatewayIds?: Record<string, string> | null;
   snatEntryIds?: Record<string, string> | null;

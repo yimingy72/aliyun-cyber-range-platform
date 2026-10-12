@@ -7,6 +7,7 @@ import { SingleInstanceBatchExecutionService, patchRuntimeTopologyGraph, type Si
 import { SystemConfigService, type SystemCloudAccountContext } from './system-config.service';
 import { buildBillingTags } from './billing-tagging';
 import { syncRangeInstanceBillingLedger, releaseRangeInstanceBillingLedger } from './billing-ledger-sync';
+import { readProvenSingleInstanceIds } from './single-instance-resource-origin';
 import { assertTencentImagesAvailable } from '../provisioning/tencent-cloud-zone-instance-scheduler';
 import { describeTencentResourceInventory } from './tencent-cloud-resources';
 import { buildTencentSingleCreationIntent } from '../provisioning/tencent-cloud-identity';
@@ -368,6 +369,8 @@ export class SingleInstanceOpenTofuExecutionService {
     let flushing = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
     let active = Promise.resolve();
+    let receipts = Promise.resolve();
+    let receiptFailure: unknown;
     const stopObserving = () => { stopped = true; clearTimeout(timer); timer = undefined; pending.clear(); };
     const schedule = (delay: number) => {
       if (stopped || flushing || timer || !pending.size) return;
@@ -424,10 +427,25 @@ export class SingleInstanceOpenTofuExecutionService {
           return;
         }
         seen.set(item.instance.id, event.resourceId);
+        if (event.action === 'create') {
+          receipts = receipts.then(async () => {
+            await this.assertLease(context.lease);
+            const member = context.manifest.members[item.instance.id];
+            const now = new Date();
+            await this.repository.createProvisionJobStepLog({ jobId: member.sourceJobId, stepName: 'single_instance_creation_receipt', status: 'succeeded',
+              message: JSON.stringify({ version: 1, cloudProvider: item.instance.cloudProvider, cloudWorkspaceId: item.instance.cloudWorkspaceId ?? 'legacy-unbound',
+                rangeInstanceId: item.instance.id, sourceJobId: member.sourceJobId, ownerUserId: item.instance.ownerUserId,
+                singleInstanceBatchId: item.instance.singleInstanceBatchId, executionContext: batchResourceSummary(context).executionContext,
+                resources: { hostIds: { [member.hostKey]: event.resourceId } } }), startedAt: now, finishedAt: now, stdoutExcerpt: null, stderrExcerpt: null });
+          }).catch(error => { receiptFailure = error; });
+        }
         pending.set(item.instance.id, { item, cloudId: event.resourceId });
         schedule(250);
       },
-      stop: async () => { stopObserving(); context.lease.signal.removeEventListener('abort', stopObserving); await active; },
+      stop: async () => {
+        stopObserving(); context.lease.signal.removeEventListener('abort', stopObserving); await active; await receipts;
+        if (receiptFailure) throw new Error('Exact provider creation receipt could not be persisted; recovery material was preserved');
+      },
     };
   }
 
@@ -513,6 +531,9 @@ export class SingleInstanceOpenTofuExecutionService {
       const details = [...new Map([...tagged, ...known].map(detail => [detail.instanceId, detail])).values()];
       if (details.some(detail => !matchesCloud(detail, item.instance))) throw new Error('Untracked cloud resource has an unproven owner or batch');
       if (details.length) {
+        const current = await this.repository.getRangeInstanceById(item.instance.id) ?? item.instance;
+        const proven = await readProvenSingleInstanceIds(this.repository, current);
+        if (details.some(detail => !proven.has(detail.instanceId))) throw new Error('Tagged candidate has no independent persisted physical creation identity; recovery is required before cleanup');
         if (context.account.provider === 'tencent_cloud' && (!pendingCreateIds(context.manifest.pending).includes(item.instance.id) && !context.knownIds.get(item.instance.id)?.length || !item.instance.singleInstanceConfig?.opentofuCreateJobId)) throw new Error('Tencent untracked resources require durable submitted creation evidence');
         context.knownIds.set(item.instance.id, [...new Set([...(context.knownIds.get(item.instance.id) ?? []), ...details.map(detail => detail.instanceId)])]);
         if (context.manifest.pending) {
@@ -687,6 +708,7 @@ function matchesCloud(detail: NormalizedInstanceDetail, instance: RangeInstanceR
   return detail.tags.RangeInstanceId === instance.id && detail.tags.SingleInstanceBatchId === instance.singleInstanceBatchId
     && detail.tags.CloudAccountUid === instance.singleInstanceConfig?.cloudAccountUid
     && detail.tags.CloudAccountContextId === instance.singleInstanceConfig?.cloudAccountContextId && detail.tags.ExecutionBackend === 'opentofu'
+    && detail.tags.PlatformCreateJobId === instance.singleInstanceConfig?.opentofuCreateJobId
     && (instance.cloudProvider !== 'tencent_cloud' || Boolean(instance.singleInstanceConfig?.opentofuCreateJobId) && detail.tags.PlatformCreateJobId === instance.singleInstanceConfig.opentofuCreateJobId && detail.tags.CreationIntentId === buildTencentSingleCreationIntent(instance,instance.singleInstanceConfig.opentofuCreateJobId) && detail.tags.CloudProvider === 'tencent_cloud')
     && detail.tags.CreatedBy === 'cyber-range-platform' && (detail.tags.PlatformUserId ?? null) === instance.ownerUserId
     && detail.tags.PlatformScope === (instance.ownerUserId ? 'user' : 'platform');

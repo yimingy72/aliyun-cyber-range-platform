@@ -242,8 +242,9 @@ describe('single-instance OpenTofu batch execution', () => {
   it.each([true,false])('recovers an untracked Tencent system disk only with CBS attachment and creation-window proof (%s)', async diskOwned => {
     const test = fixture(1,true);
     jest.spyOn(tencentRpc,'requestTencentCloud').mockImplementation(async input => input.action === 'DescribeImages' ? { RequestId: 'fixture-image-request', TotalCount: 1, ImageSet: [{ ImageId: 'img-fixture', ImageState: 'NORMAL', ImageType: 'PRIVATE_IMAGE', Architecture: 'x86_64', ImageSize: 20, SnapshotSet: [] }] } as any : { RequestId: 'fixture-disk-request', TotalCount: 1, DiskSet: [{ DiskId: 'disk-fixture', InstanceId: diskOwned ? 'ins-member1' : 'ins-foreign', DiskUsage: 'SYSTEM_DISK', Shareable: false, DiskChargeType: 'POSTPAID_BY_HOUR', DeleteWithInstance: true, CreateTime: new Date().toISOString() }] } as any);
-    test.onApply = async () => {
+    test.onApply = async options => {
       await test.createMember('member-1');
+      options.onResourceApplied?.({ address: 'module.single_batch.tencentcloud_instance.members["member-1"]', resourceType: 'tencentcloud_instance', action: 'create', resourceId: 'ins-member1' });
       test.cloud.get('ins-member1').systemDiskId = 'disk-fixture';
       await fs.rm(path.join(test.workspace,'terraform.tfstate'));
       throw new Error('response accepted but state lost');
@@ -555,8 +556,9 @@ describe('single-instance OpenTofu batch execution', () => {
 
   it('cleans proven untracked resources through explicit emergency-api and masks every batch password and account key', async () => {
     const test = fixture();
-    test.onApply = async () => {
+    test.onApply = async options => {
       await test.createMember('member-1'); await test.createMember('member-2');
+      options.onResourceApplied?.(progressEvent('member-1')); options.onResourceApplied?.(progressEvent('member-2'));
       await fs.rm(path.join(test.workspace, 'terraform.tfstate')); test.stateMembers.clear();
       throw new Error(`failure test-Passw0rd-1! test-Passw0rd-2! test-access-key test-secret-key`);
     };
@@ -603,7 +605,7 @@ describe('single-instance OpenTofu batch execution', () => {
     const manifest = JSON.parse(await fs.readFile(path.join(test.workspace, 'single-batch-manifest.json'), 'utf8'));
     expect(manifest.pending.recoveryIds).toEqual(['member-1', 'member-2', 'member-3']);
     expect(test.instances.map(instance => instance.status)).toEqual(['running', 'create_failed', 'destroy_failed']);
-    expect(test.instances[2].resourceSummary?.hostIds).toEqual({ 'host-3': 'i-member-3' });
+    expect(test.instances[2].resourceSummary?.hostIds).toBeUndefined();
   });
 
   it('refuses unknown or cross-owner cloud resources without emergency deletion', async () => {
@@ -611,6 +613,28 @@ describe('single-instance OpenTofu batch execution', () => {
     test.onApply = async () => { await test.createMember('member-1'); test.cloud.get('i-member-1').tags.PlatformUserId = 'bob'; await fs.rm(path.join(test.workspace, 'terraform.tfstate')); test.stateMembers.clear(); throw new Error('state lost'); };
     await test.service.executeCreateBatch(test.items, test.lease);
     expect(test.native.deleteOwnedUntrackedOpenTofuInstances).not.toHaveBeenCalled(); expect(test.instances[0].status).toBe('destroy_failed'); expect(test.cloud.size).toBe(1);
+  });
+  it.each([false, true])('never adopts copied Alibaba tags as creation evidence when original state is missing: known original=%s', async knownOriginal => {
+    const test = fixture(1);
+    if (knownOriginal) await test.service.executeCreateBatch(test.items, test.lease);
+    const run = async () => {
+      await test.createMember('member-1', { nativeId: 'i-forged' });
+      await fs.rm(path.join(test.workspace, 'terraform.tfstate')); test.stateMembers.clear();
+      throw new Error('unknown creation result');
+    };
+    if (knownOriginal) {
+      await run().catch(() => {});
+      await test.service.executeDestroyBatch([test.queueDestroy(0)], test.lease);
+    } else {
+      test.onApply = run;
+      await test.service.executeCreateBatch(test.items, test.lease);
+    }
+    expect(test.instances[0].status).toBe('destroy_failed');
+    expect(test.native.deleteOwnedUntrackedOpenTofuInstances).not.toHaveBeenCalled();
+    expect(test.cloud.has('i-forged')).toBe(true);
+    expect(test.ledger.some(row => row.cloudResourceId === 'i-forged')).toBe(false);
+    const manifest = JSON.parse(await fs.readFile(path.join(test.workspace, 'single-batch-manifest.json'), 'utf8'));
+    expect(Object.values(manifest.pending?.knownIds ?? {}).flat()).not.toContain('i-forged');
   });
 
   it.each(['owner', 'uid', 'region', 'profile'])('rejects mixed frozen %s membership before CLI or cloud mutation', async field => {
@@ -638,14 +662,15 @@ describe('single-instance OpenTofu batch execution', () => {
     expect(test.runner.apply).toHaveBeenCalledTimes(1); expect(test.instances[0].status).toBe('destroy_failed');
   });
 
-  it('recovers an interrupted no-state apply without ever performing a second creation apply', async () => {
+  it('keeps an interrupted no-state apply pending without inventing deletion authority from tags', async () => {
     const test = fixture(1);
     test.onApply = async () => { await test.createMember('member-1'); await fs.rm(path.join(test.workspace, 'terraform.tfstate')); test.stateMembers.clear(); test.controller.abort(); };
     await expect(test.service.executeCreateBatch(test.items, test.lease)).rejects.toBeInstanceOf(SingleInstanceOpenTofuLeaseLostError);
     const retry = test.queueDestroy(0); retry.job.jobType = 'retry'; retry.instance.status = 'creating';
     await test.service.executeCreateBatch([retry], { ...test.lease, signal: new AbortController().signal });
-    expect(test.runner.apply).toHaveBeenCalledTimes(1); expect(test.cloud.size).toBe(0); expect(retry.instance.status).toBe('create_failed');
-    await expect(fs.stat(path.join(test.workspace, '.single-batch-apply-started'))).rejects.toMatchObject({ code: 'ENOENT' });
+    expect(test.runner.apply).toHaveBeenCalledTimes(1); expect(test.cloud.size).toBe(1); expect(retry.instance.status).toBe('destroy_failed');
+    expect(test.native.deleteOwnedUntrackedOpenTofuInstances).not.toHaveBeenCalled();
+    await expect(fs.stat(path.join(test.workspace, '.single-batch-apply-started'))).resolves.toBeDefined();
   });
 
   it('retains an unknown create outcome across empty queries, worker restart and explicit retry', async () => {
@@ -667,16 +692,17 @@ describe('single-instance OpenTofu batch execution', () => {
     expect(retry.instance.status).toBe('destroy_failed');
     test.native.readOpenTofuInstancesByTag.mockImplementation(async () => [...test.cloud.values()]);
     await test.service.executeDestroyBatch([test.queueDestroy(0)], test.lease);
-    expect(test.instances[0].status).toBe('destroyed');
-    expect(test.cloud.size).toBe(0);
+    expect(test.instances[0].status).toBe('destroy_failed');
+    expect(test.cloud.size).toBe(1);
+    expect(test.native.deleteOwnedUntrackedOpenTofuInstances).not.toHaveBeenCalled();
     expect(test.runner.apply).toHaveBeenCalledTimes(1);
   });
 
   it('uses the database create intent to block a second apply after the entire workspace is lost', async () => {
     const test = fixture(1);
-    test.onApply = async () => {
+    test.onApply = async options => {
       expect(test.instances[0].singleInstanceConfig?.opentofuCreateJobId).toBe('job-1');
-      await test.createMember('member-1'); test.stateMembers.clear();
+      await test.createMember('member-1'); options.onResourceApplied?.(progressEvent('member-1')); test.stateMembers.clear();
       await fs.rm(test.workspace, { recursive: true }); throw new Error('all local state and markers lost');
     };
     test.native.readOpenTofuInstancesByTag.mockResolvedValue([]);
@@ -749,7 +775,7 @@ describe('single-instance OpenTofu batch execution', () => {
     await expect(test.service.executeCreateBatch(test.items, test.lease)).rejects.toBeInstanceOf(SingleInstanceOpenTofuLeaseLostError);
     const retry = test.queueDestroy(0); retry.job.jobType = 'retry'; retry.instance.status = 'creating';
     await test.service.executeCreateBatch([retry], { ...test.lease, signal: new AbortController().signal });
-    expect(test.runner.apply).toHaveBeenCalledTimes(1); expect([...test.cloud.keys()]).toEqual(['i-member-2']);
+    expect(test.runner.apply).toHaveBeenCalledTimes(1); expect([...test.cloud.keys()]).toEqual(['i-member-1', 'i-member-2']);
     await expect(fs.stat(path.join(test.workspace, '.single-batch-apply-started'))).resolves.toBeDefined();
     const manifest = JSON.parse(await fs.readFile(path.join(test.workspace, 'single-batch-manifest.json'), 'utf8'));
     expect(manifest.pending.ids).toEqual(['member-1', 'member-2']);
@@ -832,6 +858,8 @@ describe('single-instance OpenTofu batch execution', () => {
 
   it('fences every emergency API retry after a lease loss', async () => {
     const test = fixture(1); const item = test.items[0];
+    item.instance.singleInstanceConfig!.opentofuCreateJobId = item.job.id;
+    item.instance.resourceSummary = { mode: 'opentofu', hostIds: { 'host-1': 'i-owned' }, executionContext: { provider: 'alibaba_cloud', cloudAccountContextId: 'ctx-a', cloudAccountUid: 'uid-a', regionId: 'cn-hangzhou', zoneId: 'cn-hangzhou-h' } };
     const native = new SingleInstanceBatchExecutionService(test.repository as unknown as AdminRepository,
       { getAccountContextById: async () => test.account } as unknown as SystemConfigService);
     let deleted = 0;

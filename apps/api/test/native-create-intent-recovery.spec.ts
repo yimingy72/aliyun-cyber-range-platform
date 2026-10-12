@@ -65,7 +65,7 @@ async function fixture() {
 useFastSingleInstanceVerification();
 
 describe('native create intent recovery', () => {
-  it('retains an unknown accepted request when network preparation fails, and retries cleanup without creating another ECS', async () => {
+  it('retains unknown acceptance through cleanup retries without adopting tags or creating another ECS', async () => {
     const f = await fixture();
     jest.spyOn(f.repo, 'getSingleInstanceNetworkProfileById').mockRejectedValueOnce(new Error('Temporary profile lookup outage'));
     await f.worker.process(f.job.id);
@@ -75,15 +75,16 @@ describe('native create intent recovery', () => {
     const retry = await f.service.retry(f.instance.id, owner);
     expect(retry.topologySnapshot?.operation).toBe('destroy');
     await f.worker.process(retry.id);
-    expect((await f.repo.getRangeInstanceById(f.instance.id))?.status).toBe('destroyed');
-    expect(f.cloud.size).toBe(0);
+    expect((await f.repo.getRangeInstanceById(f.instance.id))?.status).toBe('destroy_failed');
+    expect(f.cloud.size).toBe(1);
+    expect(f.rpc.mock.calls.some(([input]: any[]) => input.action === 'DeleteInstances')).toBe(false);
     expect(f.rpc.mock.calls.some(([input]: any[]) => input.action === 'RunInstances')).toBe(false);
   });
 
   it('recovers a legacy create retry using the original request identity instead of a new job token or new specification lookup', async () => {
     const f = await fixture();
-    await f.repo.updateProvisionJob(f.job.id, { status: 'failed', finishedAt: new Date() });
-    await f.repo.updateRangeInstance(f.instance.id, { status: 'create_failed' });
+    await f.repo.updateProvisionJob(f.job.id, { status: 'failed', startedAt: new Date(), finishedAt: new Date() });
+    await f.repo.updateRangeInstance(f.instance.id, { status: 'create_failed', resourceSummary: { mode: 'ecs-native', hostIds: { entry: 'i-original-accepted' } } });
     f.config.getInstanceTypeAvailabilityInContext.mockRejectedValue(new Error('Specification service unavailable'));
     const retry = await f.service.retry(f.instance.id, owner);
     await f.worker.process(retry.id);
@@ -98,6 +99,7 @@ describe('native create intent recovery', () => {
 
   it('allows a new creation only after the previous attempt has a verified complete cleanup', async () => {
     const f = await fixture();
+    await f.repo.updateRangeInstance(f.instance.id, { resourceSummary: { mode: 'ecs-native', hostIds: { entry: 'i-original-accepted' } } });
     jest.spyOn(f.native as any, 'waitForSystemDisks').mockRejectedValueOnce(new Error('Temporary disk lookup failure'));
     await f.worker.process(f.job.id);
     const failed = (await f.repo.getRangeInstanceById(f.instance.id))!;
@@ -108,5 +110,16 @@ describe('native create intent recovery', () => {
     await f.worker.process(retry.id);
     expect(f.rpc.mock.calls.filter(([input]: any[]) => input.action === 'RunInstances')).toHaveLength(1);
     expect(f.cloud).toEqual(new Set(['i-retry-created']));
+  });
+  it('never deletes an additional native ECS carrying copied tags during confirmed cleanup', async () => {
+    const f = await fixture();
+    await f.repo.updateProvisionJob(f.job.id, { status: 'failed', startedAt: new Date(), finishedAt: new Date() });
+    await f.repo.updateRangeInstance(f.instance.id, { status: 'destroy_failed', resourceSummary: { mode: 'ecs-native', hostIds: { entry: 'i-original-accepted' } } });
+    f.cloud.add('i-copied-tags');
+    const retry = await f.service.retry(f.instance.id, owner); await f.worker.process(retry.id);
+    expect((await f.repo.getRangeInstanceById(f.instance.id))?.status).toBe('destroy_failed');
+    expect(f.rpc.mock.calls.some(([input]: any[]) => input.action === 'DeleteInstances')).toBe(false);
+    expect(f.cloud).toEqual(new Set(['i-original-accepted', 'i-copied-tags']));
+    expect((await f.repo.listBillingLedgerResources()).some(row => row.cloudResourceId === 'i-copied-tags')).toBe(false);
   });
 });

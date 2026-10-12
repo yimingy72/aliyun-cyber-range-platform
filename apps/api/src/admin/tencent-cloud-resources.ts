@@ -203,7 +203,7 @@ export async function readTencentAttachedDiskInventory(account: SystemCloudAccou
     // Only IDs persisted by the fenced OpenTofu state can be charged to a member; tags alone do not adopt external CBS.
     if (known && !conflict && !disk.shared) {
       (system ? result.systemDiskIds : result.dataDiskIds).push(disk.id);
-      result.proofs[disk.id] = { instanceId, method: 'persisted' };
+      result.proofs[disk.id] = { instanceId, method: 'persisted', deleteWithInstance: disk.deleteWithInstance };
     } else result.unverifiedDisks.push({ id: disk.id, deleteWithInstance: disk.deleteWithInstance });
   }
   result.complete ||= result.systemDiskIds.length > 0;
