@@ -136,6 +136,7 @@ export type BillingSummary = Record<string, unknown> & {
   currencyTotals?: Array<{ currency: string; totalPretaxAmount: number; platformPretaxAmount: number }>;
   billingStatus?: 'provisional';
   billingScope?: 'platform_resources';
+  platformBillingStartedAt?: string;
   reconciliationIssues?: Array<{ resourceType: 'snapshot' | 'oss' | 'unknown' | 'disk'; resourceCount: number; reason: string; resources?: BillingReconciliationResource[] }>;
   unallocatedCurrencyTotals?: Array<{ currency: string; pretaxAmount: number }>;
   resourcesWithoutBillCount?: number;

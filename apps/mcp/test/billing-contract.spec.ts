@@ -16,6 +16,7 @@ const pendingResource: BillingReconciliationResource = {
 
 const pendingSummary: BillingSummary = {
   startAt: '2026-10-10', endAt: '2026-10-10', billingScope: 'platform_resources', billingStatus: 'provisional',
+  platformBillingStartedAt: '2026-10-01T00:00:00.000Z',
   totalPretaxAmount: 0, platformPretaxAmount: 0, anomalyCount: 0, resourcesWithoutBillCount: 1, unallocatedCurrencyTotals: [],
   reconciliationIssues: [{ resourceType: 'unknown', resourceCount: 1, reason: 'Source evidence needs verification', resources: [pendingResource] }],
   resourceTypeTotals: [], dailyTotals: [],

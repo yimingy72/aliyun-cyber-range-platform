@@ -528,6 +528,21 @@ describe('BillingScreen', () => {
     expect(screen.getByText(/明细待补齐不代表云端未出账或免费/)).toBeTruthy();
   });
 
+  it('shows the fixed platform resource scope when historical charges are excluded', async () => {
+    vi.spyOn(adminSessionModule, 'useAdminSession').mockReturnValue(adminSession);
+    fetchBillingSummaryMock.mockResolvedValue({ billingScope: 'platform_resources', platformBillingStartedAt: '2026-10-12T10:00:00.000Z',
+      reconciliationIssues: [], totalPretaxAmount: 0, platformPretaxAmount: 0, anomalyCount: 0,
+      billingStatus: 'provisional', unallocatedCurrencyTotals: [], resourcesWithoutBillCount: 0 });
+    fetchBillingUsersMock.mockResolvedValue([]);
+    fetchBillingUserGroupsMock.mockResolvedValue([]);
+    render(<BillingScreen apiBaseUrl="http://localhost:3001" />);
+    const scope = await screen.findByLabelText('当前平台统计范围');
+    expect(scope.textContent).toContain('2026-10-12');
+    expect(scope.textContent).toContain('历史账单保留，不计入当前汇总');
+    expect(screen.getByText('平台已归属费用').parentElement?.textContent).toContain('¥ 0.00');
+    expect(screen.queryByLabelText('平台资源对账提示')).toBeNull();
+  });
+
   it('does not display zero costs after the first overview request fails', async () => {
     vi.spyOn(adminSessionModule, 'useAdminSession').mockReturnValue(adminSession);
     fetchBillingSummaryMock.mockRejectedValue(new AdminApiError(503, 'fixture unavailable'));
