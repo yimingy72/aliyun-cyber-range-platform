@@ -14,6 +14,8 @@ import { parseCosXml, xmlChildren, xmlOne, xmlText } from './tencent-cos-xml';
 const LEASE_MS = 300_000;
 const json = (value: unknown) => value as Prisma.InputJsonValue;
 const CORS = '<CORSConfiguration><CORSRule><AllowedOrigin>*</AllowedOrigin><AllowedMethod>PUT</AllowedMethod><AllowedMethod>GET</AllowedMethod><AllowedMethod>HEAD</AllowedMethod><AllowedHeader>*</AllowedHeader><ExposeHeader>ETag</ExposeHeader><MaxAgeSeconds>600</MaxAgeSeconds></CORSRule></CORSConfiguration>';
+const atomicTags = (bucket: CloudImageImportBucket) => ({ PlatformManagedBucketId: bucket.id,
+  PlatformCreationNonce: bucket.creationNonce, CloudWorkspaceId: bucket.cloudWorkspaceId });
 const requestId = (response: Response) => {
   const id = response.headers.get('x-oss-request-id');
   if (!id) throw new BadGatewayException('OSS 官方请求证明不完整。');
@@ -88,7 +90,7 @@ export class AliyunOssManagedBucketService {
     const claimed = await this.prisma.cloudImageImportBucket.updateMany({ where: { id: bucket.id, status: bucket.status,
       activeSlot, OR: [{ leaseToken: null }, { leaseExpiresAt: { lte: new Date() } }] },
       data: { leaseToken: token, leaseExpiresAt: new Date(Date.now() + LEASE_MS) } });
-    if (claimed.count !== 1) conflict('OSS 桶创建或配置正在处理，请稍后重试原请求。');
+    if (claimed.count !== 1) conflict('OSS 桶创建或配置正在处理，请稍后发起新的确认请求恢复原记录。');
     try { return await this.prepare(bucket, context, token); }
     catch (error) {
       await this.prisma.cloudImageImportBucket.updateMany({ where: { id: bucket.id, leaseToken: token, leaseExpiresAt: { gt: new Date() } },
@@ -159,7 +161,7 @@ export class AliyunOssManagedBucketService {
       bucket = await this.update(bucket, token, { status: 'creating', preflightAbsentAt: preflightAt, creationStartedAt: preflightAt,
         ownershipProof: json({ ...this.proof(bucket), preflightRequestId: requestId(preflight), createDispatchedAt: preflightAt.toISOString() }) });
       try {
-        const tags = { PlatformManagedBucketId: bucket.id, PlatformCreationNonce: bucket.creationNonce, CloudWorkspaceId: bucket.cloudWorkspaceId };
+        const tags = atomicTags(bucket);
         const response = await requestOss(context, bucket.bucketName, 'PUT', '',
           '<CreateBucketConfiguration><StorageClass>Standard</StorageClass><DataRedundancyType>LRS</DataRedundancyType></CreateBucketConfiguration>',
           { 'x-oss-acl': 'private', 'x-oss-bucket-tagging': Object.entries(tags).map(([key, value]) => `${encodeURIComponent(key)}=${encodeURIComponent(value)}`).join('&') });
@@ -173,7 +175,7 @@ export class AliyunOssManagedBucketService {
           ownershipProof: json({ ...this.proof(bucket), createAcceptedAt: new Date().toISOString() }) });
       } catch (error) {
         if (bucket.status !== 'rejected') await this.update(bucket, token, { status: 'unknown', errorMessage: 'OSS 创建结果未知；恢复时仅查询原名称，不重复 PUT。' });
-        throw error instanceof ConflictException ? error : new ConflictException('OSS 创建结果未知，请稍后恢复原请求；不会新建替代桶。');
+        throw error instanceof ConflictException ? error : new ConflictException('OSS 创建结果未知；稍后发起新的确认请求恢复同一创建记录，不会新建替代桶。');
       }
     }
     bucket = await this.update(bucket, token, { ownershipProof: json({ ...this.proof(bucket), stage: 'verify_identity' }) });
@@ -182,10 +184,28 @@ export class AliyunOssManagedBucketService {
     catch { throw new ConflictException('OSS 创建结果尚待身份核验；保留原名称，不重复创建。'); }
     if (!bucket.preflightAbsentAt || !bucket.creationStartedAt || !this.proof(bucket).preflightRequestId
       || Date.parse(identity.bucketCreatedAt) + 1000 < bucket.creationStartedAt.getTime()
+      || Date.parse(identity.bucketCreatedAt) > bucket.creationStartedAt.getTime() + 120_000
       || this.proof(bucket).bucketCreatedAt && this.proof(bucket).bucketCreatedAt !== identity.bucketCreatedAt) {
       conflict('OSS 官方出生时间与持久创建来源不一致，未登记费用或修改配置。');
     }
     const { preflightAbsentAt, creationStartedAt } = bucket;
+    bucket = await this.update(bucket, token, { ownershipProof: json({ ...this.proof(bucket), stage: 'verify_atomic_tags' }) });
+    const tagResponse = await requestOss(context, bucket.bucketName, 'GET', 'tagging');
+    if (!tagResponse.ok) throw new BadGatewayException('OSS 平台原子创建标签尚待核验，未登记费用或修改配置。');
+    const tagSet = xmlOne(parseCosXml(await tagResponse.text(), 'Tagging'), 'TagSet');
+    const tags: Record<string, string> = Object.create(null);
+    for (const tag of xmlChildren(tagSet, 'Tag')) {
+      const key = xmlText(tag, 'Key');
+      if (key in tags) conflict('OSS 创建标签重复，无法确认平台来源。');
+      tags[key] = xmlText(tag, 'Value');
+    }
+    const expectedTags = atomicTags(bucket);
+    if (Object.entries(expectedTags).some(([key, value]) => tags[key] !== value)) {
+      conflict('OSS 原子创建标签与持久来源不一致，保留待核验，不接管同名桶。');
+    }
+    const taggingVerifiedAt = new Date().toISOString();
+    const taggingRequestId = requestId(tagResponse);
+    bucket = await this.update(bucket, token, { ownershipProof: json({ ...this.proof(bucket), taggingVerifiedAt, taggingRequestId, atomicTags: expectedTags }) });
     const info = await requestOss(context, bucket.bucketName, 'GET', 'bucketInfo');
     if (!info.ok) throw new BadGatewayException('OSS 存储类型尚待核验，创建来源保留。');
     const infoBucket = xmlOne(parseCosXml(await info.text(), 'BucketInfo'), 'Bucket');
@@ -210,7 +230,8 @@ export class AliyunOssManagedBucketService {
     const creation: AliyunOssPlatformCreationProof = { version: 1, managedBucketId: bucket.id, creationNonce: bucket.creationNonce,
       preflightAbsentAt: preflightAbsentAt.toISOString(), preflightRequestId: String(this.proof(bucket).preflightRequestId),
       creationStartedAt: creationStartedAt.toISOString(), creationRequestId: bucket.creationRequestId,
-      aclVerifiedAt: new Date().toISOString(), aclRequestId: requestId(acl), ownerUid: identity.ownerUid, storageClass: 'Standard' };
+      aclVerifiedAt: new Date().toISOString(), aclRequestId: requestId(acl), ownerUid: identity.ownerUid, storageClass: 'Standard',
+      taggingVerifiedAt, taggingRequestId, atomicTags: expectedTags };
     bucket = await this.update(bucket, token, { status: 'available', ownershipProof: json({ ...this.proof(bucket),
       bucketCreatedAt: identity.bucketCreatedAt, identityRequestId: identity.officialRequestId, storageInfoRequestId: requestId(info), platformCreation: creation, stage: 'billing_registration' }), errorMessage: null });
     // Resource expenses exist independently of import/CORS readiness. Register billing before those later steps.
@@ -238,7 +259,7 @@ export class AliyunOssManagedBucketService {
       return binding;
     } catch {
       await this.update(bucket, token, { errorMessage: 'OSS 已创建并登记费用，浏览器跨域或导入配置尚待恢复；不会再次创建。' });
-      throw new ConflictException('OSS 桶已创建并登记费用，但导入配置尚待恢复；请重试原操作，不会再次创建。');
+      throw new ConflictException('OSS 桶已创建并登记费用，但导入配置尚待恢复；发起新的确认请求将复用原创建记录，不会再次创建。');
     }
   }
 }

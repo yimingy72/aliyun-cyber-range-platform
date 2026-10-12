@@ -7,7 +7,8 @@ export const ALIYUN_OSS_DEDICATED_BILLING_KEY = 'aliyunOssDedicatedBilling';
 export type AliyunOssPlatformCreationProof = {
   version: 1; managedBucketId: string; creationNonce: string; preflightAbsentAt: string; preflightRequestId: string;
   creationStartedAt: string; creationRequestId: string | null; aclVerifiedAt: string; aclRequestId: string;
-  ownerUid: string; storageClass: 'Standard';
+  ownerUid: string; storageClass: 'Standard'; taggingVerifiedAt: string; taggingRequestId: string;
+  atomicTags: { PlatformManagedBucketId: string; PlatformCreationNonce: string; CloudWorkspaceId: string };
 };
 export type AliyunOssDedicatedBillingProof = {
   version: 1; dedicated: true; cloudWorkspaceId: string; cloudAccountUid: string; cloudAccountContextId: string;
@@ -53,10 +54,17 @@ function validPlatformCreation(proof: AliyunOssDedicatedBillingProof): boolean {
     && typeof birth.preflightRequestId === 'string' && !!birth.preflightRequestId
     && (birth.creationRequestId === null || typeof birth.creationRequestId === 'string' && !!birth.creationRequestId)
     && typeof birth.aclRequestId === 'string' && !!birth.aclRequestId && birth.ownerUid === proof.cloudAccountUid
+    && typeof birth.taggingRequestId === 'string' && !!birth.taggingRequestId && isoTimestamp(birth.taggingVerifiedAt)
+    && birth.atomicTags?.PlatformManagedBucketId === birth.managedBucketId
+    && birth.atomicTags?.PlatformCreationNonce === birth.creationNonce
+    && birth.atomicTags?.CloudWorkspaceId === proof.cloudWorkspaceId
     && birth.storageClass === 'Standard' && isoTimestamp(birth.preflightAbsentAt) && isoTimestamp(birth.creationStartedAt)
     && isoTimestamp(birth.aclVerifiedAt) && Date.parse(birth.preflightAbsentAt) <= Date.parse(birth.creationStartedAt)
     // OSS CreationDate has second precision, while the durable preflight uses milliseconds.
     && Date.parse(birth.creationStartedAt) <= Date.parse(proof.bucketCreatedAt) + 1000
+    && Date.parse(proof.bucketCreatedAt) <= Date.parse(birth.creationStartedAt) + 120_000
+    && Date.parse(proof.bucketCreatedAt) <= Date.parse(birth.taggingVerifiedAt)
+    && Date.parse(birth.taggingVerifiedAt) <= Date.parse(proof.declaredAt)
     && Date.parse(proof.bucketCreatedAt) <= Date.parse(birth.aclVerifiedAt)
     && Date.parse(birth.aclVerifiedAt) <= Date.parse(proof.declaredAt);
 }

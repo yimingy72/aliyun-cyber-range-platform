@@ -47,6 +47,7 @@ function fixture() {
   const service = new AliyunOssManagedBucketService(prisma as never, bindings);
   let remoteName = '', birth = '2026-10-12T03:04:00.000Z', owner = scope.accountUid, privateAcl = true;
   let unknown = false, unknownAbsent = false, rejected = false, corsFail = false, stsOwner = scope.accountUid, preExisting = false, nonEmpty = false;
+  let remoteTags: Record<string, string> = {}, overrideTags: Record<string, string> | null = null;
   let creates = 0;
   const xml = (name: string) => `<BucketInfo><Bucket><Name>${name}</Name><Location>oss-cn-hangzhou</Location><StorageClass>Standard</StorageClass><CreationDate>${birth}</CreationDate><Owner><ID>${owner}</ID></Owner></Bucket></BucketInfo>`;
   const response = (body: string, status = 200) => new Response(body, { status, headers: { 'x-oss-request-id': `fixture-${status}` } });
@@ -57,12 +58,16 @@ function fixture() {
     if (options?.method === 'PUT' && !url.search) {
       creates++;
       if (rejected) return response('<Error><Code>BucketAlreadyExists</Code></Error>', 409);
-      if (!unknownAbsent) remoteName = name;
+      if (!unknownAbsent) {
+        remoteName = name;
+        remoteTags = Object.fromEntries(new URLSearchParams((options?.headers as Record<string, string>)['x-oss-bucket-tagging']));
+      }
       if (unknown) { unknown = false; throw new Error('timeout'); }
       return response('');
     }
     if (url.search === '?bucketInfo') return remoteName === name || preExisting ? response(xml(name)) : response('<Error><Code>NoSuchBucket</Code></Error>', 404);
     if (url.search === '?acl') return response(`<AccessControlPolicy><Owner><ID>${owner}</ID></Owner><AccessControlList><Grant>${privateAcl ? 'private' : 'public-read'}</Grant></AccessControlList></AccessControlPolicy>`);
+    if (url.search === '?tagging') return response(`<Tagging><TagSet>${Object.entries(overrideTags ?? remoteTags).map(([key, value]) => `<Tag><Key>${key}</Key><Value>${value}</Value></Tag>`).join('')}</TagSet></Tagging>`);
     if (url.search === '?cors' && options?.method === 'PUT') return response('', corsFail ? 403 : 200);
     if (url.search === '?cors') return response(CORS);
     if (!url.search && options?.method === 'GET') return response(`<ListBucketResult><Name>${name}</Name><IsTruncated>false</IsTruncated>${nonEmpty ? '<Contents><Key>other-business</Key></Contents>' : ''}</ListBucketResult>`);
@@ -71,13 +76,14 @@ function fixture() {
   return { service, bindings, repository, prisma, context, fetchMock, row: () => copy(row), creates: () => creates,
     create: () => runInCloudWorkspace(scope, () => service.create(payload)),
     ledger: () => runInCloudWorkspace(scope, async () => (await repository.listBillingLedgerResources())[0]),
-    settings: (values: { unknown?: boolean; unknownAbsent?: boolean; rejected?: boolean; corsFail?: boolean; stsOwner?: string; owner?: string; privateAcl?: boolean; preExisting?: boolean; birth?: string; nonEmpty?: boolean }) => {
+    settings: (values: { unknown?: boolean; unknownAbsent?: boolean; rejected?: boolean; corsFail?: boolean; stsOwner?: string; owner?: string; privateAcl?: boolean; preExisting?: boolean; birth?: string; nonEmpty?: boolean; tags?: Record<string, string> }) => {
       if (values.unknown !== undefined) unknown = values.unknown; if (values.unknownAbsent !== undefined) unknownAbsent = values.unknownAbsent;
       if (values.rejected !== undefined) rejected = values.rejected; if (values.corsFail !== undefined) corsFail = values.corsFail;
       if (values.stsOwner !== undefined) stsOwner = values.stsOwner; if (values.owner !== undefined) owner = values.owner;
       if (values.privateAcl !== undefined) privateAcl = values.privateAcl; if (values.preExisting !== undefined) preExisting = values.preExisting;
       if (values.birth !== undefined) birth = values.birth;
       if (values.nonEmpty !== undefined) nonEmpty = values.nonEmpty;
+      if (values.tags !== undefined) overrideTags = values.tags;
     } };
 }
 
@@ -106,19 +112,50 @@ it('creates one private Standard bucket, freezes actual origin, registers billin
   expect(bound).not.toHaveProperty('creationNonce'); expect(bound).not.toHaveProperty('leaseToken');
 });
 
-it('timeout recovers only the original name and nonce; absence never re-dispatches and unconfirmed first day remains pending', async () => {
-  const f = fixture(); f.settings({ unknown: true, unknownAbsent: true });
+it('accepted timeout recovers only matching atomically tagged original name and nonce; unconfirmed first day remains pending', async () => {
+  const f = fixture(); f.settings({ unknown: true });
   await expect(f.create()).rejects.toThrow('结果未知');
   const original = f.row();
-  await expect(f.create()).rejects.toThrow('尚待身份核验');
-  expect(f.creates()).toBe(1); expect(f.row().creationNonce).toBe(original.creationNonce);
-  f.settings({ preExisting: true, unknownAbsent: false });
   const recovered = await f.create();
   expect(recovered.bucketName).toBe(original.bucketName); expect(f.creates()).toBe(1);
   const proof = readAliyunOssDedicatedBilling(await f.ledger())!;
   expect(proof.platformCreation!.creationRequestId).toBeNull();
   expect(aliyunOssBindingCoversBillingDay(proof, '2026-10-12')).toBe(false);
   expect(aliyunOssBindingCoversBillingDay(proof, '2026-10-13')).toBe(true);
+  expect(proof.platformCreation).toMatchObject({ taggingRequestId: 'fixture-200', taggingVerifiedAt: expect.any(String),
+    atomicTags: { PlatformManagedBucketId: original.id, PlatformCreationNonce: original.creationNonce, CloudWorkspaceId: scope.cloudWorkspaceId } });
+});
+
+it('timeout without actual creation never re-dispatches, and a later untagged manually created namesake is not adopted', async () => {
+  const f = fixture(); f.settings({ unknown: true, unknownAbsent: true });
+  await expect(f.create()).rejects.toThrow('结果未知');
+  const original = f.row();
+  await expect(f.create()).rejects.toThrow('尚待身份核验');
+  f.settings({ preExisting: true });
+  await expect(f.create()).rejects.toThrow('原子创建标签');
+  expect(f.creates()).toBe(1); expect(f.row().creationNonce).toBe(original.creationNonce);
+  expect(await f.ledger()).toBeUndefined(); expect(f.context.imageImportBucket).toBe('');
+  expect(f.fetchMock.mock.calls.some(([url, options]) => new URL(String(url)).search === '?cors' && options?.method === 'PUT')).toBe(false);
+});
+
+it.each(['missing', 'nonce', 'late_birth'] as const)('unknown recovery rejects unrelated namesake evidence: %s', async failure => {
+  const f = fixture(); f.settings({ unknown: true }); await expect(f.create()).rejects.toThrow('结果未知');
+  const original = f.row();
+  if (failure === 'missing') f.settings({ tags: {} });
+  if (failure === 'nonce') f.settings({ tags: { PlatformManagedBucketId: original.id, PlatformCreationNonce: 'wrong-nonce', CloudWorkspaceId: scope.cloudWorkspaceId } });
+  if (failure === 'late_birth') { f.settings({ birth: '2026-10-12T03:10:00.000Z' }); jest.setSystemTime(new Date('2026-10-12T04:00:00Z')); }
+  await expect(f.create()).rejects.toThrow();
+  expect(f.creates()).toBe(1); expect(f.row().status).toBe('unknown'); expect(await f.ledger()).toBeUndefined();
+  expect(f.context.imageImportBucket).toBe(''); expect(f.prisma.cloudAccountContext.updateMany).not.toHaveBeenCalled();
+  expect(f.fetchMock.mock.calls.some(([url]) => new URL(String(url)).search === '?cors')).toBe(false);
+});
+
+it('successful PUT still requires official matching atomic tags before CORS, configuration or ledger registration', async () => {
+  const f = fixture(); f.settings({ tags: {} });
+  await expect(f.create()).rejects.toThrow('原子创建标签');
+  expect(f.row().creationRequestId).toBe('fixture-200'); expect(f.creates()).toBe(1);
+  expect(await f.ledger()).toBeUndefined(); expect(f.prisma.cloudAccountContext.updateMany).not.toHaveBeenCalled();
+  expect(f.fetchMock.mock.calls.some(([url]) => new URL(String(url)).search === '?cors')).toBe(false);
 });
 
 it('CORS failure retains exact resource and billing evidence and restores configuration without another create', async () => {
