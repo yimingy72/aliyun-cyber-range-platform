@@ -3,7 +3,7 @@ import { type RangeProvisionCreateInput, type RangeProvisionDestroyInput } from 
 import { type RangeResourceSummary } from '../src/admin/admin.repository';
 import { createMemoryAdminRepository } from './support/create-memory-admin-repository';
 import { FAILED_CREATE_CLEANUP_PROOF_STEP } from '../src/admin/failed-create-cleanup-evidence';
-import { buildRangeChangeApproval } from '../src/admin/range-draft-change-policy';
+import { buildRangeChangeApproval, rangeRuntimeIdentityDigest } from '../src/admin/range-draft-change-policy';
 
 const account = { provider: 'alibaba_cloud' as const, accessKeyId: 'fixture-source-key', accessKeySecret: 'fixture-source-secret',
   defaultRegion: 'cn-hangzhou', defaultZoneId: 'cn-hangzhou-h', imageImportBucket: '', cloudAccountContextId: 'context-source', accountUid: 'uid-source', accountUidResolved: true };
@@ -83,6 +83,19 @@ describe('range worker durable cost safety', () => {
     const inventoryLog = (await f.repository.listProvisionJobStepLogs(f.job.id)).find(log => log.stepName === 'range_resource_inventory')!;
     expect(JSON.parse(inventoryLog.message!)).toMatchObject({ executionContext: binding, resources: { hostIds: resources.hostIds, systemDiskIds: resources.systemDiskIds } });
     expect(inventoryLog.message).not.toContain(account.accessKeySecret);
+  });
+  it('does not invalidate a confirmed legacy runtime identity between network and host apply phases', async () => {
+    const f = await fixture('destroy');
+    const claimed = (await f.repository.claimRangeProvisionJob(f.job.id, new Date()))!;
+    const before = (await f.repository.getRangeInstanceById(f.instance.id))!;
+    const digest = rangeRuntimeIdentityDigest(before);
+    expect(before.resourceSummary?.executionContext).not.toHaveProperty('provider');
+    for (let phase = 0; phase < 2; phase++) {
+      await (f.worker as any).recordRangeApplyStart(before, claimed, account);
+      const after = (await f.repository.getRangeInstanceById(f.instance.id))!;
+      expect(after.resourceSummary?.executionContext).toEqual(binding);
+      expect(rangeRuntimeIdentityDigest(after)).toBe(digest);
+    }
   });
 
   it.each(['missing binding', 'changed identity'])('refuses cloud cleanup with %s instead of using the current account as absence proof', async reason => {

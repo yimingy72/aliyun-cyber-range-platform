@@ -982,7 +982,7 @@ export class ProvisioningWorkerService {
     if (!current || current.expiresAt && current.expiresAt <= new Date()) throw new Error('Range expired before cloud creation started');
     if (!context.cloudAccountContextId || !context.accountUid) throw new Error('Range execution account is not verified');
     await this.updateRangeForClaim(job, { resourceSummary: { ...current.resourceSummary, mode: 'opentofu', creationAttempted: true,
-      executionContext: { provider: context.provider, cloudAccountContextId: context.cloudAccountContextId, cloudAccountUid: context.accountUid,
+      executionContext: current.resourceSummary?.executionContext ?? { provider: context.provider, cloudAccountContextId: context.cloudAccountContextId, cloudAccountUid: context.accountUid,
         regionId: context.defaultRegion, zoneId: context.defaultZoneId } } });
     signal?.throwIfAborted();
   }
