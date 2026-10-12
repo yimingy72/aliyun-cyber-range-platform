@@ -676,7 +676,7 @@ export function BillingScreen({ apiBaseUrl = 'http://localhost:3001' }: BillingS
             </dd>
           </div>
           <div className="grid min-w-36 gap-1 px-4">
-            <dt className="text-xs font-medium text-muted-foreground">平台资源待对账</dt>
+            <dt className="text-xs font-medium text-muted-foreground">资源费用明细待补齐</dt>
             <dd className="text-base font-semibold tabular-nums text-foreground">
               {hasPlatformBillingScope && typeof summary.resourcesWithoutBillCount === 'number' ? `${summary.resourcesWithoutBillCount} 项`
                 : summary && !hasPlatformBillingScope ? '范围待确认' : isLoading && !summary ? <Skeleton className="h-5 w-20" /> : '未知'}
@@ -685,7 +685,7 @@ export function BillingScreen({ apiBaseUrl = 'http://localhost:3001' }: BillingS
         </dl>
 
         <p className="mt-3 text-xs leading-5 text-muted-foreground">
-          待出账不代表免费。平台待分配费用已确认属于平台，尚未计入用户或平台公共费用。
+          明细待补齐不代表云端未出账或免费；历史盘映射待核验另列。平台待分配费用已确认属于平台，尚未计入用户或平台公共费用。
           {summary && !hasPlatformBillingScope
             ? ' 账单范围尚未确认，暂不展示平台汇总。'
             : summary && (summary.billingStatus === undefined || summary.unallocatedCurrencyTotals === undefined || summary.resourcesWithoutBillCount === undefined || summary.reconciliationIssues === undefined)
@@ -701,6 +701,7 @@ export function BillingScreen({ apiBaseUrl = 'http://localhost:3001' }: BillingS
               <li className="break-words" key={`${issue.resourceType}-${index}`}>
                 {issue.resourceType === 'unknown'
                   ? `平台资源来源待核验：${issue.resourceCount} 项。`
+                  : issue.resourceType === 'disk' ? `历史盘映射待核验：${issue.resourceCount} 项。`
                   : `${issue.resourceType === 'snapshot' ? '快照' : 'OSS'}：${issue.resourceCount} 项平台资源待核对。`}{issue.reason}
               </li>
             ))}

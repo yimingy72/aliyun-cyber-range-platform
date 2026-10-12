@@ -61,6 +61,13 @@ describe('billing currency and export contracts', () => {
     expect(billingReconciliationResourceSchema.safeParse({ ...pendingResource, proofFailureReason: 'INVENTED' }).success).toBe(false);
   });
 
+  it('preserves historical disk mapping issues separately from resources missing independent bill details', () => {
+    const result = { ...pendingSummary, resourcesWithoutBillCount: 3, reconciliationIssues: [{ resourceType: 'disk', resourceCount: 54,
+      reason: 'Host system-disk components exist, but historical disk mappings remain unverified',
+      resources: [{ ...pendingResource, proofFailureReason: 'SYSTEM_DISK_MAPPING_UNVERIFIED' }] }] };
+    expect(billingSummaryOutputSchema.parse({ result })).toEqual({ result });
+  });
+
   it('accepts mixed-currency totals without inventing a numeric combined amount', () => {
     expect(billingSummaryOutputSchema.safeParse({ result: { startAt: '2026-10-01', endAt: '2026-10-01', totalPretaxAmount: null, platformPretaxAmount: null, currency: null, currencyTotals: [{ currency: 'CNY', totalPretaxAmount: 1, platformPretaxAmount: 1 }, { currency: 'USD', totalPretaxAmount: 2, platformPretaxAmount: 0 }], anomalyCount: 0, resourceTypeTotals: [], dailyTotals: [] } }).success).toBe(true);
     expect(billingUserSummarySchema.safeParse({ userId: 'test-user', username: 'test-user', pretaxAmount: null, currency: null, amounts: [{ currency: 'CNY', pretaxAmount: 1 }, { currency: 'USD', pretaxAmount: 2 }], itemCount: 2, launchCount: 1 }).success).toBe(true);

@@ -13,6 +13,7 @@ import {
   type ProvisionJobStatus,
 } from './admin.repository';
 import { billingDayText, resolveBillingWindow } from './billing-window';
+import { systemDiskBillingCoverage } from './billing-system-disk-coverage';
 import { getCurrentCloudWorkspaceScope } from '../auth/cloud-workspace-scope';
 import { billRegionConflict, billRegionId, isAlibabaBillingPayload, isPlatformCreatedLedger, loadPlatformBillingProof, pendingPlatformBillingEvidence, type PlatformBillingProof, isTencentBillingPayload, tencentBillRegionId, classifyTencentBillLine, pendingTencentBillingEvidence, tencentCosBillLifetimeMatches } from './billing-platform-scope';
 
@@ -188,7 +189,7 @@ export class BillingService {
     const pending = [...new Map([...lineItems, ...anomalies].filter(item => !trackedFingerprints.has(item.sourceFingerprint))
       .map(item => [item.sourceFingerprint, item])).values()].map(item => ({ item, evidence: pendingEvidence(item, proof) }));
     const unallocatedItems = pending.filter(row => row.evidence?.kind === 'resource_pending').map(row => row.item);
-    const pendingResources = new Map<'snapshot' | 'oss' | 'unknown', Set<string>>();
+    const pendingResources = new Map<'snapshot' | 'oss' | 'unknown' | 'disk', Set<string>>();
     const deferredProducts = new Set<string>();
     for (const item of trackedLineItems) {
       if (item.rawPayload.__platformBillingSyncDeferred !== true || !['snapshot', 'oss'].includes(item.productCode)) continue;
@@ -230,21 +231,27 @@ export class BillingService {
       ids.add(`image-source:${source.id}`);
       pendingResources.set(type, ids);
     }
+    const billedResourceIds = new Set(trackedLineItems.map(item => item.matchedLedgerId));
+    const resourcesWithoutBill = ledgerResources.filter(item => !['snat_entry', 'dnat_entry', 'unknown', 'snapshot_region'].includes(item.cloudResourceType)
+      && !(item.cloudProvider === 'alibaba_cloud' && item.cloudResourceType === 'image')
+      && billingDayText(item.billingStartAt) <= window.endAtText
+      && (!item.releasedAt || billingDayText(item.releasedAt) >= window.startAtText)
+      && !billedResourceIds.has(item.id));
+    const diskCoverage = await systemDiskBillingCoverage(this.adminRepository,
+      resourcesWithoutBill.filter(item => item.cloudResourceType === 'disk'), ledgerResources, trackedLineItems);
+    if (diskCoverage.mappingPending.size) pendingResources.set('disk', new Set([...diskCoverage.mappingPending].map(id => `ledger:${id}`)));
     const reasons = {
       snapshot: '平台镜像或快照仍需补齐资源清单及费用明细；源 ECS 汇总可能包含其它快照，未将整组金额计入平台。',
       oss: '平台导入对象仍需可核验的费用明细；配置或使用 Bucket 不代表整桶由平台独占，未将整桶金额计入平台。',
       unknown: '已找到平台创建记录，但历史云账号或归属证明尚未核实；记录继续保留，不按零费用处理。',
+      disk: '同实例主机已有系统盘收费组件，但历史盘与主机的准确对应关系缺失或冲突；不能据此确认每块盘已出账，也不重复添加费用。',
     };
     const reconciliationIssues = await Promise.all([...pendingResources].map(async ([resourceType, ids]) => ({ resourceType, resourceCount: ids.size,
       reason: deferredProducts.has(resourceType)
         ? `本次分账未核实，暂保留上次已核验金额，等待完整账单后更新。${reasons[resourceType]}` : reasons[resourceType],
-      resources: await this.reconciliationResourceDetails(ids, proof, deferredProducts.has(resourceType)),
+      resources: await this.reconciliationResourceDetails(ids, proof, deferredProducts.has(resourceType), resourceType === 'disk'),
     })));
-    const billedResourceIds = new Set(trackedLineItems.map(item => item.matchedLedgerId));
-    const resourcesWithoutBillCount = ledgerResources.filter(item => !['snat_entry', 'dnat_entry', 'unknown', 'snapshot_region'].includes(item.cloudResourceType)
-      && billingDayText(item.billingStartAt) <= window.endAtText
-      && (!item.releasedAt || billingDayText(item.releasedAt) >= window.startAtText)
-      && !billedResourceIds.has(item.id)).length;
+    const resourcesWithoutBillCount = resourcesWithoutBill.filter(item => !diskCoverage.covered.has(item.id) && !diskCoverage.mappingPending.has(item.id)).length;
 
     return {
       startAt: window.startAtText,
@@ -280,7 +287,7 @@ export class BillingService {
       unverifiedSourceLedgerIds: new Set([...proof.unverifiedSourceLedgerIds].filter(id => ids.has(id))) };
   }
 
-  private async reconciliationResourceDetails(keys: Set<string>, proof: PlatformBillingProof, deferred: boolean) {
+  private async reconciliationResourceDetails(keys: Set<string>, proof: PlatformBillingProof, deferred: boolean, diskMappingPending = false) {
     const scope = getCurrentCloudWorkspaceScope();
     const inWorkspace = (record: { cloudWorkspaceId?: string }) => scope && !('system' in scope)
       ? record.cloudWorkspaceId === scope.cloudWorkspaceId : false;
@@ -289,7 +296,7 @@ export class BillingService {
     return (await Promise.all([...keys].sort().map(async resourceKey => {
       const ledger = proof.ledgers.find(row => resourceKey === `ledger:${row.id}` && inWorkspace(row));
       if (ledger) {
-        let proofFailureReason = deferred ? 'BILL_SYNC_DEFERRED' : 'BILL_DETAILS_PENDING';
+        let proofFailureReason = diskMappingPending ? 'SYSTEM_DISK_MAPPING_UNVERIFIED' : deferred ? 'BILL_SYNC_DEFERRED' : 'BILL_DETAILS_PENDING';
         if (!proof.createdLedgerIds.has(ledger.id)) {
           const storageSource = ['image', 'snapshot', 'oss_bucket'].includes(ledger.cloudResourceType);
           proofFailureReason = !ledger.cloudAccountUid ? 'ACCOUNT_UID_MISSING' : storageSource ? 'IMAGE_OR_STORAGE_SOURCE_PROOF_INCOMPLETE' : !ledger.rangeInstanceId ? 'SOURCE_RANGE_MISSING'

@@ -423,9 +423,9 @@ describe('BillingScreen', () => {
     expect(screen.getByText('平台已归属费用').parentElement?.textContent).toBe('平台已归属费用¥ 10.00');
     expect(screen.getByText('平台公共费用').parentElement?.textContent).toBe('平台公共费用¥ 2.00');
     expect(screen.getByText('平台待分配费用').parentElement?.textContent).toContain('¥ 3.00');
-    expect(screen.getByText('平台资源待对账').parentElement?.textContent).toContain('5 项');
+    expect(screen.getByText('资源费用明细待补齐').parentElement?.textContent).toContain('5 项');
     expect(screen.getByRole('complementary', { name: '用户账单' }).textContent).toContain('¥ 8.00');
-    expect(screen.getByText(/待出账不代表免费/).textContent).toContain('尚未计入用户或平台公共费用');
+    expect(screen.getByText(/明细待补齐不代表云端未出账或免费/).textContent).toContain('尚未计入用户或平台公共费用');
     expect(screen.getByText(/账单可能因延迟出账/)).toBeTruthy();
   });
 
@@ -437,7 +437,7 @@ describe('BillingScreen', () => {
     render(<BillingScreen apiBaseUrl="http://localhost:3001" />);
     await screen.findByText(/对账信息尚不完整/);
     expect(screen.getByText('平台待分配费用').parentElement?.textContent).toBe('平台待分配费用未知');
-    expect(screen.getByText('平台资源待对账').parentElement?.textContent).toBe('平台资源待对账未知');
+    expect(screen.getByText('资源费用明细待补齐').parentElement?.textContent).toBe('资源费用明细待补齐未知');
     expect(screen.queryByText('无未分配记录')).toBeNull();
   });
 
@@ -462,6 +462,7 @@ describe('BillingScreen', () => {
         { resourceType: 'snapshot', resourceCount: 2, reason: '等待快照分账明细。' },
         { resourceType: 'oss', resourceCount: 1, reason: '共享存储桶仍需核实费用归属。' },
         { resourceType: 'unknown', resourceCount: 2, reason: '历史创建记录缺少原账号证明。' },
+        { resourceType: 'disk', resourceCount: 54, reason: '同实例主机系统盘费用已出现，但准确盘映射待核验。' },
       ] });
     fetchBillingUsersMock.mockResolvedValue([]);
     fetchBillingUserGroupsMock.mockResolvedValue([]);
@@ -470,6 +471,8 @@ describe('BillingScreen', () => {
     expect(issues.textContent).toContain('快照：2 项平台资源待核对。等待快照分账明细。');
     expect(issues.textContent).toContain('OSS：1 项平台资源待核对。共享存储桶仍需核实费用归属。');
     expect(issues.textContent).toContain('平台资源来源待核验：2 项。历史创建记录缺少原账号证明。');
+    expect(issues.textContent).toContain('历史盘映射待核验：54 项。同实例主机系统盘费用已出现，但准确盘映射待核验。');
+    expect(screen.getByText('资源费用明细待补齐').parentElement?.textContent).toContain('3 项');
     expect(issues.textContent).not.toContain('¥');
     expect(screen.getByText('平台待分配费用').parentElement?.textContent).toContain('无未分配记录');
   });
@@ -482,10 +485,10 @@ describe('BillingScreen', () => {
     fetchBillingUserGroupsMock.mockResolvedValue([]);
     render(<BillingScreen apiBaseUrl="http://localhost:3001" />);
     await screen.findByText('无未分配记录');
-    expect(screen.getByText('平台资源待对账').parentElement?.textContent).toBe('平台资源待对账0 项');
+    expect(screen.getByText('资源费用明细待补齐').parentElement?.textContent).toBe('资源费用明细待补齐0 项');
     expect(screen.queryByText(/对账信息尚不完整/)).toBeNull();
     expect(screen.queryByLabelText('平台资源对账提示')).toBeNull();
-    expect(screen.getByText(/待出账不代表免费/)).toBeTruthy();
+    expect(screen.getByText(/明细待补齐不代表云端未出账或免费/)).toBeTruthy();
   });
 
   it('does not display zero costs after the first overview request fails', async () => {
