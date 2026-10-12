@@ -2,7 +2,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { OpenTofuRunner, type OpenTofuCommandResult, type OpenTofuWorkspaceCommandOptions, type OpenTofuPlanOptions, type OpenTofuApplyOptions } from '@aliyun-cyber-range/iac-runner';
-import type { AdminRepository, RangeInstanceRecord, SingleInstanceBatchWithInstancesRecord, SingleInstanceConfig, RangeResourceSummary } from './admin.repository';
+import type { AdminRepository, RangeInstanceRecord, SingleInstanceBatchWithInstancesRecord, SingleInstanceConfig, RangeResourceSummary, HostCloudReleaseDeadline } from './admin.repository';
 import { SingleInstanceBatchExecutionService, patchRuntimeTopologyGraph, type SingleInstanceExecutionItem, type NormalizedInstanceDetail, patchRuntimeScenarioTemplate, patchRuntimeCompiledProvisionSpec } from './single-instance-batch-execution.service';
 import { SystemConfigService, type SystemCloudAccountContext } from './system-config.service';
 import { buildBillingTags } from './billing-tagging';
@@ -13,6 +13,8 @@ import { describeTencentResourceInventory } from './tencent-cloud-resources';
 import { buildTencentSingleCreationIntent } from '../provisioning/tencent-cloud-identity';
 import { TencentCloudOpenTofuRenderer, TENCENTCLOUD_PROVIDER_VERSION } from '../provisioning/renderers/tencent-cloud-opentofu-renderer';
 import * as mirrors from '../provisioning/provider-mirror-publication';
+import { createHostCloudReleaseDeadline, assertCloudReleaseDeadlineCanCreate, verifyCloudReleaseDeadlines } from '../provisioning/cloud-release-deadlines';
+import { hasVerifiedSystemDiskReleasePolicy } from './instance-disk-inventory';
 
 export type SingleInstanceOpenTofuBatchLease = { batchId: string; assertCurrent(): Promise<void>; signal: AbortSignal };
 type CommandOptions = OpenTofuWorkspaceCommandOptions & { signal?: AbortSignal; upgrade?: boolean };
@@ -30,7 +32,7 @@ type Config = SingleInstanceConfig & { executionBackend?: string };
 type Identity = { provider?: 'tencent_cloud'; vpcId?: string; batchId: string; ownerId: string | null; contextId: string; accountUid: string; region: string; zone: string; profileId: string; securityGroupId: string };
 type Definition = { instance_name: string; host_name: string; instance_type: string; image_id: string; vswitch_id: string;
   system_disk_category: string; client_token?: string; system_disk_size: number; internet_max_bandwidth_out: number; auto_release_time: string; tags: Record<string, string> };
-type CatalogMember = { definition: Definition; password: string; hostKey: string; sourceJobId: string };
+type CatalogMember = { definition: Definition; password: string; hostKey: string; sourceJobId: string; cloudReleaseDeadline?: HostCloudReleaseDeadline };
 type PendingOperation = { submittedAt?: string; kind: 'create' | 'destroy'; ids: string[]; jobIds: string[]; recoveryIds?: string[]; createIds?: string[]; knownIds?: Record<string, string[]> };
 type Manifest = { schemaVersion: 1; identity: Identity; members: Record<string, CatalogMember>; pending?: PendingOperation };
 type StateMember = { id: string; diskId: string; privateIp: string | null; publicIp: string | null; status: string; tainted: boolean; tags: Record<string, string> };
@@ -75,7 +77,6 @@ export class SingleInstanceOpenTofuExecutionService {
       const valid = [] as SingleInstanceExecutionItem[];
       for (const item of items) if (await this.itemCurrent(item)) valid.push(item);
       if (!valid.length) return;
-      if (context.manifest.identity.provider === 'tencent_cloud' && valid.some(item => !item.instance.singleInstanceConfig?.autoReleaseTime || new Date(item.instance.singleInstanceConfig.autoReleaseTime).getTime() - Date.now() <= 5 * 60_000)) throw new Error('Tencent scheduled termination must be more than five minutes after creation');
       if (valid.some(item => isExpired(item.instance))) throw new Error('Single-instance launch expired before OpenTofu creation');
       if (context.account.provider === 'tencent_cloud') {
         const metadata = await this.command(context, () => assertTencentImagesAvailable(context!.account,valid.map(item => item.instance.singleInstanceConfig!.imageId)));
@@ -105,6 +106,8 @@ export class SingleInstanceOpenTofuExecutionService {
       await this.writeInputs(context);
       const prepared = context;
       await this.command(prepared, () => this.runner.init({ ...this.commandOptions(prepared), upgrade: true }));
+      await this.freezeHostDeadlines(context, valid);
+      await this.writeInputs(context);
       const ids = valid.map(item => item.instance.id);
       await this.applyPlan(context, ids, false);
       context.state = await this.readState(context);
@@ -204,7 +207,10 @@ export class SingleInstanceOpenTofuExecutionService {
         if (!job || job.rangeInstanceId !== member.id) throw new Error('Active sibling has no frozen OpenTofu creation job');
         manifest.members[member.id] = this.definition({ instance: member, job }, identity);
       }
-      if (manifest.members[member.id]) this.validateFrozenDefinition(member, manifest.members[member.id]);
+      if (manifest.members[member.id]) {
+        await this.restoreFrozenDeadline(member, manifest.members[member.id], items, account, lease);
+        this.validateFrozenDefinition(member, manifest.members[member.id]);
+      }
     }
     const marker = await readJson<PendingOperation>(path.join(workspace, APPLY_MARKER));
     for (const pending of [manifest.pending, marker]) {
@@ -253,7 +259,7 @@ export class SingleInstanceOpenTofuExecutionService {
     const password = item.instance.runtimeCredentials?.[config.hostKey]?.password;
     if (!password || !config.resolvedInstanceType) throw new Error('Frozen password and exact instance type are required');
     const sourceJobId = config.opentofuCreateJobId ?? item.job.id;
-    return { password, hostKey: config.hostKey, sourceJobId, definition: { instance_name: identity.provider === 'tencent_cloud' ? Array.from(instanceName(item.instance.name)).slice(0, 60).join('') : instanceName(item.instance.name),
+    return { password, hostKey: config.hostKey, sourceJobId, ...(config.cloudReleaseDeadline ? { cloudReleaseDeadline: structuredClone(config.cloudReleaseDeadline) } : {}), definition: { instance_name: identity.provider === 'tencent_cloud' ? Array.from(instanceName(item.instance.name)).slice(0, 60).join('') : instanceName(item.instance.name),
       host_name: config.hostName ?? '', instance_type: config.resolvedInstanceType, image_id: config.imageId, vswitch_id: config.assignedVswitchId!,
       system_disk_category: identity.provider === 'tencent_cloud' ? this.env.TENCENTCLOUD_SYSTEM_DISK_TYPE ?? 'CLOUD_PREMIUM' : this.env.OPENTOFU_SYSTEM_DISK_CATEGORY ?? 'cloud_essd', system_disk_size: config.systemDiskSize,
       internet_max_bandwidth_out: Number(this.env.OPENTOFU_INTERNET_MAX_BANDWIDTH_OUT ?? 10), auto_release_time: config.autoReleaseTime ?? '',
@@ -270,8 +276,81 @@ export class SingleInstanceOpenTofuExecutionService {
       || definition.host_name !== (config.hostName ?? '') || definition.image_id !== config.imageId
       || definition.instance_type !== config.resolvedInstanceType || definition.vswitch_id !== config.assignedVswitchId
       || instance.cloudProvider === 'tencent_cloud' && (definition.client_token !== buildTencentSingleCreationIntent(instance, member.sourceJobId) || definition.tags.CreationIntentId !== definition.client_token)
+      || member.cloudReleaseDeadline && (!config.cloudReleaseDeadline || !sameDeadline(member.cloudReleaseDeadline, config.cloudReleaseDeadline))
       || definition.system_disk_size !== config.systemDiskSize || definition.auto_release_time !== (config.autoReleaseTime ?? '')) {
       throw new Error('A member immutable launch definition changed after its workspace was frozen');
+    }
+  }
+
+  private async restoreFrozenDeadline(instance: RangeInstanceRecord, member: CatalogMember, items: SingleInstanceExecutionItem[], account: SystemCloudAccountContext, lease: SingleInstanceOpenTofuBatchLease) {
+    const config = instance.singleInstanceConfig!;
+    const record = member.cloudReleaseDeadline ?? config.cloudReleaseDeadline;
+    if (!record) return;
+    if (record.provider !== account.provider || !instance.expiresAt || Date.parse(record.platformExpiresAt) !== instance.expiresAt.getTime()
+      || !Number.isFinite(Date.parse(record.creationPhaseStartedAt)) || !Number.isFinite(Date.parse(record.cloudReleaseAt))
+      || member.cloudReleaseDeadline && member.definition.auto_release_time !== record.cloudReleaseAt
+      || config.cloudReleaseDeadline && (!sameDeadline(config.cloudReleaseDeadline, record) || config.autoReleaseTime !== record.cloudReleaseAt))
+      throw new Error('Persisted single-instance deadline conflicts with its frozen account or expiry');
+    const source = await this.repository.getProvisionJobById(record.sourceProvisionJobId);
+    if (!source?.startedAt || source.rangeInstanceId !== instance.id || !['create','retry'].includes(source.jobType)
+      || (source.cloudWorkspaceId ?? 'legacy-unbound') !== (instance.cloudWorkspaceId ?? 'legacy-unbound'))
+      throw new Error('Persisted single-instance deadline has no original creation job proof');
+    if (!member.cloudReleaseDeadline) {
+      if (member.definition.auto_release_time !== record.cloudReleaseAt) throw new Error('Frozen definition differs from the persisted absolute deadline');
+      member.cloudReleaseDeadline = structuredClone(record);
+    }
+    if (!config.cloudReleaseDeadline) {
+      const item = items.find(item => item.instance.id === instance.id);
+      if (!item || config.opentofuCreateJobId || Object.keys(instance.resourceSummary?.hostIds ?? {}).length)
+        throw new Error('Incomplete deadline persistence requires its original pre-apply claim');
+      await this.assertLease(lease);
+      if (!await this.itemCurrent(item)) throw new SingleInstanceOpenTofuLeaseLostError('Deadline recovery claim is no longer active');
+      const restored = { ...config, autoReleaseTime: record.cloudReleaseAt, cloudReleaseDeadline: structuredClone(record) };
+      if (!await this.repository.commitSingleInstanceClaim(item.job, { singleInstanceConfig: restored, resourceSummary: { ...instance.resourceSummary,
+        mode: 'opentofu', cloudReleaseDeadlines: { ...instance.resourceSummary?.cloudReleaseDeadlines, [member.hostKey]: record } } }))
+        throw new SingleInstanceOpenTofuLeaseLostError('Deadline recovery claim was lost');
+      instance.singleInstanceConfig = restored; item.instance.singleInstanceConfig = restored;
+    }
+  }
+
+  private async freezeHostDeadlines(context: Context, items: SingleInstanceExecutionItem[]) {
+    const added = items.filter(item => !context.state.has(item.instance.id));
+    if (!added.length) return;
+    const startedAt = new Date().toISOString();
+    for (const item of added) {
+      await this.assertLease(context.lease);
+      if (!await this.itemCurrent(item)) throw new SingleInstanceOpenTofuLeaseLostError('Host creation claim is no longer active');
+      const current = await this.repository.getRangeInstanceById(item.instance.id);
+      if (!current?.expiresAt || current.expiresAt <= new Date()) throw new Error('Single-instance launch expired before the host creation phase');
+      const member = context.manifest.members[item.instance.id];
+      const existing = member.cloudReleaseDeadline ?? current.singleInstanceConfig?.cloudReleaseDeadline;
+      if (!existing && current.singleInstanceConfig?.opentofuCreateJobId) throw new Error('Previous host submission has no frozen deadline; recover its original resources before creating');
+      member.cloudReleaseDeadline = existing ? { ...existing, status: 'unverified' } : createHostCloudReleaseDeadline({ provider: context.account.provider,
+        platformExpiresAt: current.expiresAt.toISOString(), creationPhaseStartedAt: startedAt, sourceProvisionJobId: item.job.id });
+      const record = member.cloudReleaseDeadline;
+      delete record.instanceId; delete record.verifiedAt; delete record.lastCheckedAt; delete record.reason;
+      if (record.provider !== context.account.provider || Date.parse(record.platformExpiresAt) !== current.expiresAt.getTime()) throw new Error('Host deadline differs from the current immutable expiry');
+      assertCloudReleaseDeadlineCanCreate(record);
+      member.definition.auto_release_time = record.cloudReleaseAt;
+    }
+    // The manifest survives a failed database commit; recovery restores this exact record, never a new C.
+    await this.atomicJson(context, MANIFEST_FILE, context.manifest);
+    for (const item of added) {
+      await this.assertLease(context.lease);
+      const record = context.manifest.members[item.instance.id].cloudReleaseDeadline!;
+      const current = await this.repository.getRangeInstanceById(item.instance.id);
+      if (!current || current.singleInstanceConfig?.cloudReleaseDeadline && !sameDeadline(current.singleInstanceConfig.cloudReleaseDeadline, record))
+        throw new Error('Database host deadline differs from its persisted creation intent');
+      const config = { ...current.singleInstanceConfig!, autoReleaseTime: record.cloudReleaseAt, cloudReleaseDeadline: structuredClone(record) };
+      if (!await this.repository.commitSingleInstanceClaim(item.job, { singleInstanceConfig: config, resourceSummary: { ...current.resourceSummary,
+        ...batchResourceSummary(context), cloudReleaseDeadlines: { ...current.resourceSummary?.cloudReleaseDeadlines, [config.hostKey]: record } } }))
+        throw new SingleInstanceOpenTofuLeaseLostError('Host deadline claim was lost before applying its cloud request');
+      item.instance.singleInstanceConfig = config;
+      const sibling = context.batch.instances.find(member => member.id === item.instance.id); if (sibling) sibling.singleInstanceConfig = config;
+      const now = new Date();
+      await this.repository.createProvisionJobStepLog({ jobId: item.job.id, stepName: 'host_cloud_release_deadlines', status: 'succeeded',
+        message: JSON.stringify({ version: 1, rangeInstanceId: item.instance.id, executionContext: batchResourceSummary(context).executionContext,
+          deadlines: { [config.hostKey]: record } }), startedAt: now, finishedAt: now, stdoutExcerpt: null, stderrExcerpt: null });
     }
   }
 
@@ -333,11 +412,17 @@ export class SingleInstanceOpenTofuExecutionService {
       if (change.type !== resourceType(context) || !targets.includes(change.address)
         || destroy && change.change.actions.some(action => action !== 'delete')) throw new Error('OpenTofu plan would change an unrequested batch resource');
       if (!destroy && change.change.actions.includes('delete')) throw new Error('Creation cannot replace a pre-existing batch member');
+      if (!destroy && change.change.actions.includes('create')) {
+        const id = ids.find(id => change.address === `module.single_batch.${resourceType(context)}.members[${JSON.stringify(id)}]`)!;
+        if (context.state.has(id) || context.knownIds.get(id)?.length) throw new Error('Creation cannot recreate a previously tracked batch member');
+        const record = context.manifest.members[id]?.cloudReleaseDeadline;
+        if (!record) throw new Error('Host creation has no frozen absolute cloud deadline');
+        assertCloudReleaseDeadlineCanCreate(record);
+      }
     }
     if (!destroy && context.items.some(item => ids.includes(item.instance.id) && isExpired(item.instance))) {
       throw new Error('Single-instance launch expired while OpenTofu prepared the creation plan');
     }
-    if (!destroy && context.manifest.identity.provider === 'tencent_cloud' && ids.some(id => new Date(context.manifest.members[id].definition.auto_release_time).getTime() - Date.now() <= 5 * 60_000)) throw new Error('Tencent scheduled termination became too close while planning');
     context.manifest.pending = { submittedAt: context.manifest.pending?.submittedAt ?? new Date().toISOString(), kind: destroy ? 'destroy' : 'create', ids, jobIds: context.items.map(item => item.job.id),
       createIds: [...new Set([...pendingCreateIds(context.manifest.pending), ...(destroy ? [] : ids)])],
       knownIds: Object.fromEntries(context.knownIds),
@@ -354,6 +439,10 @@ export class SingleInstanceOpenTofuExecutionService {
     }
     const progress = destroy ? null : this.observeCreateProgress(context, ids);
     try {
+      if (!destroy) for (const change of plan.resource_changes ?? []) if (change.change.actions.includes('create')) {
+        const id = ids.find(id => change.address === `module.single_batch.${resourceType(context)}.members[${JSON.stringify(id)}]`)!;
+        assertCloudReleaseDeadlineCanCreate(context.manifest.members[id].cloudReleaseDeadline!);
+      }
       await this.command(context, () => this.runner.apply({ ...this.commandOptions(context), planFilePath,
         ...(progress ? { onResourceApplied: progress.onResourceApplied } : {}) }));
     } finally { await progress?.stop(); }
@@ -406,6 +495,7 @@ export class SingleInstanceOpenTofuExecutionService {
         // Keep the verified physical ID for crash recovery; this is not a durable-state or billing commit.
         const saved = await this.repository.commitSingleInstanceClaim(item.job, { status: 'running',
           resourceSummary: { ...batchResourceSummary(context), workspaceDir: context.workspace, hostIds: { [hostKey]: cloudId },
+            ...memberDeadlineSummary(context, item),
             resolvedInstanceType: context.manifest.members[item.instance.id].definition.instance_type, resolvedImageId: item.instance.singleInstanceConfig!.imageId },
           runtimeTopologyGraph: patchRuntimeTopologyGraph(item.instance.runtimeTopologyGraph, hostKey, detail),
           runtimeScenarioTemplateSpec: patchRuntimeScenarioTemplate(item.instance.runtimeScenarioTemplateSpec, hostKey, detail),
@@ -452,6 +542,12 @@ export class SingleInstanceOpenTofuExecutionService {
   private async completeCreated(context: Context, items: SingleInstanceExecutionItem[], partial: boolean): Promise<SingleInstanceExecutionItem[]> {
     const known = items.filter(item => { const state = context.state.get(item.instance.id); return state && !state.tainted && Boolean(state.diskId) && !isExpired(item.instance); });
     const cloud = known.length ? await this.native.readOpenTofuInstances(context.account, known.map(item => context.state.get(item.instance.id)!.id)) : [];
+    const intended = Object.fromEntries(known.flatMap(item => {
+      const record = context.manifest.members[item.instance.id].cloudReleaseDeadline;
+      return record ? [[item.instance.id, record]] : [];
+    }));
+    const checked = Object.keys(intended).length ? await verifyCloudReleaseDeadlines({ account: context.account,
+      hostIds: Object.fromEntries(known.map(item => [item.instance.id, context.state.get(item.instance.id)!.id])), deadlines: intended }) : {};
     const completed: SingleInstanceExecutionItem[] = [];
     for (const item of known) {
       await this.assertLease(context.lease);
@@ -464,7 +560,15 @@ export class SingleInstanceOpenTofuExecutionService {
         hostIds: { [hostKey]: state.id }, systemDiskIds: { [hostKey]: state.diskId },
         resolvedInstanceType: context.manifest.members[item.instance.id].definition.instance_type, resolvedImageId: item.instance.singleInstanceConfig!.imageId };
       summary = await this.native.captureInstanceDisks(item, context.account, summary, false, () => this.assertLease(context.lease));
-      if (!await this.repository.commitSingleInstanceClaim(item.job, { resourceSummary: summary, status: detail.status === 'Running' && detail.publicIp ? 'running' : 'creating',
+      const verified = checked[item.instance.id];
+      if (verified) {
+        if (verified.status === 'verified' && !hasVerifiedSystemDiskReleasePolicy(summary, state.id)) {
+          verified.status = 'unverified'; verified.reason = 'system_disk_release_unverified'; delete verified.verifiedAt;
+        }
+        summary = { ...summary, cloudReleaseDeadlines: { [hostKey]: verified } };
+      }
+      const config = { ...item.instance.singleInstanceConfig!, ...(verified ? { cloudReleaseDeadline: verified } : {}) };
+      if (!await this.repository.commitSingleInstanceClaim(item.job, { singleInstanceConfig: config, resourceSummary: summary, status: detail.status === 'Running' && detail.publicIp ? 'running' : 'creating',
         runtimeTopologyGraph: patchRuntimeTopologyGraph(item.instance.runtimeTopologyGraph, hostKey, detail),
         runtimeScenarioTemplateSpec: patchRuntimeScenarioTemplate(item.instance.runtimeScenarioTemplateSpec, hostKey, detail),
         runtimeCompiledProvisionSpec: patchRuntimeCompiledProvisionSpec(item.instance.runtimeCompiledProvisionSpec, hostKey, detail),
@@ -515,6 +619,7 @@ export class SingleInstanceOpenTofuExecutionService {
       await this.assertLease(context.lease);
       const hostKey = item.instance.singleInstanceConfig!.hostKey;
       let summary: RangeResourceSummary = { ...batchResourceSummary(context),
+        ...memberDeadlineSummary(context, item),
         workspaceDir: context.workspace, hostIds: { [hostKey]: state.id }, systemDiskIds: state.diskId ? { [hostKey]: state.diskId } : null,
         resolvedInstanceType: context.manifest.members[item.instance.id].definition.instance_type, resolvedImageId: item.instance.singleInstanceConfig!.imageId };
       summary = await this.native.captureInstanceDisks(item, context.account, summary, destroying, () => this.assertLease(context.lease));
@@ -702,6 +807,13 @@ export class SingleInstanceOpenTofuExecutionService {
   }
 }
 function backend(instance: RangeInstanceRecord) { return (instance.singleInstanceConfig as Config | null)?.executionBackend; }
+function sameDeadline(a: HostCloudReleaseDeadline, b: HostCloudReleaseDeadline) {
+  return ['provider','platformExpiresAt','creationPhaseStartedAt','cloudReleaseAt','sourceProvisionJobId'].every(key => (a as any)[key] === (b as any)[key]);
+}
+function memberDeadlineSummary(context: Context, item: SingleInstanceExecutionItem) {
+  const member = context.manifest.members[item.instance.id];
+  return member?.cloudReleaseDeadline ? { cloudReleaseDeadlines: { [member.hostKey]: member.cloudReleaseDeadline } } : {};
+}
 function pendingCreateIds(pending?: PendingOperation) { return pending?.createIds ?? (pending?.kind === 'create' ? pending.ids : []); }
 function isExpired(instance: RangeInstanceRecord) { return Boolean(instance.expiresAt && instance.expiresAt <= new Date()); }
 function matchesCloud(detail: NormalizedInstanceDetail, instance: RangeInstanceRecord) {
