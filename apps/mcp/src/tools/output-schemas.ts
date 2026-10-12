@@ -138,6 +138,7 @@ export const billingSummaryOutputSchema = resultOutputSchema(
     currency: z.string().nullable().optional(),
     currencyTotals: z.array(z.object({ currency: nonEmptyString, totalPretaxAmount: z.number(), platformPretaxAmount: z.number() })).optional(),
     billingScope: z.literal('platform_resources').optional().describe('仅统计有平台创建来源证明的资源；缺失表示范围未确认，不能将旧接口的账号级金额视为平台支出。'),
+    platformBillingStartedAt: z.iso.datetime().optional().describe('当前平台固定资源创建起点；启用后只统计该起点后由平台创建的资源，历史资源迟到账也不纳入当前范围。历史台账与账单保留。'),
     reconciliationIssues: z.array(z.object({
       resourceType: z.enum(['snapshot', 'oss', 'unknown', 'disk']),
       resourceCount: z.number().int().nonnegative(),

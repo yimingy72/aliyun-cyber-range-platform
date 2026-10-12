@@ -695,6 +695,12 @@ export function BillingScreen({ apiBaseUrl = 'http://localhost:3001' }: BillingS
           </div>
         </dl>
 
+        {hasPlatformBillingScope && summary.platformBillingStartedAt ? (
+          <p aria-label="当前平台统计范围" className="mt-3 text-xs leading-5 text-muted-foreground">
+            当前范围：{formatAdminDateTime(summary.platformBillingStartedAt)} 起由平台创建的资源。历史账单保留，不计入当前汇总。
+          </p>
+        ) : null}
+
         <p className="mt-3 text-xs leading-5 text-muted-foreground">
           明细待补齐不代表云端未出账或免费。平台待分配费用已确认属于平台，尚未计入用户或平台公共费用。
           {summary && !hasPlatformBillingScope

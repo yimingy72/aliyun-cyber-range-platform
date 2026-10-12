@@ -53,7 +53,7 @@ export const billingTools: ToolDefinition[] = [
   {
     name: 'billing_summary_get',
     title: '查询账单费用汇总',
-    description: '对应账单费用页的概览。billingScope=platform_resources表示仅统计有平台创建来源证明的资源。返回已归属费用，多币种总金额为null并读取currencyTotals。unallocatedCurrencyTotals仅含已证明属于平台但待分配的精确金额，禁止加入外部或账号混合聚合费用；resourcesWithoutBillCount统计平台资源缺少独立费用明细的数量，不含SNAT/DNAT、阿里云镜像和准确核实已含于主机系统盘组件的盘。reconciliationIssues指出快照/OSS待细分、unknown来源待核验、disk历史盘映射待核验；映射未知不能宣称该盘已出账，均不含账号聚合金额。待出账不代表免费，billingStatus=provisional表示金额可能补账或调整；旧接口缺失scope或对账字段表示范围/覆盖未知，不能当作零或平台支出。',
+    description: '对应账单费用页的概览。billingScope=platform_resources表示仅统计有平台创建来源证明的资源。若返回platformBillingStartedAt，仅包含固定起点后平台创建的资源，旧资源迟到账也不纳入当前范围；历史记录保留作审计。返回已归属费用，多币种总金额为null并读取currencyTotals。unallocatedCurrencyTotals仅含已证明属于平台但待分配的精确金额，禁止加入外部或账号混合聚合费用；resourcesWithoutBillCount统计平台资源缺少独立费用明细的数量，不含SNAT/DNAT、阿里云镜像和准确核实已含于主机系统盘组件的盘。reconciliationIssues指出快照/OSS待细分、unknown来源待核验、disk历史盘映射待核验；映射未知不能宣称该盘已出账，均不含账号聚合金额。待出账不代表免费，billingStatus=provisional表示金额可能补账或调整；旧接口缺失scope或对账字段表示范围/覆盖未知，不能当作零或平台支出。',
     requiredScopes: ['billing:read'], adminOnly: true,
     readOnlyHint: true,
     inputSchema: billingSummaryInputSchema,

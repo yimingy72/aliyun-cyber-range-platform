@@ -13,6 +13,7 @@ import {
   type ProvisionJobStatus,
 } from './admin.repository';
 import { billingDayText, resolveBillingWindow } from './billing-window';
+import { currentBillingRows, currentPlatformBillingProof, readPlatformBillingStartedAt } from './billing-current-scope';
 import { systemDiskBillingCoverage } from './billing-system-disk-coverage';
 import { getCurrentCloudWorkspaceScope } from '../auth/cloud-workspace-scope';
 import { billRegionConflict, billRegionId, isAlibabaBillingPayload, isPlatformCreatedLedger, loadPlatformBillingProof, pendingPlatformBillingEvidence, type PlatformBillingProof, isTencentBillingPayload, tencentBillRegionId, classifyTencentBillLine, pendingTencentBillingEvidence, tencentCosBillLifetimeMatches } from './billing-platform-scope';
@@ -154,6 +155,7 @@ function toCsv(rows: Array<Array<string | number | null | undefined>>) {
 
 @Injectable()
 export class BillingService {
+  private readonly platformBillingStartedAt = readPlatformBillingStartedAt();
   constructor(@Inject(ADMIN_REPOSITORY) private readonly adminRepository: AdminRepository) {}
 
   private async readPlatformItems(input: BillingWindowInput) {
@@ -162,12 +164,12 @@ export class BillingService {
       this.adminRepository.listBillingLineItems({ startAt: window.startAt, endAt: window.endAt }),
       loadPlatformBillingProof(this.adminRepository),
     ]);
-    return platformBillingItems(items, this.readableProof(proof));
+    return platformBillingItems(currentBillingRows(items, this.platformBillingStartedAt), this.readableProof(proof));
   }
 
   async getSummary(input: BillingWindowInput) {
     const window = resolveBillingWindow(input);
-    const [lineItems, anomalies, fullProof] = await Promise.all([
+    const [allLineItems, allAnomalies, fullProof] = await Promise.all([
       this.adminRepository.listBillingLineItems({
         startAt: window.startAt,
         endAt: window.endAt,
@@ -179,6 +181,8 @@ export class BillingService {
       loadPlatformBillingProof(this.adminRepository),
     ]);
     const proof = this.readableProof(fullProof);
+    const lineItems = currentBillingRows(allLineItems, this.platformBillingStartedAt);
+    const anomalies = currentBillingRows(allAnomalies, this.platformBillingStartedAt);
 
     const trackedLineItems = platformBillingItems(lineItems, proof);
     const ledgerResources = proof.ledgers.filter(ledger => isPlatformCreatedLedger(ledger, proof));
@@ -257,6 +261,7 @@ export class BillingService {
       startAt: window.startAtText,
       endAt: window.endAtText,
       billingScope: 'platform_resources' as const,
+      ...(this.platformBillingStartedAt ? { platformBillingStartedAt: this.platformBillingStartedAt.toISOString() } : {}),
       currency: money.currency,
       totalPretaxAmount: money.pretaxAmount,
       platformPretaxAmount: money.currency ? sumPretax(trackedLineItems.filter(item => item.billingScope === 'platform')) : null,
@@ -275,7 +280,8 @@ export class BillingService {
     return paginate(await this.listUserSummaries(input), input);
   }
 
-  private readableProof(proof: PlatformBillingProof): PlatformBillingProof {
+  private readableProof(fullProof: PlatformBillingProof): PlatformBillingProof {
+    const proof = currentPlatformBillingProof(fullProof, this.platformBillingStartedAt);
     const scope = getCurrentCloudWorkspaceScope();
     if (!scope && process.env.NODE_ENV === 'test') return proof;
     const visible = (record: { cloudWorkspaceId?: string; ownerUserId?: string | null }) => scope && !('system' in scope)
@@ -456,7 +462,7 @@ export class BillingService {
     ]);
 
     const readable = this.readableProof(proof);
-    return anomalies
+    return currentBillingRows(anomalies, this.platformBillingStartedAt)
       .filter(item => pendingEvidence(item, readable)?.kind === 'resource_pending')
       .slice()
       .sort((left, right) => right.billingDate.getTime() - left.billingDate.getTime());
