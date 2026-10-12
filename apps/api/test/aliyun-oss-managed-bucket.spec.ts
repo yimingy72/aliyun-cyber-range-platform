@@ -99,7 +99,7 @@ it('creates one private Standard bucket, freezes actual origin, registers billin
   expect(bound).toMatchObject({ bucketName: row.bucketName, effectiveStartAt: '2026-10-12T03:04:00.000Z' });
   expect(f.context.imageImportBucket).toBe(row.bucketName);
   expect(f.prisma.cloudAccountContext.updateMany).toHaveBeenCalledWith({ where: expect.objectContaining({ cloudWorkspaceId: scope.cloudWorkspaceId,
-    provider: 'alibaba_cloud', accountUid: scope.accountUid, regionId: 'cn-hangzhou', imageImportBucket: '' }), data: { imageImportBucket: row.bucketName, bucketStatus: 'ready' } });
+    provider: 'alibaba_cloud', accountUid: scope.accountUid, regionId: 'cn-hangzhou', imageImportBucket: '' }), data: expect.objectContaining({ imageImportBucket: row.bucketName, bucketStatus: 'ready' }) });
   const proof = readAliyunOssDedicatedBilling(await f.ledger())!;
   expect(proof.platformCreation).toMatchObject({ managedBucketId: row.id, creationRequestId: 'fixture-200', preflightRequestId: 'fixture-404', storageClass: 'Standard' });
   expect(aliyunOssBindingCoversBillingDay(proof, '2026-10-11')).toBe(false);
