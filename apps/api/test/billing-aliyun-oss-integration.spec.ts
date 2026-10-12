@@ -30,6 +30,17 @@ async function fixture() {
 const oldStart = process.env.PLATFORM_BILLING_STARTED_AT;
 afterEach(() => { if (oldStart === undefined) delete process.env.PLATFORM_BILLING_STARTED_AT; else process.env.PLATFORM_BILLING_STARTED_AT = oldStart; jest.restoreAllMocks(); jest.useRealTimers(); });
 describe('Alibaba dedicated OSS official fee attribution', () => {
+  it('keeps corrections pending without attributing a prior-business usage period to the new dedicated interval', async () => {
+    const f = await fixture();
+    f.bss.listDailyBillingItems.mockResolvedValue([bill({ Item: 'Refund' })]);
+    f.bss.listDailySplitBillingItems.mockResolvedValue([bill({ Item: 'Refund', SplitItemID: f.proof.bucketName, PretaxAmount: '0.1' }),
+      bill({ Item: 'Refund', SplitItemID: 'another-business-bucket', PretaxAmount: '0.2' })]);
+    await runInCloudWorkspace(scope, async () => {
+      await f.sync.syncRange({ startAt: DAY, endAt: DAY });
+      expect(await f.repository.listBillingLineItems()).toEqual([]);
+      expect((await f.service.getSummary({ startAt: DAY, endAt: DAY })).reconciliationIssues).toEqual([expect.objectContaining({ resourceType: 'oss', resourceCount: 1 })]);
+    });
+  });
   it('imports only exact dedicated-bucket splits, refreshes official identity, and does not count twice', async () => {
     const f = await fixture();
     await runInCloudWorkspace(scope, async () => {
@@ -76,5 +87,18 @@ describe('Alibaba dedicated OSS official fee attribution', () => {
       expect((await f.service.getSummary({ startAt: DAY, endAt: DAY })).totalPretaxAmount).toBe(0);
     });
     expect(f.verification).not.toHaveBeenCalled();
+  });
+  it('retains verified fees when native split geography is unknown instead of bypassing bucket identity refresh', async () => {
+    const f = await fixture();
+    await runInCloudWorkspace(scope, async () => {
+      await f.sync.syncRange({ startAt: DAY, endAt: DAY });
+      f.verification.mockResolvedValue({ verified: false, reason: 'OSS_BUCKET_RECREATED' });
+      f.bss.listDailyBillingItems.mockResolvedValue([bill({ Region: '未知地域', InstanceID: 'unresolved-source' })]);
+      f.bss.listDailySplitBillingItems.mockResolvedValue([bill({ Region: '未知地域', InstanceID: 'unresolved-source', SplitItemID: f.proof.bucketName, PretaxAmount: '0.15' }),
+        bill({ Region: '未知地域', InstanceID: 'unresolved-source', SplitItemID: 'another-business-bucket', PretaxAmount: '0.15' })]);
+      await f.sync.syncRange({ startAt: DAY, endAt: DAY });
+      expect(await f.repository.listBillingLineItems()).toEqual([expect.objectContaining({ pretaxAmount: 0.1, rawPayload: expect.objectContaining({ __platformBillingSyncDeferred: true }) })]);
+      expect((await f.service.getSummary({ startAt: DAY, endAt: DAY })).totalPretaxAmount).toBe(0.1);
+    });
   });
 });

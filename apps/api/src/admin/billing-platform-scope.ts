@@ -267,6 +267,7 @@ export function pendingPlatformBillingEvidence(input: {
     }
     if (classification.cloudResourceType === 'oss_bucket') {
       const binding = readAliyunOssDedicatedBilling(exact[0]);
+      if (binding && correction) return { kind: 'aggregate_pending', ledgerIds: exact.map(ledger => ledger.id), imageImportJobIds: [] };
       if (binding && !aliyunOssBindingCoversBillingDay(binding, input.billingDate)) {
         return aliyunOssBindingOverlapsBillingDay(binding, input.billingDate)
           ? { kind: 'aggregate_pending', ledgerIds: exact.map(ledger => ledger.id), imageImportJobIds: [] } : null;

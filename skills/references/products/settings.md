@@ -11,7 +11,7 @@
 | 绑定或更新厂商账号 | `cloud_account_bind` | `provider`、`regionId`、`zoneId`、敏感 `accessKeyId`、敏感 `accessKeySecret` | `cloudWorkspaceId`、`displayName`、`imageImportBucket`、操作元数据 | `settings:write`，仅平台超管 |
 | 删除云账号绑定 | `cloud_account_remove` | `cloudWorkspaceId` | 操作元数据 | `settings:write`，仅平台超管 |
 | 查询配置 | `cloud_config_get` | — | — | `settings:read` |
-| 更新配置 | `cloud_config_update` | 至少一个 `defaultRegion`、`defaultZoneId`、`accessKeyId`、敏感 `accessKeySecret` | 操作元数据 | `settings:write`，仅管理员 |
+| 更新配置 | `cloud_config_update` | 至少一个 `defaultRegion`、`defaultZoneId`、`imageImportBucket`、`accessKeyId`、敏感 `accessKeySecret` | 操作元数据 | `settings:write`，仅平台超管 |
 | 查询云账号 | `cloud_account_context_list` | — | `includeInactive` | `settings:read`，仅管理员 |
 | 验证并保存腾讯云账号 | `tencent_cloud_account_save` | `provider`（固定为 tencent_cloud）、`regionId`、`zoneId`、敏感 `accessKeyId`、敏感 `accessKeySecret` | 操作元数据 | `settings:write`，仅平台超管 |
 | 查询腾讯云地域与可用区 | `tencent_cloud_region_list` | `regionIds`、敏感 `accessKeyId`、敏感 `accessKeySecret` | — | `settings:read`，仅管理员 |
@@ -23,6 +23,7 @@
    显式 `x-cloud-workspace-id` 请求头优先于用户默认空间；`cloud_workspace_switch` 修改用户默认选择，不覆盖已固定请求头的连接。切换后核对返回空间，后续请求保持同一空间；需要修改固定连接时重新指定其请求头。错误或不可访问 ID 必须停止，不回落到其它账号。
    `cloud_config_get` 返回当前空间的地域与凭据配置状态；脱敏密钥只能说明已配置，不能回写或复用。
 2. 仅传用户明确要求的字段，并在执行前确认影响范围。
+   阿里云 `imageImportBucket` 可单独配置，不需要回传已保存凭据；普通导入桶配置不声明专用计费。费用归属须按账单参考调用 `billing_oss_bucket_bind` 明确专用用途、生效时间并核验官方身份。
    跨地域变更时同时提供属于新地域的 `defaultZoneId`；不会沿用旧地域可用区或猜测新默认值。
 3. 更新后重新读取非敏感字段核对结果。不得在对话、日志或 Skill 文件中保存密钥。
 4. `cloud_account_bind` 支持阿里云与腾讯云，身份校验后加密保存凭据，保存不会切换当前数据空间。编辑必须传准确目标 `cloudWorkspaceId`，凭据的主账号 UID 和厂商必须匹配该空间。两个凭据字段必须重新显式填写；不传脱敏值。`displayName` 最多 80 字符，`imageImportBucket` 最多 63 字符。

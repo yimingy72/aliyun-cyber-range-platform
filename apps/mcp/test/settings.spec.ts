@@ -4,6 +4,21 @@ import { createToolRegistry } from '../src/server';
 
 const raw = Object.freeze({ provider: 'alibaba_cloud', defaultRegion: 'cn-hangzhou', defaultZoneId: 'cn-hangzhou-h', accessKeyId: 'synthetic-access-key', accessKeySecret: 'synthetic-access-secret' });
 describe('Settings tool sensitive output', () => {
+  it('configures only an import bucket without replaying cloud credentials or declaring dedicated costs', async () => {
+    const save = vi.fn(async () => ({ ...raw, imageImportBucket: 'platform-owned-bucket' }));
+    const registry = createToolRegistry({ saveCloudConfig: save } as never);
+    const result = await registry.callTool('cloud_config_update', ['settings:write'], { imageImportBucket: 'platform-owned-bucket',
+      confirmationId: 'bucket-confirmation', idempotencyKey: 'bucket-key' }, 'admin');
+    expect(save).toHaveBeenCalledWith({ imageImportBucket: 'platform-owned-bucket' }, { confirmationId: 'bucket-confirmation', idempotencyKey: 'bucket-key' });
+    expect(result.structuredContent.result).toMatchObject({ imageImportBucket: 'platform-owned-bucket', accessKeySecret: '********' });
+    expect(result.structuredContent.result).not.toHaveProperty('dedicated');
+  });
+  it('rejects a URL or path instead of a literal OSS bucket name', async () => {
+    const save = vi.fn();
+    await expect(createToolRegistry({ saveCloudConfig: save } as never).callTool('cloud_config_update', ['settings:write'],
+      { imageImportBucket: 'https://another.invalid/path' }, 'admin')).rejects.toThrow('Invalid input');
+    expect(save).not.toHaveBeenCalled();
+  });
   it('masks both keys on read without modifying the downstream snapshot', async () => {
     const registry = createToolRegistry({ fetchCloudConfig: vi.fn(async () => raw) } as never);
     const result = await registry.callTool('cloud_config_get', ['settings:read'], {});

@@ -205,7 +205,7 @@ export class BillingSyncService implements OnModuleInit, OnModuleDestroy {
           if (resolved.retainedProducts.has(readString(line, 'ProductCode')) && classification.kind === 'direct') continue;
 
           if (classification.kind === 'direct' && !billRegionConflict(line)) {
-            const matchedLedger =
+            const matchedLedger = classification.cloudResourceType === 'oss_bucket' && ['Refund', 'Adjustment'].includes(readString(line, 'Item')) ? null :
               this.findActiveLedgerResource(
                 proof,
                 classification.cloudResourceId,
@@ -412,10 +412,13 @@ export class BillingSyncService implements OnModuleInit, OnModuleDestroy {
           if (productCode === 'oss') {
             const classification = classifyPlatformBillLine(line);
             const bucket = proof.ledgers.find(ledger => isPlatformCreatedLedger(ledger, proof) && ledger.cloudProvider === 'alibaba_cloud'
-              && ledger.cloudAccountUid === cloudAccountUid && ledger.regionId === billRegionId(line)
+              && ledger.cloudAccountUid === cloudAccountUid
               && ledger.cloudResourceType === 'oss_bucket' && ledger.cloudResourceId === classification.cloudResourceId);
             const binding = bucket && readAliyunOssDedicatedBilling(bucket);
             if (bucket && binding && aliyunOssBindingCoversBillingDay(binding, billingDate)) {
+              if (billRegionConflict(line) || !billRegionId(line) || bucket.regionId !== billRegionId(line)) {
+                throw new Error('Dedicated OSS split region is unverified; prior bills were retained');
+              }
               if (!verifiedBuckets.has(bucket.id)) {
                 const verification = await refreshAliyunOssBindingVerification(bucket, context);
                 if (!verification.verified) throw new Error('Dedicated OSS bucket identity is unverified; prior bills were retained');
@@ -449,6 +452,11 @@ export class BillingSyncService implements OnModuleInit, OnModuleDestroy {
           && !scopedSplit.some(line => readString(line, 'SplitItemID') === previousLine.cloudResourceId
             && readAliyunSnapshotEcsScope(line, proof, billingDate, cloudAccountUid)))) {
           throw new Error('Source ECS snapshot evidence is incomplete; previous verified revision was retained');
+        }
+        if (productCode === 'oss' && previousProduct.length && scopedSplit.some(line => ['Refund', 'Adjustment'].includes(readString(line, 'Item'))
+          && proof.ledgers.some(ledger => readAliyunOssDedicatedBilling(ledger) && ledger.cloudAccountUid === cloudAccountUid
+            && ledger.cloudResourceId === readString(line, 'SplitItemID')))) {
+          throw new Error('OSS correction usage interval is unknown; prior verified revision was retained');
         }
         resolved = [...resolved.filter(line => readString(line, 'ProductCode') !== productCode), ...scopedSplit];
       } catch {
@@ -520,7 +528,7 @@ export class BillingSyncService implements OnModuleInit, OnModuleDestroy {
       && item.cloudProvider === 'alibaba_cloud'
       && item.cloudAccountUid === cloudAccountUid && item.cloudResourceId === cloudResourceId
       && item.cloudResourceType === cloudResourceType && (!regionId || item.regionId === regionId)
-      && (item.cloudResourceType !== 'oss_bucket' || Boolean(readAliyunOssDedicatedBilling(item)
+      && (item.cloudResourceType !== 'oss_bucket' || Boolean(regionId && readAliyunOssDedicatedBilling(item)
         && aliyunOssBindingCoversBillingDay(readAliyunOssDedicatedBilling(item)!, billingDate))));
     // Without an explicit region a colliding physical ID is ambiguous, not permission to take the first row.
     if (matches.length !== 1) return null;

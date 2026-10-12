@@ -185,10 +185,11 @@ export const cloudConfigGetInputSchema = z.strictObject({});
 export const cloudConfigUpdateInputSchema = operationSchema.extend({
   defaultRegion: identifier.optional().describe('默认地域；跨地域变更时必须同时指定该地域的 defaultZoneId。'),
   defaultZoneId: identifier.optional(),
+  imageImportBucket: z.string().regex(/^(?:|[a-z0-9][a-z0-9-]{1,61}[a-z0-9])$/).optional().describe('阿里云镜像导入桶名称；普通配置不声明费用专用归属。'),
   accessKeyId: identifier.refine((value) => value !== '********', 'Masked access keys cannot be reused').optional(),
   accessKeySecret: z.string().min(1).refine((value) => value !== '********', 'Masked access keys cannot be reused').optional().describe('Sensitive. Never echo it in a summary.'),
 }).refine(
-  (input) => input.defaultRegion !== undefined || input.defaultZoneId !== undefined || input.accessKeyId !== undefined || input.accessKeySecret !== undefined,
+  (input) => input.defaultRegion !== undefined || input.defaultZoneId !== undefined || input.accessKeyId !== undefined || input.accessKeySecret !== undefined || input.imageImportBucket !== undefined,
   'at least one cloud configuration field is required',
 );
 

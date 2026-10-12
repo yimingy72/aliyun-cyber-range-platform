@@ -111,6 +111,8 @@ function platformBillingItems(items: BillingLineItemRecord[], proof: PlatformBil
         && (!snapshotScope || snapshotScope.sourceLedgerId !== ledger.id || snapshotScope.sourceInstanceId !== item.cloudResourceId)
       || ledger.cloudProvider === 'alibaba_cloud' && item.cloudResourceType === 'oss_bucket'
         && (item.rawPayload.__platformBillingSource !== 'DescribeSplitItemBill' || item.rawPayload.ProductCode !== 'oss'
+          || ['Refund', 'Adjustment'].includes(String(item.rawPayload.Item))
+          || !billRegionId(item.rawPayload) || billRegionId(item.rawPayload) !== ledger.regionId
           || item.rawPayload.SplitItemID !== ledger.cloudResourceId || !readAliyunOssDedicatedBilling(ledger)
           || !aliyunOssBindingCoversBillingDay(readAliyunOssDedicatedBilling(ledger)!, toIsoDate(item.billingDate)))
       || toIsoDate(item.billingDate) < billingDayText(ledger.billingStartAt)) return [];
