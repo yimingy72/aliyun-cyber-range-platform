@@ -1492,6 +1492,13 @@ export class PrismaAdminRepository implements AdminRepository {
       // Same intake lock as manual actions, but never wait behind a slow cloud launch.
       const [lock] = await tx.$queryRaw<Array<{ acquired: boolean }>>`SELECT pg_try_advisory_xact_lock(714921, 1) AS acquired`;
       if (!lock?.acquired) return null;
+      const observed = await tx.rangeInstance.findUnique({ where: { id: input.rangeInstanceId } });
+      if (!observed) return null;
+      // Completion commits lock job -> instance. Use that order here too, otherwise
+      // an expiring refresh and its completion can deadlock on each other's row.
+      if (observed.lastJobId) await tx.$queryRaw`SELECT id FROM "ProvisionJob"
+        WHERE id = ${observed.lastJobId} AND "rangeInstanceId" = ${observed.id}
+          AND "cloudWorkspaceId" = ${observed.cloudWorkspaceId} FOR UPDATE`;
       const locked = await tx.rangeInstance.updateMany({
         where: { id: input.rangeInstanceId, instanceMode: 'single', expiresAt: { lte: input.now },
           status: { in: ['running', 'creating', 'destroy_failed'] } },
@@ -1499,7 +1506,7 @@ export class PrismaAdminRepository implements AdminRepository {
       });
       if (locked.count !== 1) return null;
       const instance = await tx.rangeInstance.findUnique({ where: { id: input.rangeInstanceId } });
-      if (!instance) return null;
+      if (!instance || instance.lastJobId !== observed.lastJobId) return null;
       const previous = instance.lastJobId ? await tx.provisionJob.findUnique({ where: { id: instance.lastJobId } }) : null;
       const decision = expiredSingleDestroyDecision(instance, previous, input.now);
       if (!decision || await tx.provisionJob.count({ where: { rangeInstanceId: instance.id,

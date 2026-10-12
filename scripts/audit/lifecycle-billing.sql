@@ -4,8 +4,9 @@
 \set ON_ERROR_STOP on
 \if :{?workspace_id}
 \else
-  \echo 'workspace_id is required; no unscoped audit is allowed.'
-  \quit 2
+  -- psql 16 ignores a numeric argument to \quit and exits successfully.
+  -- ON_ERROR_STOP turns this explicit validation failure into a nonzero exit.
+  DO $$ BEGIN RAISE EXCEPTION 'workspace_id is required; no unscoped audit is allowed.'; END $$;
 \endif
 BEGIN TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY;
 SET LOCAL statement_timeout = '15s';
@@ -17,8 +18,7 @@ SELECT EXISTS (SELECT 1 FROM "CloudWorkspace" WHERE id = :'workspace_id') AS val
 \if :valid_workspace
 \else
   ROLLBACK;
-  \echo 'Unknown workspace_id; empty results are not a clean audit.'
-  \quit 2
+  DO $$ BEGIN RAISE EXCEPTION 'Unknown workspace_id; empty results are not a clean audit.'; END $$;
 \endif
 SELECT id AS workspace_id, provider, "accountUid"
 FROM "CloudWorkspace" WHERE id = :'workspace_id';
