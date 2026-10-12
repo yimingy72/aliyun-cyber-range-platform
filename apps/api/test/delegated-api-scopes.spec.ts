@@ -52,7 +52,7 @@ describe('delegated API permission boundary', () => {
     expect(resolveDelegatedScopes('user', ['openid', 'profile']).has('ranges:create')).toBe(true);
   });
   it('requires settings write and billing sync together to declare or end a dedicated OSS scope', () => {
-    for (const path of ['/admin/billing/oss-binding', '/admin/billing/oss-binding/ledger-owned/end']) {
+    for (const path of ['/admin/billing/oss-binding', '/admin/billing/oss-binding/create', '/admin/billing/oss-binding/ledger-owned/end']) {
       expect(() => check('POST', path, ['billing:sync'])).toThrow();
       expect(() => check('POST', path, ['settings:write'])).toThrow();
       expect(() => check('POST', path, ['billing:sync', 'settings:write'])).not.toThrow();

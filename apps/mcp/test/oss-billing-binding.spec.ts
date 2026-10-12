@@ -10,12 +10,21 @@ const input = { bucketName: value.bucketName, effectiveStartAt: value.effectiveS
 describe('dedicated Alibaba OSS billing tool contract', () => {
   it('requires admin role and both settings write and billing sync for fee-scope writes', async () => {
     const registry = createToolRegistry({} as never);
-    for (const name of ['billing_oss_bucket_bind', 'billing_oss_bucket_binding_end']) {
+    for (const name of ['billing_oss_bucket_bind', 'billing_oss_bucket_create', 'billing_oss_bucket_binding_end']) {
       for (const permissions of [['billing:sync'], ['settings:write']]) expect(registry.listTools(permissions, 'admin').map(tool => tool.name)).not.toContain(name);
       expect(registry.listTools(scopes, 'user').map(tool => tool.name)).not.toContain(name);
       await expect(registry.callTool(name, scopes, input, 'user')).rejects.toThrow('Forbidden tool');
     }
     expect(registry.listTools(['billing:read'], 'admin').find(tool => tool.name === 'billing_oss_bucket_binding_list')?.annotations.readOnlyHint).toBe(true);
+  });
+  it('creates one persistent dedicated bucket through the confirmed SDK operation without caller-selected names or retroactive dates', async () => {
+    const create = vi.fn(async () => value), registry = createToolRegistry({ createDedicatedOssBucket: create } as never);
+    for (const extra of [{ bucketName: 'existing-external-bucket' }, { effectiveStartAt: '2026-09-01' }, { dedicated: false }]) {
+      await expect(registry.callTool('billing_oss_bucket_create', scopes, { dedicated: true, ...extra }, 'admin')).rejects.toThrow('Invalid input');
+    }
+    await registry.callTool('billing_oss_bucket_create', scopes, { dedicated: true, confirmationId: 'create-confirmation', idempotencyKey: 'create-key' }, 'admin');
+    expect(create).toHaveBeenCalledTimes(1);
+    expect(create).toHaveBeenCalledWith({ dedicated: true }, { confirmationId: 'create-confirmation', idempotencyKey: 'create-key' });
   });
   it.each([{ ...input, dedicated: false }, { ...input, effectiveStartAt: 'now' }, { ...input, bucketName: 'other.example.invalid/path' },
     { ...input, accessKeySecret: 'not-accepted' }])('rejects invalid or undeclared scope before API use', async invalid => {

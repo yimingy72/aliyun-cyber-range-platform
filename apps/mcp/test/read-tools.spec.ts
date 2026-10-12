@@ -266,6 +266,7 @@ function createClientStub(): ClientStub {
     listBillingPlatformItems: vi.fn().mockResolvedValue([{ id: 'bill-platform-1' }]),
     listBillingAnomalies: vi.fn().mockResolvedValue([{ id: 'anomaly-1' }]),
     listOssBillingBindings: vi.fn().mockResolvedValue([]), bindOssBilling: vi.fn(), endOssBillingBinding: vi.fn(),
+    createDedicatedOssBucket: vi.fn(),
     syncBilling: vi.fn().mockResolvedValue({ syncedDays: 1, importedLineItems: 2, anomalyCount: 0, deferredCount: 0 }),
     exportPlatformBillingCsv: vi.fn().mockResolvedValue('startAt,2026-07-01\n'),
     exportBillingUsersCsv: vi.fn().mockResolvedValue('userId,username\n'),
@@ -1342,7 +1343,7 @@ describe('tool registry', () => {
 
     const tools = registry.listTools(scopes, 'admin');
 
-    expect(tools).toHaveLength(94);
+    expect(tools).toHaveLength(95);
     expect(tools.every((tool) => tool.inputSchema)).toBe(true);
     expect(tools.every((tool) => tool.outputSchema?.safeParse({}).success === false)).toBe(true);
     expect(

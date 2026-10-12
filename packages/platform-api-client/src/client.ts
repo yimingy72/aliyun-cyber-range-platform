@@ -472,6 +472,10 @@ export class PlatformApiClient implements PlatformApiClientLike {
     return this.request<OssBillingBinding>('/admin/billing/oss-binding', { method: 'POST', body: JSON.stringify(payload), operation });
   }
 
+  createDedicatedOssBucket(payload: { dedicated: true }, operation?: OperationRequest) {
+    return this.request<OssBillingBinding>('/admin/billing/oss-binding/create', { method: 'POST', body: JSON.stringify(payload), operation });
+  }
+
   endOssBillingBinding(ledgerId: string, operation?: OperationRequest) {
     return this.request<OssBillingBinding>(`/admin/billing/oss-binding/${encodeURIComponent(ledgerId)}/end`, { method: 'POST', body: '{}', operation });
   }

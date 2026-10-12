@@ -253,7 +253,7 @@ export class AliyunOssManagedBucketService {
       const configured = await this.prisma.cloudAccountContext.updateMany({ where: { id: context.cloudAccountContextId!,
         cloudWorkspaceId: bucket.cloudWorkspaceId, provider: 'alibaba_cloud', accountUid: bucket.cloudAccountUid,
         regionId: bucket.regionId, status: 'ready', imageImportBucket: context.imageImportBucket },
-        data: { imageImportBucket: bucket.bucketName, bucketStatus: 'ready' } });
+        data: { imageImportBucket: bucket.bucketName, bucketStatus: 'ready', lastVerifiedAt: new Date(), lastError: null } });
       if (configured.count !== 1) throw new Error('CONFIG_CHANGED');
       await this.update(bucket, token, { ownershipProof: json({ ...this.proof(bucket), configuredAt: new Date().toISOString(), ledgerId: binding.ledgerId, stage: 'ready' }), errorMessage: null });
       return binding;

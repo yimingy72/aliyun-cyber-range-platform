@@ -501,6 +501,7 @@ export type PlatformApiClientLike = {
   syncBilling(input?: Pick<BillingWindowInput, 'startAt' | 'endAt'>): Promise<BillingSyncResult>;
   listOssBillingBindings(): Promise<OssBillingBinding[]>;
   bindOssBilling(payload: BindOssBillingInput, operation?: OperationRequest): Promise<OssBillingBinding>;
+  createDedicatedOssBucket(payload: { dedicated: true }, operation?: OperationRequest): Promise<OssBillingBinding>;
   endOssBillingBinding(ledgerId: string, operation?: OperationRequest): Promise<OssBillingBinding>;
   exportPlatformBillingCsv(input?: Pick<BillingWindowInput, 'startAt' | 'endAt'>): Promise<string>;
   exportBillingUsersCsv(input?: Pick<BillingWindowInput, 'startAt' | 'endAt'>): Promise<string>;
