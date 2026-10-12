@@ -71,6 +71,7 @@ import {
   UpsertImageSnapshotsInput,
   UpsertCloudResourceDriftInput,
   UpdateBillingLedgerResourceInput,
+  RepairBillingLedgerOriginInput,
   UpdateIdempotentOperationInput,
   UpdatePlatformUserInput,
   UpdateProvisionJobInput,
@@ -2372,6 +2373,30 @@ export class PrismaAdminRepository implements AdminRepository {
         createdAt: 'desc',
       },
     }) as Promise<BillingLedgerResourceRecord[]>;
+  }
+
+  async repairBillingLedgerOrigin(input: RepairBillingLedgerOriginInput): Promise<boolean> {
+    const ledger = input.expected;
+    const cloudWorkspaceId = getCurrentCloudWorkspaceId() ?? 'legacy-unbound';
+    const rangeInstanceId = ledger.rangeInstanceId;
+    if (ledger.sourceProvisionJobId !== null || !rangeInstanceId || (ledger.cloudWorkspaceId ?? 'legacy-unbound') !== cloudWorkspaceId) return false;
+    return this.prisma.$transaction(async tx => {
+      const source = await tx.provisionJob.findFirst({ where: { id: input.sourceProvisionJobId, cloudWorkspaceId,
+        rangeInstanceId, jobType: { in: ['create', 'retry'] } } });
+      if (!source) return false;
+      const updated = await tx.billingLedgerResource.updateMany({ where: { id: ledger.id, cloudWorkspaceId,
+        cloudProvider: ledger.cloudProvider, cloudAccountUid: ledger.cloudAccountUid, regionId: ledger.regionId,
+        cloudResourceId: ledger.cloudResourceId, cloudResourceType: ledger.cloudResourceType,
+        rangeInstanceId: ledger.rangeInstanceId, ownerUserId: ledger.ownerUserId, singleInstanceBatchId: ledger.singleInstanceBatchId,
+        billingScope: ledger.billingScope, billingStartAt: ledger.billingStartAt, releasedAt: ledger.releasedAt, sourceProvisionJobId: null },
+        data: { sourceProvisionJobId: input.sourceProvisionJobId } });
+      if (updated.count !== 1) return false;
+      const now = new Date();
+      await tx.provisionJobStepLog.create({ data: { cloudWorkspaceId, jobId: input.sourceProvisionJobId,
+        stepName: 'platform_billing_origin_repair', status: 'succeeded', message: input.auditMessage,
+        startedAt: now, finishedAt: now, stdoutExcerpt: null, stderrExcerpt: null } });
+      return true;
+    });
   }
 
   async getLatestBillingLineItemDate(cloudAccountUid?: string): Promise<Date | null> {

@@ -123,7 +123,7 @@ export type BillingReconciliationResource = {
   regionId: string;
   billingStartAt: string;
   releasedAt: string | null;
-  proofFailureReason: 'BILL_SYNC_DEFERRED' | 'BILL_DETAILS_PENDING' | 'ACCOUNT_UID_MISSING' | 'IMAGE_OR_STORAGE_SOURCE_PROOF_INCOMPLETE'
+  proofFailureReason: 'SYSTEM_DISK_MAPPING_UNVERIFIED' | 'BILL_SYNC_DEFERRED' | 'BILL_DETAILS_PENDING' | 'ACCOUNT_UID_MISSING' | 'IMAGE_OR_STORAGE_SOURCE_PROOF_INCOMPLETE'
     | 'SOURCE_RANGE_MISSING' | 'SOURCE_JOB_MISSING' | 'SOURCE_PROOF_UNVERIFIED' | 'SOURCE_JOB_NOT_FOUND' | 'SOURCE_JOB_WORKSPACE_MISMATCH'
     | 'SOURCE_JOB_RANGE_MISMATCH' | 'SOURCE_JOB_NOT_CREATION' | 'SOURCE_JOB_CREATION_INVENTORY_MISSING' | 'SOURCE_CREATION_PROOF_CONFLICT'
     | 'SOURCE_RESOURCE_NOT_IN_CREATION_INVENTORY' | 'SOURCE_SNAPSHOT_INVENTORY_OR_BILL_PROOF_INCOMPLETE';
@@ -136,7 +136,7 @@ export type BillingSummary = Record<string, unknown> & {
   currencyTotals?: Array<{ currency: string; totalPretaxAmount: number; platformPretaxAmount: number }>;
   billingStatus?: 'provisional';
   billingScope?: 'platform_resources';
-  reconciliationIssues?: Array<{ resourceType: 'snapshot' | 'oss' | 'unknown'; resourceCount: number; reason: string; resources?: BillingReconciliationResource[] }>;
+  reconciliationIssues?: Array<{ resourceType: 'snapshot' | 'oss' | 'unknown' | 'disk'; resourceCount: number; reason: string; resources?: BillingReconciliationResource[] }>;
   unallocatedCurrencyTotals?: Array<{ currency: string; pretaxAmount: number }>;
   resourcesWithoutBillCount?: number;
   totalPretaxAmount: number | null;

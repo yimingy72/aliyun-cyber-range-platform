@@ -180,7 +180,7 @@ describe('billing-ledger-sync', () => {
       ]),
     );
   });
-  it('backfills a missing creation job for an existing resource ledger without replacing it later', async () => {
+  it.each(['succeeded', 'failed', 'running'] as const)('backfills a missing %s creation job without replacing it later', async status => {
     const repository = createMemoryAdminRepository();
     const instance = await repository.createRangeInstance({
       name: 'billing-ledger-range',
@@ -204,7 +204,7 @@ describe('billing-ledger-sync', () => {
       triggeredBy: 'user-1',
     });
     await repository.updateProvisionJob(createJob.id, {
-      status: 'succeeded',
+      status,
       finishedAt: new Date('2026-07-29T00:00:00.000Z'),
     });
     const updateJob = await repository.createProvisionJob({
@@ -410,6 +410,51 @@ describe('verified billing account backfill', () => {
       resourceSummary: { mode: 'opentofu', hostIds: { ecs: 'i-history' } }, billingStartAt: new Date('2026-10-09') })).rejects.toThrow();
     expect(await repository.listBillingLedgerResources()).toEqual([original]);
   });
+});
+
+it('repairs a null birth source with the failed original rather than another resource successful retry', async () => {
+ const repository = createMemoryAdminRepository();
+ const instance = await repository.createRangeInstance({ name: 'retry uses original resources', ownerUserId: 'owner', status: 'creating' });
+ const original = await repository.createProvisionJob({ rangeInstanceId: instance.id, jobType: 'create', triggeredBy: 'owner' });
+ await repository.updateProvisionJob(original.id, { status: 'failed' });
+ const retry = await repository.createProvisionJob({ rangeInstanceId: instance.id, jobType: 'retry', triggeredBy: 'owner' });
+ await repository.updateProvisionJob(retry.id, { status: 'succeeded' });
+ const base = { regionId: 'cn-hangzhou', cloudAccountUid: 'account', billingScope: 'user' as const, ownerUserId: 'owner', rangeInstanceId: instance.id, billingStartAt: instance.createdAt };
+ await repository.createBillingLedgerResource({ ...base, cloudResourceId: 'i-existing', cloudResourceType: 'ecs', sourceProvisionJobId: null });
+ await repository.createBillingLedgerResource({ ...base, cloudResourceId: 'i-other', cloudResourceType: 'ecs', sourceProvisionJobId: retry.id });
+ await syncRangeInstanceBillingLedger({ repository, instance, regionId: base.regionId, cloudAccountUid: base.cloudAccountUid,
+   resourceSummary: { mode: 'opentofu', hostIds: { original: 'i-existing' } }, sourceProvisionJobId: original.id, billingStartAt: instance.createdAt });
+ const rows = await repository.listBillingLedgerResources();
+ expect(rows.find(row => row.cloudResourceId === 'i-existing')!.sourceProvisionJobId).toBe(original.id);
+ expect(rows.find(row => row.cloudResourceId === 'i-other')!.sourceProvisionJobId).toBe(retry.id);
+});
+
+it.each(['range', 'workspace'])('rejects an unrelated source %s before changing existing ledger provenance', async kind => {
+ const repository = createMemoryAdminRepository();
+ const instance = await repository.createRangeInstance({ name: 'source boundary', ownerUserId: 'owner' });
+ const other = await repository.createRangeInstance({ name: 'another source boundary', ownerUserId: 'owner' });
+ const source = await repository.createProvisionJob({ rangeInstanceId: kind === 'range' ? other.id : instance.id, jobType: 'create', triggeredBy: 'owner' });
+ if (kind === 'workspace') jest.spyOn(repository, 'getProvisionJobById').mockResolvedValue({ ...source, cloudWorkspaceId: 'foreign' });
+ const ledger = await repository.createBillingLedgerResource({ regionId: 'cn-hangzhou', cloudAccountUid: 'account', cloudResourceId: 'i-existing', cloudResourceType: 'ecs', billingScope: 'user', ownerUserId: 'owner', rangeInstanceId: instance.id, billingStartAt: instance.createdAt });
+ await expect(syncRangeInstanceBillingLedger({ repository, instance, regionId: 'cn-hangzhou', cloudAccountUid: 'account',
+   resourceSummary: { mode: 'opentofu', hostIds: { host: 'i-existing' } }, sourceProvisionJobId: source.id, billingStartAt: instance.createdAt })).rejects.toThrow('original range and workspace');
+ expect(await repository.listBillingLedgerResources()).toEqual([ledger]);
+});
+
+it('keeps a concurrently filled birth source during ordinary recovery inventory synchronization', async () => {
+ const repository = createMemoryAdminRepository();
+ const instance = await repository.createRangeInstance({ name: 'concurrent recovery', ownerUserId: 'owner' });
+ const source = await repository.createProvisionJob({ rangeInstanceId: instance.id, jobType: 'create', triggeredBy: 'owner' });
+ const ledger = await repository.createBillingLedgerResource({ regionId: 'cn-hangzhou', cloudAccountUid: 'account', cloudResourceId: 'i-existing', cloudResourceType: 'ecs',
+   billingScope: 'user', ownerUserId: 'owner', rangeInstanceId: instance.id, billingStartAt: instance.createdAt });
+ const cas = repository.repairBillingLedgerOrigin.bind(repository);
+ jest.spyOn(repository, 'repairBillingLedgerOrigin').mockImplementation(async input => {
+   await repository.updateBillingLedgerResource(input.expected.id, { sourceProvisionJobId: 'concurrent-birth' }); return cas(input);
+ });
+ await syncRangeInstanceBillingLedger({ repository, instance, regionId: 'cn-hangzhou', cloudAccountUid: 'account',
+   resourceSummary: { mode: 'opentofu', hostIds: { host: 'i-existing' } }, sourceProvisionJobId: source.id, billingStartAt: instance.createdAt });
+ expect((await repository.listBillingLedgerResources()).find(row => row.id === ledger.id)!.sourceProvisionJobId).toBe('concurrent-birth');
+ expect(await repository.listProvisionJobStepLogs(source.id)).toEqual([]);
 });
 
 it.each(['alibaba_cloud', 'tencent_cloud'] as const)('keeps %s update-created resource birth job/time through later cleanup observation', async cloudProvider => {

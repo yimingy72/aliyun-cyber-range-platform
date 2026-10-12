@@ -20,6 +20,7 @@ import { SystemConfigService } from './system-config.service';
 import { billingDayText, resolveBillingWindow } from './billing-window';
 import { getCurrentCloudWorkspaceId, getCurrentCloudWorkspaceScope, runInSystemCloudWorkspaceScope } from '../auth/cloud-workspace-scope';
 import { listExecutionCloudWorkspaces, runInExecutionCloudWorkspace } from '../auth/background-cloud-workspace';
+import { repairAlibabaLedgerOrigins } from './billing-ledger-origin-repair';
 
 type RawBillLine = Record<string, unknown>;
 
@@ -185,6 +186,9 @@ export class BillingSyncService implements OnModuleInit, OnModuleDestroy {
           if (!/^[A-Z]{3}$/.test(readString(line, 'Currency'))) throw new Error('BSS returned an invalid currency; previous bills were retained');
           if (line.OwnerID !== undefined && String(line.OwnerID) !== cloudAccountUid) throw new Error('BSS returned a bill for a different resource account');
           if (line.BillingDate !== undefined && readString(line, 'BillingDate') !== billingDate) throw new Error('BSS returned a bill for a different billing date; previous bills were retained');
+        }
+        if (await repairAlibabaLedgerOrigins(this.adminRepository, proof, items, cloudAccountUid, billingDate)) {
+          proof = await loadPlatformBillingProof(this.adminRepository);
         }
         const previous: BillingLineItemRecord[] = (await this.adminRepository.listBillingLineItems({ cloudProvider: 'alibaba_cloud', cloudAccountUid, startAt: billingDate, endAt: billingDate }))
           .filter(line => proof.ledgers.some(ledger => ledger.id === line.matchedLedgerId && isPlatformCreatedLedger(ledger, proof)

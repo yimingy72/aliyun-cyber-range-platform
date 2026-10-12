@@ -48,8 +48,11 @@ describe('Tencent signed official billing pipeline', () => {
         tencentBill({ Id: 'cos-aggregate', ResourceId: '100001;4;cos', BusinessCode: 'p_cos', ComponentSet: [{ RealCost: '888' }] })]));
       expect(await tencentBillingSync(repository).syncRange(WINDOW)).toMatchObject({ syncedDays: 1, importedLineItems: 6, anomalyCount: 0 });
       const summary = await new BillingService(repository).getSummary(WINDOW);
-      expect(summary).toMatchObject({ totalPretaxAmount: 1.800000002, resourcesWithoutBillCount: 1, anomalyCount: 0 });
+      expect(summary).toMatchObject({ totalPretaxAmount: 1.800000002, resourcesWithoutBillCount: 0, anomalyCount: 0 });
       const items = await repository.listBillingLineItems();
+      // The root disk is billed in the CVM component; only the data disk has its own CBS row.
+      expect(items.filter(item => item.cloudResourceId === 'disk-system')).toHaveLength(0);
+      expect(items.filter(item => item.cloudResourceId === 'disk-data')).toHaveLength(1);
       expect(items.every(item => item.cloudProvider === 'tencent_cloud' && item.matchedLedgerId && ledgers.some(ledger => ledger.id === item.matchedLedgerId))).toBe(true);
       expect(items.some(item => item.pretaxAmount === -0.000000001)).toBe(true);
       const [url, init] = fetchMock.mock.calls[0];

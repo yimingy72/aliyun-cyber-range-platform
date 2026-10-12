@@ -419,7 +419,7 @@ export type BillingSummary = {
   currencyTotals?: Array<{ currency: string; totalPretaxAmount: number; platformPretaxAmount: number }>;
   billingStatus?: 'provisional';
   billingScope?: 'platform_resources';
-  reconciliationIssues?: Array<{ resourceType: 'snapshot' | 'oss' | 'unknown'; resourceCount: number; reason: string }>;
+  reconciliationIssues?: Array<{ resourceType: 'snapshot' | 'oss' | 'unknown' | 'disk'; resourceCount: number; reason: string }>;
   unallocatedCurrencyTotals?: Array<{ currency: string; pretaxAmount: number }>;
   resourcesWithoutBillCount?: number;
   totalPretaxAmount: number | null;

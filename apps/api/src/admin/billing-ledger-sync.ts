@@ -41,6 +41,15 @@ function isSuccessfulLaunchJob(job: ProvisionJobRecord | null): job is Provision
   return job?.status === 'succeeded' && (job.jobType === 'create' || job.jobType === 'retry');
 }
 
+function isLaunchJob(job: ProvisionJobRecord | null): job is ProvisionJobRecord {
+  return Boolean(job && (job.jobType === 'create' || job.jobType === 'retry'));
+}
+
+function diskInventory(summary: RangeResourceSummary): Record<string, unknown> {
+  return { hostIds: summary.hostIds ?? {}, systemDiskIds: summary.systemDiskIds ?? {}, dataDiskIds: summary.dataDiskIds ?? {},
+    diskOwnershipProofs: summary.diskOwnershipProofs ?? {}, ...(summary.retiredResources ? { retiredResources: diskInventory(summary.retiredResources) } : {}) };
+}
+
 function buildLedgerSpecs(resourceSummary: RangeResourceSummary | null): LedgerSpec[] {
   if (!resourceSummary) {
     return [];
@@ -111,15 +120,35 @@ export async function syncRangeInstanceBillingLedger(input: SyncRangeInstanceBil
     instanceSourceJobIds.map(async (jobId) => [jobId, await input.repository.getProvisionJobById(jobId)] as const),
   );
   const incomingJob = input.sourceProvisionJobId ? await input.repository.getProvisionJobById(input.sourceProvisionJobId) : null;
-  if (incomingJob?.jobType === 'update' && (incomingJob.rangeInstanceId !== input.instance.id
+  if (incomingJob && (incomingJob.rangeInstanceId !== input.instance.id
     || (incomingJob.cloudWorkspaceId ?? 'legacy-unbound') !== (input.instance.cloudWorkspaceId ?? 'legacy-unbound'))) {
-    throw new Error('Update billing inventory requires its original range and workspace job');
+    throw new Error('Billing inventory requires its original range and workspace job');
   }
   const incomingUpdate = incomingJob?.jobType === 'update' && incomingJob.startedAt ? incomingJob : null;
   const applyStartedAt = incomingUpdate ? (await input.repository.listProvisionJobStepLogs(incomingUpdate.id))
     .find(log => log.stepName === 'tofu_apply' && log.startedAt)?.startedAt ?? incomingUpdate.startedAt : null;
   const sourceProvisionJobId =
-    sourceJobs.find(([, job]) => isSuccessfulLaunchJob(job))?.[0] ?? input.sourceProvisionJobId ?? null;
+    (isLaunchJob(incomingJob) ? incomingJob.id : null) ?? sourceJobs.find(([, job]) => isSuccessfulLaunchJob(job))?.[0] ?? input.sourceProvisionJobId ?? null;
+  const context = input.resourceSummary?.executionContext;
+  const config = input.instance.singleInstanceConfig;
+  if (input.instance.cloudProvider === 'alibaba_cloud' && input.instance.instanceMode === 'single' && config?.executionBackend === 'opentofu'
+    && input.resourceSummary && ledgerSpecs.length && incomingJob
+    && ['create', 'retry', 'update'].includes(incomingJob.jobType) && context?.provider === 'alibaba_cloud'
+    && context.cloudAccountContextId && context.cloudAccountUid === input.cloudAccountUid && context.regionId === input.regionId && context.zoneId
+    && config.cloudAccountContextId === context.cloudAccountContextId && config.cloudAccountUid === context.cloudAccountUid
+    && config.regionId === context.regionId && config.zoneId === context.zoneId) {
+    // Keep verified physical disk/host relationships after destruction clears the active summary.
+    const message = JSON.stringify({ version: 1, cloudProvider: 'alibaba_cloud', cloudWorkspaceId: input.instance.cloudWorkspaceId ?? 'legacy-unbound',
+      rangeInstanceId: input.instance.id, sourceJobId: incomingJob.id, ownerUserId: input.instance.ownerUserId ?? null,
+      singleInstanceBatchId: input.instance.singleInstanceBatchId ?? null,
+      executionContext: { provider: context.provider, cloudAccountContextId: context.cloudAccountContextId, cloudAccountUid: context.cloudAccountUid, regionId: context.regionId, zoneId: context.zoneId },
+      resources: diskInventory(input.resourceSummary) });
+    if (!(await input.repository.listProvisionJobStepLogs(incomingJob.id)).some(log => log.stepName === 'range_resource_inventory' && log.status === 'succeeded' && log.message === message)) {
+      const now = new Date();
+      await input.repository.createProvisionJobStepLog({ jobId: incomingJob.id, stepName: 'range_resource_inventory', status: 'succeeded', message,
+        startedAt: now, finishedAt: now, stdoutExcerpt: null, stderrExcerpt: null });
+    }
+  }
   if (input.instance.cloudProvider === 'tencent_cloud' && input.sourceProvisionJobId && ledgerSpecs.length) {
     const context = input.resourceSummary?.executionContext;
     const job = await input.repository.getProvisionJobById(input.sourceProvisionJobId);
@@ -203,16 +232,21 @@ export async function syncRangeInstanceBillingLedger(input: SyncRangeInstanceBil
       throw new Error('Billing ledger account backfill requires the same proven instance ownership');
     }
 
+    if (input.instance.cloudProvider === 'alibaba_cloud' && existing.sourceProvisionJobId === null && isLaunchJob(incomingJob)) {
+      await input.repository.repairBillingLedgerOrigin({ expected: existing, sourceProvisionJobId: incomingJob.id,
+        auditMessage: JSON.stringify({ version: 1, evidence: 'observed_instance_creation_inventory', cloudProvider: input.instance.cloudProvider,
+          cloudWorkspaceId: input.instance.cloudWorkspaceId ?? 'legacy-unbound', rangeInstanceId: input.instance.id,
+          cloudAccountUid: input.cloudAccountUid ?? null, regionId: input.regionId, cloudResourceId: spec.cloudResourceId,
+          cloudResourceType: spec.cloudResourceType, sourceProvisionJobId: incomingJob.id }) });
+    }
+
     await input.repository.updateBillingLedgerResource(existing.id, {
       ...(backfillUid ? { cloudAccountUid: backfillUid } : {}),
       billingScope,
       ownerUserId: input.instance.ownerUserId ?? null,
       rangeInstanceId: input.instance.id,
       singleInstanceBatchId: input.instance.singleInstanceBatchId ?? null,
-      // Native IDs identify the same resource across update, reconciliation and cleanup.
-      // Preserve its birth job even if that submission failed or its source was an update.
-      sourceProvisionJobId: input.instance.cloudProvider === 'tencent_cloud' ? existing.sourceProvisionJobId
-        : existing.sourceProvisionJobId ?? sourceJobs.find(([, job]) => isSuccessfulLaunchJob(job))?.[0] ?? (isSuccessfulLaunchJob(incomingJob) ? incomingJob.id : null),
+      // Observation never overwrites a birth source, including one filled concurrently.
       releasedAt: null,
     });
   }

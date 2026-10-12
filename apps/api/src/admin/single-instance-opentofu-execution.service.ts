@@ -41,7 +41,7 @@ function modulePath(context: Context) { return context.manifest.identity.provide
 function batchResourceSummary(context: Context): RangeResourceSummary {
   const identity = context.manifest.identity;
   return { mode: 'opentofu', modulePath: modulePath(context), workspaceDir: context.workspace,
-    ...(identity.provider === 'tencent_cloud' ? { executionContext: { provider: identity.provider, cloudAccountContextId: identity.contextId, cloudAccountUid: identity.accountUid, regionId: identity.region, zoneId: identity.zone } } : {}) };
+    executionContext: { provider: identity.provider ?? 'alibaba_cloud', cloudAccountContextId: identity.contextId, cloudAccountUid: identity.accountUid, regionId: identity.region, zoneId: identity.zone } };
 }
 function resourceType(context: Context) { return context.manifest.identity.provider === 'tencent_cloud' ? 'tencentcloud_instance' : 'alicloud_instance'; }
 function validCloudId(context: Context, id: string) { return (context.manifest.identity.provider === 'tencent_cloud' ? /^ins-[a-z0-9]+$/ : /^i-[A-Za-z0-9-]{1,125}$/).test(id); }

@@ -5,6 +5,7 @@ const descriptions: Record<string, string> = {
   prepare: 'Prepare the recorded operation', tofu_init: 'Initialize OpenTofu', tofu_apply: 'Apply the recorded topology',
   tofu_destroy: 'Destroy the recorded topology', verify_destroy: 'Platform cloud absence verification',
   persist_access_entry: 'Persist cloud resources and billing sources', range_resource_inventory: 'Persist resource identities',
+  platform_billing_origin_repair: 'Restore a verified billing creation source',
   cleanup_failed_create_resources: 'Clean up partial creation',
 };
 const identity = (value: unknown) => typeof value === 'string' && /^[A-Za-z0-9][A-Za-z0-9:_-]{0,255}$/.test(value);

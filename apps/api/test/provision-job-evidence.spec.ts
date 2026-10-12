@@ -22,6 +22,14 @@ function repository() {
 }
 
 describe('controlled provisioning evidence', () => {
+  it('shows billing source repair as a fixed phase without disclosing its audit payload or foreign workspace', () => {
+    const repair = step('platform_billing_origin_repair', JSON.stringify({ officialRowsFingerprint: 'private fingerprint', rawPayload: 'private bill' }));
+    const evidence = buildProvisionJobEvidence(job, [repair, { ...repair, cloudWorkspaceId: 'foreign' }], [], []);
+    expect(evidence.steps).toEqual([{ stepName: 'platform_billing_origin_repair', status: 'succeeded',
+      description: 'Restore a verified billing creation source', startedAt: now, finishedAt: now }]);
+    expect(JSON.stringify(evidence)).not.toContain('private');
+    expect(JSON.stringify(evidence)).not.toContain('rawPayload');
+  });
   it('projects resource identities and fixed descriptions while dropping raw text, snapshots and secrets', async () => {
     const repo = repository(); const result = await new ProvisionJobsService(repo as any).getById('job-1', { id: 'alice', role: 'user' } as any, true);
     expect(result).toMatchObject({ id: 'job-1', evidence: { coverage: 'platform_recorded_job_evidence', invalidInventoryCount: 0,
