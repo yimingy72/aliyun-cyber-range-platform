@@ -1,3 +1,4 @@
+import { expiredSingleDestroyDecision } from '../../src/provisioning/automatic-destroy-policy';
 import { rangeDraftSourceDigest } from '../../src/admin/range-draft-change-policy';
 import type { RangeDnsVerification } from '../../src/admin/range-dns-types';
 import {
@@ -143,6 +144,7 @@ export function createMemoryAdminRepository(): AdminRepository {
   let idCounter = 1;
   let templateCopyQueue: Promise<unknown> = Promise.resolve();
   let singleControlQueue: Promise<unknown> = Promise.resolve();
+  let singleControlPending = 0;
   const singleBatchProvisionLocks = new Set<string>();
 
   const nextId = () => `memory-${idCounter++}`;
@@ -1110,6 +1112,24 @@ export function createMemoryAdminRepository(): AdminRepository {
       });
       return clone(job);
     },
+    async queueExpiredSingleInstanceDestroy(input) {
+      if (singleControlPending) return null;
+      return this.withSingleInstanceControlLock(async () => {
+        const instance = rangeInstances.find(record => record.id === input.rangeInstanceId);
+        if (!instance) return null;
+        const previous = provisionJobs.find(job => job.id === instance.lastJobId) ?? null;
+        const decision = expiredSingleDestroyDecision(instance, previous, input.now);
+        if (!decision || provisionJobs.some(job => job.rangeInstanceId === instance.id && ['pending', 'running'].includes(job.status)
+          && job.id !== decision.supersedeJobId)) return null;
+        // No await between the first mutation and the complete new intake state.
+        const job = createJobRecord({ rangeInstanceId: instance.id, jobType: 'destroy',
+          triggeredBy: 'system:auto-expire', retryCount: decision.retryCount });
+        if (decision.supersedeJobId && previous) Object.assign(previous, { status: 'failed', finishedAt: input.now,
+          errorSummary: 'Expired before access refresh completed', updatedAt: now() });
+        Object.assign(instance, { status: 'pending_destroy', lastJobId: job.id, updatedAt: now() });
+        return clone(job);
+      });
+    },
     async claimRangeProvisionJob(id: string, startedAt: Date) {
       const job = provisionJobs.find(record => record.id === id && record.status === 'pending');
       const instance = job && rangeInstances.find(record => record.id === job.rangeInstanceId && record.instanceMode === 'range');
@@ -1599,8 +1619,9 @@ export function createMemoryAdminRepository(): AdminRepository {
       }
     },
     async withSingleInstanceControlLock(work) {
+      singleControlPending += 1;
       const run = singleControlQueue.then(work, work);
-      singleControlQueue = run.then(() => undefined, () => undefined);
+      singleControlQueue = run.then(() => { singleControlPending -= 1; }, () => { singleControlPending -= 1; });
       return run;
     },
     async tryWithSingleInstanceBatchProvisionLock(batchId, work) {
