@@ -111,7 +111,7 @@ export class BillingOssBindingService {
     const context = await this.config.getSelectedAccountContext();
     if (scope.provider !== 'alibaba_cloud' || context.provider !== 'alibaba_cloud' || !context.accountUidResolved
       || !context.accountUid || context.accountUid !== scope.accountUid || !context.cloudAccountContextId
-      || context.cloudAccountContextId !== scope.cloudAccountContextId || requireConfiguredBucket && !context.imageImportBucket) {
+      || scope.cloudAccountContextId && context.cloudAccountContextId !== scope.cloudAccountContextId || requireConfiguredBucket && !context.imageImportBucket) {
       throw new BadRequestException('请选择已验证的阿里云账号并配置 OSS 导入桶。');
     }
     return context;

@@ -32,6 +32,14 @@ const originalStart = process.env.PLATFORM_BILLING_STARTED_AT;
 beforeEach(() => { jest.useFakeTimers().setSystemTime(new Date('2026-10-12T00:00:00Z')); process.env.PLATFORM_BILLING_STARTED_AT = '2026-09-30T16:00:00.000Z'; });
 afterEach(() => { jest.restoreAllMocks(); jest.useRealTimers(); if (originalStart === undefined) delete process.env.PLATFORM_BILLING_STARTED_AT; else process.env.PLATFORM_BILLING_STARTED_AT = originalStart; });
 
+it('uses the verified active account for ordinary workspace requests while refusing an explicit mismatched context', async () => {
+  const f = fixture();
+  expect(await runInCloudWorkspace({ ...scope, cloudAccountContextId: undefined }, () => f.service.contextForWrite(false))).toMatchObject({
+    cloudAccountContextId: context.cloudAccountContextId, accountUid: scope.accountUid });
+  await expect(runInCloudWorkspace({ ...scope, cloudAccountContextId: 'context-other' }, () => f.service.contextForWrite(false))).rejects.toThrow('请选择已验证');
+  expect(f.fetchMock).not.toHaveBeenCalled();
+});
+
 it('does not infer ownership from configured bucket; binds only verified dedicated statement and preserves immutable evidence', async () => {
   const f = fixture();
   expect(await runInCloudWorkspace(scope, () => f.service.list())).toEqual([]);
