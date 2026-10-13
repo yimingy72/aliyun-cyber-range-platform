@@ -19,11 +19,10 @@ const labels: Record<ResourceAlertStatus, string> = { pending: '待处理', unve
 const types: Record<string, string> = { ecs: '云主机', disk: '系统盘', eip: 'EIP', nat_gateway: 'NAT', eni: '网卡', vpc: 'VPC',
   vswitch: '交换机', security_group: '安全组', network_acl: 'ACL', route_table: '路由表', snat_entry: 'SNAT', dnat_entry: 'DNAT' };
 const columns: readonly AdminDataColumn[] = [
-  { id: 'resource', label: '资源', priority: 'primary', width: '24%' },
-  { id: 'source', label: '账号 / 地域 / 实例', priority: 'secondary', width: '25%' },
-  { id: 'reason', label: '异常与来源', priority: 'primary', width: '27%' },
-  { id: 'status', label: '状态 / 发现时间', priority: 'tertiary', width: '14%' },
-  { id: 'action', label: '操作', priority: 'primary', align: 'right', width: '10%' },
+  { id: 'resource', label: '资源 / 状态', priority: 'primary', width: '25%' },
+  { id: 'source', label: '账号 / 地域 / 实例', priority: 'secondary', width: '24%' },
+  { id: 'reason', label: '异常与来源', priority: 'primary', width: '37%' },
+  { id: 'action', label: '操作', priority: 'primary', align: 'right', width: '14%' },
 ];
 type Review = { preview: ResourceReclaimPreview; workspaceId: string; idempotencyKey: string };
 
@@ -142,11 +141,10 @@ export function ResourceAlertsScreen({ apiBaseUrl = '/api' }: { apiBaseUrl?: str
     <AdminDataTable columns={columns} label="资源告警列表" isRefreshing={loading && rows !== null}>
       {cols => rows === null && !error ? <TableLoadingState columnCount={cols.length} rowCount={5} label="读取资源告警" /> : !visible.length ? <AdminDataTableState columns={cols} variant={error ? 'error' : 'empty'} title={error ? '检查未完成' : '暂无资源告警'} description={error ?? '仅完整云端检查能确认资源状态。'} onRetry={error ? () => void refresh() : undefined} /> :
         visible.map(row => <TableRow key={row.id}>
-          <AdminDataTableCell column={cols[0]}><div>{types[row.type] ?? row.type}</div><div className="mt-1 break-all whitespace-normal text-xs text-muted-foreground">{row.resourceId}</div></AdminDataTableCell>
+          <AdminDataTableCell column={cols[0]}><div>{types[row.type] ?? row.type}</div><div className="my-1 break-all whitespace-normal text-xs text-muted-foreground">{row.resourceId}</div><span className={`admin-pill admin-pill-${row.status === 'resolved' ? 'success' : row.status === 'failed' ? 'danger' : 'warning'}`}>{labels[row.status]}</span></AdminDataTableCell>
           <AdminDataTableCell column={cols[1]}><div>{row.accountUid}</div><div className="text-xs text-muted-foreground">{row.regionId}</div>{row.rangeInstanceId ? <span className="mt-1 block truncate" title={row.rangeInstanceId}>{row.rangeName ?? row.rangeInstanceId}</span> : <span className="text-xs">无完整关联记录</span>}</AdminDataTableCell>
-          <AdminDataTableCell className="whitespace-normal" column={cols[2]}><p className="text-sm">{row.reason}</p><p className="mt-1 text-xs text-muted-foreground">{row.evidenceSummary.recordedInventory ? '已记录准确库存' : '创建来源待核验'} · {row.evidenceSummary.sourceJobIds.length} 个来源作业</p>{row.errorSummary ? <p className="mt-1 text-xs text-destructive">{row.errorSummary}</p> : null}</AdminDataTableCell>
-          <AdminDataTableCell column={cols[3]}><span className={`admin-pill admin-pill-${row.status === 'resolved' ? 'success' : row.status === 'failed' ? 'danger' : 'warning'}`}>{labels[row.status]}</span><div className="mt-1 text-xs text-muted-foreground" title={`首次：${formatAdminDateTime(row.firstSeenAt)}`}>{formatAdminDateTime(row.lastSeenAt)}</div></AdminDataTableCell>
-          <AdminDataTableCell column={cols[4]}><Button disabled={busy || row.status === 'reclaiming' || row.status === 'resolved'} size="sm" variant="outline" onClick={() => void inspect(row.id)}>查看清单</Button></AdminDataTableCell>
+          <AdminDataTableCell className="whitespace-normal" column={cols[2]}><p className="text-sm">{row.reason}</p><p className="mt-1 text-xs text-muted-foreground">{row.evidenceSummary.recordedInventory ? '已记录准确库存' : '创建来源待核验'} · {row.evidenceSummary.sourceJobIds.length} 个来源作业</p><div className="mt-1 text-xs text-muted-foreground"><div>首次 {formatAdminDateTime(row.firstSeenAt)}</div><div>最近 {formatAdminDateTime(row.lastSeenAt)}</div></div>{row.errorSummary ? <p className="mt-1 text-xs text-destructive">{row.errorSummary}</p> : null}</AdminDataTableCell>
+          <AdminDataTableCell column={cols[3]}><Button disabled={busy || row.status === 'reclaiming' || row.status === 'resolved'} size="sm" variant="outline" onClick={() => void inspect(row.id)}>查看清单</Button></AdminDataTableCell>
         </TableRow>)}
     </AdminDataTable>
     <AdminDialog open={Boolean(review)} title="确认残留资源回收" description="只回收以下准确资源；来源和占用会在确认后再次核验。" pending={busy} onOpenChange={open => { if (!open) setReview(null); }}
