@@ -853,13 +853,13 @@ describe('TemplatesScreen', () => {
 
     await waitFor(() => {
       expect((within(dialog).getByRole('button', { name: '取消编辑' }) as HTMLButtonElement).disabled).toBe(true);
-      expect((within(dialog).getByRole('button', { name: 'Close' }) as HTMLButtonElement).disabled).toBe(true);
+      expect((within(dialog).getByRole('button', { name: '关闭弹窗' }) as HTMLButtonElement).disabled).toBe(true);
     });
 
     fireEvent.keyDown(dialog, { key: 'Escape' });
     await new Promise((resolve) => window.setTimeout(resolve, 0));
     fireEvent.pointerDown(document.body);
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Close' }));
+    fireEvent.click(within(dialog).getByRole('button', { name: '关闭弹窗' }));
 
     expect(screen.getByRole('dialog', { name: '编辑靶场' })).toBeTruthy();
 
@@ -1187,13 +1187,13 @@ describe('TemplatesScreen', () => {
 
     await waitFor(() => {
       expect((within(dialog).getByRole('button', { name: '取消' }) as HTMLButtonElement).disabled).toBe(true);
-      expect((within(dialog).getByRole('button', { name: 'Close' }) as HTMLButtonElement).disabled).toBe(true);
+      expect((within(dialog).getByRole('button', { name: '关闭弹窗' }) as HTMLButtonElement).disabled).toBe(true);
     });
 
     fireEvent.keyDown(dialog, { key: 'Escape' });
     await new Promise((resolve) => window.setTimeout(resolve, 0));
     fireEvent.pointerDown(document.body);
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Close' }));
+    fireEvent.click(within(dialog).getByRole('button', { name: '关闭弹窗' }));
 
     expect(screen.getByRole('dialog', { name: '生成实例' })).toBeTruthy();
 

@@ -1,5 +1,7 @@
 'use client';
 
+import { Button } from '@/components/ui/button';
+
 import React from 'react';
 import {
   Background,
@@ -587,7 +589,7 @@ function TopologyFlowCanvasInner({
       <div className="topology-flow-toolbar" data-testid="topology-flow-toolbar">
         {!isReadonly ? (
           <>
-            <button
+            <Button variant="ghost"
               aria-label="选择模式"
               aria-pressed={!isConnectMode}
               className="topology-flow-tool-button"
@@ -597,8 +599,8 @@ function TopologyFlowCanvasInner({
               type="button"
             >
               <MousePointer2 aria-hidden="true" />
-            </button>
-            <button
+            </Button>
+            <Button variant="ghost"
               aria-label="连线模式"
               aria-pressed={isConnectMode}
               className="topology-flow-tool-button"
@@ -608,8 +610,8 @@ function TopologyFlowCanvasInner({
               type="button"
             >
               <GitBranch aria-hidden="true" />
-            </button>
-            <button
+            </Button>
+            <Button variant="ghost"
               aria-label="全部自动布局"
               className="topology-flow-tool-button"
               onClick={handleLayoutAll}
@@ -617,8 +619,8 @@ function TopologyFlowCanvasInner({
               type="button"
             >
               <LayoutGrid aria-hidden="true" />
-            </button>
-            <button
+            </Button>
+            <Button variant="ghost"
               aria-label="撤销"
               className="topology-flow-tool-button"
               onClick={onUndo}
@@ -626,8 +628,8 @@ function TopologyFlowCanvasInner({
               type="button"
             >
               <Undo2 aria-hidden="true" />
-            </button>
-            <button
+            </Button>
+            <Button variant="ghost"
               aria-label="重做"
               className="topology-flow-tool-button"
               onClick={onRedo}
@@ -635,10 +637,10 @@ function TopologyFlowCanvasInner({
               type="button"
             >
               <Redo2 aria-hidden="true" />
-            </button>
+            </Button>
           </>
         ) : null}
-        <button
+        <Button variant="ghost"
           aria-label="适应视图"
           className="topology-flow-tool-button"
           onClick={() => fitView({ duration: 180, ...topologyFitViewOptions })}
@@ -646,8 +648,8 @@ function TopologyFlowCanvasInner({
           type="button"
         >
           <Maximize aria-hidden="true" />
-        </button>
-        <button
+        </Button>
+        <Button variant="ghost"
           aria-label={isFullscreen ? '退出全屏编辑模式' : '进入全屏编辑模式'}
           aria-pressed={isFullscreen}
           className="topology-flow-tool-button"
@@ -657,7 +659,7 @@ function TopologyFlowCanvasInner({
           type="button"
         >
           {isFullscreen ? <Minimize2 aria-hidden="true" /> : <Maximize2 aria-hidden="true" />}
-        </button>
+        </Button>
       </div>
       <TopologyFlowResourceRail
         disabled={isReadonly}
@@ -706,7 +708,7 @@ function TopologyFlowCanvasInner({
           ) : null}
         </ReactFlow>
       </div>
-      <button
+      <Button variant="ghost"
         aria-label={isMiniMapVisible ? '隐藏导航图' : '显示导航图'}
         aria-pressed={isMiniMapVisible}
         className="topology-flow-mini-map-toggle"
@@ -715,7 +717,7 @@ function TopologyFlowCanvasInner({
         type="button"
       >
         <MapIcon aria-hidden="true" />
-      </button>
+      </Button>
     </section>
   );
 }

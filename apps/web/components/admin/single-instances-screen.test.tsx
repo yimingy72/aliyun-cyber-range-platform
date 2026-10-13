@@ -488,9 +488,9 @@ describe('SingleInstancesScreen', () => {
     expect(screen.getByRole('button', { name: '关闭' })).toBeTruthy();
     expect(screen.getByRole('button', { name: '关闭实例' })).toBeTruthy();
     expect(screen.getByRole('button', { name: '打开 VNC' })).toBeTruthy();
-    fireEvent.click(screen.getByRole('button', { name: '更多操作' }));
-    expect(screen.getByRole('button', { name: '重启实例' })).toBeTruthy();
-    expect(screen.queryByRole('button', { name: '打包为镜像' })).toBeNull();
+    fireEvent.keyDown(screen.getByRole('button', { name: '更多操作' }), { key: 'Enter' });
+    expect(screen.getByRole('menuitem', { name: '重启实例' })).toBeTruthy();
+    expect(screen.queryByRole('menuitem', { name: '打包为镜像' })).toBeNull();
   });
 
   it('keeps pack image available for a quantity-1 batch child row', async () => {
@@ -547,8 +547,8 @@ describe('SingleInstancesScreen', () => {
     expect(await screen.findByText('single-child-batch')).toBeTruthy();
     fireEvent.click(screen.getByRole('button', { name: '展开批次 single-child-batch' }));
     expect(await screen.findByText('single-child-01')).toBeTruthy();
-    fireEvent.click(screen.getByRole('button', { name: '更多操作' }));
-    expect(screen.getByRole('button', { name: '打包为镜像' })).toBeTruthy();
+    fireEvent.keyDown(screen.getByRole('button', { name: '更多操作' }), { key: 'Enter' });
+    expect(screen.getByRole('menuitem', { name: '打包为镜像' })).toBeTruthy();
   });
 
   it.each([
@@ -592,7 +592,7 @@ describe('SingleInstancesScreen', () => {
     expect(cells[2].textContent).toBe(`${quantity} 台`);
   });
 
-  it('opens the action menu upward when the trigger is near the viewport bottom', async () => {
+  it('portals batch child actions outside the clipped table', async () => {
     fetchSingleInstancesMock.mockResolvedValue({
       batches: [
         {
@@ -645,35 +645,11 @@ describe('SingleInstancesScreen', () => {
 
     fireEvent.click(await screen.findByRole('button', { name: '展开批次 single-child-batch' }));
     const moreActionsButton = await screen.findByRole('button', { name: '更多操作' });
-    const originalInnerHeight = window.innerHeight;
-    try {
-      Object.defineProperty(window, 'innerHeight', {
-        configurable: true,
-        value: 800,
-      });
-      vi.spyOn(moreActionsButton, 'getBoundingClientRect').mockReturnValue({
-        x: 0,
-        y: 0,
-        width: 80,
-        height: 32,
-        top: 740,
-        right: 80,
-        bottom: 772,
-        left: 0,
-        toJSON: () => ({}),
-      } as DOMRect);
-
-      fireEvent.click(moreActionsButton);
-
-      expect(screen.getByRole('button', { name: '重启实例' }).closest('.template-workbench-action-menu')?.className).toContain(
-        'is-upward',
-      );
-    } finally {
-      Object.defineProperty(window, 'innerHeight', {
-        configurable: true,
-        value: originalInnerHeight,
-      });
-    }
+    fireEvent.keyDown(moreActionsButton, { key: 'Enter' });
+    const menu = await screen.findByRole('menu');
+    expect(menu.closest('table')).toBeNull();
+    expect(menu.closest('[data-slot="admin-data-table-frame"]')).toBeNull();
+    expect(within(menu).getByRole('menuitem', { name: '重启实例' })).toBeTruthy();
   });
 
   it('blocks create submit when the current cpu and memory pair is not exactly saleable', async () => {
@@ -820,26 +796,23 @@ describe('SingleInstancesScreen', () => {
 
     expect(screen.getByRole('button', { name: '关闭实例' })).toBeTruthy();
     expect(screen.getByRole('button', { name: '打开 VNC' })).toBeTruthy();
-    fireEvent.click(screen.getAllByRole('button', { name: '更多操作' })[0]);
+    fireEvent.keyDown(screen.getAllByRole('button', { name: '更多操作' })[0], { key: 'Enter' });
     expect(
-      screen
-        .getAllByRole('button')
-        .filter((button) =>
-          ['关闭实例', '重启实例', '打开 VNC', '打包为镜像'].includes(button.textContent ?? ''),
-        )
-        .map((button) => button.textContent),
-    ).toEqual(['关闭实例', '打开 VNC', '重启实例', '打包为镜像']);
-    expect(screen.getByRole('button', { name: '重启实例' })).toBeTruthy();
-    expect(screen.queryByRole('button', { name: '重试创建' })).toBeNull();
-    expect(screen.queryByRole('button', { name: '重试关闭' })).toBeNull();
+      screen.getAllByRole('menuitem').map((item) => item.textContent),
+    ).toEqual(['重启实例', '打包为镜像']);
+    expect(screen.getByRole('menuitem', { name: '重启实例' })).toBeTruthy();
+    expect(screen.queryByRole('menuitem', { name: '重试创建' })).toBeNull();
+    expect(screen.queryByRole('menuitem', { name: '重试关闭' })).toBeNull();
     expect(screen.queryByText('failed-lab')).toBeNull();
 
     const destroyFailedRow = screen.getByText('destroy-failed-lab').closest('tr');
-    fireEvent.click(within(destroyFailedRow!).getByRole('button', { name: '更多操作' }));
-    expect(screen.getByRole('button', { name: '重试关闭' })).toBeTruthy();
+    fireEvent.keyDown(screen.getByRole('menu'), { key: 'Escape' });
+    fireEvent.keyDown(within(destroyFailedRow!).getByRole('button', { name: '更多操作' }), { key: 'Enter' });
+    expect(screen.getByRole('menuitem', { name: '重试关闭' })).toBeTruthy();
     expect(within(destroyFailedRow!).queryByRole('button', { name: '关闭实例' })).toBeNull();
     expect(within(destroyFailedRow!).queryByRole('button', { name: '删除记录' })).toBeNull();
 
+    fireEvent.keyDown(screen.getByRole('menu'), { key: 'Escape' });
     fireEvent.mouseDown(screen.getByRole('tab', { name: '实例历史' }), { button: 0 });
 
     expect(await screen.findByText('history-lab')).toBeTruthy();
@@ -1172,7 +1145,8 @@ describe('SingleInstancesScreen', () => {
     expect(await screen.findByText('running-lab')).toBeTruthy();
     const table = screen.getByRole('table', { name: '实例列表' });
     const initialTableBody = table.querySelector('tbody');
-    fireEvent.click(await screen.findByRole('button', { name: '更多操作' }));
+    fireEvent.keyDown(await screen.findByRole('button', { name: '更多操作' }), { key: 'Enter' });
+    fireEvent.keyDown(screen.getByRole('menu'), { key: 'Escape' });
     fireEvent.click(screen.getByRole('button', { name: '关闭实例' }));
 
     await waitFor(() =>
@@ -1425,8 +1399,8 @@ describe('SingleInstancesScreen', () => {
     render(<SingleInstancesScreen apiBaseUrl="http://localhost:3001" />);
 
     expect(await screen.findByText('running-lab')).toBeTruthy();
-    fireEvent.click(screen.getByRole('button', { name: '更多操作' }));
-    fireEvent.click(screen.getByRole('button', { name: '打包为镜像' }));
+    fireEvent.keyDown(screen.getByRole('button', { name: '更多操作' }), { key: 'Enter' });
+    fireEvent.click(screen.getByRole('menuitem', { name: '打包为镜像' }));
 
     const dialog = screen.getByRole('dialog', { name: '打包为镜像' });
     expect((within(dialog).getByLabelText('镜像名') as HTMLInputElement).value).toBe('running-lab-snapshot');

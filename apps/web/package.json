@@ -11,6 +11,7 @@
     "@aliyun-cyber-range/platform-api-client": "workspace:*",
     "@aliyun-cyber-range/scenario-runtime": "workspace:*",
     "@dagrejs/dagre": "^3.0.0",
+    "@daypicker/react": "10.0.2",
     "@xyflow/react": "^12.11.2",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",

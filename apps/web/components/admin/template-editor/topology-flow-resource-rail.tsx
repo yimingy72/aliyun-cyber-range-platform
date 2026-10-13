@@ -1,5 +1,7 @@
 'use client';
 
+import { Button } from '@/components/ui/button';
+
 import React from 'react';
 import { Box, Network, Router, Server, X, type LucideIcon } from 'lucide-react';
 
@@ -67,7 +69,7 @@ export function TopologyFlowResourceRail({
       data-expanded={expanded ? 'true' : 'false'}
       data-testid="topology-resource-rail"
     >
-      <button
+      <Button variant="ghost"
         aria-label={expanded ? '关闭资源面板' : '打开资源面板'}
         aria-controls={resourcePaletteId}
         aria-expanded={expanded}
@@ -77,7 +79,7 @@ export function TopologyFlowResourceRail({
         type="button"
       >
         {expanded ? <X aria-hidden="true" /> : <Box aria-hidden="true" />}
-      </button>
+      </Button>
       {expanded ? (
         <div
           className="topology-resource-palette"
@@ -85,7 +87,7 @@ export function TopologyFlowResourceRail({
           id={resourcePaletteId}
         >
           {resourceEntries.map(({ kind, label, description, Icon }) => (
-            <button
+            <Button variant="ghost"
               aria-label={label}
               aria-describedby={`topology-resource-description-${kind}`}
               className="topology-resource-entry"
@@ -107,7 +109,7 @@ export function TopologyFlowResourceRail({
                 <strong>{label}</strong>
                 <small id={`topology-resource-description-${kind}`}>{description}</small>
               </span>
-            </button>
+            </Button>
           ))}
         </div>
       ) : null}

@@ -1722,7 +1722,7 @@ describe('ImageCenterScreen', () => {
 
   it('offers explicit owned-snapshot cleanup without selecting it by default', async () => {
     const dialog = await openCustomDelete({ ...customSnapshot, ownedSnapshotCleanup: { snapshotCount: 2, status: 'ready' } });
-    expect((within(dialog).getByRole('radio', { name: /仅删除镜像/ }) as HTMLInputElement).checked).toBe(true);
+    expect(within(dialog).getByRole('radio', { name: /仅删除镜像/ }).getAttribute('aria-checked')).toBe('true');
     fireEvent.click(within(dialog).getByRole('radio', { name: /同时清理所属快照/ }));
     fireEvent.click(within(dialog).getByRole('button', { name: '确认回收镜像及快照' }));
     await waitFor(() => expect(deleteCustomImageSnapshotMock).toHaveBeenCalledWith('http://localhost:3001', 'dev-admin-token', customSnapshot.id, { deleteOwnedSnapshots: true }));
@@ -1755,7 +1755,7 @@ describe('ImageCenterScreen', () => {
     fireEvent.click(within(dialog).getByRole('radio', { name: /同时清理所属快照/ }));
     fireEvent.click(within(dialog).getByRole('button', { name: '确认回收镜像及快照' }));
     expect((await within(dialog).findByRole('alert')).textContent).toContain('快照仍被其它镜像引用');
-    expect((within(dialog).getByRole('radio', { name: /同时清理所属快照/ }) as HTMLInputElement).checked).toBe(true);
+    expect(within(dialog).getByRole('radio', { name: /同时清理所属快照/ }).getAttribute('aria-checked')).toBe('true');
     expect(screen.getByText(customSnapshot.sourceImageName).closest('tr')).toBeTruthy();
     fireEvent.click(within(dialog).getByRole('button', { name: '确认回收镜像及快照' }));
     await waitFor(() => expect(deleteCustomImageSnapshotMock).toHaveBeenCalledTimes(2));

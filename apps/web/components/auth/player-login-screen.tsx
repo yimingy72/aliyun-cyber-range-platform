@@ -1,5 +1,8 @@
 'use client';
 
+import { Input } from '@/components/ui/input';
+import { Button } from '@/components/ui/button';
+
 import type { FormEvent } from 'react';
 import Link from 'next/link';
 
@@ -31,15 +34,15 @@ export function PlayerLoginScreen({ adminHref = '/admin/login' }: PlayerLoginScr
         <form aria-label="选手登录表单" className="auth-form" method="post" onSubmit={handleSubmit}>
           <label>
             <span>账号</span>
-            <input name="account" type="text" placeholder="请输入账号" />
+            <Input name="account" type="text" placeholder="请输入账号" />
           </label>
 
           <label>
             <span>密码</span>
-            <input name="password" type="password" placeholder="请输入密码" />
+            <Input name="password" type="password" placeholder="请输入密码" />
           </label>
 
-          <button type="submit">登录选手入口</button>
+          <Button type="submit">登录选手入口</Button>
         </form>
 
         <p className="auth-helper">

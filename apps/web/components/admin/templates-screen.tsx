@@ -12,6 +12,7 @@ import {
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
 import { Input } from '@/components/ui/input';
+import { RangeInstanceCreateDialog } from './shared/range-instance-create-dialog';
 import { Label } from '@/components/ui/label';
 import { TableRow } from '@/components/ui/table';
 
@@ -817,7 +818,7 @@ export function TemplatesScreen({
 
   return (
     <div className="admin-screen template-workbench-screen admin-pagination-screen" onClickCapture={handleScreenClickCapture}>
-      {actionErrorMessage ? <p className="admin-error">{actionErrorMessage}</p> : null}
+      {actionErrorMessage && !launchDraft.templateId ? <p className="admin-error">{actionErrorMessage}</p> : null}
       {actionSuccessMessage ? <p className="admin-success">{actionSuccessMessage}</p> : null}
 
       <section className="admin-workbench-surface admin-pagination-surface">
@@ -1058,8 +1059,8 @@ export function TemplatesScreen({
           }
         }}
       >
-          <div className="grid gap-4">
-            <div className="grid gap-2">
+          <div className="grid gap-3">
+            <div className="grid gap-1.5">
               <Label htmlFor="create-template-name">靶场名</Label>
               <Input
                 id="create-template-name"
@@ -1068,14 +1069,13 @@ export function TemplatesScreen({
                 onChange={(event) => setCreateDraft((previous) => ({ ...previous, name: event.target.value }))}
               />
             </div>
-            <div className="grid gap-2">
+            <div className="grid gap-1.5">
               <Label htmlFor="create-template-description">靶场描述</Label>
               <Input
                 id="create-template-description"
                 value={createDraft.description}
                 onChange={(event) => setCreateDraft((previous) => ({ ...previous, description: event.target.value }))}
               />
-              {workspace?.provider === 'tencent_cloud' ? <p className="text-sm text-muted-foreground">到期时间至少在 10 分钟后。</p> : null}
             </div>
           </div>
       </AdminDialog>
@@ -1105,8 +1105,8 @@ export function TemplatesScreen({
           }
         }}
       >
-          <div className="grid gap-4">
-            <div className="grid gap-2">
+          <div className="grid gap-3">
+            <div className="grid gap-1.5">
               <Label htmlFor="edit-template-name">靶场名</Label>
               <Input
                 id="edit-template-name"
@@ -1115,61 +1115,34 @@ export function TemplatesScreen({
                 onChange={(event) => setEditDraft((previous) => ({ ...previous, name: event.target.value }))}
               />
             </div>
-            <div className="grid gap-2">
+            <div className="grid gap-1.5">
               <Label htmlFor="edit-template-description">靶场描述</Label>
               <Input
                 id="edit-template-description"
                 value={editDraft.description}
                 onChange={(event) => setEditDraft((previous) => ({ ...previous, description: event.target.value }))}
               />
-              {workspace?.provider === 'tencent_cloud' ? <p className="text-sm text-muted-foreground">到期时间至少在 10 分钟后。</p> : null}
             </div>
           </div>
       </AdminDialog>
 
-      <AdminDialog
-        footer={
-          <>
-            <Button disabled={isSubmitting} type="button" variant="outline" onClick={closeLaunchDialog}>
-              取消
-            </Button>
-            <Button disabled={!canLaunchRange || isSubmitting} type="button" onClick={() => void handleLaunchInstance()}>
-              {canReplayLaunch && !isSubmitting ? '查询原请求' : '确认生成'}
-            </Button>
-          </>
-        }
+      <RangeInstanceCreateDialog
+        title="生成实例"
+        confirmLabel="确认生成"
         initialFocusRef={launchNameRef}
         open={Boolean(launchDraft.templateId)}
         pending={isSubmitting}
-        title="生成实例"
-        onOpenChange={(open) => {
-          if (!open) {
-            closeLaunchDialog();
-          }
-        }}
-      >
-          <div className="grid gap-4">
-            <div className="grid gap-2">
-              <Label htmlFor="launch-instance-name">实例名</Label>
-              <Input
-                id="launch-instance-name"
-                ref={launchNameRef}
-                value={launchDraft.name}
-                onChange={(event) => setLaunchDraft((previous) => ({ ...previous, name: event.target.value }))}
-              />
-            </div>
-            <div className="grid gap-2">
-              <Label htmlFor="launch-instance-expires-at">到期时间</Label>
-              <Input
-                id="launch-instance-expires-at"
-                type="datetime-local"
-                value={launchDraft.expiresAt}
-                onChange={(event) => setLaunchDraft((previous) => ({ ...previous, expiresAt: event.target.value }))}
-              />
-              {workspace?.provider === 'tencent_cloud' ? <p className="text-sm text-muted-foreground">到期时间至少在 10 分钟后。</p> : null}
-            </div>
-          </div>
-      </AdminDialog>
+        canCreate={canLaunchRange}
+        canReplay={canReplayLaunch}
+        onOpenChange={(open) => { if (!open) closeLaunchDialog(); }}
+        onConfirm={() => void handleLaunchInstance()}
+        name={launchDraft.name}
+        expiresAt={launchDraft.expiresAt}
+        onNameChange={(name) => setLaunchDraft((previous) => ({ ...previous, name }))}
+        onExpiryChange={(expiresAt) => setLaunchDraft((previous) => ({ ...previous, expiresAt }))}
+        tencentCloud={workspace?.provider === 'tencent_cloud'}
+        error={actionErrorMessage}
+      />
 
       <ConfirmActionDialog
         confirmLabel="删除模板"

@@ -4,6 +4,7 @@ import { useEffect, useLayoutEffect, useMemo, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 
 import { Button } from '@/components/ui/button';
+import { RangeInstanceCreateButton } from './range-instance-create-button';
 import { TableCell, TableRow } from '@/components/ui/table';
 import {
   fetchProvisionJobs,
@@ -549,6 +550,7 @@ export function RangeInstancesScreen({
 
         <div className="mt-4 flex min-h-0 flex-1 flex-col">
           <AdminListToolbar
+            action={<RangeInstanceCreateButton apiBaseUrl={apiBaseUrl} />}
             activeView={listMode}
             onSearchChange={setSearchName}
             onViewChange={(value) => {

@@ -2144,7 +2144,7 @@ export function RangeInstanceDetailScreen({
       <RangeChangePreviewDialog preview={changePreview} pending={isSavingDraft} onClose={() => setChangePreview(null)} onConfirm={() => void handleConfirmApply()} />
       <AdminDialog open={isTemplateCopyDialogOpen} title="另存为新拓扑" description="保存当前草稿为新的私有编排拓扑，原拓扑和运行资源保持不变。" pending={isCopyingTemplate}
         onOpenChange={setIsTemplateCopyDialogOpen} footer={<><Button disabled={isCopyingTemplate} variant="outline" onClick={() => setIsTemplateCopyDialogOpen(false)}>取消</Button><Button disabled={isCopyingTemplate || !templateCopyName.trim()} onClick={() => void handleConfirmCopyTemplate()}>{isCopyingTemplate ? '正在保存…' : '保存新拓扑'}</Button></>}>
-        <div className="grid gap-4"><label className="grid gap-2 text-sm"><span>新拓扑名称</span><Input autoFocus maxLength={80} aria-label="新拓扑名称" value={templateCopyName} disabled={isCopyingTemplate} onChange={event => setTemplateCopyName(event.target.value)} /></label><label className="grid gap-2 text-sm"><span>描述</span><Input aria-label="新拓扑描述" value={templateCopyDescription} disabled={isCopyingTemplate} onChange={event => setTemplateCopyDescription(event.target.value)} /></label></div>
+        <div className="grid gap-3"><label className="grid gap-2 text-sm"><span>新拓扑名称</span><Input autoFocus maxLength={80} aria-label="新拓扑名称" value={templateCopyName} disabled={isCopyingTemplate} onChange={event => setTemplateCopyName(event.target.value)} /></label><label className="grid gap-2 text-sm"><span>描述</span><Input aria-label="新拓扑描述" value={templateCopyDescription} disabled={isCopyingTemplate} onChange={event => setTemplateCopyDescription(event.target.value)} /></label></div>
       </AdminDialog>
 
       {packImageDialog && detail ? (
@@ -2172,7 +2172,7 @@ export function RangeInstanceDetailScreen({
             <div className="template-workbench-dialog-grid">
               <label>
                 <span>镜像名</span>
-                <input
+                <Input
                   autoFocus
                   aria-label="镜像名"
                   value={packImageDialog.displayName}
@@ -2190,7 +2190,7 @@ export function RangeInstanceDetailScreen({
               </label>
               <label>
                 <span>默认主机名</span>
-                <input
+                <Input
                   aria-label="默认主机名"
                   placeholder="留空则使用当前主机名"
                   value={packImageDialog.defaultHostName}
@@ -2208,7 +2208,7 @@ export function RangeInstanceDetailScreen({
               </label>
               <label>
                 <span>默认密码</span>
-                <input
+                <Input
                   aria-label="默认密码"
                   placeholder="留空则随机生成"
                   value={packImageDialog.defaultPassword}
@@ -2226,7 +2226,7 @@ export function RangeInstanceDetailScreen({
               </label>
               <label>
                 <span>镜像备注</span>
-                <input
+                <Input
                   aria-label="镜像备注"
                   placeholder="选填"
                   value={packImageDialog.description}

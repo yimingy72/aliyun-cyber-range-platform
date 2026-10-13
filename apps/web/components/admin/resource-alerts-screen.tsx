@@ -13,6 +13,7 @@ import { AdminDialog } from './shared/admin-dialog';
 import { AdminDataTable, AdminDataTableCell, AdminDataTableState, type AdminDataColumn } from './shared/admin-data-table';
 import { TableLoadingState } from './shared/table-loading-state';
 import { Button } from '@/components/ui/button';
+import { AdminSelectField } from './shared/admin-select-field';
 import { TableRow } from '@/components/ui/table';
 
 const labels: Record<ResourceAlertStatus, string> = { pending: '待处理', unverified: '来源待核验', reclaiming: '回收中', failed: '回收失败', resolved: '已解决' };
@@ -133,10 +134,7 @@ export function ResourceAlertsScreen({ apiBaseUrl = '/api' }: { apiBaseUrl?: str
     {error ? <p className="mb-3 text-sm text-destructive" role="alert">{error}</p> : null}
     {notice ? <p className="mb-3 text-sm text-emerald-800" role="status">{notice}</p> : null}
     <label className="mb-3 flex items-center gap-2 text-sm">状态
-      <select className="rounded border border-border bg-background px-3 py-1.5" value={filter} onChange={event => setFilter(event.target.value as typeof filter)}>
-        <option value="open">未解决</option><option value="all">全部</option>
-        {Object.entries(labels).map(([key, label]) => <option key={key} value={key}>{label}</option>)}
-      </select>
+      <AdminSelectField ariaLabel="告警状态" className="w-40" value={filter} onValueChange={value => setFilter(value as typeof filter)} options={[{ value: 'open', label: '未解决' }, { value: 'all', label: '全部' }, ...Object.entries(labels).map(([value, label]) => ({ value, label }))]} />
     </label>
     <AdminDataTable columns={columns} label="资源告警列表" isRefreshing={loading && rows !== null}>
       {cols => rows === null && !error ? <TableLoadingState columnCount={cols.length} rowCount={5} label="读取资源告警" /> : !visible.length ? <AdminDataTableState columns={cols} variant={error ? 'error' : 'empty'} title={error ? '检查未完成' : '暂无平台资源告警'} description={error ?? '范围仅限已证明由平台创建的资源；检查状态见上方。'} onRetry={error ? () => void refresh() : undefined} /> :

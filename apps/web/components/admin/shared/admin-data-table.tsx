@@ -166,8 +166,9 @@ export function AdminDataTable({ label, columns, children, contentVersion, isRef
 
 export function AdminDataTableText({ children, className, tooltipContent }: AdminDataTableTextProps) {
   const { isOverflowing, textRef } = useTextOverflow();
+  const showTooltip = isOverflowing || tooltipContent !== undefined;
   const text = (
-    <span className={cn('block min-w-0 truncate', className)} ref={textRef}>
+    <span className={cn('block min-w-0 truncate', className)} ref={textRef} tabIndex={showTooltip ? 0 : undefined}>
       {children}
     </span>
   );
@@ -177,7 +178,7 @@ export function AdminDataTableText({ children, className, tooltipContent }: Admi
       <TooltipTrigger asChild>
         {text}
       </TooltipTrigger>
-      {isOverflowing ? (
+      {showTooltip ? (
         <TooltipContent className="max-w-sm break-all whitespace-normal" sideOffset={6}>
           {tooltipContent ?? children}
         </TooltipContent>
@@ -188,6 +189,7 @@ export function AdminDataTableText({ children, className, tooltipContent }: Admi
 
 export function AdminDataTableCell({ column, className, children, ...props }: AdminDataTableCellProps) {
   const isPlainText = typeof children === 'string' || typeof children === 'number';
+  const isActionColumn = column.id === 'actions' || column.id === 'action';
 
   return (
     <TableCell
@@ -195,6 +197,7 @@ export function AdminDataTableCell({ column, className, children, ...props }: Ad
         'min-w-0 overflow-hidden px-3 whitespace-nowrap',
         columnPriorityClassName(column.priority),
         column.align === 'right' && 'text-right',
+        isActionColumn && 'whitespace-normal [&>div]:flex-wrap',
         className,
       )}
       {...props}

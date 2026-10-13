@@ -1,5 +1,7 @@
 'use client';
 
+import { Button } from '@/components/ui/button';
+
 import React from 'react';
 
 import type { TemplateEdge } from './template-editor-screen';
@@ -460,7 +462,7 @@ export function TemplateCanvas({
             </svg>
 
             {positionedNodes.map((node) => (
-              <button
+              <Button variant="ghost"
                 key={node.id}
                 type="button"
                 className="template-canvas-node"
@@ -527,7 +529,7 @@ export function TemplateCanvas({
                   <span style={{ fontSize: `${nodeMetrics.metaSize}px` }}>{readNodeMeta(node)}</span>
                   {pendingLinkSourceNodeId === node.id ? <span style={{ fontSize: `${nodeMetrics.metaSize}px` }}>连线起点</span> : null}
                 </span>
-              </button>
+              </Button>
             ))}
           </div>
         </div>
