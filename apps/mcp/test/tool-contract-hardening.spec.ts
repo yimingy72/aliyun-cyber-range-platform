@@ -31,7 +31,7 @@ describe('tool contract trust boundaries', () => {
     const client = new PlatformApiClient({ baseUrl: 'https://fixture.invalid', token: 'fixture-only', fetch });
     const registry = createToolRegistry(client);
     const tools = registry.listTools(ADMIN_SCOPES, 'admin');
-    expect(tools).toHaveLength(95);
+    expect(tools).toHaveLength(100);
     for (const tool of tools) {
       const parsed = tool.inputSchema.safeParse({ __unknownCallerField: true });
       expect(parsed.success, tool.name).toBe(false);

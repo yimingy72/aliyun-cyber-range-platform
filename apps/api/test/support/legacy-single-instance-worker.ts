@@ -32,3 +32,17 @@ export async function pumpLegacySingleInstanceWorker(worker: ProvisioningWorkerS
   }
   throw new Error('Legacy fixture exceeded bounded worker scheduling rounds');
 }
+
+/** Legacy fixtures must carry the same durable creation origin as production
+ *  rows: destroy and cleanup only proceed with the original started creation job. */
+export async function seedLegacyNativeCreateJob(repository: AdminRepository, instanceId: string) {
+  const instance = await repository.getRangeInstanceById(instanceId);
+  if (!instance || instance.instanceMode !== 'single' || !instance.singleInstanceConfig)
+    throw new Error('Legacy fixture requires a single instance before seeding its creation origin');
+  if (instance.singleInstanceConfig.nativeCreateJobId) return instance.singleInstanceConfig.nativeCreateJobId;
+  const startedAt = new Date(Date.now() - 60_000);
+  const job = await repository.createProvisionJob({ rangeInstanceId: instanceId, jobType: 'create', triggeredBy: 'legacy-fixture' });
+  await repository.updateProvisionJob(job.id, { status: 'succeeded', startedAt, finishedAt: new Date() });
+  await repository.updateRangeInstance(instanceId, { singleInstanceConfig: { ...instance.singleInstanceConfig, nativeCreateJobId: job.id } });
+  return job.id;
+}

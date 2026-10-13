@@ -7,6 +7,7 @@ import { SystemConfigService, type SystemCloudAccountContext } from './system-co
 import { describeTencentInstances, describeTencentResourceInventory, readTencentAttachedDiskInventory, assertTencentOwnedInstance, terminateTencentInstances } from './tencent-cloud-resources';
 import { readAttachedDiskInventory, mergeDiskInventory, assertDiskInventorySafe, findExistingInventoryDiskIds, inventoryDiskIds } from './instance-disk-inventory';
 import { readProvenSingleInstanceIds } from './single-instance-resource-origin';
+import { createHostCloudReleaseDeadline, assertCloudReleaseDeadlineCanCreate } from '../provisioning/cloud-release-deadlines';
 const ALICLOUD_ECS_API_VERSION = '2014-05-26';
 const ALICLOUD_SIGNATURE_METHOD = 'HMAC-SHA1';
 const ALICLOUD_SIGNATURE_VERSION = '1.0';
@@ -160,7 +161,27 @@ export class SingleInstanceBatchExecutionService {
               if (item.instance.expiresAt && item.instance.expiresAt <= new Date())
                 throw new Error('Single instance has already expired');
               const expectedHostName = item.instance.singleInstanceConfig?.hostName?.trim();
-              if (!previousRequest && !(await this.adminRepository.commitSingleInstanceClaim(item.job,{singleInstanceConfig:{...item.instance.singleInstanceConfig!,resolvedInstanceType:memberType,nativeCreateJobId:item.job.id}}))) throw new LostSingleInstanceClaimError();
+              if (!previousRequest) {
+                // Freeze the durable cloud-side fallback and the request marker in
+                // ONE claim: a failed write must never leave a marker without its
+                // deadline. Long-lived members keep their automatic release, a
+                // recovered host reuses its exact frozen record, short-lived
+                // members stay without one, and a new submission always validates
+                // the fallback it is about to send.
+                const frozenConfig = item.instance.singleInstanceConfig!;
+                const frozenExpiry = item.instance.expiresAt;
+                const maySubmit = !knownIds.length;
+                let deadline = frozenConfig.cloudReleaseDeadline ?? null;
+                if (!deadline && maySubmit && frozenExpiry && frozenExpiry.getTime() - Date.now() >= 30 * 60_000 + 15_000) {
+                  deadline = createHostCloudReleaseDeadline({ provider: 'alibaba_cloud', platformExpiresAt: frozenExpiry.toISOString(),
+                    creationPhaseStartedAt: new Date().toISOString(), sourceProvisionJobId: item.job.id });
+                }
+                if (deadline && maySubmit) assertCloudReleaseDeadlineCanCreate(deadline);
+                const claimedConfig = { ...frozenConfig, resolvedInstanceType: memberType, nativeCreateJobId: item.job.id,
+                  ...(deadline ? { autoReleaseTime: deadline.cloudReleaseAt, cloudReleaseDeadline: structuredClone(deadline) } : {}) };
+                if (!(await this.adminRepository.commitSingleInstanceClaim(item.job, { singleInstanceConfig: claimedConfig }))) throw new LostSingleInstanceClaimError();
+                item.instance.singleInstanceConfig = claimedConfig;
+              }
               if (previousRequest && !knownIds.length) {
                 // The cloud token has a finite lifetime; replaying an old accepted request can create another ECS.
                 throw new Error('Previous ECS creation outcome has no durable physical identity; tags cannot authorize adoption or replay');

@@ -707,7 +707,7 @@ describe('ProvisioningWorkerService concurrency', () => {
     }
   });
 
-  it('deletes tagged ECS resources when a single-instance create request fails', async () => {
+  it('retains an uncertain tagged ECS without a durable receipt for recovery when a create request fails', async () => {
     const repository = createMemoryAdminRepository();
     const requestedUrls: string[] = [];
     const requestBodies: string[] = [];
@@ -825,15 +825,13 @@ describe('ProvisioningWorkerService concurrency', () => {
       const describeRequest = new URL(describeUrl!);
       expect(describeRequest.searchParams.get('Tag.1.Key')).toBe('RangeInstanceId');
       expect(describeRequest.searchParams.get('Tag.1.Value')).toBe(instance.id);
-      expect(requestBodies).toEqual(
-        expect.arrayContaining([
-          expect.stringContaining('Action=DeleteInstances'),
-          expect.stringContaining('InstanceId.1=i-single-create-uncertain'),
-        ]),
-      );
+      // Cloud tags only locate candidates: an uncertain creation without a durable
+      // receipt is retained for recovery instead of being deleted by tag alone.
+      expect(requestBodies.some((body) => body.includes('Action=DeleteInstances'))).toBe(false);
       await expect(repository.getRangeInstanceById(instance.id)).resolves.toEqual(
         expect.objectContaining({
-          status: 'create_failed',
+          status: 'destroy_failed',
+          errorSummary: expect.stringContaining('automatic cleanup requires recovery'),
         }),
       );
     } finally {

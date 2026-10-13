@@ -11,10 +11,14 @@ if (url) {
 }
 const describeDb = url ? describe : describe.skip;
 describeDb('OSS binding terminal CAS in isolated PostgreSQL', () => {
-  const prisma = new PrismaService({ datasources: { db: { url } } });
-  const repository = new PrismaAdminRepository(prisma);
+  // describe.skip still executes this factory, so the client must stay lazy: a
+  // missing OSS_BINDING_TEST_DATABASE_URL has to skip the suite, not crash it.
+  let prisma: PrismaService;
+  let repository: PrismaAdminRepository;
   const scope = { cloudWorkspaceId: 'oss-binding-cas-space', provider: 'alibaba_cloud' as const, accountUid: '100001' };
   beforeAll(async () => {
+    prisma = new PrismaService({ datasources: { db: { url } } });
+    repository = new PrismaAdminRepository(prisma);
     await prisma.$connect();
     await runInSystemCloudWorkspaceScope(() => prisma.cloudWorkspace.create({ data: { id: scope.cloudWorkspaceId,
       provider: scope.provider, accountUid: scope.accountUid, displayName: 'isolated OSS binding test' } }));

@@ -17,6 +17,8 @@ import { CidrPoolService } from '../src/provisioning/cidr-pool.service';
 import { rangeTemplatePayload } from './support/range-api-fixture';
 import type { ProvisionJobTopologySnapshot } from '../src/admin/admin.repository';
 
+import { desiredResources } from '../src/provisioning/range-update-plan-safety';
+
 const describeWithDatabase = process.env.DATABASE_URL ? describe : describe.skip;
 
 describeWithDatabase('PostgreSQL multi-user range lifecycle isolation', () => {
@@ -33,6 +35,51 @@ describeWithDatabase('PostgreSQL multi-user range lifecycle isolation', () => {
   let workers: ProvisioningWorkerService[];
   let apply: jest.Mock;
   let cloudCalls: Array<{ action: string; instanceId: string | null }>;
+  // Real Alibaba resource ids are a lowercase prefix plus alphanumerics. The
+  // platform now verifies exact physical identities and reconciles the OpenTofu
+  // plan and state with its persisted inventory, so the fixture models them.
+  const rangePrefixes: Record<string, string> = {
+    alicloud_instance: 'i', alicloud_vpc: 'vpc', alicloud_vswitch: 'vsw', alicloud_security_group: 'sg',
+    alicloud_network_interface: 'eni', alicloud_network_interface_attachment: 'eniattach', alicloud_security_group_rule: 'sgr',
+    alicloud_network_acl: 'nacl', alicloud_nat_gateway: 'ngw', alicloud_eip_address: 'eip', alicloud_eip_association: 'eipassoc',
+    alicloud_vpc_ipv4_cidr_block: 'vpcblock', alicloud_snat_entry: 'snat', alicloud_forward_entry: 'fwd',
+  };
+  const resourceKeyOf = (address: string) => {
+    const match = address.match(/\[("(?:[^"\\]|\\.)*")\]$/);
+    return match ? String(JSON.parse(match[1])) : null;
+  };
+  const resourceIdOf = (workspaceId: string, address: string, type: string) =>
+    `${rangePrefixes[type] ?? 'res'}-${workspaceId}${(resourceKeyOf(address) ?? '').toLowerCase().replace(/[^a-z0-9]/g, '')}`;
+  const workspaceResources = (workspaceId: string, vars: any) => [...desiredResources(vars, false).entries()].map(([address, definition]) => ({
+    address, type: definition.type, kind: definition.kind, id: resourceIdOf(workspaceId, address, definition.type),
+  }));
+  const taggableTypes = new Set(['alicloud_vpc','alicloud_vswitch','alicloud_network_acl','alicloud_security_group',
+    'alicloud_instance','alicloud_network_interface','alicloud_nat_gateway','alicloud_eip_address']);
+  const resourceAttributes = (vars: any, resource: { address: string; type: string; id: string }) =>
+    taggableTypes.has(resource.type)
+      ? { id: resource.id, ...(resource.type === 'alicloud_instance' ? { availability_zone: vars.zone_id } : {}), tags: { ...vars.tags } }
+      : { id: resource.id };
+  const writeWorkspaceState = async (workspaceDir: string, vars: any) => {
+    const workspaceId = path.basename(workspaceDir);
+    const grouped = new Map<string, { module: string; type: string; name: string; mode: string; instances: any[] }>();
+    for (const resource of workspaceResources(workspaceId, vars)) {
+      const match = resource.address.match(/^(module\.[a-z0-9_]+)\.([a-z0-9_]+)\.([A-Za-z0-9_]+)(?:\[("(?:[^"\\]|\\.)*")\])?$/);
+      if (!match) throw new Error(`Unsupported fixture resource address ${resource.address}`);
+      const [, moduleName, type, name, indexKey] = match;
+      const groupKey = `${moduleName}.${type}.${name}`;
+      const group = grouped.get(groupKey) ?? { module: moduleName, type, name, mode: 'managed', instances: [] as any[] };
+      group.instances.push({ ...(indexKey === undefined ? {} : { index_key: JSON.parse(indexKey) }), attributes: resourceAttributes(vars, resource) });
+      grouped.set(groupKey, group);
+    }
+    await fs.writeFile(path.join(workspaceDir, 'terraform.tfstate'), JSON.stringify({ version: 4, lineage: 'test-lineage', serial: 1, resources: [...grouped.values()] }));
+  };
+  const readFixtureState = async (workspaceDir: string) => {
+    try { return JSON.parse(await fs.readFile(path.join(workspaceDir, 'terraform.tfstate'), 'utf8')); } catch { return null; }
+  };
+  const fixtureStateAttributes = (state: any) => new Map<string, Record<string, any>>((state?.resources ?? []).flatMap((resource: any) => resource.instances.map((instance: any) => [
+    `${resource.module ? `${resource.module}.` : ''}${resource.type}.${resource.name}${instance.index_key === undefined ? '' : `[${JSON.stringify(instance.index_key)}]`}`,
+    instance.attributes,
+  ])));
   const metadata = {
     name: 'Two-node concurrency fixture', slug: 'two-node-concurrency', version: 'v1',
     cloudProvider: 'alibaba_cloud' as const, iacType: 'opentofu' as const,
@@ -83,37 +130,59 @@ describeWithDatabase('PostgreSQL multi-user range lifecycle isolation', () => {
         return { ok: true, json: async () => ({ RequestId: 'fixture-disks', PageSize: 100, PageNumber: 1,
           TotalCount: disks.length, Disks: { Disk: disks } }) } as Response;
       }
-      return { ok: true, json: async () => ({ RequestId: 'fixture-request', PageSize: Number(query.get('PageSize') ?? 100), PageNumber: 1, TotalCount: 0, Disks: { Disk: [] }, Instances: { Instance: [] }, Vpcs: { Vpc: [] }, VSwitches: { VSwitch: [] }, NatGateways: { NatGateway: [] }, EipAddresses: { EipAddress: [] }, NetworkInterfaceSets: { NetworkInterfaceSet: [] }, VncUrl: 'mock-vnc' }) } as Response;
+      return { ok: true, json: async () => ({ RequestId: 'fixture-request', PageSize: Number(query.get('PageSize') ?? 100), PageNumber: 1, TotalCount: 0, Disks: { Disk: [] }, Instances: { Instance: [] }, Vpcs: { Vpc: [] }, VSwitches: { VSwitch: [] }, NatGateways: { NatGateway: [] }, EipAddresses: { EipAddress: [] }, NetworkInterfaceSets: { NetworkInterfaceSet: [] }, SecurityGroups: { SecurityGroup: [] }, NetworkAcls: { NetworkAcl: [] }, SnatTableEntries: { SnatTableEntry: [] }, ForwardTableEntries: { ForwardTableEntry: [] }, VncUrl: 'mock-vnc' }) } as Response;
     });
     apply = jest.fn(async (options: { workspaceDir: string }) => {
       const vars = JSON.parse(await fs.readFile(path.join(options.workspaceDir, 'range.auto.tfvars.json'), 'utf8'));
-      await fs.writeFile(path.join(options.workspaceDir, 'terraform.tfstate'), JSON.stringify({ version: 4, lineage: 'test-lineage', serial: 1, resources: [
-        { name: 'range-owner', type: 'terraform_data', mode: 'managed', instances: [{ attributes: { id: 'owner-id', rangeInstanceId: path.basename(options.workspaceDir), ownerUserId: vars.tags.PlatformUserId } }] },
-      ] }));
+      await writeWorkspaceState(options.workspaceDir, vars);
       return { stdout: 'apply complete', stderr: '' };
     });
     const runner: any = {
       init: jest.fn().mockResolvedValue({ stdout: 'init', stderr: '' }), validate: jest.fn().mockResolvedValue({ stdout: 'validate', stderr: '' }),
-      showPlan: jest.fn().mockResolvedValue({ planned_values: { root_module: { resources: [{ mode: 'managed', address: 'terraform_data.range-owner' }] } } }),
+      showPlan: jest.fn(async (options: { workspaceDir: string }) => {
+        const vars = JSON.parse(await fs.readFile(path.join(options.workspaceDir, 'range.auto.tfvars.json'), 'utf8'));
+        const resources = workspaceResources(path.basename(options.workspaceDir), vars);
+        const planned = new Set(resources.map(resource => resource.address));
+        const actual = fixtureStateAttributes(await readFixtureState(options.workspaceDir));
+        const taggable = taggableTypes;
+        return { format_version: '1.2', terraform_version: '1.13.1', errored: false, complete: true,
+          planned_values: { root_module: { child_modules: [{ address: 'module.range', resources: resources.map(resource => ({ address: resource.address, type: resource.type, mode: 'managed' })) }] } },
+          resource_changes: [
+            ...resources.map(resource => {
+              const existing = actual.get(resource.address);
+              const creating = !existing && resource.kind === 'host';
+              return { address: resource.address, type: resource.type, mode: 'managed', change: {
+                actions: existing ? ['no-op'] : creating ? ['create'] : ['no-op'],
+                before: existing ? { ...existing } : null,
+                after: { ...resourceAttributes(vars, resource), ...(taggable.has(resource.type) ? { tags: { ...vars.tags } } : {}) },
+                after_unknown: creating ? { id: true } : {} } };
+            }),
+            ...[...actual.keys()].filter(address => !planned.has(address)).map(address => ({ address, type: String(address.split('.')[2] ?? 'res'), mode: 'managed',
+              change: { actions: ['delete'], before: { ...actual.get(address) }, after: null } })),
+          ] };
+      }),
       plan: jest.fn().mockResolvedValue({ stdout: 'plan', stderr: '' }), apply,
       output: jest.fn(async (options: { workspaceDir: string }) => {
         const id = path.basename(options.workspaceDir);
         const vars = JSON.parse(await fs.readFile(path.join(options.workspaceDir, 'range.auto.tfvars.json'), 'utf8'));
-        for (const host of vars.hosts) cloudTags.set(`i-${id}-${host.key}`, { ...vars.tags, AccessKeySecret: 'ignored-secret-tag' });
-        const ids = (items: Array<{ key: string }>, prefix: string) => Object.fromEntries(items.map(item => [item.key, `${prefix}-${id}-${item.key}`]));
+        const resources = workspaceResources(id, vars);
+        for (const resource of resources.filter(resource => resource.type === 'alicloud_instance')) cloudTags.set(resource.id, { ...vars.tags, AccessKeySecret: 'ignored-secret-tag' });
+        const byType = (type: string) => Object.fromEntries(resources.filter(resource => resource.type === type)
+          .map(resource => [resourceKeyOf(resource.address) ?? resource.address, resource.id]));
         return { public_entry: { value: { host_role: 'entry', public_ip: `mock-${id}`, private_ip: vars.hosts[0].private_ip, ssh: null } },
           resource_summary: { value: {
-            vpc_id: `vpc-${id}`, subnet_ids: ids(vars.network_zones, 'vsw'), host_ids: ids(vars.hosts, 'i'),
-            security_group_ids: ids(vars.hosts, 'sg'), network_acl_ids: ids(vars.acls, 'acl'),
-            secondary_network_interface_ids: { 'dmz-entry-1': `eni-${id}` },
-            nat_gateway_ids: ids(vars.nat_gateways, 'nat'), eip_allocation_ids: ids(vars.eips, 'eip'),
-            snat_entry_ids: ids(vars.snat_entries, 'snat'), dnat_entry_ids: ids(vars.dnat_entries, 'dnat'),
+            vpc_id: resources.find(resource => resource.type === 'alicloud_vpc')?.id,
+            subnet_ids: byType('alicloud_vswitch'), host_ids: byType('alicloud_instance'),
+            security_group_ids: byType('alicloud_security_group'), network_acl_ids: byType('alicloud_network_acl'),
+            secondary_network_interface_ids: byType('alicloud_network_interface'),
+            nat_gateway_ids: byType('alicloud_nat_gateway'), eip_allocation_ids: byType('alicloud_eip_address'),
+            snat_entry_ids: byType('alicloud_snat_entry'), dnat_entry_ids: byType('alicloud_forward_entry'),
           } },
         };
       }),
       destroy: jest.fn(async (options: { workspaceDir: string }) => {
         const id = path.basename(options.workspaceDir);
-        for (const key of cloudTags.keys()) if (key.startsWith(`i-${id}-`)) cloudTags.delete(key);
+        for (const key of cloudTags.keys()) if (key.startsWith(`i-${id}`)) cloudTags.delete(key);
         await fs.writeFile(path.join(options.workspaceDir, 'terraform.tfstate'), JSON.stringify({ version: 4, lineage: 'test-lineage', serial: 1, resources: [] }));
         return { stdout: 'destroy complete', stderr: '' };
       }),
@@ -227,6 +296,54 @@ describeWithDatabase('PostgreSQL multi-user range lifecycle isolation', () => {
     const ledgersAfter = await repository.listBillingLedgerResources();
     expect(ledgersAfter.filter(row => row.rangeInstanceId === a.id).every(row => row.releasedAt !== null)).toBe(true);
     expect(ledgersAfter.filter(row => row.rangeInstanceId === b.id).every(row => row.releasedAt === null)).toBe(true);
+  });
+
+  it('retains an applied range when a legacy replay no longer matches the frozen definition', async () => {
+    const { a } = await launchBoth();
+    const statePath = path.join(root, a.id, 'terraform.tfstate');
+    const stateBefore = await fs.readFile(statePath, 'utf8');
+    const frozenHostId = a.resourceSummary!.hostIds!['office-backend'];
+    // A legacy row without frozen definitions can only resolve the current
+    // template; that is not proof the deployed range may be replayed.
+    await repository.updateRangeInstance(a.id, { status: 'create_failed', runtimeTopologyGraph: null,
+      runtimeCompiledProvisionSpec: null, sourceTemplateVersionId: null });
+    const retry = await repository.createProvisionJob({ rangeInstanceId: a.id, jobType: 'retry', triggeredBy: alice.id, retryCount: 1 });
+    await repository.updateRangeInstance(a.id, { lastJobId: retry.id });
+    await workers[0].process(retry.id);
+
+    const after = (await repository.getRangeInstanceById(a.id))!;
+    expect((await repository.getProvisionJobById(retry.id))!.status).toBe('failed');
+    expect(after.status).toBe('destroy_failed');
+    expect(after.errorSummary).toContain('confirmed preview');
+    expect(after.errorSummary).toContain('preserved; recovery is required');
+    expect(await fs.readFile(statePath, 'utf8')).toBe(stateBefore);
+    expect(cloudCalls.some(call => call.action === 'DeleteInstances')).toBe(false);
+    expect(after.resourceSummary!.hostIds!['office-backend']).toBe(frozenHostId);
+    expect((await repository.listBillingLedgerResources()).filter(row => row.rangeInstanceId === a.id).every(row => row.releasedAt === null)).toBe(true);
+  });
+
+  it('preserves an applied range when the apply-intent write fails before any apply', async () => {
+    const { a } = await launchBoth();
+    const statePath = path.join(root, a.id, 'terraform.tfstate');
+    const stateBefore = await fs.readFile(statePath, 'utf8');
+    await repository.updateRangeInstance(a.id, { status: 'create_failed' });
+    const retry = await repository.createProvisionJob({ rangeInstanceId: a.id, jobType: 'retry', triggeredBy: alice.id, retryCount: 1 });
+    await repository.updateRangeInstance(a.id, { lastJobId: retry.id });
+    const original = repository.updateRangeInstanceForProvisionJob.bind(repository);
+    const spy = jest.spyOn(repository, 'updateRangeInstanceForProvisionJob').mockImplementation(async (jobId, startedAt, data) => {
+      if ((data as { resourceSummary?: { creationAttempted?: boolean } }).resourceSummary?.creationAttempted) {
+        throw new Error('simulated apply-intent write failure');
+      }
+      return original(jobId, startedAt, data);
+    });
+    try { await workers[0].process(retry.id); } finally { spy.mockRestore(); }
+
+    const after = (await repository.getRangeInstanceById(a.id))!;
+    expect(after.status).toBe('destroy_failed');
+    expect(after.errorSummary).toContain('preserved; recovery is required');
+    expect(await fs.readFile(statePath, 'utf8')).toBe(stateBefore);
+    expect(cloudCalls.some(call => call.action === 'DeleteInstances')).toBe(false);
+    expect((await repository.listBillingLedgerResources()).filter(row => row.rangeInstanceId === a.id).every(row => row.releasedAt === null)).toBe(true);
   });
 
   it('allows only one concurrent same-instance apply/destroy and defers expiration while update is active', async () => {

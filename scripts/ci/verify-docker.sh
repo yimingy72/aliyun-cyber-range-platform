@@ -95,6 +95,7 @@ docker run --rm --network none "${CI_PROVIDER_MIRROR_ARGS[@]}" \
 docker network create --internal "$CI_NETWORK" >/dev/null
 docker run -d --name "$CI_DB" --network "$CI_NETWORK" --network-alias postgres \
   --network-alias billing-test-postgres --network-alias cos-test-postgres \
+  --network-alias oss-binding-test-postgres \
   --tmpfs /var/lib/postgresql/data \
   -e POSTGRES_DB=cyber_range -e POSTGRES_USER=postgres -e POSTGRES_PASSWORD=postgres \
   --health-cmd 'pg_isready -h 127.0.0.1 -U postgres -d cyber_range' --health-interval 1s --health-retries 30 \
@@ -129,6 +130,8 @@ docker exec "$CI_DB" psql -U postgres -d postgres -v ON_ERROR_STOP=1 \
 docker exec "$CI_DB" psql -U postgres -d postgres -v ON_ERROR_STOP=1 \
   -c 'CREATE DATABASE cos_test' >/dev/null
 docker exec "$CI_DB" psql -U postgres -d postgres -v ON_ERROR_STOP=1 \
+  -c 'CREATE DATABASE oss_binding_test' >/dev/null
+docker exec "$CI_DB" psql -U postgres -d postgres -v ON_ERROR_STOP=1 \
   -c 'CREATE DATABASE native_batch_test' >/dev/null
 docker exec "$CI_DB" psql -U postgres -d postgres -v ON_ERROR_STOP=1 \
   -c 'CREATE DATABASE user_auth_test' >/dev/null
@@ -151,6 +154,7 @@ docker run --rm --network "$CI_NETWORK" \
   -e BILLING_TEST_DATABASE_URL='postgresql://postgres:postgres@postgres:5432/billing_test?schema=public' \
   -e TENCENT_BILLING_TEST_DATABASE_URL='postgresql://postgres:postgres@billing-test-postgres:5432/billing_test?schema=public' \
   -e TENCENT_COS_TEST_DATABASE_URL='postgresql://postgres:postgres@cos-test-postgres:5432/cos_test?schema=public' \
+  -e OSS_BINDING_TEST_DATABASE_URL='postgresql://postgres:postgres@oss-binding-test-postgres:5432/oss_binding_test?schema=public' \
   -e NATIVE_BATCH_TEST_DATABASE_URL='postgresql://postgres:postgres@postgres:5432/native_batch_test?schema=public' \
   -e USER_AUTH_TEST_DATABASE_URL='postgresql://postgres:postgres@postgres:5432/user_auth_test?schema=public' \
   -e WORKSPACE_TEST_DATABASE_URL='postgresql://postgres:postgres@postgres:5432/cyber_range_workspace_test?schema=public' \
@@ -172,6 +176,7 @@ docker run --rm --network "$CI_NETWORK" \
     DATABASE_URL="$SETTINGS_SWITCH_TEST_DATABASE_URL" pnpm --filter @aliyun-cyber-range/database prisma:migrate:deploy
     DATABASE_URL="$BILLING_TEST_DATABASE_URL" pnpm --filter @aliyun-cyber-range/database prisma:migrate:deploy
     DATABASE_URL="$TENCENT_COS_TEST_DATABASE_URL" pnpm --filter @aliyun-cyber-range/database prisma:migrate:deploy
+    DATABASE_URL="$OSS_BINDING_TEST_DATABASE_URL" pnpm --filter @aliyun-cyber-range/database prisma:migrate:deploy
     DATABASE_URL="$NATIVE_BATCH_TEST_DATABASE_URL" pnpm --filter @aliyun-cyber-range/database prisma:migrate:deploy
     DATABASE_URL="$USER_AUTH_TEST_DATABASE_URL" pnpm --filter @aliyun-cyber-range/database prisma:migrate:deploy
     DATABASE_URL="$WORKSPACE_TEST_DATABASE_URL" pnpm --filter @aliyun-cyber-range/database prisma:migrate:deploy

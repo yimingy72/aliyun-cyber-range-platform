@@ -583,15 +583,23 @@ export class ProvisioningWorkerService {
           return;
         }
         if (frozen) await this.assertRangeSnapshotImages(instance, frozen);
+        const replayApproval = (job.jobType === 'retry' || job.retryCount > 0) && topologyGraph && compiledProvisionSpec
+          ? resolveReplayCreateApproval(instance, { topologyGraph: topologyGraph as Record<string, unknown>,
+              compiledProvisionSpec: compiledProvisionSpec as Record<string, unknown> } as ProvisionJobTopologySnapshot)
+          : null;
         const result = await this.rangeProvisioner.create({
           ...failedCreateCleanupInput,
           knownResourceSummary: (await this.adminRepository.getRangeInstanceById(instance.id))?.resourceSummary ?? undefined,
           preserveWorkspaceState: job.jobType === 'retry' || job.retryCount > 0,
+          ...(replayApproval ? { changeApproval: replayApproval } : {}),
           onHostCreationPhase: deadlines => this.persistHostCloudReleaseDeadlines(job, deadlines, signal),
           onResourceCreated: event => this.persistRangeCreationReceipt(job, instance, accountContext, event, signal),
           onApplyStart: async () => {
+            // Only a persisted apply intent proves this run reached the cloud
+            // phase; a failed write must not disable applied-workspace retention.
             await this.recordRangeApplyStart(instance, job, accountContext, signal);
             failedCreateCleanupInput!.requirePersistedState = true;
+            rangeApplyStarted = true;
           },
           reportStep,
         });
@@ -673,7 +681,10 @@ export class ProvisioningWorkerService {
         }
       }
       const createFailureMessage = error instanceof Error ? error.message : 'Unknown provisioning error';
-      const cleanupFailureMessage = failedCreateCleanupInput
+      // A failure that never reached this attempt's apply step may not destroy an
+      // already-applied workspace: keep its state and inventory for recovery.
+      const retainAppliedWorkspace = Boolean(failedCreateCleanupInput?.requirePersistedState) && !rangeApplyStarted;
+      const cleanupFailureMessage = failedCreateCleanupInput && !retainAppliedWorkspace
         ? await this.cleanupFailedRangeCreate({
             instance,
             job,
@@ -682,9 +693,11 @@ export class ProvisioningWorkerService {
             reportStep,
           })
         : null;
-      const message = appendCleanupFailureMessage(createFailureMessage, cleanupFailureMessage);
+      const message = appendCleanupFailureMessage(createFailureMessage, retainAppliedWorkspace
+        ? 'The already-applied workspace was preserved; recovery is required without automatic cleanup'
+        : cleanupFailureMessage);
 
-      const needsRecovery = cleanupFailureMessage || (job.jobType === 'update' ? rangeApplyStarted
+      const needsRecovery = retainAppliedWorkspace || cleanupFailureMessage || (job.jobType === 'update' ? rangeApplyStarted
         : !failedCreateCleanupInput && (current?.resourceSummary?.creationAttempted || current?.resourceSummary?.mode === 'opentofu'));
       await this.failJob(job, instance, message, needsRecovery ? 'destroy_failed' : undefined);
     }
@@ -2546,6 +2559,25 @@ function needsSingleInstancePublicIpRefresh(instance: RangeInstanceRecord | null
       instance.resourceSummary?.hostIds &&
       (instance.status === 'creating' || !instance.accessEntry?.publicIp),
   );
+}
+
+function canonicalJson(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`;
+  if (value && typeof value === 'object') return `{${Object.keys(value as Record<string, unknown>).sort()
+    .map(key => `${JSON.stringify(key)}:${canonicalJson((value as Record<string, unknown>)[key])}`).join(',')}}`;
+  return JSON.stringify(value) ?? 'null';
+}
+
+/** Only an unchanged create/retry replay of the already-applied workspace may
+ *  reuse the original launch as its approval. The resolved topology and every
+ *  compiled host/network/rule definition must still match the immutable frozen
+ *  launch definition; otherwise the confirmed preview/update flow is required. */
+export function resolveReplayCreateApproval(instance: RangeInstanceRecord, snapshot: ProvisionJobTopologySnapshot): RangeChangeApproval | null {
+  if (canonicalJson(instance.runtimeTopologyGraph) !== canonicalJson(snapshot.topologyGraph)
+    || canonicalJson(instance.runtimeCompiledProvisionSpec) !== canonicalJson(snapshot.compiledProvisionSpec)) return null;
+  const candidate = buildRangeChangeApproval(instance, snapshot);
+  return candidate.addedHostKeys.length === 0 && candidate.deletedHostKeys.length === 0
+    && !candidate.allowDnatRemoval && !candidate.allowSnatRemoval ? candidate : null;
 }
 
 function appendCleanupFailureMessage(createFailureMessage: string, cleanupFailureMessage: string | null) {

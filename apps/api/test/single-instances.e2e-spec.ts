@@ -18,7 +18,7 @@ import { SingleInstanceNetworkBootstrapService } from '../src/provisioning/singl
 import { ProvisioningWorkerService } from '../src/provisioning/provisioning-worker.service';
 import { createMemoryAdminRepository } from './support/create-memory-admin-repository';
 import { loginAsRepositoryUser, overrideTestOidc } from './support/test-oidc';
-import { markQueuedInstancesAsLegacyNative, pumpLegacySingleInstanceWorker } from './support/legacy-single-instance-worker';
+import { markQueuedInstancesAsLegacyNative, pumpLegacySingleInstanceWorker, seedLegacyNativeCreateJob } from './support/legacy-single-instance-worker';
 
 let repositoryForLogin: AdminRepository;
 const futureExpiration = new Date(Date.now() + 48 * 60 * 60 * 1_000).toISOString();
@@ -1455,7 +1455,7 @@ describe('single instances', () => {
       expiresAt: new Date(futureExpiration),
     });
 
-    await repository.createRangeInstance({
+    const dispatchFirst = await repository.createRangeInstance({
       name: 'destroy-dispatch-failure-01',
       createdBy: 'admin',
       instanceMode: 'single',
@@ -1485,7 +1485,7 @@ describe('single instances', () => {
       },
     });
 
-    await repository.createRangeInstance({
+    const dispatchSecond = await repository.createRangeInstance({
       name: 'destroy-dispatch-failure-02',
       createdBy: 'admin',
       instanceMode: 'single',
@@ -1515,6 +1515,9 @@ describe('single instances', () => {
       },
     });
 
+    await seedLegacyNativeCreateJob(repository, dispatchFirst.id);
+    await seedLegacyNativeCreateJob(repository, dispatchSecond.id);
+
     const worker = app.get(ProvisioningWorkerService);
     const originalUpdateRangeInstance = repository.updateRangeInstance.bind(repository);
     const dispatchSpy = jest.spyOn(worker, 'dispatch').mockImplementation(() => {});
@@ -1543,7 +1546,7 @@ describe('single instances', () => {
     await pumpLegacySingleInstanceWorker(worker, repository);
     expect((await repository.listRangeInstances()).map(instance => ({ status: instance.status, errorSummary: instance.errorSummary })))
       .toEqual([{ status: 'destroyed', errorSummary: null }, { status: 'destroyed', errorSummary: null }]);
-    expect((await repository.listProvisionJobs()).map(job => ({ status: job.status, errorSummary: job.errorSummary })))
+    expect((await repository.listProvisionJobs()).filter(job => job.jobType === 'destroy').map(job => ({ status: job.status, errorSummary: job.errorSummary })))
       .toEqual([{ status: 'succeeded', errorSummary: null }, { status: 'succeeded', errorSummary: null }]);
   });
 
@@ -1551,7 +1554,9 @@ describe('single instances', () => {
     let runInstancesCallCount = 0;
     const runInstancesBodies: string[] = [];
     const expiresAt = new Date(Date.now() + 2 * 60 * 60 * 1_000).toISOString();
-    const encodedAutoReleaseTime = encodeURIComponent(expiresAt.replace(/\.\d{3}Z$/, 'Z'));
+    // The frozen cloud fallback releases five minutes after the platform expiry, rounded up to the minute.
+    const expectedAutoReleaseTime = new Date(Math.ceil((Date.parse(expiresAt) + 5 * 60_000) / 60_000) * 60_000).toISOString().replace(/\.\d{3}Z$/, 'Z');
+    const encodedAutoReleaseTime = encodeURIComponent(expectedAutoReleaseTime);
     fetchMock.mockImplementation(async (input, init) => {
       const url = String(input);
       const body = typeof init?.body === 'string' ? init.body : '';
@@ -1916,6 +1921,9 @@ describe('single instances', () => {
       },
     });
 
+    await seedLegacyNativeCreateJob(repository, first.id);
+    await seedLegacyNativeCreateJob(repository, second.id);
+
     const response = await request(app.getHttpServer())
       .post(`/admin/instances/batches/${batch.id}/destroy-all`)
       .set('Authorization', `Bearer ${adminToken}`)
@@ -2016,6 +2024,8 @@ describe('single instances', () => {
         },
       },
     });
+
+    await seedLegacyNativeCreateJob(repository, instance.id);
 
     await request(app.getHttpServer())
       .post(`/admin/instances/batches/${batch.id}/destroy-all`)
@@ -2133,6 +2143,9 @@ describe('single instances', () => {
         },
       },
     });
+
+    await seedLegacyNativeCreateJob(repository, first.id);
+    await seedLegacyNativeCreateJob(repository, second.id);
 
     try {
       await request(app.getHttpServer())

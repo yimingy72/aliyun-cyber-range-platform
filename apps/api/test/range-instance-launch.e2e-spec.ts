@@ -362,6 +362,8 @@ describe('Range instance launch API', () => {
   });
 
   it('launches a range instance atomically with snapshots and a pending create job', async () => {
+    // Platform expiry must stay inside the 1095-day Alibaba cloud release bound.
+    const expiresAt = new Date(Date.now() + 30 * 24 * 3600_000).toISOString();
     const response = await request(app.getHttpServer())
       .post('/admin/ranges/launch')
       .set('x-idempotency-key', randomUUID())
@@ -369,7 +371,7 @@ describe('Range instance launch API', () => {
       .send({
         templateId,
         name: '攻防实例-一号',
-        expiresAt: '2030-07-09T12:00:00.000Z',
+        expiresAt,
       })
       .expect(201);
 
@@ -380,7 +382,7 @@ describe('Range instance launch API', () => {
         status: 'pending_create',
         createdBy: launchUser.username,
         ownerUserId: launchUser.id,
-        expiresAt: '2030-07-09T12:00:00.000Z',
+        expiresAt,
         lastJobId: expect.any(String),
         templateNameSnapshot: 'Launchable Template',
         templateSlugSnapshot: 'launchable-template',
@@ -411,7 +413,7 @@ describe('Range instance launch API', () => {
       .send({
         templateId,
         name: '攻防实例-二号',
-        expiresAt: '2030-07-10T12:00:00.000Z',
+        expiresAt: new Date(Date.now() + 40 * 24 * 3600_000).toISOString(),
       })
       .expect(201);
 
@@ -491,7 +493,7 @@ describe('Range instance launch API', () => {
       .send({
         templateId: legacyTemplate.id,
         name: '旧模板实例',
-        expiresAt: '2030-07-12T12:00:00.000Z',
+        expiresAt: new Date(Date.now() + 50 * 24 * 3600_000).toISOString(),
       })
       .expect(400);
 
