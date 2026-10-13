@@ -57,6 +57,25 @@ it.each([
   expect(validRangeResourceCreatedEvent(value as any,'tencent_cloud')).toBe(true);expect(validRangeResourceCreatedEvent(value as any,'alibaba_cloud')).toBe(false);
 });
 
+it.each([
+  ['alicloud_snat_entry','snat_entry','stb-owned:snat-new'],
+  ['alicloud_forward_entry','dnat_entry','ftb-owned:fwd-new'],
+])('preserves the exact Alibaba NAT compound identity for %s creation', async (providerResourceType,type,id)=>{
+  const address=`module.range.${providerResourceType}.entries["new-rule"]`;
+  const sink=jest.fn(async()=>undefined);
+  const observer=createRangeResourceReceiptObserver({plan:{resource_changes:[{address,type:providerResourceType,mode:'managed',change:{actions:['create']}}]},priorState:null,provider:'alibaba_cloud',onCreated:sink});
+  observer.onResourceApplied({address,resourceType:providerResourceType,action:'create',resourceId:id});await observer.drain();
+  expect(sink).toHaveBeenCalledWith({address,providerResourceType,type,id,logicalKey:'new-rule'});
+});
+it.each([
+  ['alicloud_snat_entry','snat_entry','snat-new'],
+  ['alicloud_snat_entry','snat_entry','stb-owned:fwd-new'],
+  ['alicloud_forward_entry','dnat_entry','fwd-new'],
+  ['alicloud_forward_entry','dnat_entry','ftb-owned:snat-new'],
+])('rejects an incomplete or mismatched Alibaba NAT compound identity: %s %s %s', (providerResourceType,type,id)=>{
+  expect(validRangeResourceCreatedEvent({address:`module.range.${providerResourceType}.entries["new-rule"]`,providerResourceType,type,id} as any,'alibaba_cloud')).toBe(false);
+});
+
 it.each([false,true])('drains receipts before a successful or failed provider apply returns (provider failure=%s)', async fails=>{
   const root=await fs.mkdtemp(path.join(os.tmpdir(),'range-receipt-'));const pause=gate();const sink=jest.fn(async()=>pause.promise);
   const original=JSON.stringify({version:1,addresses:[address]});await fs.writeFile(path.join(root,'.range-apply-started'),original);

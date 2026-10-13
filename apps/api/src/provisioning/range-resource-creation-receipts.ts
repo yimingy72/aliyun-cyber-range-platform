@@ -22,6 +22,8 @@ export function validRangeResourceCreatedEvent(event: RangeResourceCreatedEvent,
     || !event.providerResourceType.startsWith(prefix) || TYPES[event.providerResourceType] !== event.type
     || !/^module\.range\.[a-z_]+\.[A-Za-z0-9_]+(?:\[(?:"[A-Za-z0-9][A-Za-z0-9:_-]{0,255}"|\d+)\])?$/.test(event.address)
     || !event.address.startsWith(`module.range.${event.providerResourceType}.`) || typeof event.id !== 'string' || event.id.length > 256) return false;
+  if (provider === 'alibaba_cloud' && event.type === 'snat_entry') return /^stb-[A-Za-z0-9-]+:snat-[A-Za-z0-9-]+$/.test(event.id);
+  if (provider === 'alibaba_cloud' && event.type === 'dnat_entry') return /^ftb-[A-Za-z0-9-]+:fwd-[A-Za-z0-9-]+$/.test(event.id);
   if (provider === 'tencent_cloud' && event.type === 'snat_entry') return /^nat-[a-z0-9]+#subnet-[a-z0-9]+$/.test(event.id);
   if (provider === 'tencent_cloud' && event.type === 'dnat_entry') {
     const match = event.id.match(/^(TCP|UDP):\/\/vpc-[a-z0-9]+:nat-[a-z0-9]+@([0-9.]+):([1-9]\d{0,4})$/);
