@@ -876,10 +876,10 @@ function readPersistTopologyErrorMessage(error: unknown) {
 
 function readNodeWindowsImageHint(node: EcsTemplateNode, platformImageAssets: PlatformImageAsset[]) {
   const asset = platformImageAssets.find((candidate) => candidate.id === node.platformImageAssetId);
-  const osHint = `${asset?.osType ?? ''} ${asset?.platform ?? ''}`.trim().toLowerCase();
 
-  if (osHint) {
-    return osHint.includes('windows');
+  if (asset) {
+    // The asset is known: its metadata owns the decision, even when OS fields are empty.
+    return `${asset.osType ?? ''} ${asset.platform ?? ''}`.trim().toLowerCase().includes('windows');
   }
 
   return [node.imageName, node.imageId, node.image]

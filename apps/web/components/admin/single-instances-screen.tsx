@@ -1079,10 +1079,9 @@ export function SingleInstancesScreen({
 
       const providedPassword = createForm.password.trim();
       if (providedPassword && (workspace?.provider ?? 'alibaba_cloud') === 'alibaba_cloud') {
+        // The chosen asset is known: only its OS metadata may gate the Windows rule.
         const imageOsHint = `${selectedPlatformImage.osType ?? ''} ${selectedPlatformImage.platform ?? ''}`.trim().toLowerCase();
-        const windowsPassword = imageOsHint
-          ? imageOsHint.includes('windows')
-          : (selectedPlatformImage.displayName ?? '').toLowerCase().includes('windows');
+        const windowsPassword = imageOsHint.includes('windows');
         const passwordValidation = validateAliyunEcsPassword(providedPassword, { windows: windowsPassword });
         if (!passwordValidation.valid && passwordValidation.code) {
           setCreateFormError(`密码不符合阿里云 ECS 要求：${describeAliyunEcsPasswordFailure(passwordValidation.code)}。`);

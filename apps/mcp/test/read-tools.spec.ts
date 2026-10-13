@@ -604,6 +604,38 @@ describe('tool registry', () => {
     expect(client.createRangeTemplate).not.toHaveBeenCalled();
   });
 
+  it('skips local Windows password guesses when the image catalog cannot be read', async () => {
+    const client = createClientStub();
+    (client.listPlatformImages as ReturnType<typeof vi.fn>).mockRejectedValue(new PlatformApiError(403, 'delegated token lacks images:read'));
+
+    const graph = structuredClone(authoringGraph);
+    const host = graph.nodes.find((node) => node.kind === 'ecs')!;
+    if (host.kind === 'ecs') {
+      host.imageName = 'Windows-compatible Ubuntu';
+      host.customPassword = '/Abcd1234';
+    }
+
+    await createToolRegistry(client).callTool('range_template_create', ['templates:write'], { name: '降级靶场', topologyGraph: graph });
+    expect(client.createRangeTemplate).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps OS hints from a readable catalog view when the other view fails', async () => {
+    const client = createClientStub();
+    (client.listPlatformImages as ReturnType<typeof vi.fn>)
+      .mockRejectedValueOnce(new PlatformApiError(403, 'platform view denied'))
+      .mockResolvedValueOnce([{ id: 'asset-nginx', osType: 'linux', platform: 'Ubuntu 24.04' }]);
+
+    const graph = structuredClone(authoringGraph);
+    const host = graph.nodes.find((node) => node.kind === 'ecs')!;
+    if (host.kind === 'ecs') {
+      host.imageName = 'Windows-compatible Ubuntu';
+      host.customPassword = '/Abcd1234';
+    }
+
+    await createToolRegistry(client).callTool('range_template_create', ['templates:write'], { name: '视图隔离靶场', topologyGraph: graph });
+    expect(client.createRangeTemplate).toHaveBeenCalledTimes(1);
+  });
+
   it('prefers resolved platform image OS metadata when saving an instance draft', async () => {
     const client = createClientStub();
     (client.getRangeInstance as ReturnType<typeof vi.fn>).mockResolvedValue({

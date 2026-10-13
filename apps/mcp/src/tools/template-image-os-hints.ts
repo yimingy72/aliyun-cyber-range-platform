@@ -1,11 +1,14 @@
-import type { PlatformApiClient } from '@aliyun-cyber-range/platform-api-client';
 import type { TemplateImageOsHints } from '@aliyun-cyber-range/scenario-runtime';
+
+type ImageCatalogClient = {
+  listPlatformImages?: (view?: 'platform' | 'mine') => Promise<unknown>;
+};
 
 // Tools compile authored graphs locally before the platform re-validates them. Resolve
 // platform-image OS metadata here so Windows password rules follow the bound image and
 // the local precheck cannot refuse a password the server would accept.
 export async function resolveToolImageOsHints(
-  client: PlatformApiClient,
+  client: ImageCatalogClient,
   ...graphs: Array<Record<string, unknown> | null | undefined>
 ): Promise<TemplateImageOsHints> {
   const assetIds = new Set<string>();
@@ -26,36 +29,48 @@ export async function resolveToolImageOsHints(
     }
   }
 
-  if (!assetIds.size || typeof client.listPlatformImages !== 'function') {
+  if (!assetIds.size) {
     return {};
   }
 
-  const hints: TemplateImageOsHints = {};
+  // Materialize an entry for every referenced asset up front: an entry means "the tool
+  // owns this OS decision"; catalog misses or unreadable views leave it unknown and the
+  // platform API performs the authoritative Windows check with its own metadata.
+  const hints: TemplateImageOsHints = Object.fromEntries(
+    [...assetIds].map((assetId) => [assetId, { osType: null, platform: null }]),
+  );
 
-  try {
-    for (const view of ['platform', 'mine'] as const) {
-      const assets = await client.listPlatformImages(view);
+  if (typeof client.listPlatformImages !== 'function') {
+    return hints;
+  }
 
-      if (!Array.isArray(assets)) {
+  for (const view of ['platform', 'mine'] as const) {
+    let assets: unknown;
+
+    try {
+      assets = await client.listPlatformImages(view);
+    } catch {
+      // A single unreadable view (for example a token without catalog scope) must not
+      // discard results from the other view.
+      continue;
+    }
+
+    if (!Array.isArray(assets)) {
+      continue;
+    }
+
+    for (const asset of assets) {
+      if (!asset || typeof asset !== 'object' || !assetIds.has(asset.id)) {
         continue;
       }
 
-      for (const asset of assets) {
-        if (!asset || typeof asset !== 'object' || !assetIds.has(asset.id)) {
-          continue;
-        }
-
-        const osType = (asset as { osType?: unknown }).osType;
-        const platform = (asset as { platform?: unknown }).platform;
-        hints[asset.id] = {
-          osType: typeof osType === 'string' ? osType : null,
-          platform: typeof platform === 'string' ? platform : null,
-        };
-      }
+      const osType = (asset as { osType?: unknown }).osType;
+      const platform = (asset as { platform?: unknown }).platform;
+      hints[asset.id] = {
+        osType: typeof osType === 'string' ? osType : null,
+        platform: typeof platform === 'string' ? platform : null,
+      };
     }
-  } catch {
-    // Best-effort lookup: degrade to the compiler's image-name heuristic.
-    return {};
   }
 
   return hints;

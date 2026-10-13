@@ -517,13 +517,14 @@ function validateGraph(graph: ScenarioGraphDraft, metadata: TemplateAuthoringMet
         throw new Error(`ECS 缺少镜像：${node.id}`);
       }
       if (typeof node.customPassword === 'string' && node.customPassword.length > 0) {
-        // Prefer caller-resolved platform-image OS metadata; only fall back to the image-name
-        // heuristic the runtime already uses for Windows credentials when metadata is absent.
-        const resolvedAssetOs = typeof node.platformImageAssetId === 'string' && node.platformImageAssetId
-          ? imageOsHints[node.platformImageAssetId]
-          : undefined;
+        // Callers that resolved an image entry own the OS decision: an entry for this
+        // asset (even an empty one) suppresses the image-name guess, while callers that
+        // provided no entry at all keep the historical name heuristic.
+        const assetId = typeof node.platformImageAssetId === 'string' && node.platformImageAssetId ? node.platformImageAssetId : null;
+        const hasResolvedEntry = assetId !== null && Object.prototype.hasOwnProperty.call(imageOsHints, assetId);
+        const resolvedAssetOs = hasResolvedEntry ? imageOsHints[assetId!] : undefined;
         const resolvedOsHint = `${resolvedAssetOs?.osType ?? ''} ${resolvedAssetOs?.platform ?? ''}`.trim().toLowerCase();
-        const windowsHint = resolvedOsHint
+        const windowsHint = hasResolvedEntry
           ? resolvedOsHint.includes('windows')
           : [node.imageName, node.imageId, node.image]
             .filter((value): value is string => typeof value === 'string')
