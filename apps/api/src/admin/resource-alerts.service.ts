@@ -39,11 +39,12 @@ export class ResourceAlertsService {
     }
   }
 
-  async setPatrolManager(user: SessionUserProfile, input: { managerUserId: string }) {
+  async setPatrolManager(user: SessionUserProfile, input: { managerUserId?: string }) {
     this.assertManager(user);
-    if (!input.managerUserId?.trim() || input.managerUserId.length > 192) throw new BadRequestException('巡检管理员标识无效。');
-    await this.store.target(input.managerUserId);
-    await this.store.setManager(input.managerUserId);
+    const managerUserId = input.managerUserId ?? user.id;
+    if (!managerUserId.trim() || managerUserId.length > 192) throw new BadRequestException('巡检管理员标识无效。');
+    await this.store.target(managerUserId);
+    await this.store.setManager(managerUserId);
     return this.getPatrol(user);
   }
 

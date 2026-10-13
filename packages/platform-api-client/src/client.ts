@@ -74,7 +74,7 @@ export class PlatformApiError extends Error {
 
 export class PlatformApiClient implements PlatformApiClientLike {
   getResourcePatrol() { return this.request<ResourcePatrol>('/admin/resource-alerts/patrol'); }
-  setResourcePatrolManager(managerUserId: string) {
+  setResourcePatrolManager(managerUserId?: string) {
     return this.request<ResourcePatrol>('/admin/resource-alerts/patrol', { method: 'POST', body: JSON.stringify({ managerUserId }) });
   }
   listResourceAlerts(status?: ResourceAlertStatus) {

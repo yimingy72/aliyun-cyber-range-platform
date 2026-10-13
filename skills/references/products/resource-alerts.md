@@ -5,7 +5,7 @@
 | 操作 | MCP 工具 | 必填参数 | Scope |
 |---|---|---|---|
 | 查询巡检目标与完成度 | `resource_patrol_get` | — | `settings:read` |
-| 指定跟随的超管 | `resource_patrol_manager_set` | `managerUserId` | `settings:write` |
+| 指定跟随的超管 | `resource_patrol_manager_set` | 可选 `managerUserId`，省略使用当前已认证超管 | `settings:write` |
 | 查询当前空间告警 | `resource_alert_list` | 可选 `status` | `settings:read` |
 | 核验并预览回收清单 | `resource_alert_reclaim_preview` | `alertId` | `settings:read` |
 | 确认回收 | `resource_alert_reclaim` | `alertId`、`planDigest`、`idempotencyKey`；二阶段传 `confirmationId` | `settings:write`、`ranges:destroy`、`instances:destroy` |

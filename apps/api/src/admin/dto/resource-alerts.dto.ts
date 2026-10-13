@@ -7,10 +7,11 @@ export class ResourceAlertsQueryDto {
 }
 
 export class SetResourcePatrolManagerDto {
+  @IsOptional()
   @IsString()
   @MinLength(1)
   @MaxLength(192)
-  managerUserId!: string;
+  managerUserId?: string;
 }
 
 export class ReclaimResourceAlertDto {

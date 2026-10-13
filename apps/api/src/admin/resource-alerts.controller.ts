@@ -19,13 +19,13 @@ export class ResourceAlertsController {
   patrol(@Req() request: AuthenticatedPlatformRequest) { return this.alerts.getPatrol(request.adminUser); }
 
   @Post('patrol')
-  async setPatrol(@Req() request: AuthenticatedPlatformRequest, @Body() input: SetResourcePatrolManagerDto) {
+  async setPatrol(@Req() request: AuthenticatedPlatformRequest, @Body() input: SetResourcePatrolManagerDto = {}) {
     const metadata = readOperationRequestMetadata(request);
     const result = await this.alerts.setPatrolManager(request.adminUser, input);
     await this.operations.audit({ requestId: metadata.requestId, operationId: metadata.requestId,
       actorUserId: request.adminUser.id, source: request.authContext.source, oauthClientId: request.authContext.oauthClientId,
-      toolName: 'resource_patrol_manager_set', targetType: 'resource_patrol', targetId: input.managerUserId,
-      sanitizedInput: { ...input }, phase: 'succeeded' });
+      toolName: 'resource_patrol_manager_set', targetType: 'resource_patrol', targetId: result.managerUserId,
+      sanitizedInput: { managerUserId: result.managerUserId }, phase: 'succeeded' });
     return result;
   }
 

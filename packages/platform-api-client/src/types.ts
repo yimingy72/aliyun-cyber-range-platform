@@ -416,7 +416,7 @@ export type ResetAdminUserPasswordInput = {
 
 export type PlatformApiClientLike = {
   getResourcePatrol(): Promise<import('./resource-alerts').ResourcePatrol>;
-  setResourcePatrolManager(managerUserId: string): Promise<import('./resource-alerts').ResourcePatrol>;
+  setResourcePatrolManager(managerUserId?: string): Promise<import('./resource-alerts').ResourcePatrol>;
   listResourceAlerts(status?: import('./resource-alerts').ResourceAlertStatus): Promise<import('./resource-alerts').ResourceAlert[]>;
   previewResourceReclaim(alertId: string): Promise<import('./resource-alerts').ResourceReclaimPreview>;
   reclaimResourceAlert(alertId: string, planDigest: string, operation: OperationRequest): Promise<import('./resource-alerts').ResourceReclaimResult>;

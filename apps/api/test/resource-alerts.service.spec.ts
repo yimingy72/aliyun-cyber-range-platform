@@ -34,6 +34,12 @@ async function fixture(provider: 'alibaba_cloud'|'tencent_cloud' = 'alibaba_clou
 }
 
 describe('current-account residual patrol',() => {
+  it('can follow the authenticated manager without guessing another user ID',async () => {
+    const f=await fixture();
+    expect(await f.service.setPatrolManager(manager,{})).toMatchObject({managerUserId:manager.id});
+    await expect(f.service.setPatrolManager({...manager,isPlatformManager:false},{})).rejects.toThrow();
+    await expect(f.service.setPatrolManager(manager,{managerUserId:''})).rejects.toThrow();
+  });
   it('reads historical IDs after runtime state was cleared and never claims tag-only copies',async () => {
     const f = await fixture();
     f.cloud.inspect.mockResolvedValue([cloudRow('ecs','i-real'),cloudRow('eip','eip-forged')] as never[]);
