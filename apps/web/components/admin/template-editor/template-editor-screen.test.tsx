@@ -3944,6 +3944,85 @@ describe('TemplateEditorScreen', () => {
     expect(screen.getByText('已发布')).toBeTruthy();
   });
 
+  const savedTopologyFixture = {
+    id: 'saved-template', name: '已保存拓扑', slug: 'saved-topology', revision: 7,
+    status: 'private' as const,
+    topologyGraph: {
+      schemaVersion: '2.0.0',
+      nodes: [
+        { id: 'router', kind: 'router', label: 'Router', routeRole: 'egress', egressType: 'internet', bindEip: false },
+        { id: 'switch', kind: 'switch', label: '业务交换机', zoneKey: 'business', cidr: '10.0.0.0/24', aclRules: [], nat: { snatEnabled: false, dnatMappings: [] } },
+        { id: 'host', kind: 'ecs', label: '业务主机', zoneKey: 'business', privateIp: '10.0.0.10',
+          platformImageAssetId: 'platform-image-1', image: 'Ubuntu 24.04 LTS', imageName: 'Ubuntu 24.04 LTS', imageId: 'ubuntu_24_04_x64_20G_alibase', cpu: 2, memory: 4,
+          nics: [{ id: 'primary', switchId: 'switch', privateIp: '10.0.0.10', secondaryIps: [], securityGroupRules: [] }],
+          initScript: 'echo keep-user-task', imageStrategy: { mode: 'fixed', imageId: 'ubuntu_24_04_x64_20G_alibase' }, instanceTypeStrategy: { mode: 'auto' } },
+      ],
+      edges: [
+        { id: 'router-switch', fromNodeId: 'router', toNodeId: 'switch', relationType: 'manual' },
+        { id: 'switch-host', fromNodeId: 'switch', toNodeId: 'host', relationType: 'manual' },
+      ],
+    },
+  };
+
+  it('publishes a saved server graph despite editor defaults added when opening it', async () => {
+    shareRangeTemplateMock.mockResolvedValue({ ...savedTopologyFixture, status: 'published', revision: 8 });
+    render(<TemplateEditorScreen template={savedTopologyFixture} />);
+
+    fireEvent.click(screen.getByRole('button', { name: '发布到平台' }));
+
+    await waitFor(() => expect(shareRangeTemplateMock).toHaveBeenCalledWith(
+      'http://localhost:3001', 'dev-admin-token', 'saved-template', { expectedRevision: 7 },
+    ));
+    expect(validateAndSaveRangeTemplateMock).not.toHaveBeenCalled();
+  });
+
+  it('publishes after detection saves a normalized response and blocks subsequent local edits', async () => {
+    validateAndSaveRangeTemplateMock.mockImplementationOnce(async (_url, _token, _id, payload) => ({
+      ...savedTopologyFixture,
+      revision: 8,
+      topologyGraph: {
+        ...payload.topologyGraph,
+        // A database/compiler response need not retain object order or empty editor fields.
+        nodes: payload.topologyGraph.nodes.map((node: Record<string, unknown>) => Object.fromEntries(
+          Object.entries(node).filter(([key]) => !['description', 'customPassword', 'position'].includes(key)).reverse(),
+        )),
+      },
+    }));
+    render(<TemplateEditorScreen template={savedTopologyFixture} />);
+    fireEvent.click(screen.getByRole('button', { name: '检测与保存' }));
+    await screen.findByText('拓扑检测通过，已保存');
+
+    shareRangeTemplateMock.mockRejectedValueOnce(new Error('temporary publish failure'));
+    fireEvent.click(screen.getByRole('button', { name: '发布到平台' }));
+    await waitFor(() => expect(shareRangeTemplateMock).toHaveBeenCalledWith(
+      'http://localhost:3001', 'dev-admin-token', 'saved-template', { expectedRevision: 8 },
+    ));
+    await screen.findByText('编排发布失败：temporary publish failure');
+    const savedHost = validateAndSaveRangeTemplateMock.mock.calls[0]![3].topologyGraph.nodes.find((node: TemplateNode) => node.id === 'host');
+    expect(savedHost.initScript).toBe('echo keep-user-task');
+
+    fireEvent.click(screen.getByRole('button', { name: /业务主机/ }));
+    fireEvent.change(await screen.findByLabelText('主机名'), { target: { value: '尚未保存的主机名' } });
+    fireEvent.click(screen.getByRole('button', { name: '发布到平台' }));
+    expect(screen.getByText('请先点击“检测与保存”，再发布到平台。')).toBeTruthy();
+    expect(shareRangeTemplateMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps a restored local draft visible without treating it as the saved publishing baseline', async () => {
+    const serverGraph = savedTopologyFixture.topologyGraph;
+    window.localStorage.setItem('template-editor:topology-cache:saved-template:7', JSON.stringify({
+      persistedGraphSignature: JSON.stringify({ nodes: serverGraph.nodes, edges: serverGraph.edges }),
+      topologyGraph: { ...serverGraph, nodes: serverGraph.nodes.map(node => node.id === 'host' ? { ...node, label: '本地未保存主机' } : node) },
+    }));
+    render(<TemplateEditorScreen template={savedTopologyFixture} />);
+
+    expect(screen.getByRole('button', { name: /本地未保存主机/ })).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: '发布到平台' }));
+    expect(screen.getByText('请先点击“检测与保存”，再发布到平台。')).toBeTruthy();
+    expect(shareRangeTemplateMock).not.toHaveBeenCalled();
+    expect(screen.getByRole('button', { name: /本地未保存主机/ })).toBeTruthy();
+  });
+
   it('shows structured publish precheck errors when publishing fails', async () => {
     shareRangeTemplateMock.mockRejectedValue(
       new AdminApiError(400, '编排发布失败', {

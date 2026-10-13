@@ -891,7 +891,10 @@ function readInvalidCustomPasswordMessage(nodes: TemplateNode[]) {
 }
 
 function readNodesFromTemplate(template: RangeTemplate | null, fallbackTemplateId?: string): TemplateNode[] {
-  const topologyGraph = readResolvedTopologyGraph(template, fallbackTemplateId);
+  return readNodesFromTopologyGraph(readResolvedTopologyGraph(template, fallbackTemplateId), template);
+}
+
+function readNodesFromTopologyGraph(topologyGraph: Record<string, unknown> | null, template: RangeTemplate | null): TemplateNode[] {
   const rawNodes = topologyGraph && typeof topologyGraph === 'object' ? (topologyGraph as { nodes?: unknown }).nodes : [];
 
   if (!Array.isArray(rawNodes)) {
@@ -1058,7 +1061,10 @@ function readNodesFromTemplate(template: RangeTemplate | null, fallbackTemplateI
 }
 
 function readEdgesFromTemplate(template: RangeTemplate | null, fallbackTemplateId?: string): TemplateEdge[] {
-  const topologyGraph = readResolvedTopologyGraph(template, fallbackTemplateId);
+  return readEdgesFromTopologyGraph(readResolvedTopologyGraph(template, fallbackTemplateId));
+}
+
+function readEdgesFromTopologyGraph(topologyGraph: Record<string, unknown> | null): TemplateEdge[] {
   const rawEdges = topologyGraph && typeof topologyGraph === 'object' ? (topologyGraph as { edges?: unknown }).edges : [];
 
   if (!Array.isArray(rawEdges)) {
@@ -1122,6 +1128,11 @@ export function TemplateEditorScreen({
   );
   const topologyCacheKey = useMemo(() => readTopologyCacheKey(template, templateId), [template, templateId]);
   const graphSignature = useMemo(() => readGraphSignature(nodes, edges), [edges, nodes]);
+  const savedGraphSignature = useMemo(() => {
+    // Compare editor shapes, without treating a restored local draft as saved.
+    const savedGraph = readTemplateTopologyGraph(template);
+    return readGraphSignature(readNodesFromTopologyGraph(savedGraph, template), readEdgesFromTopologyGraph(savedGraph));
+  }, [template]);
   const lastPersistedGraphRef = useRef('');
 
   if (!lastPersistedGraphRef.current) {
@@ -1903,7 +1914,7 @@ export function TemplateEditorScreen({
       return;
     }
 
-    if (template.id === 'new' || graphSignature !== lastPersistedGraphRef.current) {
+    if (template.id === 'new' || graphSignature !== savedGraphSignature) {
       setStatusMessage('请先点击“检测与保存”，再发布到平台。');
       return;
     }
