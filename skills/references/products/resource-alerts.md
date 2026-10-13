@@ -2,13 +2,13 @@
 
 后台每 5 分钟跟随指定平台超管持久化选择的工作账号，仅检查该账号平台实际使用过的地域。浏览器关闭不会停止巡检；切换默认账号不改变已受理作业冻结的云身份或到期回收。
 
-| 操作 | MCP 工具 | 必填参数 | Scope |
-|---|---|---|---|
-| 查询巡检目标与完成度 | `resource_patrol_get` | — | `settings:read` |
-| 指定跟随的超管 | `resource_patrol_manager_set` | 可选 `managerUserId`，省略使用当前已认证超管 | `settings:write` |
-| 查询当前空间告警 | `resource_alert_list` | 可选 `status` | `settings:read` |
-| 核验并预览回收清单 | `resource_alert_reclaim_preview` | `alertId` | `settings:read` |
-| 确认回收 | `resource_alert_reclaim` | `alertId`、`planDigest`、`idempotencyKey`；二阶段传 `confirmationId` | `settings:write`、`ranges:destroy`、`instances:destroy` |
+| 操作 | MCP 工具 | 必填参数 | 可选参数 | Scope |
+|---|---|---|---|---|
+| 查询巡检目标与完成度 | `resource_patrol_get` | — | — | `settings:read` |
+| 指定跟随的超管 | `resource_patrol_manager_set` | — | `managerUserId`，省略使用当前已认证超管 | `settings:write` |
+| 查询当前空间告警 | `resource_alert_list` | — | `status` | `settings:read` |
+| 核验并预览回收清单 | `resource_alert_reclaim_preview` | `alertId` | — | `settings:read` |
+| 确认回收 | `resource_alert_reclaim` | `alertId`、`planDigest`、`idempotencyKey` | 二阶段传 `confirmationId` | `settings:write`、`ranges:destroy`、`instances:destroy` |
 
 这些接口仅平台超管可操作，工具可见并不替代服务端身份校验。必须先读取运行时 tools/list。
 
