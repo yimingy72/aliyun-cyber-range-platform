@@ -595,9 +595,11 @@ export class ProvisioningWorkerService {
           onHostCreationPhase: deadlines => this.persistHostCloudReleaseDeadlines(job, deadlines, signal),
           onResourceCreated: event => this.persistRangeCreationReceipt(job, instance, accountContext, event, signal),
           onApplyStart: async () => {
-            rangeApplyStarted = true;
+            // Only a persisted apply intent proves this run reached the cloud
+            // phase; a failed write must not disable applied-workspace retention.
             await this.recordRangeApplyStart(instance, job, accountContext, signal);
             failedCreateCleanupInput!.requirePersistedState = true;
+            rangeApplyStarted = true;
           },
           reportStep,
         });

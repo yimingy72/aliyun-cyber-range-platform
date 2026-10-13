@@ -322,6 +322,30 @@ describeWithDatabase('PostgreSQL multi-user range lifecycle isolation', () => {
     expect((await repository.listBillingLedgerResources()).filter(row => row.rangeInstanceId === a.id).every(row => row.releasedAt === null)).toBe(true);
   });
 
+  it('preserves an applied range when the apply-intent write fails before any apply', async () => {
+    const { a } = await launchBoth();
+    const statePath = path.join(root, a.id, 'terraform.tfstate');
+    const stateBefore = await fs.readFile(statePath, 'utf8');
+    await repository.updateRangeInstance(a.id, { status: 'create_failed' });
+    const retry = await repository.createProvisionJob({ rangeInstanceId: a.id, jobType: 'retry', triggeredBy: alice.id, retryCount: 1 });
+    await repository.updateRangeInstance(a.id, { lastJobId: retry.id });
+    const original = repository.updateRangeInstanceForProvisionJob.bind(repository);
+    const spy = jest.spyOn(repository, 'updateRangeInstanceForProvisionJob').mockImplementation(async (jobId, startedAt, data) => {
+      if ((data as { resourceSummary?: { creationAttempted?: boolean } }).resourceSummary?.creationAttempted) {
+        throw new Error('simulated apply-intent write failure');
+      }
+      return original(jobId, startedAt, data);
+    });
+    try { await workers[0].process(retry.id); } finally { spy.mockRestore(); }
+
+    const after = (await repository.getRangeInstanceById(a.id))!;
+    expect(after.status).toBe('destroy_failed');
+    expect(after.errorSummary).toContain('preserved; recovery is required');
+    expect(await fs.readFile(statePath, 'utf8')).toBe(stateBefore);
+    expect(cloudCalls.some(call => call.action === 'DeleteInstances')).toBe(false);
+    expect((await repository.listBillingLedgerResources()).filter(row => row.rangeInstanceId === a.id).every(row => row.releasedAt === null)).toBe(true);
+  });
+
   it('allows only one concurrent same-instance apply/destroy and defers expiration while update is active', async () => {
     const { a } = await launchBoth();
     const saved = await service.saveDraft(a.id, draftInput(compile(graph())), alice);
