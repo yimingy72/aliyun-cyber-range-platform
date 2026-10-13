@@ -33,7 +33,7 @@ describe('range cloud deadline admission', () => {
     const draft = compileTemplateTopology(nextGraph, metadata);
     const instance = await repository.createRangeInstance({ name: 'legacy range', status: 'running', instanceMode: 'range', cloudProvider: 'alibaba_cloud', ownerUserId: 'admin',
       expiresAt: new Date(Date.now() + (reason === 'excessive_expiry' ? 1100 * 24 * 60 * 60_000 : 2 * 60 * 60_000)).toISOString(), templateModulePathSnapshot: metadata.modulePathOrRef,
-      ...(reason === 'reused_host_key' ? { resourceSummary: { cloudReleaseDeadlines: { new: {
+      ...(reason === 'reused_host_key' ? { resourceSummary: { mode: 'opentofu' as const, cloudReleaseDeadlines: { new: {
         provider: 'alibaba_cloud' as const, platformExpiresAt: new Date(Date.now() + 2 * 60 * 60_000).toISOString(),
         creationPhaseStartedAt: '2026-10-13T00:00:00Z', cloudReleaseAt: '2026-10-13T01:00:00Z',
         sourceProvisionJobId: 'previous-create', status: 'verified' as const, instanceId: 'i-previous',
