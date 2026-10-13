@@ -70,7 +70,7 @@ describe('TemplatePropertyPanel', () => {
     const customNode = onUpdateNode.mock.calls[0]![1];
     expect(customNode.dns).toEqual({ servers: [], nicIds: ['ecs-1-nic-1'] });
     rerender(<TemplatePropertyPanel selectedNode={customNode} allNodes={[customNode]} onUpdateNode={onUpdateNode} />);
-    expect((screen.getByLabelText('DNS 作用网卡 1') as HTMLInputElement).checked).toBe(true);
+    expect(screen.getByLabelText('DNS 作用网卡 1').getAttribute('aria-checked')).toBe('true');
     fireEvent.click(screen.getByRole('combobox', { name: 'DNS 配置方式' }));
     fireEvent.click(screen.getByRole('option', { name: '自动获取 DNS' }));
     expect(onUpdateNode.mock.calls.at(-1)?.[1]).toEqual(expect.objectContaining({ dns: undefined, nics: node.nics }));
@@ -103,7 +103,7 @@ describe('TemplatePropertyPanel', () => {
     expect(next.dns.nicIds).toEqual(['ecs-1-nic-2']);
     rerender(<TemplatePropertyPanel selectedNode={next} allNodes={[next]} onUpdateNode={onUpdateNode} />);
     expect(screen.getByRole('alert').textContent).toContain('DNS 作用网卡已不存在，请重新选择');
-    expect((screen.getByLabelText('DNS 作用网卡 1') as HTMLInputElement).checked).toBe(false);
+    expect(screen.getByLabelText('DNS 作用网卡 1').getAttribute('aria-checked')).toBe('false');
   });
 
   it('renders an accessible collapse action only when the editor provides one', () => {

@@ -17,6 +17,7 @@ import {
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
 import { Input } from '@/components/ui/input';
+import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group';
 import { Label } from '@/components/ui/label';
 import { TableCell, TableRow } from '@/components/ui/table';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
@@ -2282,7 +2283,7 @@ function CloudImageCenterScreen({
               onClose={closeImageImportDialog}
             >
               <form
-                className="grid gap-4"
+                className="grid gap-3"
                 id="image-import-form"
                 onSubmit={(event) => {
                   event.preventDefault();
@@ -2293,7 +2294,7 @@ function CloudImageCenterScreen({
                   文件会直接上传到当前云账号的私有 {objectStorageName} Bucket，再由{providerName}导入为自定义镜像。主机名和密码会作为后续创建实例的默认值，不会修改原始镜像文件。
                 </p>
                 <fieldset className="grid gap-4 border-0 p-0" disabled={pendingActionKeys.includes('create:image-import')}>
-                  <div className="grid gap-2">
+                  <div className="grid gap-1.5">
                     <Label htmlFor="image-import-file">系统盘镜像文件</Label>
                     <Input
                       autoFocus
@@ -2317,23 +2318,23 @@ function CloudImageCenterScreen({
                     />
                     <small>仅支持 QCOW2、RAW、VHD；首期只导入系统盘。</small>
                   </div>
-                  <div className="grid gap-2">
+                  <div className="grid gap-1.5">
                     <Label htmlFor="image-import-name">镜像名</Label>
                     <Input aria-label="上传镜像名" id="image-import-name" value={imageImportDraft.displayName} onChange={(event) => updateImageImportDraft({ displayName: event.target.value })} required />
                   </div>
-                  <div className="grid gap-2">
+                  <div className="grid gap-1.5">
                     <Label htmlFor="image-import-host-name">默认主机名</Label>
                     <Input aria-label="上传镜像默认主机名" id="image-import-host-name" value={imageImportDraft.defaultHostName} onChange={(event) => updateImageImportDraft({ defaultHostName: event.target.value })} placeholder="可选，创建实例时使用" />
                   </div>
-                  <div className="grid gap-2">
+                  <div className="grid gap-1.5">
                     <Label htmlFor="image-import-password">默认登录密码</Label>
                     <Input aria-label="上传镜像默认登录密码" id="image-import-password" type="password" value={imageImportDraft.defaultPassword} onChange={(event) => updateImageImportDraft({ defaultPassword: event.target.value })} autoComplete="new-password" placeholder="可选，保存后不再回显" />
                   </div>
-                  <div className="grid gap-2">
+                  <div className="grid gap-1.5">
                     <Label htmlFor="image-import-description">备注</Label>
                     <Input aria-label="上传镜像备注" id="image-import-description" value={imageImportDraft.description} onChange={(event) => updateImageImportDraft({ description: event.target.value })} placeholder="镜像用途或来源说明" />
                   </div>
-                  <div className="grid gap-2">
+                  <div className="grid gap-1.5">
                     <Label htmlFor="image-import-os-type">操作系统</Label>
                     <AdminSelectField
                       ariaLabel="上传镜像操作系统"
@@ -2349,16 +2350,16 @@ function CloudImageCenterScreen({
                       value={imageImportDraft.osType}
                     />
                   </div>
-                  <div className="grid gap-2">
+                  <div className="grid gap-1.5">
                     <Label htmlFor="image-import-platform">{provider === 'tencent_cloud' ? '操作系统发行版' : '系统版本 / 平台'}</Label>
                     <Input aria-label="上传镜像系统版本" id="image-import-platform" value={imageImportDraft.platform} onChange={(event) => updateImageImportDraft({ platform: event.target.value })} placeholder={provider === 'tencent_cloud' ? '例如 Ubuntu' : '例如 Ubuntu 22.04'} required={provider === 'tencent_cloud'} />
                   </div>
-                  {provider === 'tencent_cloud' ? <div className="grid gap-2">
+                  {provider === 'tencent_cloud' ? <div className="grid gap-1.5">
                     <Label htmlFor="image-import-os-version">操作系统版本</Label>
                     <Input aria-label="上传镜像操作系统版本" id="image-import-os-version" value={imageImportDraft.osVersion} onChange={(event) => updateImageImportDraft({ osVersion: event.target.value })} placeholder="填写镜像实际系统版本" required />
                     <p className="text-sm text-muted-foreground">发行版和版本须与镜像一致，提交后由腾讯云核验支持矩阵。</p>
                   </div> : null}
-                  <div className="grid gap-2">
+                  <div className="grid gap-1.5">
                     <Label htmlFor="image-import-architecture">架构</Label>
                     <AdminSelectField
                       ariaLabel="上传镜像架构"
@@ -2374,7 +2375,7 @@ function CloudImageCenterScreen({
                       value={imageImportDraft.architecture}
                     />
                   </div>
-                  <div className="grid gap-2">
+                  <div className="grid gap-1.5">
                     <Label htmlFor="image-import-boot-mode">启动模式</Label>
                     <AdminSelectField
                       ariaLabel="上传镜像启动模式"
@@ -2390,7 +2391,7 @@ function CloudImageCenterScreen({
                       value={imageImportDraft.bootMode}
                     />
                   </div>
-                  <div className="grid gap-2">
+                  <div className="grid gap-1.5">
                     <Label htmlFor="image-import-format">镜像格式</Label>
                     <AdminSelectField
                       ariaLabel="上传镜像格式"
@@ -2407,7 +2408,7 @@ function CloudImageCenterScreen({
                       value={imageImportDraft.imageFormat}
                     />
                   </div>
-                  <div className="grid gap-2">
+                  <div className="grid gap-1.5">
                     <Label htmlFor="image-import-system-disk-size">系统盘大小（GiB）</Label>
                     <Input aria-label="上传镜像系统盘大小" id="image-import-system-disk-size" type="number" min="1" max="2048" value={imageImportDraft.systemDiskSize} onChange={(event) => updateImageImportDraft({ systemDiskSize: event.target.value })} required />
                   </div>
@@ -2439,8 +2440,8 @@ function CloudImageCenterScreen({
               title="编辑镜像名称"
               onClose={closeRenameDialog}
             >
-              <div className="grid gap-4">
-                <div className="grid gap-2">
+              <div className="grid gap-3">
+                <div className="grid gap-1.5">
                   <Label htmlFor="rename-platform-image">镜像名</Label>
                   <Input aria-label="镜像名" autoFocus id="rename-platform-image" value={renameDraft} onChange={(event) => setRenameDraft(event.target.value)} />
                 </div>
@@ -2477,14 +2478,16 @@ function CloudImageCenterScreen({
             >
               <fieldset className="grid gap-3 text-sm" disabled={pendingActionKeys.includes(`delete:custom:${confirmState.snapshot.id}`)}>
                 <legend className="mb-2 font-medium">删除范围</legend>
+                <RadioGroup aria-label="删除范围" disabled={pendingActionKeys.includes(`delete:custom:${confirmState.snapshot.id}`)} name="custom-image-delete-scope" value={confirmState.deleteOwnedSnapshots ? 'snapshots' : 'image'} onValueChange={(value) => setConfirmState({ ...confirmState, deleteOwnedSnapshots: value === 'snapshots' })}>
                 {confirmState.snapshot.status !== 'Deleted' && confirmState.snapshot.ownedSnapshotCleanup?.status !== 'deleting' ? <label className="flex items-start gap-2">
-                  <input checked={!confirmState.deleteOwnedSnapshots} className="mt-1 accent-[var(--primary)]" name="custom-image-delete-scope" type="radio" onChange={() => setConfirmState({ ...confirmState, deleteOwnedSnapshots: false })} />
+                  <RadioGroupItem value="image" />
                   <span>仅删除镜像<span className="mt-1 block text-xs text-muted-foreground">保留关联快照，快照存储费用继续产生。</span></span>
                 </label> : null}
                 {confirmState.snapshot.ownedSnapshotCleanup ? <label className="flex items-start gap-2">
-                  <input checked={confirmState.deleteOwnedSnapshots} className="mt-1 accent-[var(--primary)]" name="custom-image-delete-scope" type="radio" onChange={() => setConfirmState({ ...confirmState, deleteOwnedSnapshots: true })} />
+                  <RadioGroupItem value="snapshots" />
                   <span>{confirmState.snapshot.status === 'Deleted' ? '回收所属快照' : '同时清理所属快照'}<span className="mt-1 block text-xs text-muted-foreground">{confirmState.snapshot.ownedSnapshotCleanup.snapshotCount} 个待回收。仅清理本平台打包生成且无其它引用的快照；回收后无法恢复。</span></span>
                 </label> : <p className="text-xs text-muted-foreground">该镜像缺少可核验的打包快照来源，平台不会自动删除其快照。</p>}
+                </RadioGroup>
               </fieldset>
               {actionErrorMessage ? <p className="mt-3 text-sm text-destructive" role="alert">{actionErrorMessage}</p> : null}
             </AdminDialog>

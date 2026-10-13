@@ -1,5 +1,12 @@
 'use client';
 
+import { Input } from '@/components/ui/input';
+import { Textarea } from '@/components/ui/textarea';
+import { Combobox } from '@/components/ui/combobox';
+import { DateTimePicker } from '@/components/ui/date-time-picker';
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
+import { AdminFormField } from './shared/admin-form-field';
+
 import React from 'react';
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
@@ -133,11 +140,6 @@ type PackImageDialogState = {
   defaultPassword: string;
   description: string;
 };
-
-type ActionMenuPlacement = 'down' | 'up';
-
-const ACTION_MENU_VERTICAL_OFFSET_PX = 8;
-const ACTION_MENU_ESTIMATED_HEIGHT_PX = 88;
 
 function isUnauthorizedError(error: unknown) {
   return error instanceof AdminApiError && error.status === 401;
@@ -442,16 +444,6 @@ function getActionLabel(action: MenuAction, status: string) {
   return '打包为镜像';
 }
 
-function resolveActionMenuPlacement(triggerElement: HTMLElement): ActionMenuPlacement {
-  const triggerRect = triggerElement.getBoundingClientRect();
-  const containerRect =
-    triggerElement.closest('.admin-workbench-panel')?.getBoundingClientRect() ??
-    triggerElement.closest('.admin-main-content')?.getBoundingClientRect();
-  const availableBelow = (containerRect?.bottom ?? window.innerHeight) - triggerRect.bottom;
-
-  return availableBelow < ACTION_MENU_ESTIMATED_HEIGHT_PX + ACTION_MENU_VERTICAL_OFFSET_PX ? 'up' : 'down';
-}
-
 function isPrimaryInlineAction(action: MenuAction) {
   return action === 'destroy' || action === 'open-vnc';
 }
@@ -498,17 +490,19 @@ function SingleInstanceDialog({
   children,
   footer,
   pending = false,
-  size = 'wide',
+  open = true,
+  size = 'standard',
 }: {
   title: string;
   onClose: () => void;
   children: React.ReactNode;
   footer: React.ReactNode;
   pending?: boolean;
+  open?: boolean;
   size?: AdminDialogSize;
 }) {
   return (
-    <AdminDialog footer={footer} open pending={pending} size={size} title={title} onOpenChange={(open) => !open && onClose()}>
+    <AdminDialog footer={footer} open={open} pending={pending} size={size} title={title} onOpenChange={(open) => !open && onClose()}>
       {children}
     </AdminDialog>
   );
@@ -559,8 +553,6 @@ export function SingleInstancesScreen({
   const isCurrentLaunch = () => launchMountedRef.current && launchContextRef.current.scope === launchScope;
   const launchPendingRef = useRef(false);
   const launchRequestRef = useRef<{ fingerprint: string; key: string; payload: SingleInstanceLaunchInput } | null>(null);
-  const [menuInstanceId, setMenuInstanceId] = useState<string | null>(null);
-  const [menuPlacement, setMenuPlacement] = useState<ActionMenuPlacement>('down');
   const [pendingActionInstanceId, setPendingActionInstanceId] = useState<string | null>(null);
   const [expandedBatchIds, setExpandedBatchIds] = useState<string[]>([]);
   const [copiedPasswordInstanceId, setCopiedPasswordInstanceId] = useState<string | null>(null);
@@ -964,17 +956,6 @@ export function SingleInstancesScreen({
     );
   }
 
-  function toggleActionMenu(instanceId: string, triggerElement: HTMLElement) {
-    if (menuInstanceId === instanceId) {
-      setMenuInstanceId(null);
-      setMenuPlacement('down');
-      return;
-    }
-
-    setMenuInstanceId(instanceId);
-    setMenuPlacement(resolveActionMenuPlacement(triggerElement));
-  }
-
   useEffect(() => {
     if (!isCreateOpen) {
       setInstanceTypeAvailability(null);
@@ -1128,8 +1109,6 @@ export function SingleInstancesScreen({
   }
 
   function openPackImageDialog(instance: RangeInstance) {
-    setMenuInstanceId(null);
-    setMenuPlacement('down');
     setPackImageDialog({
       instanceId: instance.id,
       displayName: readDefaultPackImageName(instance),
@@ -1209,8 +1188,6 @@ export function SingleInstancesScreen({
       return;
     }
 
-    setMenuInstanceId(null);
-    setMenuPlacement('down');
     setErrorMessage(null);
     setPendingActionInstanceId(instance.id);
     const openedWindow =
@@ -1304,8 +1281,6 @@ export function SingleInstancesScreen({
       return;
     }
 
-    setMenuInstanceId(null);
-    setMenuPlacement('down');
     setErrorMessage(null);
 
     try {
@@ -1454,7 +1429,7 @@ export function SingleInstancesScreen({
     }
 
     return (
-      <div className="template-workbench-row-menu relative flex justify-start gap-1">
+      <div className="flex flex-wrap items-center justify-start gap-1">
         {inlineActions.map((action) => (
           <Button
             disabled={isActionPending}
@@ -1468,34 +1443,20 @@ export function SingleInstancesScreen({
           </Button>
         ))}
         {menuActions.length ? (
-          <>
-            <Button
-              aria-label="更多操作"
-              disabled={isActionPending}
-              onClick={(event) => toggleActionMenu(instance.id, event.currentTarget)}
-              size="icon-sm"
-              type="button"
-              variant="ghost"
-            >
-              <MoreHorizontal aria-hidden="true" />
-            </Button>
-            {menuInstanceId === instance.id ? (
-              <div className={`template-workbench-action-menu${menuPlacement === 'up' ? ' is-upward' : ''}`}>
-                {menuActions.map((action) => (
-                  <Button
-                    disabled={isActionPending}
-                    key={action}
-                    onClick={() => void handleAction(instance, action)}
-                    size="sm"
-                    type="button"
-                    variant="ghost"
-                  >
-                    {getActionLabel(action, instance.status)}
-                  </Button>
-                ))}
-              </div>
-            ) : null}
-          </>
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button aria-label="更多操作" disabled={isActionPending} size="icon-sm" type="button" variant="ghost">
+                <MoreHorizontal aria-hidden="true" />
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end">
+              {menuActions.map((action) => (
+                <DropdownMenuItem disabled={isActionPending} key={action} onSelect={() => void handleAction(instance, action)}>
+                  {getActionLabel(action, instance.status)}
+                </DropdownMenuItem>
+              ))}
+            </DropdownMenuContent>
+          </DropdownMenu>
         ) : null}
       </div>
     );
@@ -1812,420 +1773,8 @@ export function SingleInstancesScreen({
         </div>
       </section>
 
-      {false ? (
-      <section>
-        <article className="admin-workbench-panel range-workbench-shell">
-          <div className="template-workbench-list-header range-workbench-header">
-            <div className="template-workbench-list-header-copy">
-              <h2>实例管理</h2>
-            </div>
-          </div>
-
-          <div className="template-workbench-controls range-workbench-controls">
-            <div className="template-workbench-search-grid">
-              <label className="template-workbench-search-field">
-                <span className="sr-only">实例名搜索</span>
-                <input
-                  aria-label="筛选实例名"
-                  value={searchName}
-                  onChange={(event) => setSearchName(event.target.value)}
-                  placeholder="搜索实例名"
-                />
-              </label>
-            </div>
-
-            <div className="single-instance-toolbar-actions">
-              <div className="template-workbench-segmented range-workbench-segmented" role="tablist" aria-label="实例视图切换">
-                <button type="button" aria-pressed={listMode === 'active'} onClick={() => setListModeWithUrl('active')}>
-                  实例列表
-                </button>
-                <button type="button" aria-pressed={listMode === 'history'} onClick={() => setListModeWithUrl('history')}>
-                  实例历史
-                </button>
-              </div>
-
-              <button
-                type="button"
-                className="template-workbench-primary-action"
-                onClick={openCreateDialog}
-                disabled={!canProvision || !enabledPlatformImages.length}
-              >
-                创建实例
-              </button>
-            </div>
-          </div>
-          {hasLoadedPlatformImages && !enabledPlatformImages.length ? (
-            <p className="admin-empty">请先前往镜像中心收录或启用至少一个平台镜像。</p>
-          ) : null}
-
-          {isBootstrapLoading ? (
-            listMode === 'active' ? (
-              <div className="single-instance-batch-section">
-                <div className="single-instance-batch-header">
-                  <div></div>
-                  <div>批次名</div>
-                  <div>镜像</div>
-                  <div>数量</div>
-                  <div>状态汇总</div>
-                  <div>创建时间</div>
-                  <div>到期时间</div>
-                  <div>创建人</div>
-                  <div>批量操作</div>
-                </div>
-                <div className="admin-workbench-empty" aria-hidden="true" />
-              </div>
-            ) : (
-              <div className="admin-workbench-empty" aria-hidden="true" />
-            )
-          ) : hasVisibleContent ? (
-            <>
-              {pagedBatchGroups.length > 0 ? (
-                <div className="single-instance-batch-section">
-                  <div className={`single-instance-batch-header${listMode === 'history' ? ' is-history' : ''}`}>
-                    <div></div>
-                    <div>批次名</div>
-                    <div>镜像</div>
-                    <div>数量</div>
-                    <div>{listMode === 'history' ? '结果汇总' : '状态汇总'}</div>
-                    <div>创建时间</div>
-                    <div>{listMode === 'history' ? '结束时间' : '到期时间'}</div>
-                    <div>创建人</div>
-                    {listMode === 'history' ? null : <div>批量操作</div>}
-                  </div>
-                  {pagedBatchGroups.map((group) => {
-                    const isExpanded = expandedBatchIds.includes(group.batch.id);
-                    const isHistoryGroup = isHistoryBatch(group);
-                    const batchEndedAt = isHistoryGroup ? getBatchHistoryEndedAt(group) : group.batch.expiresAt;
-
-                    return (
-                      <div key={group.batch.id} className="single-instance-batch-card">
-                        <div className={`single-instance-batch-row${isHistoryGroup ? ' is-history' : ''}`}>
-                          <button
-                            type="button"
-                            className="single-instance-batch-toggle"
-                            aria-label={`展开批次 ${group.batch.name}`}
-                            onClick={() =>
-                              setExpandedBatchIds((current) =>
-                                current.includes(group.batch.id)
-                                  ? current.filter((id) => id !== group.batch.id)
-                                  : [...current, group.batch.id],
-                              )
-                            }
-                          >
-                            {isExpanded ? '−' : '+'}
-                          </button>
-                          <div className="range-workbench-main">
-                            <strong>{group.batch.name}</strong>
-                          </div>
-                          <div className="range-workbench-main">
-                            <span>{group.batch.imageDisplayName}</span>
-                          </div>
-                          <div className="range-workbench-main">
-                            <span>{group.instances.length}</span>
-                          </div>
-                          <div className="range-workbench-main">
-                            <span>{formatBatchSummary(group.instances)}</span>
-                          </div>
-                          <div className="range-workbench-created-at">
-                            <span>{formatDateTime(group.batch.createdAt)}</span>
-                          </div>
-                          <div className="range-workbench-created-at">
-                            <span>{formatDateTime(batchEndedAt)}</span>
-                          </div>
-                          <div className="range-workbench-main">
-                            <span>{group.batch.createdBy?.trim() || 'admin'}</span>
-                          </div>
-                          {!isHistoryGroup ? (
-                            <div className="single-instance-batch-actions">
-                              <button type="button" onClick={() => handleBatchExport(group)}>
-                                一键导出
-                              </button>
-                              <button type="button" onClick={() => void handleBatchDestroy(group.batch.id)}>
-                                一键关闭
-                              </button>
-                            </div>
-                          ) : null}
-                        </div>
-                        {isExpanded ? (
-                          <div className="single-instance-batch-children">
-                            <div className={`single-instance-batch-child-head${isHistoryGroup ? ' is-history' : ''}`}>
-                              <div>实例名</div>
-                              <div>规格</div>
-                              <div>公网 IP</div>
-                              <div>账号/密码</div>
-                              <div>状态</div>
-                              {isHistoryGroup ? null : <div className="single-instance-batch-child-action-head">操作</div>}
-                            </div>
-                            {group.instances.map((instance) => {
-                              const actions = getAvailableActions(instance.status).filter(
-                                (action) => action !== 'pack-image' || group.batch.quantity <= 1,
-                              );
-                              const inlineActions = actions.filter(isPrimaryInlineAction);
-                              const menuActions = actions.filter((action) => !isPrimaryInlineAction(action));
-                              const isActionPending = pendingActionInstanceId === instance.id;
-
-                              return (
-                                <div
-                                  key={instance.id}
-                                  className={`single-instance-batch-child-row${isHistoryGroup ? ' is-history' : ''}${menuInstanceId === instance.id ? ' is-menu-open' : ''}`}
-                                >
-                                  <div className="range-workbench-main">
-                                    <strong>{instance.name?.trim() || instance.id}</strong>
-                                  </div>
-                                  <div className="range-workbench-main">
-                                    <span>{getSpecLabel(instance)}</span>
-                                  </div>
-                                  <div className="range-workbench-main">
-                                    <span>{getPublicIp(instance)}</span>
-                                  </div>
-                                  <div className="single-instance-credential-cell">
-                                    <span className="single-instance-credential-mask">{formatMaskedCredential(instance)}</span>
-                                    <span className="single-instance-credential-tooltip">{formatFullCredential(instance)}</span>
-                                    <button
-                                      type="button"
-                                      aria-label="复制密码"
-                                      className={`single-instance-copy-button${copiedPasswordInstanceId === instance.id ? ' is-copied' : ''}`}
-                                      onClick={() => void handleCopyPassword(instance)}
-                                    >
-                                      {copiedPasswordInstanceId === instance.id ? '已复制' : '复制'}
-                                    </button>
-                                  </div>
-                                  <div className="range-workbench-main">
-                                    <span className={`template-workbench-status-pill ${getStatusTone(instance.status)}`}>
-                                      {getStatusLabel(instance.status)}
-                                    </span>
-                                  </div>
-                                  {!isHistoryGroup ? (
-                                    <div className="single-instance-batch-child-actions">
-                                      {inlineActions.map((action) => (
-                                        <button key={action} type="button" disabled={isActionPending} onClick={() => void handleAction(instance, action)}>
-                                          {getActionLabel(action, instance.status)}
-                                        </button>
-                                      ))}
-                                      {menuActions.length ? (
-                                        <div className="template-workbench-row-menu">
-                                          <button
-                                            type="button"
-                                            disabled={isActionPending}
-                                            onClick={(event) => toggleActionMenu(instance.id, event.currentTarget)}
-                                          >
-                                            更多操作
-                                          </button>
-                                          {menuInstanceId === instance.id ? (
-                                            <div className={`template-workbench-action-menu${menuPlacement === 'up' ? ' is-upward' : ''}`}>
-                                              {menuActions.map((action) => (
-                                                <button key={action} type="button" disabled={isActionPending} onClick={() => void handleAction(instance, action)}>
-                                                  {getActionLabel(action, instance.status)}
-                                                </button>
-                                              ))}
-                                            </div>
-                                          ) : null}
-                                        </div>
-                                      ) : null}
-                                    </div>
-                                  ) : null}
-                                </div>
-                              );
-                            })}
-                          </div>
-                        ) : null}
-                      </div>
-                    );
-                  })}
-                </div>
-              ) : null}
-
-              {pagedInstances.length > 0 ? (
-                <>
-                {listMode === 'history' ? (
-                  <div className="single-instance-history-column-head">
-                    <div className="template-workbench-column-cell"><strong>实例名</strong></div>
-                    <div className="template-workbench-column-cell"><strong>创建人</strong></div>
-                    <div className="template-workbench-column-cell"><strong>镜像</strong></div>
-                    <div className="template-workbench-column-cell"><strong>规格</strong></div>
-                    <div className="template-workbench-column-cell"><strong>公网 IP</strong></div>
-                    <div className="template-workbench-column-cell"><strong>开启时间</strong></div>
-                    <div className="template-workbench-column-cell"><strong>回收时间</strong></div>
-                    <div className="template-workbench-column-cell"><strong>运行时长</strong></div>
-                  </div>
-                ) : (
-                  <div className="single-instance-workbench-column-head">
-                    <div className="template-workbench-column-cell"><strong>实例名</strong></div>
-                    <div className="template-workbench-column-cell"><strong>镜像</strong></div>
-                    <div className="template-workbench-column-cell"><strong>规格</strong></div>
-                    <div className="template-workbench-column-cell"><strong>公网 IP</strong></div>
-                    <div className="template-workbench-column-cell"><strong>状态</strong></div>
-                    <div className="template-workbench-column-cell"><strong>创建时间</strong></div>
-                    <div className="template-workbench-column-cell"><strong>到期时间</strong></div>
-                    <div className="template-workbench-column-cell"><strong>创建人</strong></div>
-                    <div className="template-workbench-column-cell"><strong>账号/密码</strong></div>
-                    <div className="template-workbench-column-cell workbench-action-cell"><strong>操作</strong></div>
-                  </div>
-                )}
-                <div className="range-workbench-rows">
-              {pagedInstances.map((instance) => {
-                const isHistory = listMode === 'history';
-                const lifecycle = lifecycleByInstanceId.get(instance.id);
-                const startedAt =
-                  readJobTimestamp(lifecycle?.createJob, 'start') ??
-                  instance.createdAt ??
-                  null;
-                const endedAt =
-                  readJobTimestamp(lifecycle?.destroyJob, 'end') ??
-                  null;
-                const actions = getAvailableActions(instance.status);
-                const inlineActions = actions.filter(isPrimaryInlineAction);
-                const menuActions = actions.filter((action) => !isPrimaryInlineAction(action));
-                const isActionPending = pendingActionInstanceId === instance.id;
-                return (
-                  <article
-                    key={instance.id}
-                    className={
-                      isHistory
-                        ? `single-instance-history-row${menuInstanceId === instance.id ? ' is-menu-open' : ''}`
-                        : `single-instance-workbench-row${menuInstanceId === instance.id ? ' is-menu-open' : ''}`
-                    }
-                  >
-                    <div className="range-workbench-main">
-                      <strong>{instance.name?.trim() || instance.id}</strong>
-                    </div>
-                    {isHistory ? (
-                      <div className="range-workbench-main">
-                        <span>{instance.createdBy?.trim() || 'admin'}</span>
-                      </div>
-                    ) : null}
-                    <div className="range-workbench-main">
-                      <span>{getImageLabel(instance)}</span>
-                    </div>
-                    <div className="range-workbench-main">
-                      <span>{getSpecLabel(instance)}</span>
-                    </div>
-                    <div className="range-workbench-main">
-                      <span>{getPublicIp(instance)}</span>
-                    </div>
-                    {isHistory ? (
-                      <>
-                        <div className="range-workbench-created-at">
-                          <span>{formatDateTime(startedAt)}</span>
-                        </div>
-                        <div className="range-workbench-created-at">
-                          <span>{formatDateTime(endedAt)}</span>
-                        </div>
-                        <div className="range-workbench-created-at">
-                          <span>{formatDuration(startedAt, endedAt)}</span>
-                        </div>
-                      </>
-                    ) : (
-                      <>
-                        <div className="template-workbench-status">
-                          <span className={`template-workbench-status-pill ${getStatusTone(instance.status)}`}>
-                            {getStatusLabel(instance.status)}
-                          </span>
-                        </div>
-                        <div className="range-workbench-created-at">
-                          <span>{formatDateTime(instance.createdAt)}</span>
-                        </div>
-                        <div className="range-workbench-created-at">
-                          <span>{formatDateTime(instance.expiresAt)}</span>
-                        </div>
-                        <div className="range-workbench-main">
-                          <span>{instance.createdBy?.trim() || '暂无'}</span>
-                        </div>
-                        <div className="single-instance-credential-cell">
-                          <span className="single-instance-credential-mask">{formatMaskedCredential(instance)}</span>
-                          <span className="single-instance-credential-tooltip">{formatFullCredential(instance)}</span>
-                          <button
-                            type="button"
-                            aria-label="复制密码"
-                            className={`single-instance-copy-button${copiedPasswordInstanceId === instance.id ? ' is-copied' : ''}`}
-                            onClick={() => void handleCopyPassword(instance)}
-                          >
-                            {copiedPasswordInstanceId === instance.id ? '已复制' : '复制'}
-                          </button>
-                        </div>
-                      </>
-                    )}
-                    {!isHistory ? (
-                      <div className="template-workbench-row-menu range-workbench-actions workbench-action-cell">
-                        {actions.length ? (
-                          <>
-                            {inlineActions.map((action) => (
-                              <button key={action} type="button" disabled={isActionPending} onClick={() => void handleAction(instance, action)}>
-                                {getActionLabel(action, instance.status)}
-                              </button>
-                            ))}
-                            {menuActions.length ? (
-                              <>
-                                <button
-                                  type="button"
-                                  disabled={isActionPending}
-                                  onClick={(event) => toggleActionMenu(instance.id, event.currentTarget)}
-                                >
-                                  更多操作
-                                </button>
-                                {menuInstanceId === instance.id ? (
-                                  <div className={`template-workbench-action-menu${menuPlacement === 'up' ? ' is-upward' : ''}`}>
-                                    {menuActions.map((action) => (
-                                      <button key={action} type="button" disabled={isActionPending} onClick={() => void handleAction(instance, action)}>
-                                        {getActionLabel(action, instance.status)}
-                                      </button>
-                                    ))}
-                                  </div>
-                                ) : null}
-                              </>
-                            ) : null}
-                          </>
-                        ) : null}
-                      </div>
-                    ) : null}
-                  </article>
-                );
-              })}
-                </div>
-                </>
-              ) : null}
-            </>
-          ) : (
-            <div className="template-workbench-empty">
-              <strong>{listMode === 'history' ? '暂无实例历史' : '暂无实例'}</strong>
-            </div>
-          )}
-          {hasVisibleContent ? (
-            <AdminPaginationControls
-              label={`${listMode === 'history' ? '实例历史' : '实例列表'} 分页`}
-              pageSize={pageSize}
-              pagination={activePagination}
-              visiblePages={visiblePages}
-              jumpPageValue={jumpPageValue}
-              onPageSizeChange={handlePageSizeChange}
-              onPreviousPage={() =>
-                setListPages((current) => ({
-                  ...current,
-                  [listMode]: activePagination.page - 1,
-                }))
-              }
-              onNextPage={() =>
-                setListPages((current) => ({
-                  ...current,
-                  [listMode]: activePagination.page + 1,
-                }))
-              }
-              onPageSelect={(pageNumber) =>
-                setListPages((current) => ({
-                  ...current,
-                  [listMode]: pageNumber,
-                }))
-              }
-              onJumpPageValueChange={setJumpPageValue}
-              onJumpPage={handleJumpToPage}
-            />
-          ) : null}
-        </article>
-      </section>
-      ) : null}
-
-      {isCreateOpen ? (
-        <SingleInstanceDialog
+        <SingleInstanceDialog open={isCreateOpen}
+          size="wide"
           footer={
             <>
               <Button disabled={isSubmitting} type="button" variant="outline" onClick={() => setIsCreateOpen(false)}>
@@ -2240,147 +1789,42 @@ export function SingleInstancesScreen({
           title="创建实例"
           onClose={() => setIsCreateOpen(false)}
         >
-          <form id="single-instance-create-form" onSubmit={handleCreateSubmit}>
-            <div className="single-instance-dialog-body">
-              <div className="single-instance-dialog-grid">
-                <div className="single-instance-form-row single-instance-form-row-full">
-                  <label className="single-instance-form-label" htmlFor="single-instance-name">
-                    实例名
-                  </label>
-                  <div className="single-instance-form-control">
-                    <input autoFocus id="single-instance-name" aria-label="实例名" value={createForm.name} onChange={(event) => updateCreateForm('name', event.target.value)} required />
-                  </div>
-                </div>
-
-                <div className="single-instance-form-row single-instance-form-row-full">
-                  <label className="single-instance-form-label" htmlFor="single-instance-host-name">
-                    主机名
-                  </label>
-                  <div className="single-instance-form-control">
-                    <input id="single-instance-host-name" aria-label="主机名" value={createForm.hostName} onChange={(event) => updateCreateForm('hostName', event.target.value)} />
-                  </div>
-                </div>
-
-                <div className="single-instance-form-row single-instance-form-row-full">
-                  <label className="single-instance-form-label" htmlFor="single-instance-image">
-                    镜像
-                  </label>
-                  <div className="single-instance-form-control">
-                    <input
-                      id="single-instance-image"
-                      aria-label="镜像"
-                      list="single-instance-platform-images"
-                      value={createForm.platformImageQuery}
-                      onChange={(event) => updateCreateForm('platformImageQuery', event.target.value)}
-                      placeholder="搜索或选择平台镜像"
-                      disabled={!enabledPlatformImages.length}
-                    />
-                    <datalist id="single-instance-platform-images">
-                      {enabledPlatformImages.map((item) => (
-                        <option key={item.id} value={buildPlatformImageOptionLabel(item)} />
-                      ))}
-                    </datalist>
-                  </div>
-                </div>
-
-                <div className="single-instance-form-row single-instance-form-row-full">
-                  <span className="single-instance-form-label">CPU/内存</span>
-                  <div className="single-instance-inline-grid">
-                    <div className="single-instance-inline-field">
-                      <input aria-label="CPU" type="number" min="1" value={createForm.cpu} onChange={(event) => updateCreateForm('cpu', event.target.value)} required />
-                      <span className="single-instance-inline-unit">核</span>
-                    </div>
-                    <div className="single-instance-inline-field">
-                      <input aria-label="内存" type="number" min="1" value={createForm.memory} onChange={(event) => updateCreateForm('memory', event.target.value)} required />
-                      <span className="single-instance-inline-unit">G</span>
-                    </div>
-                  </div>
-                </div>
-
-                <div className="single-instance-form-row single-instance-form-row-full">
-                  <label className="single-instance-form-label" htmlFor="single-instance-disk">
-                    磁盘大小
-                  </label>
-                  <div className="single-instance-inline-field single-instance-form-control">
-                    <input
-                      id="single-instance-disk"
-                      aria-label="磁盘大小"
-                      type="number"
-                      min={minimumSystemDiskSize(workspace?.provider ?? 'alibaba_cloud', findPlatformImageAsset(createForm.platformImageQuery, enabledPlatformImages))}
-                      value={createForm.systemDiskSize}
-                      onChange={(event) => updateCreateForm('systemDiskSize', event.target.value)}
-                    />
-                    <span className="single-instance-inline-unit">G</span>
-                  </div>
-                </div>
-
-                <div className="single-instance-form-row single-instance-form-row-full">
-                  <label className="single-instance-form-label" htmlFor="single-instance-quantity">
-                    启动数量
-                  </label>
-                  <div className="single-instance-form-control">
-                    <input
-                      id="single-instance-quantity"
-                      aria-label="启动实例数量"
-                      type="number"
-                      min="1"
-                      max="99"
-                      value={createForm.quantity}
-                      onChange={(event) => updateCreateForm('quantity', event.target.value)}
-                      required
-                    />
-                  </div>
-                </div>
-
-                <div className="single-instance-form-row single-instance-form-row-full">
-                  <label className="single-instance-form-label" htmlFor="single-instance-expire">
-                    到期时间
-                  </label>
-                  <div className="single-instance-form-control">
-                    <input
-                      id="single-instance-expire"
-                      aria-label="到期时间"
-                      type="datetime-local"
-                      value={createForm.expiresAt}
-                      onChange={(event) => updateCreateForm('expiresAt', event.target.value)}
-                      required
-                    />
-                    {workspace?.provider === 'tencent_cloud' ? <p className="text-sm text-muted-foreground">到期时间至少在 10 分钟后。</p> : null}
-                  </div>
-                </div>
-
-                <div className="single-instance-form-row single-instance-form-row-full">
-                  <label className="single-instance-form-label" htmlFor="single-instance-password">
-                    密码
-                  </label>
-                  <div className="single-instance-form-control">
-                    <input id="single-instance-password" aria-label="密码" type="password" value={createForm.password} onChange={(event) => updateCreateForm('password', event.target.value)} />
-                  </div>
-                </div>
-
-                <div className="single-instance-form-row single-instance-form-row-full single-instance-form-row-textarea">
-                  <label className="single-instance-form-label" htmlFor="single-instance-remark">
-                    备注
-                  </label>
-                  <div className="single-instance-form-control">
-                    <textarea id="single-instance-remark" aria-label="备注" value={createForm.remark} onChange={(event) => updateCreateForm('remark', event.target.value)} rows={3} />
-                  </div>
-                </div>
-
-                {createFormError ? <p className="admin-error single-instance-form-message">{createFormError}</p> : null}
-                {!enabledPlatformImages.length ? (
-                  <p className="admin-empty single-instance-form-message">请先前往镜像中心收录或启用平台镜像后，再创建实例。</p>
-                ) : null}
-                {instanceTypeAvailability && !instanceTypeAvailability.exactAvailable ? (
-                  <p className="admin-empty single-instance-form-message">
-                    {instanceTypeAvailability.warning ?? `默认可用区暂无 ${createForm.cpu} 核 / ${createForm.memory} G 的精确可售规格。`}
-                  </p>
-                ) : null}
+          <form id="single-instance-create-form" className="grid gap-3 sm:grid-cols-6" aria-label="创建实例表单" aria-busy={isSubmitting} onSubmit={handleCreateSubmit}>
+            <AdminFormField className="sm:col-span-3" label="实例名" htmlFor="single-instance-name" required>
+              <Input autoFocus id="single-instance-name" aria-label="实例名" placeholder="例如：训练环境" value={createForm.name} onChange={(event) => updateCreateForm('name', event.target.value)} required />
+            </AdminFormField>
+            <AdminFormField className="sm:col-span-3" label="主机名" htmlFor="single-instance-host-name">
+              <Input id="single-instance-host-name" aria-label="主机名" placeholder="可选，使用镜像默认值" value={createForm.hostName} onChange={(event) => updateCreateForm('hostName', event.target.value)} />
+            </AdminFormField>
+            <AdminFormField className="sm:col-span-6" label="镜像" htmlFor="single-instance-image" required>
+              <Combobox id="single-instance-image" ariaLabel="镜像" options={enabledPlatformImages.map((image) => ({ value: buildPlatformImageOptionLabel(image), label: image.displayName, description: image.imageId }))} value={createForm.platformImageQuery} onValueChange={(value) => updateCreateForm('platformImageQuery', value)} placeholder="搜索或选择平台镜像" disabled={!enabledPlatformImages.length} required />
+            </AdminFormField>
+            <AdminFormField className="sm:col-span-2" label="CPU / 内存" required>
+              <div className="grid grid-cols-2 gap-2">
+                <div className="relative"><Input className="pr-8" aria-label="CPU" type="number" min="1" value={createForm.cpu} onChange={(event) => updateCreateForm('cpu', event.target.value)} required /><span className="pointer-events-none absolute top-2 right-3 text-xs text-muted-foreground">核</span></div>
+                <div className="relative"><Input className="pr-8" aria-label="内存" type="number" min="1" value={createForm.memory} onChange={(event) => updateCreateForm('memory', event.target.value)} required /><span className="pointer-events-none absolute top-2 right-3 text-xs text-muted-foreground">G</span></div>
               </div>
-            </div>
+            </AdminFormField>
+            <AdminFormField className="sm:col-span-2" label="磁盘大小" htmlFor="single-instance-disk">
+              <div className="relative"><Input className="pr-8" id="single-instance-disk" aria-label="磁盘大小" type="number" min={minimumSystemDiskSize(workspace?.provider ?? 'alibaba_cloud', findPlatformImageAsset(createForm.platformImageQuery, enabledPlatformImages))} value={createForm.systemDiskSize} onChange={(event) => updateCreateForm('systemDiskSize', event.target.value)} /><span className="pointer-events-none absolute top-2 right-3 text-xs text-muted-foreground">G</span></div>
+            </AdminFormField>
+            <AdminFormField className="sm:col-span-2" label="启动数量" htmlFor="single-instance-quantity" required>
+              <Input id="single-instance-quantity" aria-label="启动实例数量" type="number" min="1" max="99" value={createForm.quantity} onChange={(event) => updateCreateForm('quantity', event.target.value)} required />
+            </AdminFormField>
+            <AdminFormField className="sm:col-span-3" label="到期时间" htmlFor="single-instance-expire" required hint={workspace?.provider === 'tencent_cloud' ? '到期时间至少在 10 分钟后。' : undefined}>
+              <DateTimePicker id="single-instance-expire" aria-label="到期时间" value={createForm.expiresAt} onValueChange={(value) => updateCreateForm('expiresAt', value)} required />
+            </AdminFormField>
+            <AdminFormField className="sm:col-span-3" label="密码" htmlFor="single-instance-password" hint="留空时，为每台实例生成独立随机密码。">
+              <Input id="single-instance-password" aria-label="密码" autoComplete="new-password" type="password" value={createForm.password} onChange={(event) => updateCreateForm('password', event.target.value)} />
+            </AdminFormField>
+            <AdminFormField className="sm:col-span-6" label="备注" htmlFor="single-instance-remark">
+              <Textarea className="min-h-14" id="single-instance-remark" aria-label="备注" placeholder="可选，填写用途或备注" value={createForm.remark} onChange={(event) => updateCreateForm('remark', event.target.value)} rows={2} />
+            </AdminFormField>
+            {createFormError ? <p className="text-sm text-destructive sm:col-span-6" role="alert">{createFormError}</p> : null}
+            {!enabledPlatformImages.length ? <p className="text-xs text-muted-foreground sm:col-span-6">请先前往镜像中心收录或启用平台镜像后，再创建实例。</p> : null}
+            {instanceTypeAvailability && !instanceTypeAvailability.exactAvailable ? <p className="text-xs text-muted-foreground sm:col-span-6">{instanceTypeAvailability.warning ?? `默认可用区暂无 ${createForm.cpu} 核 / ${createForm.memory} G 的精确可售规格。`}</p> : null}
           </form>
         </SingleInstanceDialog>
-      ) : null}
 
       {packImageDialog ? (
         <SingleInstanceDialog
@@ -2409,7 +1853,7 @@ export function SingleInstancesScreen({
                   镜像名
                 </label>
                 <div className="single-instance-form-control">
-                  <input
+                  <Input
                     autoFocus
                     id="single-instance-pack-image-name"
                     aria-label="镜像名"
@@ -2433,7 +1877,7 @@ export function SingleInstancesScreen({
                   默认主机名
                 </label>
                 <div className="single-instance-form-control">
-                  <input
+                  <Input
                     id="single-instance-pack-image-hostname"
                     aria-label="默认主机名"
                     placeholder="留空则使用当前主机名"
@@ -2457,7 +1901,7 @@ export function SingleInstancesScreen({
                   默认密码
                 </label>
                 <div className="single-instance-form-control">
-                  <input
+                  <Input
                     id="single-instance-pack-image-password"
                     aria-label="默认密码"
                     placeholder="留空则随机生成"
@@ -2481,7 +1925,7 @@ export function SingleInstancesScreen({
                   镜像备注
                 </label>
                 <div className="single-instance-form-control">
-                  <input
+                  <Input
                     id="single-instance-pack-image-description"
                     aria-label="镜像备注"
                     placeholder="选填"

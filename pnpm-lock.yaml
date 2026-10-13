@@ -117,6 +117,9 @@ importers:
       '@dagrejs/dagre':
         specifier: ^3.0.0
         version: 3.0.0
+      '@daypicker/react':
+        specifier: 10.0.2
+        version: 10.0.2(@types/react@19.1.17)(react@19.1.1)
       '@xyflow/react':
         specifier: ^12.11.2
         version: 12.11.2(@types/react-dom@19.1.11(@types/react@19.1.17))(@types/react@19.1.17)(react-dom@19.1.1(react@19.1.1))(react@19.1.1)
@@ -439,6 +442,19 @@ packages:
 
   '@dagrejs/graphlib@4.0.1':
     resolution: {integrity: sha512-IvcV6FduIIAmLwnH+yun+QtV36SC7mERqa86aClNqmMN09WhmPPYU8ckHrZBozErf+UvHPWOTJYaGYiIcs0DgA==}
+
+  '@date-fns/tz@1.5.0':
+    resolution: {integrity: sha512-lwYN/vDPeNRULcepoE/LO2Pgx+7/RV+S9ARfbc9lr2DtGkOD7pAiruHvbR1RX3Qyf6ja47EWJDMsNK5vK08DJg==}
+
+  '@daypicker/react@10.0.2':
+    resolution: {integrity: sha512-Z/gvGXnc/xjRr5Z6l9OhIey00C7kwbIyJ85Pff9B9EWDkjTlkTQztB3qeylmGJDQ9xmxRJUV1W+02rskqarUBw==}
+    engines: {node: '>=18'}
+    peerDependencies:
+      '@types/react': '>=16.8.0'
+      react: '>=16.8.0'
+    peerDependenciesMeta:
+      '@types/react':
+        optional: true
 
   '@emnapi/core@1.10.0':
     resolution: {integrity: sha512-yq6OkJ4p82CAfPl0u9mQebQHKPJkY7WrIuk205cTYnYe+k2Z8YBh11FrbRG/H6ihirqcacOgl2BIO8oyMQLeXw==}
@@ -2822,6 +2838,9 @@ packages:
     resolution: {integrity: sha512-ZYP5VBHshaDAiVZxjbRVcFJpc+4xGgT0bK3vzy1HLN8jTO975HEbuYzZJcHoQEY5K1a0z8YayJkyVETa08eNTg==}
     engines: {node: '>=18'}
 
+  date-fns@4.4.0:
+    resolution: {integrity: sha512-+1UMbeh68lH1SegH83CGWwpb6OHHbpSgr3+s5Eww5M4CAgswBpoWS0AjTOfEJ33HiYKz1hdj/KTFprzXHmq/6w==}
+
   debug@4.4.3:
     resolution: {integrity: sha512-RGwwWnwQvkVfavKVt22FGLw+xYSdzARwm0ru6DhTVA3umU5hZc28V3kO4stgYryrTlLpuvgI9GiijltAjNbcqA==}
     engines: {node: '>=6.0'}
@@ -3933,6 +3952,16 @@ packages:
   rc9@2.1.2:
     resolution: {integrity: sha512-btXCnMmRIBINM2LDZoEmOogIZU7Qe7zn4BpomSKZ/ykbLObuBdvG+mFq11DL6fjH1DRwHhrlgtYWG96bJiC7Cg==}
 
+  react-day-picker@10.0.2:
+    resolution: {integrity: sha512-QetiKtZWE9Uaw/pM/SYNv6WPYOTRnSJ2puL0GgwkmUFMIwiY0dtjH1W4B7DOVXVNQM0ZOClGpH/heOfBSzWeiA==}
+    engines: {node: '>=18'}
+    peerDependencies:
+      '@types/react': '>=16.8.0'
+      react: '>=16.8.0'
+    peerDependenciesMeta:
+      '@types/react':
+        optional: true
+
   react-dom@19.1.1:
     resolution: {integrity: sha512-Dlq/5LAZgF0Gaz6yiqZCf6VCcZs1ghAJyrsu84Q/GT0gV+mCxbfmKNoGRKBYMJ8IEdGPqu49YWXD02GCknEDkw==}
     peerDependencies:
@@ -4855,6 +4884,15 @@ snapshots:
       '@dagrejs/graphlib': 4.0.1
 
   '@dagrejs/graphlib@4.0.1': {}
+
+  '@date-fns/tz@1.5.0': {}
+
+  '@daypicker/react@10.0.2(@types/react@19.1.17)(react@19.1.1)':
+    dependencies:
+      react: 19.1.1
+      react-day-picker: 10.0.2(@types/react@19.1.17)(react@19.1.1)
+    optionalDependencies:
+      '@types/react': 19.1.17
 
   '@emnapi/core@1.10.0':
     dependencies:
@@ -7109,6 +7147,8 @@ snapshots:
       whatwg-mimetype: 4.0.0
       whatwg-url: 14.2.0
 
+  date-fns@4.4.0: {}
+
   debug@4.4.3:
     dependencies:
       ms: 2.1.3
@@ -8419,6 +8459,14 @@ snapshots:
     dependencies:
       defu: 6.1.7
       destr: 2.0.5
+
+  react-day-picker@10.0.2(@types/react@19.1.17)(react@19.1.1):
+    dependencies:
+      '@date-fns/tz': 1.5.0
+      date-fns: 4.4.0
+      react: 19.1.1
+    optionalDependencies:
+      '@types/react': 19.1.17
 
   react-dom@19.1.1(react@19.1.1):
     dependencies:

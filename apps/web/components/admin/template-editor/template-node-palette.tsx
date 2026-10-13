@@ -1,5 +1,7 @@
 'use client';
 
+import { Button } from '@/components/ui/button';
+
 import React from 'react';
 
 const HOST_NODE_TYPES = [
@@ -26,7 +28,7 @@ export function TemplateNodePalette({ onAddNode }: TemplateNodePaletteProps) {
         <div className="template-node-group">
           <strong className="template-node-group-title">主机设备</strong>
           {HOST_NODE_TYPES.map((nodeType) => (
-            <button
+            <Button variant="ghost"
               key={nodeType.key}
               type="button"
               className="template-node-card"
@@ -43,13 +45,13 @@ export function TemplateNodePalette({ onAddNode }: TemplateNodePaletteProps) {
                 <strong>{nodeType.label}</strong>
                 <span>{nodeType.description}</span>
               </span>
-            </button>
+            </Button>
           ))}
         </div>
         <div className="template-node-group">
           <strong className="template-node-group-title">网络设备</strong>
           {NETWORK_NODE_TYPES.map((nodeType) => (
-            <button
+            <Button variant="ghost"
               key={nodeType.key}
               type="button"
               className="template-node-card"
@@ -66,7 +68,7 @@ export function TemplateNodePalette({ onAddNode }: TemplateNodePaletteProps) {
                 <strong>{nodeType.label}</strong>
                 <span>{nodeType.description}</span>
               </span>
-            </button>
+            </Button>
           ))}
         </div>
       </div>

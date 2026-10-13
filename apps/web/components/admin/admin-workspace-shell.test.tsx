@@ -360,6 +360,7 @@ describe('AdminWorkspaceShell', () => {
       '/admin/users',
       '/admin/billing',
       '/admin/settings/cloud',
+      '/admin/resource-alerts',
     ]);
     expect(screen.getByText('admin / admin')).toBeTruthy();
     expect(screen.queryByText('运营后台')).toBeNull();

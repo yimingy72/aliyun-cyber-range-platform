@@ -1,6 +1,13 @@
 'use client';
 
-import React, { type ReactNode, createContext, useContext, useEffect, useRef, useState } from 'react';
+import { Input } from '@/components/ui/input';
+import { Checkbox } from '@/components/ui/checkbox';
+import { Label } from '@/components/ui/label';
+import { Combobox } from '@/components/ui/combobox';
+import { Textarea } from '@/components/ui/textarea';
+import { Button } from '@/components/ui/button';
+
+import React, { type ReactNode, createContext, useContext, useEffect, useId, useRef, useState } from 'react';
 import { PanelRightClose } from 'lucide-react';
 import { nextAvailableGraphId, validateAliyunEcsPassword } from '@aliyun-cyber-range/scenario-runtime';
 import type { InstanceTypeAvailabilitySnapshot, PlatformImageAsset } from '../../../lib/admin-types';
@@ -84,7 +91,7 @@ function DnsServerField({ servers, invalid, onChange }: { servers: string[]; inv
   useEffect(() => {
     setDraft((current) => JSON.stringify(parseMultiLineList(current)) === JSON.stringify(servers) ? current : formatMultiLineList(servers));
   }, [servers]);
-  return <textarea aria-label="DNS 服务器" aria-invalid={invalid} rows={3} placeholder={'10.0.50.10\n10.0.50.11'} value={draft}
+  return <Textarea aria-label="DNS 服务器" aria-invalid={invalid} rows={3} placeholder={'10.0.50.10\n10.0.50.11'} value={draft}
     onChange={(event) => { setDraft(event.target.value); onChange(parseMultiLineList(event.target.value)); }} />;
 }
 
@@ -152,13 +159,22 @@ function PropertyFields({ disabled = false, className = '', children }: { disabl
 }
 
 function PropertyField({ label, hint, className, children }: PropertyFieldProps) {
+  const generatedId = useId();
+  const child = React.isValidElement<{ id?: string }>(children) ? children : null;
+  const canLabel = child && (child.type === Input || child.type === Textarea);
+  const fieldId = canLabel ? child.props.id ?? generatedId : undefined;
   return (
-    <label className={className ? `template-property-field ${className}` : 'template-property-field'}>
-      <span className="template-property-field-label">{label}</span>
-      {children}
+    <div className={className ? `template-property-field ${className}` : 'template-property-field'}>
+      <Label className="template-property-field-label" htmlFor={fieldId}>{label}</Label>
+      {canLabel ? React.cloneElement(child, { id: fieldId }) : children}
       {hint ? <small className="template-property-field-hint">{hint}</small> : null}
-    </label>
+    </div>
   );
+}
+
+function PropertyCheckbox(props: React.ComponentProps<typeof Checkbox>) {
+  const inheritedDisabled = useContext(PropertyDisabledContext);
+  return <Checkbox {...props} disabled={props.disabled || inheritedDisabled} />;
 }
 
 function PropertySelect({
@@ -225,135 +241,25 @@ type TemplateImageComboboxProps = {
   onSelectImageAsset: (asset: PlatformImageAsset | null) => void;
 };
 
-function TemplateImageCombobox({
-  selectedImageAsset,
-  imageOptions,
-  onSelectImageAsset,
-}: TemplateImageComboboxProps) {
+function TemplateImageCombobox({ selectedImageAsset, imageOptions, onSelectImageAsset }: TemplateImageComboboxProps) {
   const disabled = useContext(PropertyDisabledContext);
   const [query, setQuery] = useState(selectedImageAsset?.displayName ?? '');
-  const [isOpen, setIsOpen] = useState(false);
-  const rootRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => { setQuery(selectedImageAsset?.displayName ?? ''); }, [selectedImageAsset?.displayName]);
 
-  useEffect(() => {
-    setQuery(selectedImageAsset?.displayName ?? '');
-  }, [selectedImageAsset?.displayName]);
-
-  useEffect(() => {
-    function handlePointerDown(event: MouseEvent) {
-      if (!rootRef.current?.contains(event.target as Node)) {
-        setIsOpen(false);
-      }
-    }
-
-    document.addEventListener('mousedown', handlePointerDown);
-    return () => {
-      document.removeEventListener('mousedown', handlePointerDown);
-    };
-  }, []);
-
-  const normalizedQuery = query.trim().toLowerCase();
-  const matchedOptions =
-    normalizedQuery.length === 0
-      ? []
-      : imageOptions.filter(
-          (item) =>
-            item.displayName.toLowerCase().includes(normalizedQuery) ||
-            item.imageId.toLowerCase().includes(normalizedQuery),
-        );
-  const exactMatchedOption =
-    normalizedQuery.length === 0
-      ? null
-      : imageOptions.find(
-          (item) =>
-            item.displayName.toLowerCase() === normalizedQuery ||
-            item.imageId.toLowerCase() === normalizedQuery,
-        ) ?? null;
-
-  function applySelection(asset: PlatformImageAsset | null) {
-    if (disabled) return;
-    onSelectImageAsset(asset);
-    setQuery(asset?.displayName ?? '');
-    setIsOpen(false);
-  }
-
-  return (
-    <div className="template-image-combobox" ref={rootRef}>
-      <input
-        aria-label="镜像名"
-        disabled={disabled}
-        aria-autocomplete="list"
-        aria-expanded={isOpen}
-        autoComplete="off"
-        className="template-image-combobox-input"
-        placeholder="请选择平台镜像"
-        role="combobox"
-        value={query}
-        onChange={(event) => {
-          if (disabled) return;
-          const nextValue = event.target.value;
-          setQuery(nextValue);
-          setIsOpen(nextValue.trim().length > 0);
-
-          const normalizedValue = nextValue.trim().toLowerCase();
-          const nextExactMatchedOption =
-            normalizedValue.length === 0
-              ? null
-              : imageOptions.find(
-                  (item) =>
-                    item.displayName.toLowerCase() === normalizedValue ||
-                    item.imageId.toLowerCase() === normalizedValue,
-                ) ?? null;
-
-          if (nextExactMatchedOption) {
-            onSelectImageAsset(nextExactMatchedOption);
-            return;
-          }
-
-          if (nextValue.trim().length === 0) {
-            onSelectImageAsset(null);
-          }
-        }}
-        onFocus={() => {
-          if (!disabled && query.trim().length > 0) {
-            setIsOpen(true);
-          }
-        }}
-        onKeyDown={(event) => {
-          if (event.key === 'Escape') {
-            setIsOpen(false);
-          }
-
-          if (event.key === 'Enter' && exactMatchedOption) {
-            event.preventDefault();
-            applySelection(exactMatchedOption);
-          }
-        }}
-      />
-
-      {!disabled && isOpen && matchedOptions.length > 0 ? (
-        <div className="template-image-combobox-list" role="listbox" aria-label="平台镜像候选列表">
-          {matchedOptions.slice(0, 8).map((item) => {
-            const isSelected = selectedImageAsset?.id === item.id;
-
-            return (
-              <button
-                key={item.id}
-                type="button"
-                className={isSelected ? 'template-image-combobox-option is-selected' : 'template-image-combobox-option'}
-                role="option"
-                aria-selected={isSelected}
-                onMouseDown={(event) => event.preventDefault()}
-                onClick={() => applySelection(item)}
-              >
-                <span>{item.displayName}</span>
-              </button>
-            );
-          })}
-        </div>
-      ) : null}
-    </div>
-  );
+  return <Combobox
+    ariaLabel="镜像名"
+    disabled={disabled}
+    placeholder="请选择平台镜像"
+    value={query}
+    selectedValue={selectedImageAsset?.id}
+    options={imageOptions.map((image) => ({ value: image.id, label: image.displayName, description: image.imageId }))}
+    onValueChange={(value) => {
+      const normalized = value.trim().toLowerCase();
+      const asset = imageOptions.find((image) => image.id === value || image.displayName.toLowerCase() === normalized || image.imageId.toLowerCase() === normalized);
+      setQuery(asset?.displayName ?? value);
+      if (asset || !normalized) onSelectImageAsset(asset ?? null);
+    }}
+  />;
 }
 
 type EcsCustomPasswordFieldProps = {
@@ -373,7 +279,7 @@ function EcsCustomPasswordField({ value, onChange }: EcsCustomPasswordFieldProps
   return (
     <PropertyField label="自定义密码" hint={hint} className="template-property-field-full">
       <div>
-        <input
+        <Input
           aria-label="自定义密码"
           autoComplete="new-password"
           type="text"
@@ -515,7 +421,7 @@ function renderHostFields(
         headClassName="template-property-group-head-badge"
       >
         <PropertyField label="名称">
-          <input
+          <Input
             aria-label="名称"
             value={selectedNode.label}
             onChange={(event) =>
@@ -528,7 +434,7 @@ function renderHostFields(
           />
         </PropertyField>
         <PropertyField label="主机名">
-          <input
+          <Input
             aria-label="主机名"
             value={selectedNode.hostName ?? ''}
             onChange={(event) =>
@@ -547,7 +453,7 @@ function renderHostFields(
           />
         </PropertyField>
         <PropertyField label="CPU">
-          <input
+          <Input
             aria-label="CPU"
             type="number"
             value={selectedNode.cpu ?? 1}
@@ -559,7 +465,7 @@ function renderHostFields(
           />
         </PropertyField>
         <PropertyField label="内存">
-          <input
+          <Input
             aria-label="内存"
             type="number"
             value={selectedNode.memory ?? 2}
@@ -589,9 +495,9 @@ function renderHostFields(
       <PropertyGroup
         title="网卡配置"
         action={
-          <button type="button" className="template-property-inline-button" disabled={options?.runtimeExistingNode} onClick={handleAddNic}>
+          <Button variant="ghost" type="button" className="template-property-inline-button" disabled={options?.runtimeExistingNode} onClick={handleAddNic}>
             添加网卡
-          </button>
+          </Button>
         }
       >
         {nicItems.map((nic, index) => {
@@ -614,14 +520,14 @@ function renderHostFields(
               <div className="template-property-card-head">
                 <strong className="template-property-card-title">网卡 {index + 1}</strong>
                 <div className="template-property-card-actions">
-                  <button
+                  <Button variant="ghost"
                     type="button"
                     className="template-property-inline-button"
                     onClick={() => handleAddNicSecurityRule(nic.id)}
                   >
                     添加安全规则
-                  </button>
-                  <button
+                  </Button>
+                  <Button variant="ghost"
                     type="button"
                     className="template-property-inline-button is-danger"
                     disabled={Boolean(options?.runtimeExistingNode) || nicItems.length <= 1}
@@ -629,7 +535,7 @@ function renderHostFields(
                     onClick={() => handleDeleteNic(nic.id)}
                   >
                     删除网卡
-                  </button>
+                  </Button>
                 </div>
               </div>
               <PropertyFields className="template-property-card-grid" disabled={options?.runtimeExistingNode}>
@@ -655,7 +561,7 @@ function renderHostFields(
                   />
                 </PropertyField>
                 <PropertyField label="私网 IP" hint={ipError ?? ipHint} className="template-property-field-full">
-                  <input
+                  <Input
                     aria-label={`私网 IP ${index + 1}`}
                     disabled={!selectedSwitch}
                     value={nic.privateIp}
@@ -678,7 +584,7 @@ function renderHostFields(
                   />
                 </PropertyField>
                 <PropertyField label="辅助 IP" hint={secondaryIpError ?? ipHint} className="template-property-field-full">
-                  <input
+                  <Input
                     aria-label={`辅助 IP ${index + 1}`}
                     disabled={!selectedSwitch}
                     value={nic.secondaryIps.join(',')}
@@ -705,7 +611,7 @@ function renderHostFields(
                   <div key={rule.key} className="template-property-card template-property-card-sub">
                 <div className="template-property-card-head">
                   <strong className="template-property-card-title">安全规则 {index + 1}-{ruleIndex + 1}</strong>
-                  <button
+                  <Button variant="ghost"
                     type="button"
                   className="template-property-inline-button is-danger"
                   aria-label={`删除安全规则 ${index + 1}-${ruleIndex + 1}`}
@@ -716,7 +622,7 @@ function renderHostFields(
                   }
                   >
                     删除
-                  </button>
+                  </Button>
                 </div>
                 <div className="template-property-card-grid">
                   <PropertyField label="方向">
@@ -760,7 +666,7 @@ function renderHostFields(
                     />
                   </PropertyField>
                   <PropertyField label="端口范围">
-                    <input
+                    <Input
                       aria-label={`安全端口 ${index + 1}-${ruleIndex + 1}`}
                       placeholder={getPortRangePlaceholder(rule.protocol)}
                       value={rule.portRange}
@@ -795,7 +701,7 @@ function renderHostFields(
                     />
                   </PropertyField>
                   <PropertyField label="安全优先级">
-                    <input
+                    <Input
                       aria-label={`安全优先级 ${index + 1}-${ruleIndex + 1}`}
                       type="number"
                       value={rule.priority}
@@ -811,7 +717,7 @@ function renderHostFields(
                     />
                   </PropertyField>
                   <PropertyField label="源网段">
-                    <input
+                    <Input
                       aria-label={`安全源网段 ${index + 1}-${ruleIndex + 1}`}
                       placeholder={SOURCE_CIDR_PLACEHOLDER}
                       value={rule.sourceCidr}
@@ -867,16 +773,15 @@ function renderHostFields(
           <fieldset className="grid min-w-0 gap-2 border-0 p-0">
             <legend className="template-property-field-label mb-1">作用网卡</legend>
             {nicItems.map((nic, index) => <label className="flex min-w-0 items-start gap-2 text-xs" key={nic.id}>
-              <input
+              <PropertyCheckbox
                 aria-label={`DNS 作用网卡 ${index + 1}`}
                 className="mt-0.5 shrink-0"
-                type="checkbox"
                 checked={selectedNode.dns!.nicIds.includes(nic.id)}
-                onChange={(event) => onUpdateNode(selectedNode.id, {
+                onCheckedChange={(checked) => onUpdateNode(selectedNode.id, {
                   ...selectedNode,
                   dns: {
                     ...selectedNode.dns!,
-                    nicIds: event.target.checked
+                    nicIds: checked === true
                       ? [...selectedNode.dns!.nicIds, nic.id]
                       : selectedNode.dns!.nicIds.filter((id) => id !== nic.id),
                   },
@@ -887,7 +792,7 @@ function renderHostFields(
             <small className="template-property-field-hint">默认作用于主网卡。未选择的网卡保留原 DNS。</small>
           </fieldset>
           <PropertyField label="验证域名（可选）" hint="填写 AD 域名时，额外检查域控 SRV 记录，例如 lab.example。">
-            <input aria-label="DNS 验证域名" placeholder="lab.example" value={selectedNode.dns.domain ?? ''}
+            <Input aria-label="DNS 验证域名" placeholder="lab.example" value={selectedNode.dns.domain ?? ''}
               onChange={(event) => onUpdateNode(selectedNode.id, {
                 ...selectedNode,
                 dns: { ...selectedNode.dns!, domain: event.target.value.trim() || undefined },
@@ -901,7 +806,7 @@ function renderHostFields(
 
       <PropertyGroup title="初始化脚本" disabled={options?.runtimeExistingNode}>
         <div className="template-property-field">
-          <textarea
+          <Textarea
             aria-label="初始化脚本"
             rows={4}
             value={selectedNode.initScript}
@@ -985,7 +890,7 @@ function renderSwitchFields(
         headClassName="template-property-group-head-badge"
       >
         <PropertyField label="名称">
-          <input
+          <Input
             aria-label="交换机名称"
             value={selectedNode.label}
             onChange={(event) =>
@@ -997,7 +902,7 @@ function renderSwitchFields(
           />
         </PropertyField>
         <PropertyField label="描述" className="template-property-field-switch-description-inline">
-          <textarea
+          <Textarea
             aria-label="描述"
             rows={3}
             placeholder="请输入描述"
@@ -1015,7 +920,7 @@ function renderSwitchFields(
       <PropertyGroup disabled={runtimeExistingNode} title="网段配置" formClassName="template-property-form">
         <div className="template-switch-cidr-field">
           <div className="template-switch-cidr-shell">
-            <input
+            <Input
               className="template-switch-cidr-octet"
               aria-label="CIDR 第一段"
               value={cidrParts.first}
@@ -1032,7 +937,7 @@ function renderSwitchFields(
               }
             />
             <span className="template-switch-cidr-separator">.</span>
-            <input
+            <Input
               className="template-switch-cidr-octet"
               aria-label="CIDR 第二段"
               value={cidrParts.second}
@@ -1049,7 +954,7 @@ function renderSwitchFields(
               }
             />
             <span className="template-switch-cidr-separator">.</span>
-            <input
+            <Input
               className="template-switch-cidr-octet"
               aria-label="CIDR 第三段"
               value={cidrParts.third}
@@ -1066,7 +971,7 @@ function renderSwitchFields(
               }
             />
             <span className="template-switch-cidr-separator">.</span>
-            <input
+            <Input
               className="template-switch-cidr-octet template-switch-cidr-octet-readonly"
               aria-label="CIDR 第四段"
               value="0"
@@ -1074,7 +979,7 @@ function renderSwitchFields(
               tabIndex={-1}
             />
             <span className="template-switch-cidr-slash">/</span>
-            <input
+            <Input
               className="template-switch-cidr-prefix"
               aria-label="CIDR 前缀"
               value={cidrParts.prefix}
@@ -1097,9 +1002,9 @@ function renderSwitchFields(
       <PropertyGroup
         title="ACL 配置"
         action={
-          <button type="button" className="template-property-inline-button" onClick={handleAddAclRule}>
+          <Button variant="ghost" type="button" className="template-property-inline-button" onClick={handleAddAclRule}>
             添加 ACL 规则
-          </button>
+          </Button>
         }
       >
         {aclRules.length === 0 ? <p className="template-property-empty-note">暂无 ACL 规则</p> : null}
@@ -1107,7 +1012,7 @@ function renderSwitchFields(
           <div key={rule.key} className="template-property-card">
             <div className="template-property-card-head">
               <strong className="template-property-card-title">ACL 规则 {index + 1}</strong>
-              <button
+              <Button variant="ghost"
                 type="button"
                 className="template-property-inline-button is-danger"
                 aria-label={`删除 ACL 规则 ${index + 1}`}
@@ -1119,7 +1024,7 @@ function renderSwitchFields(
                 }
               >
                 删除
-              </button>
+              </Button>
             </div>
             <div className="template-property-card-grid template-property-card-grid-compact">
               <PropertyField label="方向">
@@ -1161,7 +1066,7 @@ function renderSwitchFields(
                 />
               </PropertyField>
               <PropertyField label="端口范围">
-                <input
+                <Input
                   aria-label={`ACL 端口范围 ${index + 1}`}
                   placeholder={getPortRangePlaceholder(rule.protocol)}
                   value={rule.portRange}
@@ -1194,7 +1099,7 @@ function renderSwitchFields(
                 />
               </PropertyField>
               <PropertyField label="ACL 优先级">
-                <input
+                <Input
                   aria-label={`ACL 优先级 ${index + 1}`}
                   type="number"
                   value={rule.priority}
@@ -1209,7 +1114,7 @@ function renderSwitchFields(
                 />
               </PropertyField>
               <PropertyField label="源网段" className="template-property-field-full">
-                <input
+                <Input
                   aria-label={`ACL 源网段 ${index + 1}`}
                   placeholder={SOURCE_CIDR_PLACEHOLDER}
                   value={rule.sourceCidr}
@@ -1224,7 +1129,7 @@ function renderSwitchFields(
                 />
               </PropertyField>
               <PropertyField label="目标网段" className="template-property-field-full">
-                <input
+                <Input
                   aria-label={`ACL 目标网段 ${index + 1}`}
                   value={rule.destinationCidr ?? ''}
                   onChange={(event) =>
@@ -1245,20 +1150,19 @@ function renderSwitchFields(
       <PropertyGroup
         title="NAT 配置"
         action={
-          <button type="button" className="template-property-inline-button" onClick={handleAddDnatRule}>
+          <Button variant="ghost" type="button" className="template-property-inline-button" onClick={handleAddDnatRule}>
             添加 DNAT 规则
-          </button>
+          </Button>
         }
       >
         <label className="template-property-check template-property-check-card">
-          <input
-            type="checkbox"
+          <PropertyCheckbox aria-label="允许访问互联网（SNAT）"
             checked={selectedNode.nat?.snatEnabled ?? false}
-            onChange={(event) =>
+            onCheckedChange={(checked) =>
               onUpdateNode(selectedNode.id, {
                 ...selectedNode,
                 nat: {
-                  snatEnabled: event.target.checked,
+                  snatEnabled: checked === true,
                   dnatMappings: selectedNode.nat?.dnatMappings ?? [],
                 },
               })
@@ -1271,7 +1175,7 @@ function renderSwitchFields(
           <div key={mapping.key} className="template-property-card">
             <div className="template-property-card-head">
               <strong className="template-property-card-title">DNAT 规则 {index + 1}</strong>
-              <button
+              <Button variant="ghost"
                 type="button"
                 className="template-property-inline-button is-danger"
                 aria-label={`删除 DNAT 规则 ${index + 1}`}
@@ -1286,7 +1190,7 @@ function renderSwitchFields(
                 }
               >
                 删除
-              </button>
+              </Button>
             </div>
             <div className="template-property-card-grid template-property-card-grid-compact">
               <PropertyField label="目标主机" className="template-property-field-full">
@@ -1309,7 +1213,7 @@ function renderSwitchFields(
                 />
               </PropertyField>
               <PropertyField label="公网端口">
-                <input
+                <Input
                   aria-label={`DNAT 公网端口 ${index + 1}`}
                   aria-invalid={dnatPortConflictsByMappingKey.has(mapping.key)}
                   type="number"
@@ -1340,7 +1244,7 @@ function renderSwitchFields(
                 </p>
               ) : null}
               <PropertyField label="内网端口">
-                <input
+                <Input
                   aria-label={`DNAT 内网端口 ${index + 1}`}
                   type="number"
                   value={mapping.internalPort}
@@ -1402,7 +1306,7 @@ function renderRouterFields(
         headClassName="template-property-group-head-badge"
       >
         <PropertyField label="名称">
-          <input
+          <Input
             aria-label="名称"
             value={selectedNode.label}
             onChange={(event) =>
@@ -1414,7 +1318,7 @@ function renderRouterFields(
           />
         </PropertyField>
         <PropertyField label="描述" className="template-property-field-switch-description-inline">
-          <textarea
+          <Textarea
             aria-label="路由描述"
             rows={3}
             placeholder="请输入描述"
@@ -1505,7 +1409,7 @@ export function TemplatePropertyPanel({
       <div className="admin-section-header template-property-panel-header">
         <h2>属性面板</h2>
         {onClose ? (
-          <button
+          <Button variant="ghost"
             aria-label="收起节点属性"
             className="template-property-panel-close"
             onClick={onClose}
@@ -1513,7 +1417,7 @@ export function TemplatePropertyPanel({
             type="button"
           >
             <PanelRightClose aria-hidden="true" />
-          </button>
+          </Button>
         ) : null}
       </div>
 

@@ -710,8 +710,8 @@ export function UsersScreen({
         title="创建用户"
       >
           {actionErrorMessage ? <p className="text-sm text-destructive" role="alert">{actionErrorMessage}</p> : null}
-          <div className="grid gap-4">
-            <div className="grid gap-2">
+          <div className="grid gap-3">
+            <div className="grid gap-1.5">
               <Label htmlFor="create-user-username">用户名</Label>
               <Input
                 id="create-user-username"
@@ -720,7 +720,7 @@ export function UsersScreen({
                 onChange={(event) => setCreateDraft((currentValue) => ({ ...currentValue, username: event.target.value }))}
               />
             </div>
-            <div className="grid gap-2">
+            <div className="grid gap-1.5">
               <Label htmlFor="create-user-password">初始密码</Label>
               <Input
                 id="create-user-password"
@@ -729,7 +729,7 @@ export function UsersScreen({
                 onChange={(event) => setCreateDraft((currentValue) => ({ ...currentValue, password: event.target.value }))}
               />
             </div>
-            <div className="grid gap-2">
+            <div className="grid gap-1.5">
               <Label>角色</Label>
               <AdminSelectField
                 ariaLabel="角色"
@@ -773,7 +773,7 @@ export function UsersScreen({
         title="重置密码"
       >
           {actionErrorMessage ? <p className="text-sm text-destructive" role="alert">{actionErrorMessage}</p> : null}
-          <div className="grid gap-2">
+          <div className="grid gap-1.5">
             <Label htmlFor="reset-user-password">新密码</Label>
             <Input
               id="reset-user-password"

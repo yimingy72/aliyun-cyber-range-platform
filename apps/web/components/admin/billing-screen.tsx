@@ -1,5 +1,7 @@
 'use client';
 
+import { DateTimePicker } from '@/components/ui/date-time-picker';
+
 import { useEffect, useLayoutEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { ChevronDown, ChevronRight, Download, RefreshCw } from 'lucide-react';
@@ -761,7 +763,7 @@ export function BillingScreen({ apiBaseUrl = 'http://localhost:3001' }: BillingS
               <div className="grid gap-1">
                 <span className="text-xs font-medium text-muted-foreground">查看</span>
                 <div aria-label="费用明细视图" className="inline-flex w-fit rounded-lg bg-muted p-0.5" role="group">
-                  <button
+                  <Button variant="ghost"
                     aria-pressed={detailView === 'users'}
                     className={
                       detailView === 'users'
@@ -772,8 +774,8 @@ export function BillingScreen({ apiBaseUrl = 'http://localhost:3001' }: BillingS
                     type="button"
                   >
                     用户明细
-                  </button>
-                  <button
+                  </Button>
+                  <Button variant="ghost"
                     aria-pressed={detailView === 'platform'}
                     className={
                       detailView === 'platform'
@@ -784,7 +786,7 @@ export function BillingScreen({ apiBaseUrl = 'http://localhost:3001' }: BillingS
                     type="button"
                   >
                     平台费用明细
-                  </button>
+                  </Button>
                 </div>
               </div>
 
@@ -806,20 +808,22 @@ export function BillingScreen({ apiBaseUrl = 'http://localhost:3001' }: BillingS
                 <div className="flex items-center gap-1.5">
                   <label>
                     <span className="sr-only">开始账期</span>
-                    <input
-                      className="h-8 rounded-md border border-input bg-background px-2 text-sm text-foreground outline-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/30"
-                      onChange={(event) => updateRange({ ...range, startAt: event.target.value })}
-                      type="date"
+                    <DateTimePicker
+                      aria-label="开始账期"
+                      className="w-36"
+                      includeTime={false}
+                      onValueChange={(value) => updateRange({ ...range, startAt: value })}
                       value={range.startAt}
                     />
                   </label>
                   <span className="text-xs text-muted-foreground">至</span>
                   <label>
                     <span className="sr-only">结束账期</span>
-                    <input
-                      className="h-8 rounded-md border border-input bg-background px-2 text-sm text-foreground outline-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/30"
-                      onChange={(event) => updateRange({ ...range, endAt: event.target.value })}
-                      type="date"
+                    <DateTimePicker
+                      aria-label="结束账期"
+                      className="w-36"
+                      includeTime={false}
+                      onValueChange={(value) => updateRange({ ...range, endAt: value })}
                       value={range.endAt}
                     />
                   </label>
@@ -896,9 +900,9 @@ export function BillingScreen({ apiBaseUrl = 'http://localhost:3001' }: BillingS
 
               return (
                 <article key={group.id} className="border-b border-border last:border-b-0">
-                  <button
+                  <Button variant="ghost"
                     aria-expanded={isExpanded}
-                    className="grid min-h-14 w-full grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-3 px-3 py-2 text-left hover:bg-muted/60 focus-visible:bg-muted focus-visible:outline-none sm:grid-cols-[auto_9rem_minmax(0,1fr)_auto]"
+                    className="grid h-auto min-h-14 w-full rounded-none whitespace-normal grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-3 px-3 py-2 text-left hover:bg-muted/60 focus-visible:bg-muted focus-visible:outline-none sm:grid-cols-[auto_9rem_minmax(0,1fr)_auto]"
                     onClick={() => toggleGroup(group.id)}
                     type="button"
                   >
@@ -920,7 +924,7 @@ export function BillingScreen({ apiBaseUrl = 'http://localhost:3001' }: BillingS
                       {formatMoney(group.pretaxAmount, group.currency)}
                       <span className="font-medium text-muted-foreground">{group.currency}</span>
                     </span>
-                  </button>
+                  </Button>
 
                   {isExpanded ? (
                     <div className="border-t border-border bg-muted/25 pl-10 sm:pl-10">
@@ -978,12 +982,12 @@ export function BillingScreen({ apiBaseUrl = 'http://localhost:3001' }: BillingS
             </p>
           ) : null}
           {users.map((user) => (
-            <button
+            <Button variant="ghost"
               aria-pressed={user.userId === selectedUserId && detailView === 'users'}
               className={
                 user.userId === selectedUserId && detailView === 'users'
-                  ? 'flex w-full items-center justify-between gap-3 border-l-2 border-primary bg-accent/60 px-3 py-2.5 text-left'
-                  : 'flex w-full items-center justify-between gap-3 border-l-2 border-transparent px-3 py-2.5 text-left hover:bg-muted/60'
+                  ? 'flex h-auto w-full items-center justify-between gap-3 rounded-none bg-accent/60 px-3 py-2.5 text-left whitespace-normal'
+                  : 'flex h-auto w-full items-center justify-between gap-3 rounded-none px-3 py-2.5 text-left whitespace-normal hover:bg-muted/60'
               }
               key={user.userId}
               onClick={() => selectUser(user.userId)}
@@ -996,7 +1000,7 @@ export function BillingScreen({ apiBaseUrl = 'http://localhost:3001' }: BillingS
                 </span>
               </span>
               <strong className="shrink-0 text-sm font-semibold tabular-nums text-foreground">{user.amounts?.length ? user.amounts.map(item => <span className="block" key={item.currency}>{formatMoney(item.pretaxAmount, item.currency)}</span>) : formatMoney(user.pretaxAmount, user.currency ?? 'CNY')}</strong>
-            </button>
+            </Button>
           ))}
           {!users.length && !isLoading ? <p className="px-3 py-8 text-sm text-muted-foreground">当前账期内暂无用户账单。</p> : null}
         </div>

@@ -180,7 +180,7 @@ describe('RangeInstancesScreen', () => {
     expect(screen.queryByRole('heading', { name: '实例详情' })).toBeNull();
     expect(screen.getByRole('button', { name: '查看详情' })).toBeTruthy();
     expect(screen.getByRole('button', { name: '关闭' })).toBeTruthy();
-    expect(screen.queryByText('创建实例')).toBeNull();
+    expect(screen.getByRole('button', { name: '创建实例' })).toBeTruthy();
     expect(screen.queryByText('筛选条件')).toBeNull();
 
     const activeTable = screen.getByRole('table', { name: '编排实例列表' });
