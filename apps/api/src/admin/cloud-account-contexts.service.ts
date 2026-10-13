@@ -15,6 +15,19 @@ const ALICLOUD_SIGNATURE_METHOD = 'HMAC-SHA1';
 const ALICLOUD_SIGNATURE_VERSION = '1.0';
 const ALICLOUD_STS_API_VERSION = '2015-04-01';
 
+// Only allowlisted Aliyun STS codes are surfaced; anything else stays opaque so a
+// gateway or proxy body can never smuggle credentials into admin-facing errors.
+const ALICLOUD_STS_FAILURE_HINTS: Record<string, string> = {
+  SignatureDoesNotMatch: 'AccessKey Secret 与 AccessKey ID 不匹配，请核对 Secret 是否完整正确（注意不要混入空格或换行）。',
+  'InvalidAccessKeyId.NotFound': 'AccessKey ID 不存在或不可用，请确认密钥输入完整、未被删除。',
+  InvalidAccessKeyId: 'AccessKey ID 无效，请确认密钥输入完整、未被删除。',
+  'InvalidAccessKeyId.Inactive': '该 AccessKey 已被禁用，请在阿里云控制台启用或重新生成。',
+  'Forbidden.RAM': '该 AccessKey 缺少身份校验所需权限，请检查对应 RAM 用户的授权。',
+  Throttling: '身份校验请求过于频繁，请稍后重试。',
+};
+const ALICLOUD_STS_SAFE_CODES = new Set([...Object.keys(ALICLOUD_STS_FAILURE_HINTS),
+  'InvalidAccessKeySecret', 'Forbidden', 'Forbidden.SubUser', 'SignatureExpired', 'MissingParameter']);
+
 export type CloudAccountContextCredentials = {
   id: string;
   provider: 'alibaba_cloud' | 'tencent_cloud';
@@ -581,7 +594,7 @@ export class CloudAccountContextsService {
     }
 
     if (!response.ok) {
-      throw new BadRequestException(`阿里云账号身份校验失败（HTTP ${response.status}）。`);
+      throw await this.readStsFailure(response, accessKeyId, accessKeySecret);
     }
 
     const payload = (await response.json()) as { AccountId?: string | number };
@@ -592,6 +605,27 @@ export class CloudAccountContextsService {
     }
 
     return accountUid;
+  }
+
+  private async readStsFailure(response: Response, accessKeyId: string, accessKeySecret: string) {
+    let code: string | null = null;
+    let requestId: string | null = null;
+    try {
+      const payload = JSON.parse((await response.text()).slice(0, 8_192)) as { Code?: unknown; RequestId?: unknown };
+      const carriesCredentials = (value: string) => [accessKeyId, accessKeySecret].some((secret) => secret && value.includes(secret));
+      if (typeof payload.Code === 'string' && ALICLOUD_STS_SAFE_CODES.has(payload.Code) && !carriesCredentials(payload.Code)) {
+        code = payload.Code;
+      }
+      if (typeof payload.RequestId === 'string' && /^[A-Za-z0-9][A-Za-z0-9-]{0,127}$/.test(payload.RequestId)
+        && !carriesCredentials(payload.RequestId)) {
+        requestId = payload.RequestId;
+      }
+    } catch {
+      // Aliyun STS error bodies are JSON; opaque proxy responses fall back to generic guidance.
+    }
+    const detail = `HTTP ${response.status}${code ? `，${code}` : ''}${requestId ? `；请求 ID ${requestId}` : ''}`;
+    const hint = (code && ALICLOUD_STS_FAILURE_HINTS[code]) ?? '请检查凭据、权限和网络后重试。';
+    return new BadRequestException(`阿里云账号身份校验失败（${detail}）：${hint}`);
   }
 
   private async verifyImageImportBucket(input: {

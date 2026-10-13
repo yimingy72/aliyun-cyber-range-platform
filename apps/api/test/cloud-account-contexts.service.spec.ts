@@ -1,3 +1,5 @@
+import { BadRequestException } from '@nestjs/common';
+
 import { CloudAccountContextsService } from '../src/admin/cloud-account-contexts.service';
 import { PrismaService } from '../src/database/prisma.service';
 
@@ -70,6 +72,31 @@ describe('CloudAccountContextsService', () => {
     const { service } = fixture();global.fetch = jest.fn().mockResolvedValue(response({ AccountId: 'test-account' }));
     await expect((service as any).resolveAccountUid('test-access-key', 'test-access-secret')).resolves.toBe('test-account');
     expect(String((global.fetch as jest.Mock).mock.calls[0][0])).not.toContain('test-access-secret');
+  });
+  it('names the STS failure code and secret-mismatch hint without echoing submitted credentials', async () => {
+    const { service } = fixture();global.fetch = jest.fn().mockResolvedValue(new Response(JSON.stringify({
+      RequestId: 'ABCD-1234-EFGH', Code: 'SignatureDoesNotMatch',
+      Message: 'Specified signature is not matched with our calculation. server string to sign is:GET&%2F&AccessKeyId%3Dtest-access-key',
+    }), { status: 400 }));
+    const error = await (service as any).resolveAccountUid('test-access-key', 'test-access-secret').catch((value: unknown) => value);
+    expect(error).toBeInstanceOf(BadRequestException);
+    expect(error.message).toBe('阿里云账号身份校验失败（HTTP 400，SignatureDoesNotMatch；请求 ID ABCD-1234-EFGH）：AccessKey Secret 与 AccessKey ID 不匹配，请核对 Secret 是否完整正确（注意不要混入空格或换行）。');
+    expect(error.message).not.toContain('test-access-key');expect(error.message).not.toContain('test-access-secret');
+  });
+  it('explains a missing AccessKey ID on STS 404 and drops diagnostics that carry credentials', async () => {
+    const { service } = fixture();global.fetch = jest.fn().mockResolvedValue(new Response(JSON.stringify({
+      RequestId: 'request-test-access-secret', Code: 'InvalidAccessKeyId.NotFound', Message: 'Specified access key is not found.',
+    }), { status: 404 }));
+    const error = await (service as any).resolveAccountUid('test-access-key', 'test-access-secret').catch((value: unknown) => value);
+    expect(error.message).toBe('阿里云账号身份校验失败（HTTP 404，InvalidAccessKeyId.NotFound）：AccessKey ID 不存在或不可用，请确认密钥输入完整、未被删除。');
+    expect(error.message).not.toContain('test-access-secret');
+  });
+  it.each([
+    ['non-JSON', '<html>gateway rejected the request</html>'],
+    ['unknown code', JSON.stringify({ Code: 'NotAllowlisted.Code' })],
+  ])('keeps the generic guidance for an opaque STS failure: %s', async (_name, body) => {
+    const { service } = fixture();global.fetch = jest.fn().mockResolvedValue(new Response(body, { status: 400 }));
+    await expect((service as any).resolveAccountUid('test-access-key', 'test-access-secret')).rejects.toThrow('阿里云账号身份校验失败（HTTP 400）：请检查凭据、权限和网络后重试。');
   });
   it('blocks switching while live instances or provision jobs remain', async () => {
     const { db, service } = fixture({ ...context, isActive: false });db.provisionJob.count.mockResolvedValue(1);
