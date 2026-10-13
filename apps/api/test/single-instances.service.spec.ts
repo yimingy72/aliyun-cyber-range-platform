@@ -52,6 +52,40 @@ describe('SingleInstancesService', () => {
     expect(f.network.ensureDefaultProfile).not.toHaveBeenCalled(); expect(f.config.getInstanceTypeAvailabilityInContext).not.toHaveBeenCalled();
     expect(await f.repository.listProvisionJobs()).toEqual([]);
   });
+  it('rejects an invalid Alibaba password before network preparation and batch intake', async () => {
+    const f = createLaunchFixture();
+    await expect(f.service.launch({ ...f.input, password: 'abcdefgh' }, f.actor.id)).rejects.toThrow('密码不符合阿里云 ECS 要求');
+    await expect(f.service.launch({ ...f.input, password: 'Abcd 1234!' }, f.actor.id)).rejects.toThrow('不能包含空格');
+    await expect(f.service.launch({ ...f.input, password: 'Abcd123中!' }, f.actor.id)).rejects.toThrow('不能包含中文');
+    expect(f.network.ensureDefaultProfile).not.toHaveBeenCalled();
+    expect(f.config.getInstanceTypeAvailabilityInContext).not.toHaveBeenCalled();
+    expect(await f.repository.listProvisionJobs()).toEqual([]);
+    expect(await f.repository.listRangeInstances()).toEqual([]);
+  });
+
+  it('rejects a Windows password starting with a slash when the image is Windows', async () => {
+    const f = createLaunchFixture();
+    (f.repository.getImageSnapshotById as jest.Mock).mockResolvedValue({ id: 'source-1', isAvailable: true, osType: 'windows', platform: 'Windows Server 2022' });
+    await expect(f.service.launch({ ...f.input, password: '/Abcd1234' }, f.actor.id)).rejects.toThrow('Windows 实例密码不能以“/”开头');
+    expect(f.network.ensureDefaultProfile).not.toHaveBeenCalled();
+  });
+
+  it('accepts compliant passwords and keeps generating random passwords when blank', async () => {
+    const f = createLaunchFixture();
+    const launched = await f.service.launch({ ...f.input, password: 'Valid1234!' }, f.actor.id);
+    expect(launched.batch.quantity).toBe(2);
+    const instances = (await f.repository.listRangeInstances()).filter((instance) => instance.singleInstanceBatchId === launched.batch.id);
+    expect(instances).toHaveLength(2);
+    expect(instances.map((instance) => instance.runtimeCredentials?.['single-ecs-1']?.password ?? instance.runtimeCredentials?.['single-ecs-2']?.password)
+      .every((password) => password === 'Valid1234!')).toBe(true);
+
+    const blank = createLaunchFixture();
+    const randomLaunched = await blank.service.launch({ ...blank.input }, blank.actor.id);
+    const randomInstances = (await blank.repository.listRangeInstances()).filter((instance) => instance.singleInstanceBatchId === randomLaunched.batch.id);
+    expect(randomInstances).toHaveLength(2);
+    expect(randomInstances.every((instance) => Boolean(instance.runtimeCredentials?.['single-ecs-1']?.password || instance.runtimeCredentials?.['single-ecs-2']?.password))).toBe(true);
+  });
+
   it('shows a targeted original packed artifact safely through the existing instance getter', async () => {
     const fixture = createLaunchFixture();
     const instance = await fixture.repository.createRangeInstance({ name: 'packed-source', cloudProvider: 'tencent_cloud', instanceMode: 'single', ownerUserId: fixture.actor.id,

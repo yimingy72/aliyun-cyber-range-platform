@@ -5,6 +5,7 @@ import {
   compileTemplateTopology,
   type TemplateAuthoringMetadata,
 } from './template-authoring';
+import { resolveToolImageOsHints } from './template-image-os-hints';
 import {
   rangeDestroyInputSchema,
   rangeInstanceIdInputSchema,
@@ -346,7 +347,12 @@ async function saveRangeInstanceTopology(
     ...metadataFromRangeInstance(instance),
     ...(input.publicEntryProtocols ? { publicEntryProtocols: input.publicEntryProtocols } : {}),
   };
-  const compiled = JSON.parse(JSON.stringify(compileTemplateTopology(input.topologyGraph, metadata))) as
+  const imageOsHints = await resolveToolImageOsHints(
+    context.client,
+    input.topologyGraph as Record<string, unknown>,
+    instance.draftTopologyGraph as Record<string, unknown> | null,
+  );
+  const compiled = JSON.parse(JSON.stringify(compileTemplateTopology(input.topologyGraph, metadata, imageOsHints))) as
     ReturnType<typeof compileTemplateTopology>;
 
   const saved = await context.client.saveRangeInstanceDraft(

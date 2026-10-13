@@ -6,6 +6,7 @@ import { Combobox } from '@/components/ui/combobox';
 import { DateTimePicker } from '@/components/ui/date-time-picker';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
 import { AdminFormField } from './shared/admin-form-field';
+import { ConfirmActionDialog } from './shared/confirm-action-dialog';
 
 import React from 'react';
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
@@ -22,6 +23,7 @@ import {
   launchSingleInstances,
   triggerSingleInstanceAction,
 } from '../../lib/admin-api';
+import { describeAliyunEcsPasswordFailure, validateAliyunEcsPassword } from '@aliyun-cyber-range/scenario-runtime';
 import { useAdminScreenCache } from '../../lib/admin-screen-cache';
 import { cloudExpiryError, minimumSystemDiskSize, tencentImageError, verifiedTencentInstanceTypes } from '@/lib/cloud-execution-policy';
 import { cloudProviderLabel, useCloudWorkspace } from './cloud-workspace-provider';
@@ -270,8 +272,11 @@ function getBatchPublicIp(group: SingleInstanceBatchGroup) {
 }
 
 function escapeCsvCell(value: string) {
-  const normalizedValue = value.replaceAll('"', '""');
-  return /[",\n]/.test(normalizedValue) ? `"${normalizedValue}"` : normalizedValue;
+  // Spreadsheet software must never execute user- or cloud-supplied cells as formulas;
+  // prefixing every risky string keeps passwords like '=...' inert in Excel.
+  const safeText = /^[\s\u0000-\u001f]*[=+@-]/.test(value) ? `'${value}` : value;
+  const normalizedValue = safeText.replaceAll('"', '""');
+  return /[",\r\n]/.test(normalizedValue) ? `"${normalizedValue}"` : normalizedValue;
 }
 
 function readPrimaryCredential(instance: RangeInstance): InstanceCredential | null {
@@ -554,6 +559,13 @@ export function SingleInstancesScreen({
   const launchPendingRef = useRef(false);
   const launchRequestRef = useRef<{ fingerprint: string; key: string; payload: SingleInstanceLaunchInput } | null>(null);
   const [pendingActionInstanceId, setPendingActionInstanceId] = useState<string | null>(null);
+  const [confirmAction, setConfirmAction] = useState<
+    | { kind: 'destroy'; instance: RangeInstance }
+    | { kind: 'retry'; instance: RangeInstance }
+    | { kind: 'batch-destroy'; batchId: string; batchName: string; instanceCount: number }
+    | null
+  >(null);
+  const [isConfirmPending, setIsConfirmPending] = useState(false);
   const [expandedBatchIds, setExpandedBatchIds] = useState<string[]>([]);
   const [copiedPasswordInstanceId, setCopiedPasswordInstanceId] = useState<string | null>(null);
   const [createForm, setCreateForm] = useState<CreateDialogState>(buildDefaultDialogState([], workspace?.provider ?? 'alibaba_cloud'));
@@ -1065,6 +1077,18 @@ export function SingleInstancesScreen({
         return;
       }
 
+      const providedPassword = createForm.password.trim();
+      if (providedPassword && (workspace?.provider ?? 'alibaba_cloud') === 'alibaba_cloud') {
+        // The chosen asset is known: only its OS metadata may gate the Windows rule.
+        const imageOsHint = `${selectedPlatformImage.osType ?? ''} ${selectedPlatformImage.platform ?? ''}`.trim().toLowerCase();
+        const windowsPassword = imageOsHint.includes('windows');
+        const passwordValidation = validateAliyunEcsPassword(providedPassword, { windows: windowsPassword });
+        if (!passwordValidation.valid && passwordValidation.code) {
+          setCreateFormError(`密码不符合阿里云 ECS 要求：${describeAliyunEcsPasswordFailure(passwordValidation.code)}。`);
+          return;
+        }
+      }
+
       if (
         !instanceTypeAvailability ||
         instanceTypeAvailability.cpu !== cpu ||
@@ -1223,6 +1247,20 @@ export function SingleInstancesScreen({
       return;
     }
 
+    if (action === 'destroy' || action === 'retry') {
+      setErrorMessage(null);
+      setConfirmAction({ kind: action, instance });
+      return;
+    }
+
+    await performInstanceAction(instance, action);
+  }
+
+  async function performInstanceAction(instance: RangeInstance, action: MenuAction) {
+    if (!session.token || pendingActionInstanceId) {
+      return;
+    }
+
     setErrorMessage(null);
     setPendingActionInstanceId(instance.id);
     const openedWindow =
@@ -1311,7 +1349,7 @@ export function SingleInstancesScreen({
     }
   }
 
-  async function handleBatchDestroy(batchId: string) {
+  async function performBatchDestroy(batchId: string) {
     if (!session.token) {
       return;
     }
@@ -1763,7 +1801,19 @@ export function SingleInstancesScreen({
                                         <Button onClick={() => handleBatchExport(group)} size="sm" type="button" variant="outline">
                                           导出
                                         </Button>
-                                        <Button onClick={() => void handleBatchDestroy(group.batch.id)} size="sm" type="button" variant="destructive">
+                                        <Button
+                                          onClick={() =>
+                                            setConfirmAction({
+                                              kind: 'batch-destroy',
+                                              batchId: group.batch.id,
+                                              batchName: group.batch.name?.trim() || group.batch.id,
+                                              instanceCount: group.instances.filter((item) => !isSingleInstanceHistoryStatus(item.status)).length,
+                                            })
+                                          }
+                                          size="sm"
+                                          type="button"
+                                          variant="destructive"
+                                        >
                                           关闭
                                         </Button>
                                       </div>
@@ -1849,7 +1899,7 @@ export function SingleInstancesScreen({
             <AdminFormField className="sm:col-span-3" label="到期时间" htmlFor="single-instance-expire" required hint={workspace?.provider === 'tencent_cloud' ? '到期时间至少在 10 分钟后。' : undefined}>
               <DateTimePicker id="single-instance-expire" aria-label="到期时间" value={createForm.expiresAt} onValueChange={(value) => updateCreateForm('expiresAt', value)} required />
             </AdminFormField>
-            <AdminFormField className="sm:col-span-3" label="密码" htmlFor="single-instance-password" hint="留空时，为每台实例生成独立随机密码。">
+            <AdminFormField className="sm:col-span-3" label="密码" htmlFor="single-instance-password" hint="留空时，为每台实例生成独立随机密码。自定义密码需为 8-30 位，且至少包含大写字母、小写字母、数字、特殊字符中的 3 类。">
               <Input id="single-instance-password" aria-label="密码" autoComplete="new-password" type="password" value={createForm.password} onChange={(event) => updateCreateForm('password', event.target.value)} />
             </AdminFormField>
             <AdminFormField className="sm:col-span-6" label="备注" htmlFor="single-instance-remark">
@@ -1981,6 +2031,46 @@ export function SingleInstancesScreen({
             </div>
           </div>
         </SingleInstanceDialog>
+      ) : null}
+
+      {confirmAction ? (
+        <ConfirmActionDialog
+          confirmLabel={confirmAction.kind === 'batch-destroy' ? '确认全部关闭' : confirmAction.kind === 'retry' ? '确认重试' : '确认关闭'}
+          description={
+            confirmAction.kind === 'batch-destroy'
+              ? `将销毁批次“${confirmAction.batchName}”中 ${confirmAction.instanceCount} 台运行中的实例及随实例磁盘，关闭后无法恢复。`
+              : confirmAction.kind === 'retry'
+                ? `将重试销毁“${confirmAction.instance.name?.trim() || confirmAction.instance.id}”的剩余云资源，完成后无法恢复。`
+                : `将销毁“${confirmAction.instance.name?.trim() || confirmAction.instance.id}”的云主机及随实例磁盘，关闭后无法恢复。`
+          }
+          open
+          pending={isConfirmPending}
+          title={confirmAction.kind === 'batch-destroy' ? '关闭全部实例' : confirmAction.kind === 'retry' ? '重试关闭实例' : '关闭实例'}
+          onConfirm={() => {
+            if (!confirmAction || isConfirmPending) {
+              return;
+            }
+            const action = confirmAction;
+            void (async () => {
+              setIsConfirmPending(true);
+              try {
+                if (action.kind === 'batch-destroy') {
+                  await performBatchDestroy(action.batchId);
+                } else {
+                  await performInstanceAction(action.instance, action.kind);
+                }
+              } finally {
+                setIsConfirmPending(false);
+                setConfirmAction(null);
+              }
+            })();
+          }}
+          onOpenChange={(open) => {
+            if (!open && !isConfirmPending) {
+              setConfirmAction(null);
+            }
+          }}
+        />
       ) : null}
     </div>
   );

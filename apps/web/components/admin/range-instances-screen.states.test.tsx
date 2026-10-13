@@ -327,6 +327,8 @@ describe('RangeInstancesScreen list states', () => {
     expect(pushMock).toHaveBeenCalledWith('/admin/ranges/range-running');
 
     fireEvent.click(screen.getByRole('button', { name: '关闭' }));
+    expect(triggerRangeActionMock).not.toHaveBeenCalled();
+    fireEvent.click(await screen.findByRole('button', { name: '确认关闭' }));
     await waitFor(() => {
       expect(triggerRangeActionMock).toHaveBeenCalledWith(
         'http://localhost:3001',

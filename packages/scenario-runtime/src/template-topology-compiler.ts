@@ -63,12 +63,15 @@ export const DEFAULT_ALIBABA_CLOUD_SECONDARY_VPC_CIDRS = [
   '192.168.0.0/16',
 ];
 
+export type TemplateImageOsHints = Record<string, { osType?: string | null; platform?: string | null } | undefined>;
+
 export function compileTemplateTopology(
   topologyGraph: ScenarioGraphDraft,
   metadata: TemplateAuthoringMetadata,
+  imageOsHints: TemplateImageOsHints = {},
 ): CompiledTemplatePayload {
   const graph = normalizeTopologyGraph(topologyGraph);
-  validateGraph(graph, metadata);
+  validateGraph(graph, metadata, imageOsHints);
   const primaryVpcCidr =
     metadata.primaryVpcCidr ??
     metadata.vpcCidr ??
@@ -413,7 +416,7 @@ export function graphFromTemplate(template: Record<string, unknown>): ScenarioGr
   return cloneGraph(rawGraph as ScenarioGraphDraft);
 }
 
-function validateGraph(graph: ScenarioGraphDraft, metadata: TemplateAuthoringMetadata) {
+function validateGraph(graph: ScenarioGraphDraft, metadata: TemplateAuthoringMetadata, imageOsHints: TemplateImageOsHints = {}) {
   if (metadata.cloudProvider !== 'alibaba_cloud' && metadata.cloudProvider !== 'tencent_cloud') {
     throw new Error('Unsupported template cloud provider');
   }
@@ -514,7 +517,21 @@ function validateGraph(graph: ScenarioGraphDraft, metadata: TemplateAuthoringMet
         throw new Error(`ECS 缺少镜像：${node.id}`);
       }
       if (typeof node.customPassword === 'string' && node.customPassword.length > 0) {
-        const passwordValidation = validateAliyunEcsPassword(node.customPassword);
+        // Callers that resolved an image entry own the OS decision: an entry for this
+        // asset (even an empty one) suppresses the image-name guess, while callers that
+        // provided no entry at all keep the historical name heuristic.
+        const assetId = typeof node.platformImageAssetId === 'string' && node.platformImageAssetId ? node.platformImageAssetId : null;
+        const hasResolvedEntry = assetId !== null && Object.prototype.hasOwnProperty.call(imageOsHints, assetId);
+        const resolvedAssetOs = hasResolvedEntry ? imageOsHints[assetId!] : undefined;
+        const resolvedOsHint = `${resolvedAssetOs?.osType ?? ''} ${resolvedAssetOs?.platform ?? ''}`.trim().toLowerCase();
+        const windowsHint = hasResolvedEntry
+          ? resolvedOsHint.includes('windows')
+          : [node.imageName, node.imageId, node.image]
+            .filter((value): value is string => typeof value === 'string')
+            .join(' ')
+            .toLowerCase()
+            .includes('windows');
+        const passwordValidation = validateAliyunEcsPassword(node.customPassword, { windows: windowsHint });
         if (!passwordValidation.valid) {
           throw new Error(`ECS 自定义密码不合法：${node.id}${passwordValidation.message ? `（${passwordValidation.message}）` : ''}`);
         }

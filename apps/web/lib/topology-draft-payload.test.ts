@@ -164,6 +164,49 @@ describe('buildTopologyDraftPayload', () => {
     expect(payload.compiledProvisionSpec.eips.filter((eip) => eip.key === 'eip-snat-shared')).toHaveLength(provider === 'tencent_cloud' ? 1 : 0);
   });
 
+  it('rejects Windows host passwords starting with a forward slash without affecting Linux hosts', () => {
+    const windowsGraph = createValidGraph();
+    const windowsHost = windowsGraph.nodes.find((node) => node.kind === 'ecs')!;
+    windowsHost.imageName = 'Windows Server 2022';
+    windowsHost.customPassword = '/Abcd1234';
+
+    expect(() => buildTopologyDraftPayload({ graph: windowsGraph, metadata: validMetadata, viewport: null }))
+      .toThrow('Windows instance passwords must not start with a forward slash');
+
+    const linuxGraph = createValidGraph();
+    const linuxHost = linuxGraph.nodes.find((node) => node.kind === 'ecs')!;
+    linuxHost.imageName = 'Ubuntu 24.04 LTS';
+    linuxHost.customPassword = '/Abcd1234';
+
+    expect(() => buildTopologyDraftPayload({ graph: linuxGraph, metadata: validMetadata, viewport: null })).not.toThrow();
+  });
+
+  it('prefers resolved image OS metadata over the image name for Windows password checks', () => {
+    const linuxNamedGraph = createValidGraph();
+    const linuxNamedHost = linuxNamedGraph.nodes.find((node) => node.kind === 'ecs')!;
+    linuxNamedHost.imageName = 'Windows-compatible Ubuntu';
+    linuxNamedHost.customPassword = '/Abcd1234';
+
+    expect(() => buildTopologyDraftPayload({
+      graph: linuxNamedGraph,
+      metadata: validMetadata,
+      viewport: null,
+      imageOsHints: { 'platform-image-ubuntu': { osType: 'linux', platform: 'Ubuntu' } },
+    })).not.toThrow();
+
+    const renamedWindowsGraph = createValidGraph();
+    const renamedWindowsHost = renamedWindowsGraph.nodes.find((node) => node.kind === 'ecs')!;
+    renamedWindowsHost.imageName = 'Server 2022';
+    renamedWindowsHost.customPassword = '/Abcd1234';
+
+    expect(() => buildTopologyDraftPayload({
+      graph: renamedWindowsGraph,
+      metadata: validMetadata,
+      viewport: null,
+      imageOsHints: { 'platform-image-ubuntu': { osType: 'windows', platform: 'Windows Server 2022' } },
+    })).toThrow('Windows instance passwords must not start with a forward slash');
+  });
+
   it('rejects duplicate DNAT protocol and external port pairs', () => {
     const graph = createValidGraph();
     const switchNode = graph.nodes.find((node) => node.id === 'switch-dmz')!;

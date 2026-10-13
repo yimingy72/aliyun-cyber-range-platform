@@ -8,6 +8,7 @@ import {
   metadataFromTemplate,
   type TemplateAuthoringMetadata,
 } from './template-authoring';
+import { resolveToolImageOsHints } from './template-image-os-hints';
 import {
   templateCloneInputSchema,
   templateCreateInputSchema,
@@ -94,7 +95,8 @@ export const templateTools: ToolDefinition[] = [
         || active.cloudWorkspaceId != null && active.cloudWorkspaceId !== workspace.id) {
         throw new Error('模板创建需要当前已验证且可执行的云账号工作空间。');
       }
-      const compiled = compileTemplateTopology(input.topologyGraph, metadataForTemplateCreation(input, workspace.provider));
+      const imageOsHints = await resolveToolImageOsHints(context.client, input.topologyGraph as Record<string, unknown>);
+      const compiled = compileTemplateTopology(input.topologyGraph, metadataForTemplateCreation(input, workspace.provider), imageOsHints);
       const payload: CreateRangeTemplateInput = {
         name: input.name,
         ...(input.description !== undefined ? { description: input.description } : {}),
@@ -159,10 +161,15 @@ export const templateTools: ToolDefinition[] = [
         throw new Error('模板版本已变化，请刷新后再保存；未覆盖新拓扑');
       }
       const topologyGraph = preserveRedactedCustomPasswords(graphFromTemplate(current), input.topologyGraph);
+      const imageOsHints = await resolveToolImageOsHints(
+        context.client,
+        topologyGraph as Record<string, unknown>,
+        graphFromTemplate(current) as Record<string, unknown>,
+      );
       const compiled = compileTemplateTopology(topologyGraph, {
         ...withoutLegacyVpcMetadata(metadataFromTemplate(withServerOwnedMetadata(current))),
         ...pickTopologyMetadata(input),
-      });
+      }, imageOsHints);
       const template = await context.client.saveRangeTemplateTopology(
         input.templateId,
         { ...compiled, expectedRevision: input.expectedRevision },

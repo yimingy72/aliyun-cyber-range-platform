@@ -120,6 +120,16 @@ describe('tool contract trust boundaries', () => {
     expect(await registry.callTool('single_instance_batch_export_csv', scopes, args)).toMatchObject({ isError: true });
     expect(access.mock.calls.every(([id]) => id === 'owned')).toBe(true);
   });
+
+  it('neutralizes spreadsheet formulas in every exported credential cell', async () => {
+    const client = {
+      listSingleInstances: async () => ({ batches: [{ batch: { id: 'formula-batch', name: 'formula' }, instances: [{ id: 'formula-instance', name: '+name' }] }], standaloneInstances: [] }),
+      getSingleInstanceAccess: async () => ({ runtimeCredentials: { host: { username: '=user', password: '+1+1' } }, accessEntry: { publicIp: '=ip' } }),
+    };
+    const registry = createToolRegistry(client as never);
+    const result = await registry.callTool('single_instance_batch_export_csv', ['instances:read', 'instances:credentials:read'], { batchId: 'formula-batch', view: 'active' });
+    expect(result.structuredContent.result).toMatchObject({ rowCount: 1, csv: "实例名,公网 IP,账号,密码\n'+name,'=ip,'=user,'+1+1" });
+  });
   it('does not reflect supplied credentials or unexpected nested credential fields in platform errors', async () => {
     const secret = 'SyntheticPrivatePassword1!';
     const registry = createToolRegistry({ createAdminUser: async () => { throw new PlatformApiError(400, 'invalid', { code: 'REJECTED', message: `Cannot accept ${secret}`, requestId: 'safe-request', nested: { accessKeySecret: 'server-private', password: secret } }); } } as never);

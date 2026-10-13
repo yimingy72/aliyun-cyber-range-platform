@@ -270,7 +270,7 @@ type EcsCustomPasswordFieldProps = {
 function EcsCustomPasswordField({ value, onChange }: EcsCustomPasswordFieldProps) {
   const customPassword = value ?? '';
   const validationResult =
-    customPassword.length > 0 ? validateAliyunEcsPassword(customPassword) : { valid: true, message: null };
+    customPassword.length > 0 ? validateAliyunEcsPassword(customPassword) : { valid: true, code: null, message: null };
   const hint =
     customPassword.length === 0
       ? '留空时，生成实例会为当前 ECS 自动生成随机密码'

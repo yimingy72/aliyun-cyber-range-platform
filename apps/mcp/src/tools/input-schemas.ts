@@ -156,7 +156,7 @@ export const singleInstanceLaunchInputSchema = operationSchema.extend({
   memory: z.number().int().positive(),
   systemDiskSize: z.number().int().min(20).optional(),
   expiresAt: isoDateTime,
-  password: z.string().min(1).optional().describe('Sensitive. Only provide when explicitly requested.'),
+  password: z.string().min(1).optional().describe('Sensitive. Only provide when explicitly requested. Must satisfy the Aliyun ECS policy: 8-30 characters with at least three of uppercase, lowercase, digit, and special characters; only ( ) ~ ` ! @ # $ % ^ & * - _ + = | { } [ ] : ; \' < > , . ? / are accepted, and Windows images reject a leading slash.'),
   quantity: z.number().int().min(1).max(99),
   remark: z.string().optional(),
 });

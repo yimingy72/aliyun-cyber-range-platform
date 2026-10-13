@@ -1,10 +1,12 @@
 import {
+  BadRequestException,
   ConflictException,
   ForbiddenException,
   Inject,
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
+import { describeAliyunEcsPasswordFailure, validateAliyunEcsPassword } from '@aliyun-cyber-range/scenario-runtime/compiled';
 import { createHash } from 'node:crypto';
 
 import type { SessionUserProfile } from './admin-user-auth';
@@ -231,7 +233,8 @@ export class SingleInstancesService {
     catch (error) { throw new ConflictException(error instanceof Error ? error.message : '云端截止时间不可用。'); }
     if (!accountContext.accountUid || !accountContext.cloudAccountContextId) throw new ConflictException('创建实例前必须配置并验证云账号。');
     if (accountContext.provider === 'tencent_cloud' && new Date(input.expiresAt).getTime() - Date.now() <= 10 * 60_000) throw new ConflictException('腾讯云定时销毁需至少预留十分钟，请延长实例到期时间。');
-    await this.requireEnabledPlatformImage(input.platformImageAssetId, currentUserId, accountContext);
+    const launchImage = await this.requireEnabledPlatformImage(input.platformImageAssetId, currentUserId, accountContext);
+    await this.assertProvidedLaunchPassword(input.password, launchImage, accountContext.provider);
     const offered = await this.systemConfigService.getInstanceTypeAvailabilityInContext({ cpu: input.cpu, memory: input.memory }, accountContext);
     const matches = accountContext.provider === 'tencent_cloud' ? offered.matches.filter(match => match.architecture === 'X86_64') : offered.matches;
     const availability = { ...offered, matches, exactAvailable: offered.exactAvailable && matches.length > 0 };
@@ -511,6 +514,23 @@ export class SingleInstancesService {
       ? this.adminRepository.getProvisionJobById(instance.lastJobId) : Promise.resolve(null)));
     if (jobs.some(job => job && ['create', 'retry'].includes(job.jobType) && ['pending', 'running'].includes(job.status))) {
       throw new ConflictException('批次仍在创建，请等待创建完成后销毁。');
+    }
+  }
+
+  private async assertProvidedLaunchPassword(
+    password: string | undefined,
+    image: PlatformImageAssetRecord,
+    provider: SystemCloudAccountContext['provider'],
+  ) {
+    const normalized = password?.trim();
+    if (!normalized || provider !== 'alibaba_cloud') {
+      return;
+    }
+    const snapshot = image.sourceSnapshotId ? await this.adminRepository.getImageSnapshotById(image.sourceSnapshotId) : null;
+    const windows = `${snapshot?.osType ?? ''} ${snapshot?.platform ?? image.displayName}`.toLowerCase().includes('windows');
+    const validation = validateAliyunEcsPassword(normalized, { windows });
+    if (!validation.valid && validation.code) {
+      throw new BadRequestException(`密码不符合阿里云 ECS 要求：${describeAliyunEcsPasswordFailure(validation.code)}。`);
     }
   }
 

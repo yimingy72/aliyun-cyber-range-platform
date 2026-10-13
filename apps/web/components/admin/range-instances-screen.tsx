@@ -26,6 +26,7 @@ import {
   useAdminPageSize,
 } from './admin-pagination';
 import { useAdminRouteIsActive } from './admin-page-cache';
+import { ConfirmActionDialog } from './shared/confirm-action-dialog';
 import {
   AdminDataTable,
   AdminDataTableCell,
@@ -207,6 +208,8 @@ export function RangeInstancesScreen({
   });
   const [loadAttempt, setLoadAttempt] = useState(0);
   const [isSubmittingAction, setIsSubmittingAction] = useState<'destroy' | null>(null);
+  const [confirmDestroyTarget, setConfirmDestroyTarget] = useState<ExtendedRangeInstance | null>(null);
+  const [isConfirmingDestroy, setIsConfirmingDestroy] = useState(false);
   const [listPages, setListPages] = useState<Record<RangeListMode, number>>({ active: 1, history: 1 });
   const [jumpPageValue, setJumpPageValue] = useState('1');
   const { pageSize, setPageSize } = useAdminPageSize();
@@ -455,7 +458,7 @@ export function RangeInstancesScreen({
     router.push(`/admin/ranges/${instanceId}`);
   }
 
-  async function handleListDestroyAction(instance: ExtendedRangeInstance) {
+  async function performListDestroyAction(instance: ExtendedRangeInstance) {
     if (!session.token) {
       return;
     }
@@ -726,7 +729,7 @@ export function RangeInstancesScreen({
                             {actionLabel ? (
                               <Button
                                 disabled={workspace?.isReadOnly || isSubmittingAction !== null}
-                                onClick={() => void handleListDestroyAction(instance)}
+                                onClick={() => setConfirmDestroyTarget(instance)}
                                 size="sm"
                                 type="button"
                                 variant="destructive"
@@ -747,6 +750,38 @@ export function RangeInstancesScreen({
           </AdminListToolbar>
         </div>
       </section>
+
+      {confirmDestroyTarget ? (
+        <ConfirmActionDialog
+          confirmLabel={confirmDestroyTarget.status === 'destroy_failed' ? '确认重试' : '确认关闭'}
+          description={confirmDestroyTarget.status === 'destroy_failed'
+            ? `将重新执行回收任务，继续删除“${getInstanceDisplayName(confirmDestroyTarget)}”的剩余云资源；回收完成后无法恢复。`
+            : `将销毁“${getInstanceDisplayName(confirmDestroyTarget)}”的全部云主机与随实例磁盘；关闭后无法恢复。`}
+          open
+          pending={isConfirmingDestroy}
+          title={confirmDestroyTarget.status === 'destroy_failed' ? '重试回收编排实例' : '关闭编排实例'}
+          onConfirm={() => {
+            if (!confirmDestroyTarget || isConfirmingDestroy) {
+              return;
+            }
+            const target = confirmDestroyTarget;
+            void (async () => {
+              setIsConfirmingDestroy(true);
+              try {
+                await performListDestroyAction(target);
+              } finally {
+                setIsConfirmingDestroy(false);
+                setConfirmDestroyTarget(null);
+              }
+            })();
+          }}
+          onOpenChange={(open) => {
+            if (!open && !isConfirmingDestroy) {
+              setConfirmDestroyTarget(null);
+            }
+          }}
+        />
+      ) : null}
     </div>
   );
 }
