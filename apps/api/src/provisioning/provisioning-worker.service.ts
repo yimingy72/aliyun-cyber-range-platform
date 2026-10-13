@@ -407,16 +407,18 @@ export class ProvisioningWorkerService {
       const effectiveJobType = this.resolveEffectiveJobType(job, instance);
       if(ResourceAlertReclaimer.handles(job)) {
         if(effectiveJobType!=='destroy'||!this.resourceAlertReclaimer) throw new Error('Confirmed inventory cleanup executor is unavailable');
-        const assertCurrent=async()=>{signal?.throwIfAborted();if(!await this.ownsProvisionJobClaim(job)) throw new Error('Confirmed cleanup claim was lost');};
+        const assertCurrent=async()=>{signal?.throwIfAborted();await batchLease?.assertCurrent();if(!await this.ownsProvisionJobClaim(job)) throw new Error('Confirmed cleanup claim was lost');};
         if(instance.instanceMode==='range') await this.updateRangeForClaim(job,{status:'destroying'});
         else if(!await this.adminRepository.commitSingleInstanceClaim(job,{status:'destroying'})) return;
         await this.runWorkerStep(reportStep,'verify_destroy',async()=>{await this.resourceAlertReclaimer!.execute(job,instance,assertCurrent);});
         await assertCurrent();
-        const summary=instance.resourceSummary?.executionContext?{mode:'opentofu' as const,creationAttempted:false,executionContext:instance.resourceSummary.executionContext}:null;
+        const summary=instance.resourceSummary?.executionContext?{mode:'opentofu' as const,creationAttempted:false,
+          cloudReleaseDeadlines:instance.resourceSummary.cloudReleaseDeadlines,executionContext:instance.resourceSummary.executionContext}:null;
         if(instance.instanceMode==='range') {
           await this.updateRangeForClaim(job,{status:'destroyed',resourceSummary:summary,accessEntry:null,errorSummary:null});
           if(!await this.adminRepository.updateRangeProvisionJob(job.id,job.startedAt!,{status:'succeeded',finishedAt:new Date(),errorSummary:null})) return;
-        } else if(!await this.adminRepository.commitSingleInstanceClaim(job,{status:'destroyed',resourceSummary:summary,accessEntry:null,errorSummary:null},
+        } else if(!await this.adminRepository.commitSingleInstanceClaim(job,{status:'destroyed',resourceSummary:summary,accessEntry:null,errorSummary:null,
+          singleInstanceConfig: instance.singleInstanceConfig ? { ...instance.singleInstanceConfig, opentofuCreateJobId: null } : null},
           {status:'succeeded',finishedAt:new Date(),errorSummary:null})) return;
         await this.finalizeDispatchedOperation(job,'succeeded');this.nextResourceReconciliationAt=0;return;
       }
@@ -723,6 +725,7 @@ export class ProvisioningWorkerService {
     await releaseRangeInstanceBillingLedger(this.adminRepository, instance.id, new Date());
     await this.updateRangeForClaim(job, { status: 'destroyed', accessEntry: null,
       resourceSummary: instance.resourceSummary?.executionContext ? { mode: 'opentofu', creationAttempted: false,
+        cloudReleaseDeadlines: instance.resourceSummary.cloudReleaseDeadlines,
         executionContext: instance.resourceSummary.executionContext } : null, errorSummary: null });
     if (!(await this.adminRepository.updateRangeProvisionJob(job.id, job.startedAt!, {
       status: 'succeeded', finishedAt: new Date(), errorSummary: null,
@@ -1365,7 +1368,7 @@ export class ProvisioningWorkerService {
     const groupedItems = candidateInstances.flatMap((instance) => {
       const job = instance.lastJobId ? jobsById.get(instance.lastJobId) : null;
 
-      if (!job || job.cloudWorkspaceId !== instance.cloudWorkspaceId || job.rangeInstanceId !== instance.id || job.status !== 'pending'
+      if (!job || ResourceAlertReclaimer.handles(job) || job.cloudWorkspaceId !== instance.cloudWorkspaceId || job.rangeInstanceId !== instance.id || job.status !== 'pending'
         || this.resolveEffectiveJobType(job, instance) !== input.effectiveJobType) {
         return [];
       }
@@ -2322,7 +2325,10 @@ export class ProvisioningWorkerService {
           stdoutExcerpt: null, stderrExcerpt: null,
         });
       }
-      await this.updateRangeForClaim(input.job, { accessEntry: null, resourceSummary: null });
+      await this.updateRangeForClaim(input.job, { accessEntry: null, resourceSummary: evidence.resourceSummary?.executionContext ? {
+        mode: 'opentofu', creationAttempted: false, executionContext: evidence.resourceSummary.executionContext,
+        cloudReleaseDeadlines: evidence.resourceSummary.cloudReleaseDeadlines,
+      } : null });
       return null;
     } catch (error) {
       return error instanceof Error ? error.message : 'Unknown automatic cleanup failure';

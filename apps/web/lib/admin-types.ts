@@ -201,6 +201,7 @@ export type RangeRuntimeCredential = {
 export type RangeRuntimeCredentials = Record<string, RangeRuntimeCredential>;
 
 export type SingleInstanceConfig = {
+  cloudReleaseDeadline?: import('@aliyun-cyber-range/platform-api-client').HostCloudReleaseDeadline | null;
   baseName: string;
   quantityIndex: number;
   hostKey: string;

@@ -153,7 +153,11 @@ describe('range worker durable cost safety', () => {
     const current = await f.repository.getRangeInstanceById(f.instance.id);
     expect(current?.status).toBe(malformed ? 'destroy_failed' : 'create_failed');
     if (malformed) expect(current?.resourceSummary).toMatchObject({ hostIds: resources.hostIds, creationAttempted: true, executionContext: binding });
-    else expect(current?.resourceSummary).toBeNull();
+    else {
+      expect(current?.resourceSummary?.hostIds ?? null).toBeNull();
+      expect(current?.resourceSummary?.creationAttempted).toBe(false);
+      expect(current?.resourceSummary?.executionContext).toMatchObject(binding);
+    }
     expect((await f.repository.listBillingLedgerResources()).every(row => Boolean(row.releasedAt) === !malformed)).toBe(true);
     expect((await f.repository.listProvisionJobStepLogs(f.job.id)).some(log => log.stepName === FAILED_CREATE_CLEANUP_PROOF_STEP)).toBe(!malformed);
   });

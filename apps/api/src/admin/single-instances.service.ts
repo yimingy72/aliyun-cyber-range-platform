@@ -642,6 +642,7 @@ function toSingleInstanceListItem(instance: RangeInstanceRecord) {
           systemDiskSize: instance.singleInstanceConfig.systemDiskSize,
           quantityIndex: instance.singleInstanceConfig.quantityIndex,
           baseName: instance.singleInstanceConfig.baseName,
+          cloudReleaseDeadline: instance.singleInstanceConfig.cloudReleaseDeadline ?? null,
         }
       : null,
     runtimeCredentials: instance.runtimeCredentials,

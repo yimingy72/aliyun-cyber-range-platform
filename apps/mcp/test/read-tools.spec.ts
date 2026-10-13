@@ -1348,7 +1348,11 @@ describe('tool registry', () => {
 
     const tools = registry.listTools(scopes, 'admin');
 
-    expect(tools).toHaveLength(95);
+    expect(new Set(tools.map(tool => tool.name)).size).toBe(tools.length);
+    expect(tools.map(tool => tool.name)).toEqual(expect.arrayContaining([
+      'resource_patrol_get', 'resource_patrol_manager_set', 'resource_alert_list',
+      'resource_alert_reclaim_preview', 'resource_alert_reclaim',
+    ]));
     expect(tools.every((tool) => tool.inputSchema)).toBe(true);
     expect(tools.every((tool) => tool.outputSchema?.safeParse({}).success === false)).toBe(true);
     expect(

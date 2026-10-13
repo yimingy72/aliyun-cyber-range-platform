@@ -1520,7 +1520,7 @@ export function SingleInstancesScreen({
           <StatusBadge status={instance.status} />
         </AdminDataTableCell>
         <AdminDataTableCell column={columns[5]}>{formatDateTime(instance.createdAt)}</AdminDataTableCell>
-        <AdminDataTableCell column={columns[6]}><span>{formatDateTime(instance.expiresAt)}</span><CloudReleaseStatus deadline={Object.values(instance.resourceSummary?.cloudReleaseDeadlines ?? {})[0]} /></AdminDataTableCell>
+        <AdminDataTableCell column={columns[6]}><span>{formatDateTime(instance.expiresAt)}</span><CloudReleaseStatus deadline={Object.values(instance.resourceSummary?.cloudReleaseDeadlines ?? {})[0] ?? instance.singleInstanceConfig?.cloudReleaseDeadline ?? undefined} /></AdminDataTableCell>
         <AdminDataTableCell column={columns[7]}>{instance.createdBy?.trim() || '暂无'}</AdminDataTableCell>
         <AdminDataTableCell column={columns[8]}>{renderCredentials(instance)}</AdminDataTableCell>
         <AdminDataTableCell column={columns[9]}>{renderInstanceActions(instance, actions)}</AdminDataTableCell>
