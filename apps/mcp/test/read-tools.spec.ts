@@ -577,6 +577,56 @@ describe('tool registry', () => {
     }), expect.anything());
   });
 
+  it('prefers resolved platform image OS metadata when compiling authored templates', async () => {
+    const client = createClientStub();
+    const registry = createToolRegistry(client);
+    (client.listPlatformImages as ReturnType<typeof vi.fn>).mockResolvedValue([{ id: 'asset-nginx', osType: 'linux', platform: 'Ubuntu 24.04' }]);
+
+    const compatibleGraph = structuredClone(authoringGraph);
+    const compatibleHost = compatibleGraph.nodes.find((node) => node.kind === 'ecs')!;
+    if (compatibleHost.kind === 'ecs') {
+      compatibleHost.imageName = 'Windows-compatible Ubuntu';
+      compatibleHost.customPassword = '/Abcd1234';
+    }
+    await registry.callTool('range_template_create', ['templates:write'], { name: '兼容别名靶场', topologyGraph: compatibleGraph });
+    expect(client.createRangeTemplate).toHaveBeenCalledTimes(1);
+
+    const renamedGraph = structuredClone(authoringGraph);
+    const renamedHost = renamedGraph.nodes.find((node) => node.kind === 'ecs')!;
+    (client.listPlatformImages as ReturnType<typeof vi.fn>).mockResolvedValue([{ id: 'asset-nginx', osType: 'windows', platform: 'Windows Server 2022' }]);
+    (client.createRangeTemplate as ReturnType<typeof vi.fn>).mockClear();
+    if (renamedHost.kind === 'ecs') {
+      renamedHost.imageName = 'Server 2022';
+      renamedHost.customPassword = '/Abcd1234';
+    }
+    await expect(registry.callTool('range_template_create', ['templates:write'], { name: '改名靶场', topologyGraph: renamedGraph }))
+      .rejects.toThrow('Windows instance passwords must not start with a forward slash');
+    expect(client.createRangeTemplate).not.toHaveBeenCalled();
+  });
+
+  it('prefers resolved platform image OS metadata when saving an instance draft', async () => {
+    const client = createClientStub();
+    (client.getRangeInstance as ReturnType<typeof vi.fn>).mockResolvedValue({
+      id: 'range-1',
+      name: 'Range',
+      cloudProvider: 'alibaba_cloud',
+      draftRevision: 3,
+      draftTopologyGraph: authoringGraph,
+      draftScenarioTemplateSpec: { metadata: { cloudProvider: 'alibaba_cloud' } },
+    });
+    (client.listPlatformImages as ReturnType<typeof vi.fn>).mockResolvedValue([{ id: 'asset-nginx', osType: 'linux', platform: 'Ubuntu 24.04' }]);
+
+    const graph = structuredClone(authoringGraph);
+    const host = graph.nodes.find((node) => node.kind === 'ecs')!;
+    if (host.kind === 'ecs') {
+      host.imageName = 'Windows-compatible Ubuntu';
+      host.customPassword = '/Abcd1234';
+    }
+
+    await createToolRegistry(client).callTool('range_instance_topology_save', ['ranges:write'], { rangeInstanceId: 'range-1', expectedDraftRevision: 3, topologyGraph: graph });
+    expect(client.saveRangeInstanceDraft).toHaveBeenCalled();
+  });
+
   it('preserves Tencent metadata when compiling an existing instance draft', async () => {
     const client = createClientStub();
     (client.getRangeInstance as ReturnType<typeof vi.fn>).mockResolvedValue({ id: 'tencent-range', name: 'Tencent range', cloudProvider: 'tencent_cloud', draftRevision: 1,
