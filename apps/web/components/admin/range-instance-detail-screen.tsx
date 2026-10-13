@@ -46,7 +46,7 @@ import {
 } from '../../lib/scenario-graph';
 import { nextAvailableSwitchCidr, reconcileHostNicConnections } from '../../lib/scenario-graph-linking';
 import { readHostDns } from '../../lib/host-dns';
-import { buildTopologyDraftPayload } from '../../lib/topology-draft-payload';
+import { buildTemplateImageOsHints, buildTopologyDraftPayload } from '../../lib/topology-draft-payload';
 import { RangeInstanceNodeDirectory, type RangeNodeDnsVerification } from './range-instance-node-directory';
 import { RangeInstanceDetailBodySkeleton, RangeInstanceTopologyLoading } from './range-instance-detail-loading';
 import { AsyncContentState } from './shared/async-content-state';
@@ -1122,13 +1122,15 @@ export function RangeInstanceDetailScreen({
         }
 
         if (job.status === 'succeeded' || job.status === 'failed' || job.status === 'cancelled') {
-          setTrackedUpdateJobId(null);
-          recoveryTriggeredJobsRef.current.delete(jobId);
           screenCache?.invalidate(apiBaseUrl, token, 'range-instances:');
           // Sequence-guarded reload: an older detail response must never overwrite the
-          // fresher terminal snapshot.
+          // fresher terminal snapshot. Tracking only stops after the refresh resolves so
+          // a failed refresh keeps polling and never swallows the terminal message.
           const payload = await reloadDetailSnapshot();
-          if (!isActive || !payload) return;
+          if (!isActive) return;
+          setTrackedUpdateJobId(null);
+          recoveryTriggeredJobsRef.current.delete(jobId);
+          if (!payload) return;
           if (job.jobType === 'update') {
             setSuccessMessage(job.status === 'succeeded' ? '实例配置变更已应用。' : null);
             setErrorMessage(job.status === 'succeeded' ? null : [job.errorSummary || '实例配置变更未完成，请检查任务。', payload.status === 'destroy_failed' ? '部分云变更可能已生效，资源尚未确认全部回收；请查看任务并执行回收。' : ''].filter(Boolean).join(' '));
@@ -1401,6 +1403,7 @@ export function RangeInstanceDetailScreen({
           ...(publicEntry?.protocols ? { publicEntryProtocols: publicEntry.protocols } : {}),
         },
         viewport: topologyViewport,
+        imageOsHints: buildTemplateImageOsHints(platformImageAssets),
       });
 
       const updated = await saveRangeInstanceDraft(apiBaseUrl, session.token, detail.id, {

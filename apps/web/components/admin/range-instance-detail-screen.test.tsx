@@ -1570,6 +1570,53 @@ describe('RangeInstanceDetailScreen', () => {
     expect((await screen.findAllByText('运行中')).length).toBeGreaterThan(0);
   });
 
+  it('keeps polling and surfaces the failure when the terminal refresh fails once', async () => {
+    let detailCall = 0;
+    fetchRangeInstanceDetailMock.mockReset();
+    fetchRangeInstanceDetailMock.mockImplementation(() => {
+      detailCall += 1;
+      if (detailCall === 1) {
+        return Promise.resolve({ id: 'range-1', status: 'pending_create', name: '重试靶场', lastJobId: 'job-create-1', runtimeTopologyGraph: createValidTopologyGraph('host') });
+      }
+      if (detailCall === 2) {
+        return Promise.reject(new Error('503 read failure'));
+      }
+      return Promise.resolve({ id: 'range-1', status: 'running', name: '重试靶场', runtimeTopologyGraph: createValidTopologyGraph('host') });
+    });
+    fetchProvisionJobDetailMock.mockResolvedValue({ job: { id: 'job-create-1', jobType: 'create', status: 'succeeded' }, steps: [] });
+
+    render(<RangeInstanceDetailScreen rangeId="range-1" apiBaseUrl="http://localhost:3001" />);
+
+    expect(await screen.findByText('任务状态刷新失败，正在重试。')).toBeTruthy();
+    expect(await screen.findByText('任务已完成，实例状态已更新。', undefined, { timeout: 5000 })).toBeTruthy();
+    expect((await screen.findAllByText('运行中')).length).toBeGreaterThan(0);
+  });
+
+  it('applies the terminal message only after a delayed guarded refresh resolves', async () => {
+    let resolveTerminal!: (value: unknown) => void;
+    let detailCall = 0;
+    fetchRangeInstanceDetailMock.mockReset();
+    fetchRangeInstanceDetailMock.mockImplementation(() => {
+      detailCall += 1;
+      if (detailCall === 1) {
+        return Promise.resolve({ id: 'range-1', status: 'pending_create', name: '延迟靶场', lastJobId: 'job-create-1', runtimeTopologyGraph: createValidTopologyGraph('host') });
+      }
+      return new Promise((resolve) => {
+        resolveTerminal = resolve;
+      });
+    });
+    fetchProvisionJobDetailMock.mockResolvedValue({ job: { id: 'job-create-1', jobType: 'create', status: 'succeeded' }, steps: [] });
+
+    render(<RangeInstanceDetailScreen rangeId="range-1" apiBaseUrl="http://localhost:3001" />);
+
+    await waitFor(() => expect(detailCall).toBeGreaterThanOrEqual(2));
+    expect(screen.queryByText('任务已完成，实例状态已更新。')).toBeNull();
+
+    resolveTerminal({ id: 'range-1', status: 'running', name: '延迟靶场', runtimeTopologyGraph: createValidTopologyGraph('host') });
+    expect(await screen.findByText('任务已完成，实例状态已更新。')).toBeTruthy();
+    expect((await screen.findAllByText('运行中')).length).toBeGreaterThan(0);
+  });
+
   it('keeps the freshest detail snapshot when a stale recovery reload resolves late', async () => {
     let resolveStaleReload!: (value: unknown) => void;
     let detailCall = 0;

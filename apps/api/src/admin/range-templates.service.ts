@@ -1,6 +1,7 @@
 import { BadRequestException, ConflictException, ForbiddenException, Inject, Injectable, NotFoundException, Optional } from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
 import { preserveOmittedHostPasswords } from './topology-secret-preservation';
+import { resolveTemplateImageOsHints } from './template-image-os-hints';
 import { portableRangeTemplateGraph } from './range-template-portable-graph';
 import { getCurrentCloudWorkspaceScope } from '../auth/cloud-workspace-scope';
 import { isDeepStrictEqual } from 'node:util';
@@ -162,10 +163,11 @@ export class RangeTemplatesService {
     const slug = this.buildServerTemplateSlug(input.name);
     // Only portable graph configuration enters the compiler, never native resource state.
     const graph = portableRangeTemplateGraph(input.topologyGraph);
+    const imageOsHints = await resolveTemplateImageOsHints(this.adminRepository, graph as Record<string, unknown>, input.topologyGraph);
     let compiled: ReturnType<typeof compileTemplateTopology>;
     try {
       compiled = compileTemplateTopology(graph, { ...frozen, name: input.name, slug, version: INTERNAL_TEMPLATE_VERSION,
-        description: input.description ?? '', iacType: 'opentofu' });
+        description: input.description ?? '', iacType: 'opentofu' }, imageOsHints);
     } catch (error) { throw new BadRequestException(error instanceof Error ? error.message : 'Invalid instance draft'); }
     const topology = JSON.parse(JSON.stringify(compiled));
     await this.validateTopologyPayload(topology, currentUser);
@@ -600,8 +602,9 @@ export class RangeTemplatesService {
         ...placementDefaults,
         publicEntryProtocols: input.topologySpec.publicEntry.protocols,
       };
+    const imageOsHints = await resolveTemplateImageOsHints(this.adminRepository, input.topologyGraph as Record<string, unknown>, sourceGraph);
     try {
-      compiled = compileTemplateTopology(input.topologyGraph as ScenarioGraphDraft, compilationMetadata);
+      compiled = compileTemplateTopology(input.topologyGraph as ScenarioGraphDraft, compilationMetadata, imageOsHints);
     } catch (error) {
       throw new BadRequestException(error instanceof Error ? error.message : 'Invalid template topology graph');
     }
@@ -617,7 +620,7 @@ export class RangeTemplatesService {
     }
     const preserved = preserveOmittedHostPasswords(sourceGraph, input.topologyGraph);
     if (preserved !== input.topologyGraph) {
-      Object.assign(canonical, JSON.parse(JSON.stringify(compileTemplateTopology(preserved as ScenarioGraphDraft, compilationMetadata))));
+      Object.assign(canonical, JSON.parse(JSON.stringify(compileTemplateTopology(preserved as ScenarioGraphDraft, compilationMetadata, imageOsHints))));
       canonical.compiledProvisionSpec.topology = { ...(canonical.compiledProvisionSpec.topology as Record<string, unknown>), ...placementDefaults };
     }
     return {

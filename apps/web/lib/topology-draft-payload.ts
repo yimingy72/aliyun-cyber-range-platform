@@ -1,6 +1,7 @@
 import {
   compileTemplateTopology,
   type TemplateAuthoringMetadata,
+  type TemplateImageOsHints,
 } from '@aliyun-cyber-range/scenario-runtime';
 
 import { writeTopologyViewport } from '../components/admin/template-editor/topology-flow-adapter';
@@ -14,7 +15,12 @@ type BuildTopologyDraftPayloadInput = {
   graph: ScenarioGraphDraft;
   metadata: TemplateAuthoringMetadata;
   viewport: TopologyViewport | null;
+  imageOsHints?: TemplateImageOsHints;
 };
+
+export function buildTemplateImageOsHints(assets: Array<{ id: string; osType?: string | null; platform?: string | null }>): TemplateImageOsHints {
+  return Object.fromEntries(assets.map((asset) => [asset.id, { osType: asset.osType ?? null, platform: asset.platform ?? null }]));
+}
 
 export type TopologyDraftPayload = {
   topologyGraph: ScenarioGraphDraft & { viewport?: TopologyViewport };
@@ -28,13 +34,14 @@ export function buildTopologyDraftPayload({
   graph,
   metadata,
   viewport,
+  imageOsHints,
 }: BuildTopologyDraftPayloadInput): TopologyDraftPayload {
   const graphWithViewport = writeTopologyViewport({
     ...graph,
     nodes: graph.nodes,
     edges: graph.edges,
   }, viewport);
-  const compiled = compileTemplateTopology(graphWithViewport, metadata);
+  const compiled = compileTemplateTopology(graphWithViewport, metadata, imageOsHints ?? {});
 
   return {
     topologyGraph: writeTopologyViewport({

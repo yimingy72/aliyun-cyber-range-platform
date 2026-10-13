@@ -7,6 +7,7 @@ import {
   type CompiledTemplatePayload,
   type ScenarioGraphDraft,
   type TemplateAuthoringMetadata,
+  type TemplateImageOsHints,
 } from '@aliyun-cyber-range/scenario-runtime/compiled';
 
 export function validateRangeInstanceDraftPayload(input: {
@@ -14,7 +15,7 @@ export function validateRangeInstanceDraftPayload(input: {
   draftTopologySpec: Record<string, unknown>;
   draftScenarioTemplateSpec: Record<string, unknown>;
   draftCompiledProvisionSpec: Record<string, unknown>;
-}, metadata: TemplateAuthoringMetadata, sourceGraph?: Record<string, unknown> | null): CompiledTemplatePayload {
+}, metadata: TemplateAuthoringMetadata, sourceGraph?: Record<string, unknown> | null, imageOsHints: TemplateImageOsHints = {}): CompiledTemplatePayload {
   if (!isPlainObject(input.draftTopologyGraph)) {
     throw new BadRequestException('draftTopologyGraph must be a plain object');
   }
@@ -40,7 +41,7 @@ export function validateRangeInstanceDraftPayload(input: {
   let compiled: CompiledTemplatePayload;
 
   try {
-    compiled = compileTemplateTopology(input.draftTopologyGraph as ScenarioGraphDraft, metadata);
+    compiled = compileTemplateTopology(input.draftTopologyGraph as ScenarioGraphDraft, metadata, imageOsHints);
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Invalid range instance topology draft';
     throw new BadRequestException(message);
@@ -70,7 +71,7 @@ export function validateRangeInstanceDraftPayload(input: {
   const preserved = preserveOmittedHostPasswords(sourceGraph, input.draftTopologyGraph);
   if (preserved !== input.draftTopologyGraph) {
     // Validate caller snapshots before restoring server-owned opaque secrets and recompiling.
-    return JSON.parse(JSON.stringify(compileTemplateTopology(preserved as ScenarioGraphDraft, metadata))) as CompiledTemplatePayload;
+    return JSON.parse(JSON.stringify(compileTemplateTopology(preserved as ScenarioGraphDraft, metadata, imageOsHints))) as CompiledTemplatePayload;
   }
   return canonicalCompiled;
 }

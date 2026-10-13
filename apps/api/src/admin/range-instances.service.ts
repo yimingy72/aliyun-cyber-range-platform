@@ -36,6 +36,7 @@ import { generateAliyunEcsPassword } from './ecs-password-generator';
 import { signAliyunRpcQuery } from './image-catalog-rpc-signer';
 import { RangeTemplatesService } from './range-templates.service';
 import { validateRangeInstanceDraftPayload } from './range-instance-draft.validation';
+import { resolveTemplateImageOsHints } from './template-image-os-hints';
 import { buildRangeRecoverySummary } from './range-instance-recovery';
 import { SystemConfigService } from './system-config.service';
 import { CidrPoolService } from '../provisioning/cidr-pool.service';
@@ -357,7 +358,7 @@ export class RangeInstancesService {
     }
 
     const metadata = await this.resolveDraftCompilationMetadata(instance, this.readPublicEntryProtocols(input.draftTopologySpec));
-    const compiled = validateRangeInstanceDraftPayload(input, metadata, instance.draftTopologyGraph ?? instance.runtimeTopologyGraph);
+    const compiled = await this.validateDraftPayloadWithImageOs(input, metadata, instance.draftTopologyGraph ?? instance.runtimeTopologyGraph);
     await this.assertNewDraftHostImages(instance, compiled.topologyGraph, currentUser);
     const viewport = this.readDraftViewport(input.draftTopologyGraph);
     const updated = await this.adminRepository.saveRangeInstanceDraft(id, input.expectedDraftRevision, {
@@ -429,7 +430,7 @@ export class RangeInstancesService {
     const pending = (await this.adminRepository.listProvisionJobs()).some(job => job.rangeInstanceId === instance.id && ['pending', 'running'].includes(job.status));
     if (pending) throw new ConflictException('实例存在未完成任务，请等待完成后重新预览。');
     const metadata = await this.resolveDraftCompilationMetadata(instance, this.readPublicEntryProtocols(instance.draftTopologySpec));
-    const compiled = validateRangeInstanceDraftPayload({ draftTopologyGraph: this.normalizeJsonRecord(instance.draftTopologyGraph),
+    const compiled = await this.validateDraftPayloadWithImageOs({ draftTopologyGraph: this.normalizeJsonRecord(instance.draftTopologyGraph),
       draftTopologySpec: this.normalizeJsonRecord(instance.draftTopologySpec), draftScenarioTemplateSpec: this.normalizeJsonRecord(instance.draftScenarioTemplateSpec),
       draftCompiledProvisionSpec: this.normalizeJsonRecord(instance.draftCompiledProvisionSpec) }, metadata);
     const snapshot: ProvisionJobTopologySnapshot = { operation: 'update', draftRevision: input.expectedDraftRevision,
@@ -501,7 +502,7 @@ export class RangeInstancesService {
     const draftCompiledProvisionSpec = this.normalizeJsonRecord(instance.draftCompiledProvisionSpec);
     assertExistingHostBootstrapUnchanged(instance, draftTopologyGraph);
     const metadata = await this.resolveDraftCompilationMetadata(instance, this.readPublicEntryProtocols(draftTopologySpec));
-    const compiled = validateRangeInstanceDraftPayload(
+    const compiled = await this.validateDraftPayloadWithImageOs(
       {
         draftTopologyGraph,
         draftTopologySpec,
@@ -599,7 +600,7 @@ export class RangeInstancesService {
       || account.accountUid !== scope.accountUid || account.defaultRegion !== originalRegion || account.defaultZoneId !== originalZone
       || (context && account.cloudAccountContextId !== context.cloudAccountContextId))
       throw new ConflictException('当前云账号或地域配置已变化，请恢复实例原账号、地域和可用区后另存拓扑。');
-    const compiled = validateRangeInstanceDraftPayload({ draftTopologyGraph: this.normalizeJsonRecord(instance.draftTopologyGraph),
+    const compiled = await this.validateDraftPayloadWithImageOs({ draftTopologyGraph: this.normalizeJsonRecord(instance.draftTopologyGraph),
       draftTopologySpec: this.normalizeJsonRecord(instance.draftTopologySpec), draftScenarioTemplateSpec: this.normalizeJsonRecord(instance.draftScenarioTemplateSpec),
       draftCompiledProvisionSpec: this.normalizeJsonRecord(instance.draftCompiledProvisionSpec) }, frozen);
     const template = await this.rangeTemplatesService.preparePrivateTemplateFromInstance({ name: input.name, description: input.description,
@@ -661,7 +662,7 @@ export class RangeInstancesService {
       throw new ConflictException('Range template has changed; refresh before syncing the template');
     }
 
-    const compiled = validateRangeInstanceDraftPayload(
+    const compiled = await this.validateDraftPayloadWithImageOs(
       {
         draftTopologyGraph: this.normalizeJsonRecord(instance.draftTopologyGraph),
         draftTopologySpec: this.normalizeJsonRecord(instance.draftTopologySpec),
@@ -1188,6 +1189,15 @@ export class RangeInstancesService {
     const accountPreset = (value as { accountPreset?: unknown }).accountPreset;
 
     return accountPreset === undefined || (accountPreset !== null && typeof accountPreset === 'object');
+  }
+
+  private async validateDraftPayloadWithImageOs(
+    input: Parameters<typeof validateRangeInstanceDraftPayload>[0],
+    metadata: Parameters<typeof validateRangeInstanceDraftPayload>[1],
+    sourceGraph?: Record<string, unknown> | null,
+  ) {
+    const imageOsHints = await resolveTemplateImageOsHints(this.adminRepository, input.draftTopologyGraph, sourceGraph);
+    return validateRangeInstanceDraftPayload(input, metadata, sourceGraph, imageOsHints);
   }
 
   private async resolveDraftCompilationMetadata(instance: RangeInstanceRecord, publicEntryProtocols?: TemplateAuthoringMetadata['publicEntryProtocols']): Promise<TemplateAuthoringMetadata> {

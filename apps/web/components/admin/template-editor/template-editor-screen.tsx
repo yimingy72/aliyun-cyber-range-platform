@@ -43,7 +43,7 @@ import type {
   TemplateNode,
   TemplateNodeImageStrategy,
 } from '../../../lib/scenario-graph';
-import { buildTopologyDraftPayload } from '../../../lib/topology-draft-payload';
+import { buildTemplateImageOsHints, buildTopologyDraftPayload } from '../../../lib/topology-draft-payload';
 import { useAdminSession } from '../use-admin-session';
 import { readTopologyViewport, writeTopologyViewport } from './topology-flow-adapter';
 import {
@@ -1345,6 +1345,7 @@ export function TemplateEditorScreen({
       graph: topologyGraph,
       metadata: buildScenarioTemplateMetadata(currentTemplate, currentProvider()),
       viewport: currentViewport,
+      imageOsHints: buildTemplateImageOsHints(platformImageAssets),
     });
   }
 
