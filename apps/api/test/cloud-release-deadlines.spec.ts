@@ -1,7 +1,7 @@
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { createHostCloudReleaseDeadline, assertCloudReleaseDeadlineCanCreate, verifyCloudReleaseDeadlines } from '../src/provisioning/cloud-release-deadlines';
+import { createHostCloudReleaseDeadline, assertCloudReleaseDeadlineCanCreate, verifyCloudReleaseDeadlines, assertPlatformExpirationSupportsCloudDeadline, ALIBABA_MAX_RELEASE_DELAY_MS } from '../src/provisioning/cloud-release-deadlines';
 import { OpenTofuRangeProvisioner, networkPreparationTargets, assertNetworkPreparationPlan } from '../src/provisioning/open-tofu-range-provisioner';
 import { imageRpc } from '../src/admin/aliyun-image-rpc';
 import { requestTencentCloud } from '../src/admin/tencent-cloud-client';
@@ -15,6 +15,16 @@ const deadline = (minutes = 10, provider: 'alibaba_cloud' | 'tencent_cloud' = 'a
 
 afterEach(() => { jest.restoreAllMocks(); jest.clearAllMocks(); });
 describe('immutable cloud release deadline', () => {
+  it('rejects a release past Alibaba maximum while accounting for the fallback buffer and minute rounding', () => {
+    const now = new Date(C), lastRelease = Math.floor((now.getTime() + ALIBABA_MAX_RELEASE_DELAY_MS) / 60_000) * 60_000;
+    const lastExpiry = lastRelease - 5 * 60_000;
+    expect(() => assertPlatformExpirationSupportsCloudDeadline('alibaba_cloud', new Date(lastExpiry).toISOString(), now)).not.toThrow();
+    expect(() => assertPlatformExpirationSupportsCloudDeadline('alibaba_cloud', new Date(lastExpiry + 1).toISOString(), now)).toThrow('1095');
+    expect(() => createHostCloudReleaseDeadline({ provider: 'alibaba_cloud', platformExpiresAt: new Date(lastExpiry + 1).toISOString(), creationPhaseStartedAt: C, sourceProvisionJobId: 'job' })).toThrow('1095');
+    const record = { ...deadline(), platformExpiresAt: new Date(lastExpiry + 1).toISOString(), cloudReleaseAt: new Date(lastRelease + 60_000).toISOString() };
+    expect(() => assertCloudReleaseDeadlineCanCreate(record, now)).toThrow('1095');
+    expect(() => assertPlatformExpirationSupportsCloudDeadline('tencent_cloud', new Date(lastExpiry + 1).toISOString(), now)).not.toThrow();
+  });
   it.each([[10, '2026-10-13T02:33:00Z'], [20, '2026-10-13T02:33:00Z'], [29, '2026-10-13T02:35:00Z'], [60, '2026-10-13T03:06:00Z']])('keeps platform expiry and computes the %i-minute Alibaba fallback with minute rounding', (minutes, cloudReleaseAt) => {
     const record = deadline(minutes as number); expect(record.cloudReleaseAt).toBe(cloudReleaseAt); expect(record.platformExpiresAt).toBe(new Date(Date.parse(C) + Number(minutes) * 60_000).toISOString());
   });

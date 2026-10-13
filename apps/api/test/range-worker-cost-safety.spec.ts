@@ -187,6 +187,22 @@ describe('range worker durable cost safety', () => {
     expect(f.provisioner.create).not.toHaveBeenCalled();
     expect(f.provisioner.destroy).not.toHaveBeenCalled();
   });
+  it('keeps the original range running and records a pre-apply state recovery error without invoking cleanup', async () => {
+    const f = await fixture('destroy');
+    await f.repository.updateProvisionJob(f.job.id, { status: 'failed', finishedAt: new Date() });
+    const before = await f.repository.updateRangeInstance(f.instance.id, { status: 'running', expiresAt: new Date(Date.now() + 60 * 60_000) });
+    const snapshot: any = { operation: 'update', draftRevision: 1, templateModulePath: 'fixture/range', topologyGraph: before.runtimeTopologyGraph,
+      topologySpec: { vpcCidr: '10.0.0.0/16', networkZones: [], hosts: [], publicEntry: {} }, scenarioTemplateSpec: { metadata: {}, topology: {}, networkZones: [], hosts: [] },
+      compiledProvisionSpec: { topology: {}, networkZones: [], hosts: [] }, compiledSpec: { topology: {}, resources: [] } };
+    snapshot.changeApproval = buildRangeChangeApproval(before, snapshot);
+    const update = await f.repository.createProvisionJob({ rangeInstanceId: before.id, jobType: 'update', triggeredBy: 'alice', topologySnapshot: snapshot });
+    await f.repository.updateRangeInstance(before.id, { lastJobId: update.id });
+    f.provisioner.create.mockRejectedValueOnce(new Error('Original host state is missing; recovery is required without recreating the range'));
+    await f.worker.process(update.id);
+    expect(await f.repository.getRangeInstanceById(before.id)).toMatchObject({ status: 'running', resourceSummary: { hostIds: resources.hostIds }, errorSummary: expect.stringContaining('Original host state is missing') });
+    expect(await f.repository.getProvisionJobById(update.id)).toMatchObject({ status: 'failed' });
+    expect(f.provisioner.destroy).not.toHaveBeenCalled();
+  });
 
   it('checks external disk deletion safety before an update can remove a topology node', async () => {
     const f = await fixture('destroy'); const base = f.query.getMockImplementation()!;

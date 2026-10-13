@@ -5,6 +5,8 @@ import type { ResolvedProvisioningRuntimeConfig } from './provisioning.types';
 
 const MINUTE = 60_000;
 const REQUEST_MARGIN_MS = 2 * MINUTE;
+// Conservative three-year bound, including leap years and minute rounding.
+export const ALIBABA_MAX_RELEASE_DELAY_MS = 1095 * 24 * 60 * MINUTE;
 
 function utcTime(value: string) {
   const time = Date.parse(value);
@@ -13,10 +15,20 @@ function utcTime(value: string) {
 }
 const iso = (time: number) => new Date(time).toISOString().replace(/\.\d{3}Z$/, 'Z');
 
+export function assertPlatformExpirationSupportsCloudDeadline(provider: CloudProvider, platformExpiresAt: string, now = new Date()) {
+  const expiresAt = utcTime(platformExpiresAt);
+  if (expiresAt <= now.getTime()) throw new Error('Platform expiry reached before host creation');
+  const latestRelease = Math.ceil((expiresAt + 5 * MINUTE) / MINUTE) * MINUTE;
+  if (provider === 'alibaba_cloud' && latestRelease - now.getTime() > ALIBABA_MAX_RELEASE_DELAY_MS) {
+    throw new Error('阿里云到期时间必须为云端兜底预留 5 分钟及分钟取整余量，云端截止时间不能超过 1095 天。');
+  }
+}
+
 /** Freeze this record before the first host apply; retries reuse it without recalculation. */
 export function createHostCloudReleaseDeadline(input: { provider: CloudProvider; platformExpiresAt: string; creationPhaseStartedAt: string; sourceProvisionJobId: string }): HostCloudReleaseDeadline {
   const expiresAt = utcTime(input.platformExpiresAt), startedAt = utcTime(input.creationPhaseStartedAt);
   if (startedAt >= expiresAt) throw new Error('Platform expiry reached before host creation');
+  assertPlatformExpirationSupportsCloudDeadline(input.provider, input.platformExpiresAt, new Date(startedAt));
   if (!input.sourceProvisionJobId) throw new Error('Cloud release deadline requires its original creation job');
   const deadline = input.provider === 'alibaba_cloud'
     ? Math.ceil(Math.max(expiresAt + 5 * MINUTE, startedAt + 30 * MINUTE + REQUEST_MARGIN_MS) / MINUTE) * MINUTE
@@ -28,6 +40,7 @@ export function createHostCloudReleaseDeadline(input: { provider: CloudProvider;
 export function assertCloudReleaseDeadlineCanCreate(record: HostCloudReleaseDeadline, now = new Date()) {
   if (now.getTime() >= utcTime(record.platformExpiresAt)) throw new Error('Platform expiry reached before host creation');
   const remaining = utcTime(record.cloudReleaseAt) - now.getTime();
+  if (record.provider === 'alibaba_cloud' && remaining > ALIBABA_MAX_RELEASE_DELAY_MS) throw new Error('Frozen Alibaba cloud release deadline exceeds the 1095-day provider limit');
   if (remaining < (record.provider === 'alibaba_cloud' ? 30 * MINUTE + 15_000 : 5 * MINUTE + 15_000))
     throw new Error('Frozen cloud release deadline is too close; it cannot be extended by retry');
 }

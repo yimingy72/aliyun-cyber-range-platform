@@ -40,6 +40,7 @@ import { buildRangeRecoverySummary } from './range-instance-recovery';
 import { SystemConfigService } from './system-config.service';
 import { CidrPoolService } from '../provisioning/cidr-pool.service';
 import { ProvisioningWorkerService } from '../provisioning/provisioning-worker.service';
+import { assertPlatformExpirationSupportsCloudDeadline } from '../provisioning/cloud-release-deadlines';
 import { RangeNetworkDiagnosticsService } from './range-network-diagnostics.service';
 
 const ALICLOUD_ECS_API_VERSION = '2014-05-26';
@@ -252,6 +253,8 @@ export class RangeInstancesService {
     }
 
     this.assertRangeProvisioningEnabled(template.cloudProvider);
+    try { assertPlatformExpirationSupportsCloudDeadline(template.cloudProvider, input.expiresAt); }
+    catch (error) { throw new ConflictException(error instanceof Error ? error.message : '云端截止时间不可用。'); }
     if (account && template.cloudProvider !== account.provider) {
       throw new ConflictException('模板云厂商与当前已验证账号不一致。');
     }
@@ -524,6 +527,11 @@ export class RangeInstancesService {
       templateModulePath,
     };
     const changeApproval = buildRangeChangeApproval(instance, topologySnapshot);
+    if (changeApproval.addedHostKeys.length) {
+      this.assertFutureInstanceExpiration(instance.expiresAt);
+      try { assertPlatformExpirationSupportsCloudDeadline(instance.cloudProvider, instance.expiresAt!.toISOString()); }
+      catch (error) { throw new ConflictException(error instanceof Error ? error.message : '云端截止时间不可用。'); }
+    }
     topologySnapshot.changeApproval = changeApproval;
     const workspaceId = getCurrentCloudWorkspaceId() ?? instance.cloudWorkspaceId ?? 'legacy-unbound';
     const expectedSourceDigest = rangeDraftSourceDigest(instance, actorId, workspaceId);

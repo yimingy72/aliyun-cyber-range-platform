@@ -20,6 +20,7 @@ import { RangeInstanceNodeActionsService } from './range-instance-node-actions.s
 import { SingleInstanceBatchExecutionService } from './single-instance-batch-execution.service';
 import { SingleInstanceNetworkService } from './single-instance-network.service';
 import { assertTencentImagesAvailable } from '../provisioning/tencent-cloud-zone-instance-scheduler';
+import { assertPlatformExpirationSupportsCloudDeadline } from '../provisioning/cloud-release-deadlines';
 import { SystemConfigService, type InstanceTypeAvailabilitySnapshot, type SystemCloudAccountContext } from './system-config.service';
 import type { LaunchSingleInstanceDto } from './dto/single-instance.dto';
 import { ProvisioningWorkerService } from '../provisioning/provisioning-worker.service';
@@ -226,6 +227,8 @@ export class SingleInstancesService {
   async launch(input: LaunchSingleInstanceDto & { expiresAt: string }, currentUserId: string) {
     this.assertFutureInstanceExpiration(input.expiresAt);
     const accountContext = { ...await this.systemConfigService.getExecutionAccountContext() };
+    try { assertPlatformExpirationSupportsCloudDeadline(accountContext.provider, input.expiresAt); }
+    catch (error) { throw new ConflictException(error instanceof Error ? error.message : '云端截止时间不可用。'); }
     if (!accountContext.accountUid || !accountContext.cloudAccountContextId) throw new ConflictException('创建实例前必须配置并验证云账号。');
     if (accountContext.provider === 'tencent_cloud' && new Date(input.expiresAt).getTime() - Date.now() <= 10 * 60_000) throw new ConflictException('腾讯云定时销毁需至少预留十分钟，请延长实例到期时间。');
     await this.requireEnabledPlatformImage(input.platformImageAssetId, currentUserId, accountContext);

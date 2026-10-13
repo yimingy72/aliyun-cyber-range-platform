@@ -5,7 +5,7 @@ import { prepareOpenTofuProviderEnv, migrateAliCloudWorkspaceProvider } from './
 import { createHash, createHmac, randomUUID } from 'node:crypto';
 import { requestTencentCloud } from '../admin/tencent-cloud-client';
 import { assertApprovedRangeUpdatePlan, assertRangeStateOwnership, assertRangeStateMatchesInventory, preserveDeployedRangeHostFacts } from './range-update-plan-safety';
-import { createHostCloudReleaseDeadline, assertCloudReleaseDeadlineCanCreate, verifyCloudReleaseDeadlines } from './cloud-release-deadlines';
+import { createHostCloudReleaseDeadline, assertCloudReleaseDeadlineCanCreate, verifyCloudReleaseDeadlines, assertPlatformExpirationSupportsCloudDeadline } from './cloud-release-deadlines';
 
 import {
   OpenTofuRunner,
@@ -380,6 +380,7 @@ export class OpenTofuRangeProvisioner implements RangeProvisioner {
         const deployed = new Set(originalState?.instances.filter(resource => ['alicloud_instance','tencentcloud_instance'].includes(resource.type)).map(resource => resourceInstanceKey(resource.address)) ?? []);
         const added = variables.hosts.filter((host: any) => !deployed.has(host.key));
         if (added.length) {
+          assertPlatformExpirationSupportsCloudDeadline(input.runtimeConfig?.provider ?? 'alibaba_cloud', input.expiresAt);
           if (Date.parse(input.expiresAt) <= Date.now()) throw new Error('Range expired before network preparation');
           const targets = networkPreparationTargets(planned);
           if (targets.length) {
@@ -1007,6 +1008,10 @@ export class OpenTofuRangeProvisioner implements RangeProvisioner {
     await assertDirectoryExists(moduleDir, 'OpenTofu module path does not exist');
     if (options.preserveWorkspaceState) {
       priorState = await assertWorkspaceCanApply(workspaceDir, input.requirePersistedState === true);
+      if (Object.keys(input.knownResourceSummary?.hostIds ?? {}).length
+        && !priorState?.instances.some(resource => ['alicloud_instance', 'tencentcloud_instance'].includes(resource.type))) {
+        throw new Error('Original host state is missing but its exact platform inventory remains; recovery is required without recreating the range');
+      }
       if (input.runtimeConfig?.provider === 'tencent_cloud') await this.assertTencentWorkspaceIdentity(workspaceDir, input);
     } else {
       if (input.requirePersistedState) throw new Error('OpenTofu state recovery is required before proceeding; persisted workspace was preserved');

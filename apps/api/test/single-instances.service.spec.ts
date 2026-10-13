@@ -46,6 +46,12 @@ function createLaunchFixture() {
 }
 
 describe('SingleInstancesService', () => {
+  it('rejects an excessive Alibaba platform expiry before network preparation or job intake', async () => {
+    const f = createLaunchFixture();
+    await expect(f.service.launch({ ...f.input, expiresAt: new Date(Date.now() + 1100 * 24 * 60 * 60_000).toISOString() }, f.actor.id)).rejects.toThrow('1095');
+    expect(f.network.ensureDefaultProfile).not.toHaveBeenCalled(); expect(f.config.getInstanceTypeAvailabilityInContext).not.toHaveBeenCalled();
+    expect(await f.repository.listProvisionJobs()).toEqual([]);
+  });
   it('shows a targeted original packed artifact safely through the existing instance getter', async () => {
     const fixture = createLaunchFixture();
     const instance = await fixture.repository.createRangeInstance({ name: 'packed-source', cloudProvider: 'tencent_cloud', instanceMode: 'single', ownerUserId: fixture.actor.id,
