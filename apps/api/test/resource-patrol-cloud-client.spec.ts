@@ -23,6 +23,12 @@ describe('resource patrol bounded cloud reads',()=>{
     global.fetch=jest.fn(async()=>response({Code:'InvalidVpcID.NotFound'},404));
     await expect((service as any).list(account,'vpc',['vpc-original'])).rejects.toThrow();
   });
+  it.each(['raw\nprivate content',account.accessKeyId,account.accessKeySecret])('does not copy malformed or credential-bearing cloud codes into diagnostics: %j',async code=>{
+    global.fetch=jest.fn(async()=>response({Code:code,RequestId:'safe-request',Message:'private full cloud error'},400));
+    await expect(new ResourcePatrolCloudClient().verifyAccount(account)).rejects.toMatchObject({
+      action:'GetCallerIdentity',status:400,code:'UNKNOWN',requestId:'safe-request',
+    });
+  });
   it.each([
     {TotalCount:2,RequestId:'page',Instances:{Instance:[]}},
     {TotalCount:0,RequestId:'page',NextToken:'next',Instances:{Instance:[]}},

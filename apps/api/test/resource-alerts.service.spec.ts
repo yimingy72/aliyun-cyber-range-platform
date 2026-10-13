@@ -1,5 +1,5 @@
 import { ResourceAlertsService } from '../src/admin/resource-alerts.service';
-import { ResourcePatrolCloudClient } from '../src/admin/resource-patrol-cloud-client';
+import { CloudPatrolReadError, ResourcePatrolCloudClient } from '../src/admin/resource-patrol-cloud-client';
 import { runInCloudWorkspace } from '../src/auth/cloud-workspace-scope';
 import { createMemoryAdminRepository } from './support/create-memory-admin-repository';
 import { createMemoryResourcePatrolRepository } from './support/create-memory-resource-patrol-repository';
@@ -55,6 +55,19 @@ describe('current-account residual patrol',() => {
     f.cloud.inspect.mockRejectedValue(new Error('incomplete pagination')); await f.service.scanCurrent();
     expect(f.store.alerts[0].status).toBe('pending'); expect(f.store.settingsValue.lastScanError).toBeTruthy();
     f.cloud.inspect.mockResolvedValue([]); await f.service.scanCurrent(); expect(f.store.alerts[0].status).toBe('resolved');
+  });
+  it('shows the bounded API failure receipt and retains alerts without exposing raw error content',async () => {
+    const f=await fixture(); f.cloud.inspect.mockResolvedValue([cloudRow('ecs','i-real')] as never[]); await f.service.scanCurrent();
+    f.cloud.inspect.mockRejectedValue(new CloudPatrolReadError('DescribeVSwitches',403,'Forbidden.RAM','safe-request'));
+    await f.service.scanCurrent();
+    expect(f.store.settingsValue.lastScanError).toContain('DescribeVSwitches');
+    expect(f.store.settingsValue.lastScanError).toContain('HTTP 403，Forbidden.RAM');
+    expect(f.store.settingsValue.lastScanError).toContain('safe-request');
+    expect(f.store.alerts[0].status).toBe('pending');
+    f.cloud.inspect.mockRejectedValue(new Error('private credential or raw cloud response'));
+    await f.service.scanCurrent();
+    expect(f.store.settingsValue.lastScanError).not.toMatch(/private|credential/);
+    expect(f.store.alerts[0].status).toBe('pending');
   });
   it('merges repeat discoveries and rejects non-manager and cross-workspace access',async () => {
     const f=await fixture(); f.cloud.inspect.mockResolvedValue([cloudRow('ecs','i-real')] as never[]); await f.service.scanCurrent(); await f.service.scanCurrent();

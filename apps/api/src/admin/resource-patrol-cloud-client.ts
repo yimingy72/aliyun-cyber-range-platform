@@ -13,7 +13,7 @@ function validRequestId(value: unknown,account: SystemCloudAccountContext): valu
   return typeof value==='string' && /^[A-Za-z0-9][A-Za-z0-9-]{0,127}$/.test(value)
     && ![account.accessKeyId,account.accessKeySecret].some(secret => secret && value.includes(secret));
 }
-class CloudPatrolReadError extends Error {
+export class CloudPatrolReadError extends Error {
   constructor(readonly action: string, readonly status: number, readonly code: string, readonly requestId: string | null) { super(`CLOUD_READ_FAILED:${action}:${status}`); }
 }
 const missingCodes: Partial<Record<PatrolResourceType,string[]>> = {
@@ -294,7 +294,9 @@ export class ResourcePatrolCloudClient {
       { signal: AbortSignal.timeout(30_000) });
     const payload = await response.json() as Record<string,unknown>;
     if (!response.ok || payload.Code || !validRequestId(payload.RequestId,account)) throw new CloudPatrolReadError(action,response.status,
-      typeof payload.Code === 'string' ? payload.Code : 'UNKNOWN', validRequestId(payload.RequestId,account) ? payload.RequestId : null);
+      typeof payload.Code === 'string' && /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(payload.Code)
+        && ![account.accessKeyId,account.accessKeySecret].some(secret => secret && String(payload.Code).includes(secret))
+        ? payload.Code : 'UNKNOWN', validRequestId(payload.RequestId,account) ? payload.RequestId : null);
     return payload;
   }
 }
