@@ -2,6 +2,7 @@ import { RangeNetworkDiagnosticsService } from '../src/admin/range-network-diagn
 import { RangeInstancesService } from '../src/admin/range-instances.service';
 import { RangeTemplatesService } from '../src/admin/range-templates.service';
 import { createMemoryAdminRepository } from './support/create-memory-admin-repository';
+import { signAliyunRpcQuery } from '../src/admin/image-catalog-rpc-signer';
 
 const accountUid = '1234567890123456';
 const user = { id: 'alice', role: 'user' as const };
@@ -52,6 +53,35 @@ function fixture() {
 
 describe('Range network diagnostics scope and data', () => {
   afterEach(() => jest.restoreAllMocks());
+  it('resolves encrypted Alibaba credentials and signs every read with the decrypted secret',async()=>{
+    const s=fixture();Object.assign(s.context,{id:'bound-context',accessKeySecret:'cloud-credential:v1:synthetic-envelope'});
+    const resolved={provider:'alibaba_cloud',accountUid,defaultRegion:'cn-hangzhou',cloudAccountContextId:'bound-context',
+      accessKeyId:s.context.accessKeyId,accessKeySecret:'synthetic-decrypted-secret'};
+    const config={getExecutionAccountContext:jest.fn(async()=>resolved)};
+    const service=new RangeNetworkDiagnosticsService(s.db as never,config as never);
+    const result=await service.get(range as never,user);
+    expect(config.getExecutionAccountContext).toHaveBeenCalledWith({cloudAccountContextId:'bound-context'});
+    for(const request of s.requests){
+      const parameters=Object.fromEntries(request.searchParams);delete parameters.Signature;
+      const expected=new URLSearchParams(signAliyunRpcQuery(parameters,resolved.accessKeySecret));
+      expect(request.searchParams.get('Signature')).toBe(expected.get('Signature'));
+    }
+    expect(JSON.stringify(result)).not.toMatch(/synthetic-envelope|synthetic-decrypted-secret/);
+  });
+  it.each(['provider','account','region','context'] as const)('rejects a mismatched decrypted %s identity before cloud reads',async mismatch=>{
+    const s=fixture();Object.assign(s.context,{id:'bound-context',accessKeySecret:'cloud-credential:v1:synthetic-envelope'});
+    const resolved={provider:mismatch==='provider'?'tencent_cloud':'alibaba_cloud',accountUid:mismatch==='account'?'foreign':accountUid,
+      defaultRegion:mismatch==='region'?'cn-beijing':'cn-hangzhou',cloudAccountContextId:mismatch==='context'?'foreign':'bound-context',
+      accessKeyId:'synthetic-bound-key',accessKeySecret:'synthetic-decrypted-secret'};
+    const service=new RangeNetworkDiagnosticsService(s.db as never,{getExecutionAccountContext:async()=>resolved} as never);
+    await expect(service.get(range as never,user)).rejects.toThrow('resolved frozen account identity mismatch');
+    expect(s.fetchMock).not.toHaveBeenCalled();
+  });
+  it('never signs an encrypted credential without the resolver',async()=>{
+    const s=fixture();s.context.accessKeySecret='cloud-credential:v1:synthetic-envelope';
+    await expect(s.service.get(range as never,user)).rejects.toThrow('encrypted account credential resolver unavailable');
+    expect(s.fetchMock).not.toHaveBeenCalled();
+  });
   it('returns only checked range facts including primary/secondary identities, routes, ACL order and gateway bindings', async () => {
     const s = fixture(); const result = await s.service.get(range as never, user);
     expect(result).toMatchObject({ status: 'succeeded', regionId: 'cn-hangzhou', vpcId: 'vpc-owned', cloudAccountUid: accountUid });

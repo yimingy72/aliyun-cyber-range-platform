@@ -5,6 +5,9 @@
 .playwright-cli
 .superpowers
 .local
+private
+releases
+.releases
 .tmp
 .worktrees
 **/.env

@@ -37,6 +37,9 @@ const { adminSession, replaceMock, router, searchParamsState } = vi.hoisted(() =
   };
 });
 
+const routeState = vi.hoisted(() => ({ active: true }));
+vi.mock('./admin-page-cache', () => ({ useAdminRouteIsActive: () => routeState.active }));
+
 vi.mock('next/navigation', () => ({
   useRouter: () => router,
   useSearchParams: () => new URLSearchParams(searchParamsState.value),
@@ -137,6 +140,7 @@ describe('SingleInstancesScreen list states', () => {
     triggerSingleInstanceActionMock.mockReset();
     replaceMock.mockReset();
     searchParamsState.value = '';
+    routeState.active = true;
     fetchProvisionJobsMock.mockResolvedValue([]);
     fetchPlatformImagesMock.mockResolvedValue({
       items: [{ id: 'platform-image-1', imageId: 'm-123', displayName: 'Ubuntu 24.04 LTS', enabled: true }],
@@ -253,7 +257,7 @@ describe('SingleInstancesScreen list states', () => {
     });
   });
 
-  it('keeps the active snapshot visible and marks the table busy during polling revalidation', async () => {
+  it('silently polls changing instances without replaying unchanged rows or overlapping requests', async () => {
     const pendingRefresh = createDeferred<unknown>();
     const polls: Array<() => void> = [];
     vi.spyOn(window, 'setInterval').mockImplementation((callback, delay) => {
@@ -263,7 +267,7 @@ describe('SingleInstancesScreen list states', () => {
       return 1;
     });
     fetchSingleInstancesMock
-      .mockResolvedValueOnce([activeInstance])
+      .mockResolvedValueOnce([{ ...activeInstance, status: 'creating' }])
       .mockReturnValueOnce(pendingRefresh.promise);
 
     render(<SingleInstancesScreen apiBaseUrl="http://localhost:3001" pollIntervalMs={100} />);
@@ -271,7 +275,7 @@ describe('SingleInstancesScreen list states', () => {
     expect(await screen.findByText('web-lab-01')).toBeTruthy();
 
     await waitFor(() => {
-      expect(polls).toHaveLength(2);
+      expect(polls).toHaveLength(1);
     });
     act(() => {
       polls.at(-1)?.();
@@ -279,12 +283,64 @@ describe('SingleInstancesScreen list states', () => {
 
     expect(fetchSingleInstancesMock).toHaveBeenCalledTimes(2);
     const table = screen.getByRole('table', { name: '实例列表' });
-    expect(table.getAttribute('aria-busy')).toBe('true');
+    const originalBody = table.querySelector('tbody');
+    expect(table.getAttribute('aria-busy')).toBeNull();
     expect(screen.getByText('web-lab-01')).toBeTruthy();
+    act(() => { polls.at(-1)?.(); });
+    expect(fetchSingleInstancesMock).toHaveBeenCalledTimes(2);
 
     await act(async () => {
-      pendingRefresh.resolve([activeInstance]);
+      pendingRefresh.resolve([{ ...activeInstance, status: 'creating' }]);
     });
+    expect(table.querySelector('tbody')).toBe(originalBody);
+  });
+
+  it('does not schedule empty-list polling and uses a quiet minute interval for stable instances', async () => {
+    const interval = vi.spyOn(window, 'setInterval');
+    fetchSingleInstancesMock.mockResolvedValue([]);
+    const empty = render(<SingleInstancesScreen pollIntervalMs={100} />);
+    await screen.findByText('暂无实例');
+    expect(interval.mock.calls.filter(([, delay]) => delay === 100 || delay === 60_000)).toHaveLength(0);
+    empty.unmount();
+
+    fetchSingleInstancesMock.mockResolvedValue([activeInstance]);
+    render(<SingleInstancesScreen pollIntervalMs={100} />);
+    await screen.findByText('web-lab-01');
+    expect(interval).toHaveBeenLastCalledWith(expect.any(Function), 60_000);
+  });
+
+  it('stops rapid polling after a job finishes and pauses when the browser tab or route is hidden', async () => {
+    const callbacks: Array<() => void> = [];
+    let hidden = false;
+    vi.spyOn(document, 'hidden', 'get').mockImplementation(() => hidden);
+    const interval = vi.spyOn(window, 'setInterval').mockImplementation((callback, delay) => {
+      if (delay === 100 || delay === 60_000) callbacks.push(callback as () => void);
+      return callbacks.length;
+    });
+    const clearInterval = vi.spyOn(window, 'clearInterval');
+    fetchSingleInstancesMock.mockResolvedValueOnce([{ ...activeInstance, status: 'creating' }]).mockResolvedValue([activeInstance]);
+    const view = render(<SingleInstancesScreen pollIntervalMs={100} />);
+    await screen.findByText('web-lab-01');
+    expect(interval).toHaveBeenLastCalledWith(expect.any(Function), 100);
+    await act(async () => { callbacks.at(-1)?.(); });
+    expect(interval).toHaveBeenLastCalledWith(expect.any(Function), 60_000);
+    expect(await screen.findByText('运行中')).toBeTruthy();
+
+    hidden = true;
+    fireEvent(document, new Event('visibilitychange'));
+    expect(clearInterval).toHaveBeenLastCalledWith(2);
+    act(() => { callbacks.at(-1)?.(); });
+    expect(fetchSingleInstancesMock).toHaveBeenCalledTimes(2);
+    hidden = false;
+    await act(async () => { fireEvent(document, new Event('visibilitychange')); });
+    expect(fetchSingleInstancesMock).toHaveBeenCalledTimes(3);
+    expect(interval).toHaveBeenLastCalledWith(expect.any(Function), 60_000);
+
+    routeState.active = false;
+    view.rerender(<SingleInstancesScreen pollIntervalMs={100} />);
+    expect(clearInterval).toHaveBeenLastCalledWith(3);
+    fireEvent.focus(window);
+    expect(fetchSingleInstancesMock).toHaveBeenCalledTimes(3);
   });
 
   it('adds an in-table retryable error row ahead of retained rows when revalidation fails', async () => {
@@ -297,7 +353,7 @@ describe('SingleInstancesScreen list states', () => {
       return 1;
     });
     fetchSingleInstancesMock
-      .mockResolvedValueOnce([activeInstance])
+      .mockResolvedValueOnce([{ ...activeInstance, status: 'creating' }])
       .mockReturnValueOnce(failedRefresh.promise)
       .mockResolvedValueOnce([activeInstance]);
 
@@ -305,7 +361,7 @@ describe('SingleInstancesScreen list states', () => {
 
     expect(await screen.findByText('web-lab-01')).toBeTruthy();
     await waitFor(() => {
-      expect(polls).toHaveLength(2);
+      expect(polls).toHaveLength(1);
     });
     act(() => {
       polls.at(-1)?.();
@@ -339,7 +395,7 @@ describe('SingleInstancesScreen list states', () => {
       return 1;
     });
     fetchSingleInstancesMock
-      .mockResolvedValueOnce([activeInstance])
+      .mockResolvedValueOnce([{ ...activeInstance, status: 'creating' }])
       .mockReturnValueOnce(failedRefresh.promise)
       .mockResolvedValueOnce([activeInstance]);
 
@@ -350,7 +406,7 @@ describe('SingleInstancesScreen list states', () => {
     expect(await screen.findByText('暂无实例')).toBeTruthy();
 
     await waitFor(() => {
-      expect(polls).toHaveLength(2);
+      expect(polls).toHaveLength(1);
     });
     act(() => {
       polls.at(-1)?.();

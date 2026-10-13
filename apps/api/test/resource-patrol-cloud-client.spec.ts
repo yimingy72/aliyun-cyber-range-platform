@@ -23,6 +23,12 @@ describe('resource patrol bounded cloud reads',()=>{
     global.fetch=jest.fn(async()=>response({Code:'InvalidVpcID.NotFound'},404));
     await expect((service as any).list(account,'vpc',['vpc-original'])).rejects.toThrow();
   });
+  it.each(['raw\nprivate content',account.accessKeyId,account.accessKeySecret])('does not copy malformed or credential-bearing cloud codes into diagnostics: %j',async code=>{
+    global.fetch=jest.fn(async()=>response({Code:code,RequestId:'safe-request',Message:'private full cloud error'},400));
+    await expect(new ResourcePatrolCloudClient().verifyAccount(account)).rejects.toMatchObject({
+      action:'GetCallerIdentity',status:400,code:'UNKNOWN',requestId:'safe-request',
+    });
+  });
   it.each([
     {TotalCount:2,RequestId:'page',Instances:{Instance:[]}},
     {TotalCount:0,RequestId:'page',NextToken:'next',Instances:{Instance:[]}},
@@ -95,6 +101,46 @@ describe('resource patrol bounded cloud reads',()=>{
     await expect((new ResourcePatrolCloudClient() as any).list(account,'eni',['eni-original'])).resolves.toEqual([
       expect.objectContaining({type:'eni',id:'eni-original'}),
     ]);
+  });
+  it('accepts the documented exact ENI absence code but not a missing parent or credentials',async()=>{
+    global.fetch=jest.fn(async(url:any)=>{
+      expect(new URL(String(url)).searchParams.get('NetworkInterfaceId.1')).toBe('eni-original');
+      return response({RequestId:'exact-eni',Code:'InvalidEniId.NotFound'},404);
+    });
+    await expect((new ResourcePatrolCloudClient() as any).list(account,'eni',['eni-original'])).resolves.toEqual([]);
+    for(const code of ['InvalidVpcId.NotFound','InvalidAccessKeyId.NotFound']) {
+      global.fetch=jest.fn(async()=>response({RequestId:'wrong-source',Code:code},404));
+      await expect((new ResourcePatrolCloudClient() as any).list(account,'eni',['eni-original'])).rejects.toThrow();
+    }
+  });
+  it('does not traverse a released VPC but still checks every recorded child exact ID',async()=>{
+    const sets:Record<string,Record<string,unknown>>={
+      DescribeInstances:{Instances:{Instance:[]}},DescribeDisks:{Disks:{Disk:[]}},
+      DescribeEipAddresses:{EipAddresses:{EipAddress:[]}},DescribeNatGateways:{NatGateways:{NatGateway:[]}},
+      DescribeNetworkInterfaces:{NetworkInterfaceSets:{NetworkInterfaceSet:[]},NextToken:''},
+      DescribeVpcs:{Vpcs:{Vpc:[]}},DescribeVSwitches:{VSwitches:{VSwitch:[]}},
+      DescribeSecurityGroups:{SecurityGroups:{SecurityGroup:[]}},
+    };
+    global.fetch=jest.fn(async(url:any)=>{
+      const query=new URL(String(url)).searchParams,action=query.get('Action')!;
+      expect(query.has('VpcId') && action!=='DescribeVpcs').toBe(false);
+      if(action==='DescribeVSwitches' && query.get('VSwitchId')==='vsw-remaining') {
+        return response({RequestId:'child-exact',TotalCount:1,VSwitches:{VSwitch:[{VSwitchId:'vsw-remaining',VpcId:'vpc-released'}]}});
+      }
+      expect(sets[action]).toBeDefined();
+      return response({RequestId:'bounded-read',TotalCount:0,...sets[action]});
+    });
+    const found=await new ResourcePatrolCloudClient().inspect(account,[{type:'vpc',id:'vpc-released'},{type:'vswitch',id:'vsw-remaining'}]);
+    expect(found).toEqual([expect.objectContaining({type:'vswitch',id:'vsw-remaining'})]);
+    expect((global.fetch as jest.Mock).mock.calls.some(([url])=>new URL(String(url)).searchParams.get('VSwitchId')==='vsw-remaining')).toBe(true);
+  });
+  it('does not treat conflicting tagged and exact VPC observations as a completed check',async()=>{
+    const service=new ResourcePatrolCloudClient();
+    jest.spyOn(service as any,'list').mockImplementation(async(...args:unknown[])=>{
+      const [,type,ids]=args;
+      return type==='vpc' && !ids ? [{type:'vpc',id:'vpc-original',tags:{},raw:{},systemDisk:false,parentId:null,attachedInstanceId:null}] : [];
+    });
+    await expect(service.inspect(account,[{type:'vpc',id:'vpc-original'}])).rejects.toThrow('INCONSISTENT_PARENT_RESOURCE_LOOKUP');
   });
   it('reads every ENI token page and refuses repeated cursors instead of treating truncation as absence',async()=>{
     const service=new ResourcePatrolCloudClient();

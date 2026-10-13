@@ -5,14 +5,16 @@ import type { SessionUserProfile } from './admin-user-auth';
 import { SystemConfigService, type SystemCloudAccountContext } from './system-config.service';
 import { getCurrentCloudWorkspaceScope, requireCurrentCloudWorkspaceId, runInSystemCloudWorkspaceScope } from '../auth/cloud-workspace-scope';
 import { ResourcePatrolRepository } from './resource-patrol.repository';
-import { ResourcePatrolCloudClient, type PatrolCloudResource } from './resource-patrol-cloud-client';
+import { CloudPatrolReadError, ResourcePatrolCloudClient, type PatrolCloudResource } from './resource-patrol-cloud-client';
 import { readPatrolInventories, patrolResourceIdentities, patrolResourceKey, type ProvenInventory } from './resource-patrol-inventory';
 import type { ResourceAlertStatus, ResourceAlertView, ResourceIdentity, ResourceReclaimPreview, StoredResourceAlert } from './resource-alert-types';
 
 const inactive = new Set(['destroyed','create_failed','destroy_failed']);
 const digest = (value: unknown) => createHash('sha256').update(JSON.stringify(value)).digest('hex');
 const sort = (resources: ResourceIdentity[]) => [...resources].sort((a,b) => patrolResourceKey(a).localeCompare(patrolResourceKey(b)));
-const safeError = () => '云端检查未完成或来源已变化，请检查账号权限与网络后重新核验。';
+const safeError = (error: unknown) => error instanceof CloudPatrolReadError
+  ? `阿里云 ${error.action} 检查失败（HTTP ${error.status}，${error.code}；${error.requestId ? `请求 ID ${error.requestId}` : '请求 ID 未核验'}），请检查账号权限与网络后重新核验。`
+  : '云端检查未完成或来源已变化，请检查账号权限与网络后重新核验。';
 
 @Injectable()
 export class ResourceAlertsService {
@@ -123,10 +125,10 @@ export class ResourceAlertsService {
             await assertCurrent();
             // A completed bounded read is required before any absence may close an alert.
             drifts += await this.observeRegion({ ...account, defaultRegion: region }, data, observations, new Date(), assertCurrent, token);
-          } catch { error = safeError(); }
+          } catch (cause) { error = safeError(cause); }
         }
       });
-    } catch { error = safeError(); }
+    } catch (cause) { error = safeError(cause); }
     finally {
       clearInterval(heartbeat);
       await this.store.finish(token, new Date(), regions, error, scanWorkspaceId);

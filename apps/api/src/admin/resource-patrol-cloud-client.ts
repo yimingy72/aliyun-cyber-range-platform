@@ -13,12 +13,12 @@ function validRequestId(value: unknown,account: SystemCloudAccountContext): valu
   return typeof value==='string' && /^[A-Za-z0-9][A-Za-z0-9-]{0,127}$/.test(value)
     && ![account.accessKeyId,account.accessKeySecret].some(secret => secret && value.includes(secret));
 }
-class CloudPatrolReadError extends Error {
+export class CloudPatrolReadError extends Error {
   constructor(readonly action: string, readonly status: number, readonly code: string, readonly requestId: string | null) { super(`CLOUD_READ_FAILED:${action}:${status}`); }
 }
 const missingCodes: Partial<Record<PatrolResourceType,string[]>> = {
   vpc: ['InvalidVpcID.NotFound','InvalidVpcId.NotFound'], vswitch: ['InvalidVSwitchId.NotFound'],
-  eni: ['InvalidNetworkInterfaceId.NotFound'], security_group: ['InvalidSecurityGroupId.NotFound'],
+  eni: ['InvalidNetworkInterfaceId.NotFound','InvalidEniId.NotFound'], security_group: ['InvalidSecurityGroupId.NotFound'],
   eip: ['InvalidAllocationId.NotFound'], nat_gateway: ['InvalidNatGatewayId.NotFound'], network_acl: ['InvalidNetworkAclId.NotFound'],
 };
 const alibaba = {
@@ -83,11 +83,19 @@ export class ResourcePatrolCloudClient {
 
   async inspect(account: SystemCloudAccountContext, known: ResourceIdentity[], candidateIds: ResourceIdentity[] = []): Promise<PatrolCloudResource[]> {
     const inventory = new Map<string, PatrolCloudResource>();
+    const presentKnownVpcs = new Set<string>();
     const remember = (rows: PatrolCloudResource[]) => rows.forEach(row => inventory.set(`${row.type}:${row.id}`, row));
     for (const type of coreTypes) {
       // ACLs do not have a documented portable tag filter: only read proven IDs or parents.
       if (type !== 'network_acl') remember(await this.list(account, type));
-      remember(await this.list(account, type, [...known,...candidateIds].filter(resource => resource.type === type).map(resource => resource.id)));
+      const exact = await this.list(account, type, [...known,...candidateIds].filter(resource => resource.type === type).map(resource => resource.id));
+      remember(exact);
+      if (type === 'vpc') {
+        exact.forEach(resource => presentKnownVpcs.add(resource.id));
+        if (known.some(resource => resource.type === 'vpc' && inventory.has(`vpc:${resource.id}`) && !presentKnownVpcs.has(resource.id))) {
+          throw new Error('INCONSISTENT_PARENT_RESOURCE_LOOKUP');
+        }
+      }
     }
     const parents = [...inventory.values()].filter(resource => resource.type === 'nat_gateway');
     for (const parent of parents) {
@@ -97,7 +105,8 @@ export class ResourcePatrolCloudClient {
     }
     // An owned VPC may contain foreign/untagged dependants. Observe these as candidates,
     // so a whole-range cleanup cannot remove a network that another instance uses.
-    for (const parent of known.filter(resource => resource.type === 'vpc')) {
+    const presentParents = known.filter(resource => resource.type === 'vpc' && presentKnownVpcs.has(resource.id));
+    for (const parent of presentParents) {
       for (const type of ['ecs','vswitch','eni','nat_gateway'] as PatrolResourceType[]) {
         if (account.provider === 'tencent_cloud') remember((await describeTencentResourceInventory(account,
           (type === 'nat_gateway' ? 'nat' : type) as TencentResourceKind, { vpcId: parent.id })).map(row => this.tencent(type, row)));
@@ -106,7 +115,7 @@ export class ResourcePatrolCloudClient {
       if (account.provider === 'alibaba_cloud') remember(await this.aliList(account, 'security_group', { VpcId: parent.id }));
     }
     if (account.provider === 'tencent_cloud') {
-      for (const parent of known.filter(resource => resource.type === 'vpc')) {
+      for (const parent of presentParents) {
         remember((await describeTencentResourceInventory(account, 'network_acl', { vpcId: parent.id })).map(row => this.tencent('network_acl', row)));
       }
       for (const resource of [...known,...candidateIds].filter(resource => resource.type === 'route_table')) {
@@ -121,7 +130,7 @@ export class ResourcePatrolCloudClient {
         }
       }
     } else {
-      for (const parent of known.filter(resource => resource.type === 'vpc')) {
+      for (const parent of presentParents) {
         remember(await this.aliList(account, 'network_acl', { VpcId: parent.id }));
       }
       for (const resource of [...known,...candidateIds].filter(resource => resource.type === 'route_table')) {
@@ -294,7 +303,9 @@ export class ResourcePatrolCloudClient {
       { signal: AbortSignal.timeout(30_000) });
     const payload = await response.json() as Record<string,unknown>;
     if (!response.ok || payload.Code || !validRequestId(payload.RequestId,account)) throw new CloudPatrolReadError(action,response.status,
-      typeof payload.Code === 'string' ? payload.Code : 'UNKNOWN', validRequestId(payload.RequestId,account) ? payload.RequestId : null);
+      typeof payload.Code === 'string' && /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(payload.Code)
+        && ![account.accessKeyId,account.accessKeySecret].some(secret => secret && String(payload.Code).includes(secret))
+        ? payload.Code : 'UNKNOWN', validRequestId(payload.RequestId,account) ? payload.RequestId : null);
     return payload;
   }
 }
