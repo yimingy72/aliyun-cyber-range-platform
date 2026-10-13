@@ -32,7 +32,7 @@ export const resourceAlertTools: ToolDefinition[] = [
     outputSchema: resultOutputSchema(patrol),
     async call(context, args) { return patrol.parse(await context.client.setResourcePatrolManager(args.managerUserId as string | undefined)); } },
   { name: 'resource_alert_list', title: '查询当前账号资源告警', adminOnly: true, readOnlyHint: true,
-    description: '返回当前工作空间准确资源ID、账号、地域、关联实例、首次/最近发现时间及脱敏创建证明。标签只发现候选，unverified不允许回收。已解决仍保留历史证据，不返回密钥、状态文件或脚本。',
+    description: '只返回当前工作空间有完整平台创建证明的资源告警：准确资源ID、账号、地域、关联实例、首次/最近发现时间及脱敏来源。仅有标签、名称或关联网络的未知资产不认领、不展示、不计费。已解决的平台告警保留历史；不返回密钥、状态文件或脚本。',
     requiredScopes: ['settings:read'], inputSchema: z.strictObject({ status: status.optional() }),
     outputSchema: resultOutputSchema(z.array(alert)),
     async call(context, args) { return z.array(alert).parse(await context.client.listResourceAlerts(args.status as ResourceAlertStatus | undefined)); } },

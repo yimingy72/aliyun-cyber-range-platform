@@ -119,7 +119,7 @@ export function ResourceAlertsScreen({ apiBaseUrl = '/api' }: { apiBaseUrl?: str
   if (!session.profile?.isPlatformManager) return <p className="admin-empty">仅平台超管可查看和处理资源告警。</p>;
   const visible = (rows ?? []).filter(row => filter === 'all' || (filter === 'open' ? row.status !== 'resolved' : row.status === filter));
   return <div className="admin-screen"><section className="admin-workbench-surface">
-    <AdminPageHeader title="资源告警" description="核验当前账号的残留资源，预览后确认回收。" action={<Button disabled={loading || busy} variant="outline" onClick={() => void refresh()}><RefreshCw aria-hidden="true" />刷新</Button>} />
+    <AdminPageHeader title="资源告警" description="仅显示有平台创建来源的资源，预览后确认回收。" action={<Button disabled={loading || busy} variant="outline" onClick={() => void refresh()}><RefreshCw aria-hidden="true" />刷新</Button>} />
     <div className="my-4 flex flex-wrap items-center justify-between gap-3 text-sm">
       <div className="min-w-0">
         <span>后台巡检：{patrol?.managerUsername ?? '未指定超管'}</span>
@@ -139,7 +139,7 @@ export function ResourceAlertsScreen({ apiBaseUrl = '/api' }: { apiBaseUrl?: str
       </select>
     </label>
     <AdminDataTable columns={columns} label="资源告警列表" isRefreshing={loading && rows !== null}>
-      {cols => rows === null && !error ? <TableLoadingState columnCount={cols.length} rowCount={5} label="读取资源告警" /> : !visible.length ? <AdminDataTableState columns={cols} variant={error ? 'error' : 'empty'} title={error ? '检查未完成' : '暂无资源告警'} description={error ?? '仅完整云端检查能确认资源状态。'} onRetry={error ? () => void refresh() : undefined} /> :
+      {cols => rows === null && !error ? <TableLoadingState columnCount={cols.length} rowCount={5} label="读取资源告警" /> : !visible.length ? <AdminDataTableState columns={cols} variant={error ? 'error' : 'empty'} title={error ? '检查未完成' : '暂无平台资源告警'} description={error ?? '范围仅限已证明由平台创建的资源；检查状态见上方。'} onRetry={error ? () => void refresh() : undefined} /> :
         visible.map(row => <TableRow key={row.id}>
           <AdminDataTableCell column={cols[0]}><div>{types[row.type] ?? row.type}</div><div className="my-1 break-all whitespace-normal text-xs text-muted-foreground">{row.resourceId}</div><span className={`admin-pill admin-pill-${row.status === 'resolved' ? 'success' : row.status === 'failed' ? 'danger' : 'warning'}`}>{labels[row.status]}</span></AdminDataTableCell>
           <AdminDataTableCell column={cols[1]}><div>{row.accountUid}</div><div className="text-xs text-muted-foreground">{row.regionId}</div>{row.rangeInstanceId ? <span className="mt-1 block truncate" title={row.rangeInstanceId}>{row.rangeName ?? row.rangeInstanceId}</span> : <span className="text-xs">无完整关联记录</span>}</AdminDataTableCell>

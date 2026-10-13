@@ -152,9 +152,9 @@ describe('patrol creation authority is independent of observation', () => {
     const service = new ResourceAlertsService(f.repository, config as any, store, cloud as any);
     await service.scanCurrent();
     expect(cloud.inspect.mock.calls[0][1]).toEqual(expect.arrayContaining([{ type: 'ecs', id: f.ids.new }]));
-    expect(store.alerts[0].status).toBe('unverified');
+    expect(store.alerts).toEqual([]);
     await runInCloudWorkspace(f.scope, async () => {
-      expect((await service.preview({ id: 'manager', isPlatformManager: true } as any, store.alerts[0].id)).reclaimable).toBe(false);
+      expect(await service.list({ id: 'manager', isPlatformManager: true } as any)).toEqual([]);
       expect(await f.repository.listBillingLedgerResources()).toEqual([]);
     });
   });

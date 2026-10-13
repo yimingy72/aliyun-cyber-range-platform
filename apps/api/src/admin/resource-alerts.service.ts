@@ -51,7 +51,16 @@ export class ResourceAlertsService {
   async list(user: SessionUserProfile, input: { status?: ResourceAlertStatus } = {}): Promise<ResourceAlertView[]> {
     this.assertManager(user);
     if (input.status && !['pending','unverified','reclaiming','failed','resolved'].includes(input.status)) throw new BadRequestException('告警状态无效。');
-    return (await this.store.list(input.status)).map(row => this.view(row));
+    const scope = getCurrentCloudWorkspaceScope();
+    if (!scope || 'system' in scope || !scope.accountUid || scope.isReadOnly) return [];
+    const rows = await this.store.list(input.status);
+    if (!rows.length) return [];
+    const { inventories } = await this.inventoryData(scope.accountUid,scope.provider);
+    return rows.flatMap(row => {
+      const owner = this.ownedAlertInventory(row,inventories);
+      return owner ? [this.view({ ...row,rangeName:owner.instance.name,
+        remainingResources:row.remainingResources.filter(resource => this.ownedAlertInventory(row,inventories,resource) === owner) })] : [];
+    });
   }
 
   async preview(user: SessionUserProfile, id: string): Promise<ResourceReclaimPreview> {
@@ -110,9 +119,7 @@ export class ResourceAlertsService {
           try {
             await assertCurrent();
             const known = data.inventories.filter(row => row.context.regionId === region).flatMap(row => row.resources);
-            const candidates = (await this.store.list()).filter(row => row.regionId === region && row.accountUid === target.accountUid && row.status !== 'resolved')
-              .map(row => ({type:row.type,id:row.resourceId}));
-            const observations = await this.cloud.inspect({ ...account, defaultRegion: region }, known,candidates);
+            const observations = await this.cloud.inspect({ ...account, defaultRegion: region }, known);
             await assertCurrent();
             // A completed bounded read is required before any absence may close an alert.
             drifts += await this.observeRegion({ ...account, defaultRegion: region }, data, observations, new Date(), assertCurrent, token);
@@ -152,42 +159,27 @@ export class ResourceAlertsService {
       const source = owners.length === 1 ? owners[0] : null;
       if (resource.type==='eni'&&resource.isPrimary&&resource.attachedInstanceId
         && inventory.some(row=>row.proven.has(`ecs:${resource.attachedInstanceId}`))) continue;
-      if (source && (busyInstances.has(source.instance.id) || !inactive.has(source.instance.status))) continue;
-      if (source && !(await this.unchangedInactive(source.instance))) continue;
-      const contextMatches = source && source.context.cloudAccountUid === account.accountUid;
+      if (!source || source.context.cloudAccountUid !== account.accountUid
+        || !source.birthSources.has(patrolResourceKey(resource))) continue;
+      if (busyInstances.has(source.instance.id) || !inactive.has(source.instance.status)) continue;
+      if (!(await this.unchangedInactive(source.instance))) continue;
       await this.store.observe({ provider: account.provider, accountUid: account.accountUid!, regionId: region,
-        resource, rangeInstanceId: source?.instance.id ?? null, status: contextMatches ? 'pending' : 'unverified', now, leaseToken,
-        reason: contextMatches ? '平台记录已回收或创建失败，但准确库存中的云资源仍存在。'
-          : '云端候选缺少完整创建作业和准确库存证明，仅定位候选，不能删除。',
-        evidence: { recordedInventory: Boolean(contextMatches), sourceJobIds: source?.sourceJobIds ?? [], accountVerified: true,
-          rangeName: source?.instance.name ?? null, cloudAccountContextId: source?.context.cloudAccountContextId ?? null,
+        resource, rangeInstanceId: source.instance.id, status: 'pending', now, leaseToken,
+        reason: '平台记录已回收或创建失败，但准确库存中的云资源仍存在。',
+        evidence: { recordedInventory: true, sourceJobIds: source.sourceJobIds, accountVerified: true,
+          rangeName: source.instance.name, cloudAccountContextId: source.context.cloudAccountContextId,
           parentId: resource.parentId, identity: { type: resource.type, id: resource.id } } });
-      if (source && contextMatches) await this.reconcileResourceBilling(source,resource,account,now,leaseToken,true);
+      await this.reconcileResourceBilling(source,resource,account,now,leaseToken,true);
       drifts++;
     }
     for (const alert of existing.filter(row => row.status !== 'resolved')) {
       await assertCurrent();
-      const owner = inventory.find(row => row.proven.has(`${alert.type}:${alert.resourceId}`));
-      if (owner && busyInstances.has(owner.instance.id)) continue;
-      if (owner && !(await this.unchangedInactive(owner.instance))) continue;
-      // Tag candidates are never closed on tag disappearance; known inventory IDs were independently queried.
-      if (owner && !observed.has(`${alert.type}:${alert.resourceId}`)) {
+      const owner = this.ownedAlertInventory(alert,inventory);
+      if (!owner || busyInstances.has(owner.instance.id)) continue;
+      if (!(await this.unchangedInactive(owner.instance))) continue;
+      if (!observed.has(`${alert.type}:${alert.resourceId}`)) {
         await this.reconcileResourceBilling(owner,{type:alert.type,id:alert.resourceId},account,now,leaseToken,false);
         await this.store.resolve(alert.id, now, leaseToken);
-      }
-      else if (!owner && !observed.has(`${alert.type}:${alert.resourceId}`)
-        && (['ecs','disk','eip','nat_gateway','eni','vpc','vswitch','security_group','network_acl','route_table'].includes(alert.type)
-          || ['snat_entry','dnat_entry'].includes(alert.type) && inventory.some(row => row.resources.some(resource => resource.type === 'nat_gateway'
-            && resource.id === alert.evidence.parentId)))) {
-        // Recheck the exact ID twice: missing tags never prove absence or grant deletion authority.
-        const identity = {type:alert.type,id:alert.resourceId};
-        const parents = inventory.flatMap(row => row.resources);
-        await assertCurrent();
-        if ((await this.cloud.exact(account,[identity],parents)).length) continue;
-        await assertCurrent();
-        if ((await this.cloud.exact(account,[identity],parents)).length) continue;
-        await assertCurrent();
-        await this.store.resolve(alert.id,new Date(),leaseToken);
       }
       else if (alert.status === 'reclaiming' && alert.jobId) {
         const job = data.jobs.find(job => job.id === alert.jobId);
@@ -203,9 +195,7 @@ export class ResourceAlertsService {
     const scope = getCurrentCloudWorkspaceScope();
     if (!scope || 'system' in scope || scope.isReadOnly || scope.accountUid !== alert.accountUid || scope.provider !== alert.provider) throw new ConflictException('告警与当前云账号空间不一致。');
     const data = await this.inventoryData(alert.accountUid,alert.provider);
-    const owners = data.inventories.filter(row => row.instance.id === alert.rangeInstanceId && row.context.regionId === alert.regionId
-      && row.proven.has(`${alert.type}:${alert.resourceId}`));
-    const inventory = owners.length === 1 ? owners[0] : null;
+    const inventory = this.ownedAlertInventory(alert,data.inventories);
     let reason: string | null = null;
     if (!inventory || !alert.evidenceSummary.recordedInventory) reason = '缺少完整创建来源和准确库存证明，不能删除。';
     else if (!inactive.has(inventory.instance.status) || data.jobs.some(job => job.rangeInstanceId === inventory.instance.id && ['pending','running'].includes(job.status))) reason = '原实例仍在使用或有活动作业，不能按残留回收。';
@@ -250,6 +240,15 @@ export class ResourceAlertsService {
     if (!current || !inactive.has(current.status) || current.updatedAt.getTime() !== observed.updatedAt.getTime()) return false;
     const job = current.lastJobId ? await this.repository.getProvisionJobById(current.lastJobId) : null;
     return !job || !['pending','running'].includes(job.status);
+  }
+
+  private ownedAlertInventory(alert: StoredResourceAlert, inventories: ProvenInventory[],
+    resource: ResourceIdentity = {type:alert.type,id:alert.resourceId}) {
+    const owners = inventories.filter(row => row.instance.cloudWorkspaceId === alert.cloudWorkspaceId
+      && row.instance.cloudProvider === alert.provider && row.context.provider === alert.provider
+      && row.context.cloudAccountUid === alert.accountUid && row.context.regionId === alert.regionId
+      && row.proven.has(patrolResourceKey(resource)) && row.birthSources.has(patrolResourceKey(resource)));
+    return owners.length === 1 && owners[0].instance.id === alert.rangeInstanceId ? owners[0] : null;
   }
 
   private async reconcileResourceBilling(source: ProvenInventory, resource: ResourceIdentity, account: SystemCloudAccountContext,
