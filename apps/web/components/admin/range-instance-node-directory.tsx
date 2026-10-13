@@ -10,6 +10,8 @@ import { TableRow } from '@/components/ui/table';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { AdminDataTable, AdminDataTableCell, AdminDataTableState, type AdminDataColumn } from './shared/admin-data-table';
 import { TableLoadingState } from './shared/table-loading-state';
+import { CloudReleaseStatus } from './shared/cloud-release-status';
+import type { HostCloudReleaseDeadline } from '@aliyun-cyber-range/platform-api-client';
 
 type NodeActionName = 'start' | 'stop' | 'reboot' | 'open-vnc' | 'reset' | 'pack-image' | 'verify-dns';
 
@@ -38,6 +40,7 @@ type RangeInstanceWorkbenchNode = {
   password?: string;
   imageName?: string;
   expiresAt?: string;
+  cloudReleaseDeadline?: HostCloudReleaseDeadline;
   createdAt?: string;
   dns?: { servers: string[]; nicIds: string[]; domain?: string };
   dnsVerification?: RangeNodeDnsVerification;
@@ -164,7 +167,7 @@ export function RangeInstanceNodeDirectory({
                   </Button>
                 </div>
               </AdminDataTableCell>
-              <AdminDataTableCell column={columns[5]!}>{node.expiresAt || '暂无'}</AdminDataTableCell>
+              <AdminDataTableCell column={columns[5]!}><span>{node.expiresAt || '暂无'}</span><CloudReleaseStatus deadline={node.cloudReleaseDeadline} /></AdminDataTableCell>
               <AdminDataTableCell column={columns[6]!}>{node.createdAt || '暂无'}</AdminDataTableCell>
               <AdminDataTableCell column={columns[7]!}>
                 {allowActions ? <div className="flex flex-wrap items-center justify-start gap-1">

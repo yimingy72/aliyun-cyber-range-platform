@@ -24,6 +24,9 @@ export function resolveDelegatedScopes(role: SessionUserProfile['role'], tokenSc
 type ScopeRule = { method: string; path: RegExp; all?: string[]; any?: string[] };
 const metadataScopes = (namespace: string) => [...userScopes, ...adminScopes].filter(scope => scope.startsWith(`${namespace}:`));
 const rules: ScopeRule[] = [
+  { method: 'GET', path: /^\/admin\/resource-alerts(?:\/patrol|\/[^/]+\/preview)?$/, all: ['settings:read'] },
+  { method: 'POST', path: /^\/admin\/resource-alerts\/patrol$/, all: ['settings:write'] },
+  { method: 'POST', path: /^\/admin\/resource-alerts\/[^/]+\/reclaim$/, all: ['settings:write', 'ranges:destroy', 'instances:destroy'] },
   // Own session/workspace metadata is required to resolve the target before a composite tool operates.
   { method: 'GET', path: /^\/admin\/(?:session|cloud-workspaces\/current)$/ },
   { method: 'GET', path: /^\/admin\/cloud-workspaces$/, all: ['settings:read'] },

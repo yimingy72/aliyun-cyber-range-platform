@@ -22,6 +22,7 @@ description: 通过 aliyun-cyber-range-platform MCP 操作阿里云或腾讯云�
 | 用户管理 | `user-management` | [空间内用户、角色和状态](./references/products/user-management.md) |
 | 账单费用 | `billing` | [官方费用、平台归属和待核对状态](./references/products/billing.md) |
 | 基础配置 | `settings` | [账号绑定、工作空间切换和地域](./references/products/settings.md) |
+| 资源告警 | `resource-alerts` | [当前账号巡检、来源核验和确认回收](./references/products/resource-alerts.md) |
 
 - 查询已有模板、查看 VPC/ACL、管理模板名称或发布状态：直接走相应只读/管理工具，无需 `RangeDesign/v1`。
 - 新建或替换模板拓扑：先读靶场编排参考。用户提供 YAML 时严格解析 `RangeDesign/v1`，拒绝重复键、截断字段和歧义；使用可见平台镜像转换为完整 `topologyGraph`。既有完整图可基于最新详情修改，不要求往返重写成 YAML。

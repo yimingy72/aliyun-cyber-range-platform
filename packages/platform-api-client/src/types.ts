@@ -198,6 +198,7 @@ export type RangeInstanceNetworkDiagnostics = Readonly<{
   securityGroups: NetworkDiagnosticRows;
 }>;
 export type RangeInstance = Record<string, unknown> & {
+  resourceSummary?: { cloudReleaseDeadlines?: Record<string, import('./resource-alerts').HostCloudReleaseDeadline>; [key: string]: unknown } | null;
   id: string;
   instanceMode?: 'range' | 'single';
   networkDiagnostics?: RangeInstanceNetworkDiagnostics;
@@ -414,6 +415,11 @@ export type ResetAdminUserPasswordInput = {
 };
 
 export type PlatformApiClientLike = {
+  getResourcePatrol(): Promise<import('./resource-alerts').ResourcePatrol>;
+  setResourcePatrolManager(managerUserId: string): Promise<import('./resource-alerts').ResourcePatrol>;
+  listResourceAlerts(status?: import('./resource-alerts').ResourceAlertStatus): Promise<import('./resource-alerts').ResourceAlert[]>;
+  previewResourceReclaim(alertId: string): Promise<import('./resource-alerts').ResourceReclaimPreview>;
+  reclaimResourceAlert(alertId: string, planDigest: string, operation: OperationRequest): Promise<import('./resource-alerts').ResourceReclaimResult>;
   listRangeTemplates(view?: RangeTemplateView): Promise<RangeTemplate[]>;
   getRangeTemplate(id: string): Promise<RangeTemplate | null>;
   createRangeTemplate(payload: CreateRangeTemplateInput, operation?: OperationRequest): Promise<RangeTemplate>;

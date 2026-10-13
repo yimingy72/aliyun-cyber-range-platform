@@ -22,7 +22,7 @@ import { buildBillingTags } from '../admin/billing-tagging';
 import { RangeTemplatesService } from '../admin/range-templates.service';
 import { releaseRangeInstanceBillingLedger, syncRangeInstanceBillingLedger } from '../admin/billing-ledger-sync';
 import { retiredResourceInventory, retiredBillableIds } from './retired-resource-inventory';
-import { readAttachedDiskInventory, mergeDiskInventory, assertDiskInventorySafe, inventoryDiskIds } from '../admin/instance-disk-inventory';
+import { readAttachedDiskInventory, mergeDiskInventory, assertDiskInventorySafe, inventoryDiskIds, verifyCloudReleaseSystemDiskPolicies } from '../admin/instance-disk-inventory';
 import { describeTencentResourceInventory, readTencentAttachedDiskInventory } from '../admin/tencent-cloud-resources';
 import { TencentCloudRequestError } from '../admin/tencent-cloud-client';
 import { signAliyunRpcQuery } from '../admin/image-catalog-rpc-signer';
@@ -1108,6 +1108,7 @@ export class ProvisioningWorkerService {
       summary = mergeDiskInventory(summary, hostKey, disks, instanceId);
       inventories.push(disks);
     }
+    summary = verifyCloudReleaseSystemDiskPolicies(summary);
     const persisted = await this.updateRangeForClaim(job, { resourceSummary: summary });
     await this.recordRangeResourceInventory(job, summary);
     await syncRangeInstanceBillingLedger({ repository: this.adminRepository, instance: persisted, resourceSummary: summary,

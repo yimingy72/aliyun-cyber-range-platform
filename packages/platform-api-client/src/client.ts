@@ -1,3 +1,4 @@
+import type { ResourceAlert, ResourceAlertStatus, ResourcePatrol, ResourceReclaimPreview, ResourceReclaimResult } from './resource-alerts';
 import type {
   AdminUser,
   BillingAnomaly,
@@ -72,6 +73,20 @@ export class PlatformApiError extends Error {
 }
 
 export class PlatformApiClient implements PlatformApiClientLike {
+  getResourcePatrol() { return this.request<ResourcePatrol>('/admin/resource-alerts/patrol'); }
+  setResourcePatrolManager(managerUserId: string) {
+    return this.request<ResourcePatrol>('/admin/resource-alerts/patrol', { method: 'POST', body: JSON.stringify({ managerUserId }) });
+  }
+  listResourceAlerts(status?: ResourceAlertStatus) {
+    return this.request<ResourceAlert[]>(`/admin/resource-alerts${status ? `?status=${encodeURIComponent(status)}` : ''}`);
+  }
+  previewResourceReclaim(alertId: string) {
+    return this.request<ResourceReclaimPreview>(`/admin/resource-alerts/${encodeURIComponent(alertId)}/preview`);
+  }
+  reclaimResourceAlert(alertId: string, planDigest: string, operation: OperationRequest) {
+    return this.request<ResourceReclaimResult>(`/admin/resource-alerts/${encodeURIComponent(alertId)}/reclaim`,
+      { method: 'POST', body: JSON.stringify({ planDigest }), operation });
+  }
   private readonly baseUrl: string;
   private readonly token: string;
   private readonly fetchImpl: typeof fetch;

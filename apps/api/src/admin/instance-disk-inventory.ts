@@ -116,3 +116,17 @@ export function assertDiskInventorySafe(inventory: AttachedDiskInventory, destro
   if (inventory.unverifiedDisks.some(disk => !destroying || disk.deleteWithInstance !== false))
     throw new Error('Attached disk ownership is unverified; preserve resource inventory before billing or deleting the ECS');
 }
+export function verifyCloudReleaseSystemDiskPolicies(summary: RangeResourceSummary): RangeResourceSummary {
+  if (!summary.cloudReleaseDeadlines) return summary;
+  const deadlines = structuredClone(summary.cloudReleaseDeadlines);
+  for (const [key, record] of Object.entries(deadlines)) {
+    if (record.status !== 'verified') continue;
+    const id = summary.hostIds?.[key];
+    if (!id || record.instanceId !== id || !hasVerifiedSystemDiskReleasePolicy(summary, id)) {
+      record.status = 'unverified';
+      record.reason = 'system_disk_release_policy_unverified';
+      delete record.verifiedAt;
+    }
+  }
+  return { ...summary, cloudReleaseDeadlines: deadlines };
+}

@@ -659,6 +659,7 @@ function toSingleInstanceListItem(instance: RangeInstanceRecord) {
           vpcId: instance.resourceSummary.vpcId ?? null,
           subnetIds: instance.resourceSummary.subnetIds ?? null,
           hostIds: instance.resourceSummary.hostIds ?? null,
+          cloudReleaseDeadlines: instance.resourceSummary.cloudReleaseDeadlines ?? null,
           resolvedImageId: instance.resourceSummary.resolvedImageId ?? null,
           resolvedInstanceType: instance.resourceSummary.resolvedInstanceType ?? null,
         }

@@ -216,6 +216,7 @@ export type SingleInstanceConfig = {
 };
 
 export type RangeResourceSummary = {
+  cloudReleaseDeadlines?: Record<string, import('@aliyun-cyber-range/platform-api-client').HostCloudReleaseDeadline>;
   mode?: 'dry-run' | 'opentofu' | 'ecs-native' | null;
   modulePath?: string | null;
   workspaceDir?: string | null;
