@@ -583,10 +583,18 @@ export class ProvisioningWorkerService {
           return;
         }
         if (frozen) await this.assertRangeSnapshotImages(instance, frozen);
+        // A create/retry replay over an already-applied workspace is a frozen
+        // no-op replay, not a new topology change: the original launch snapshot
+        // is its own approval. A real host change still fails the plan checks.
+        const replayApproval = (job.jobType === 'retry' || job.retryCount > 0) && topologyGraph && compiledProvisionSpec
+          ? buildRangeChangeApproval(instance, { topologyGraph: topologyGraph as Record<string, unknown>,
+              compiledProvisionSpec: compiledProvisionSpec as Record<string, unknown> } as ProvisionJobTopologySnapshot)
+          : null;
         const result = await this.rangeProvisioner.create({
           ...failedCreateCleanupInput,
           knownResourceSummary: (await this.adminRepository.getRangeInstanceById(instance.id))?.resourceSummary ?? undefined,
           preserveWorkspaceState: job.jobType === 'retry' || job.retryCount > 0,
+          ...(replayApproval ? { changeApproval: replayApproval } : {}),
           onHostCreationPhase: deadlines => this.persistHostCloudReleaseDeadlines(job, deadlines, signal),
           onResourceCreated: event => this.persistRangeCreationReceipt(job, instance, accountContext, event, signal),
           onApplyStart: async () => {
