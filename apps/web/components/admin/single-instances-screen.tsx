@@ -566,6 +566,8 @@ export function SingleInstancesScreen({
   const [jumpPageValue, setJumpPageValue] = useState('1');
   const instanceTypeAvailabilityRequestRef = useRef(0);
   const listRequestIdRef = useRef(0);
+  const pollPendingRef = useRef(false);
+  const rowSnapshotRef = useRef<Partial<Record<ListMode, string>>>({});
   const loadedListModeRef = useRef<ListMode | null>(null);
   const copiedPasswordTimerRef = useRef<number | null>(null);
   const consumedPrefillRef = useRef<string | null>(null);
@@ -605,7 +607,7 @@ export function SingleInstancesScreen({
       : load();
   }
 
-  async function refreshSingleInstanceRows(token: string, nextListMode: ListMode, force = false) {
+  async function refreshSingleInstanceRows(token: string, nextListMode: ListMode, force = false, quiet = false) {
     const requestId = listRequestIdRef.current + 1;
     const hasCurrentSnapshot = loadedListModeRef.current === nextListMode;
     const cachedRows = screenCache?.read<SingleInstanceRows>(apiBaseUrl, token, `single-instances:${nextListMode}`);
@@ -616,6 +618,7 @@ export function SingleInstancesScreen({
       setBatchGroups(cachedRows.data.batchGroups);
       setInstances(cachedRows.data.instances);
       setJobs(cachedRows.data.jobs);
+      rowSnapshotRef.current[nextListMode] = JSON.stringify(cachedRows.data);
       loadedListModeRef.current = nextListMode;
       setLoadedListMode(nextListMode);
       setIsLoading(false);
@@ -623,9 +626,9 @@ export function SingleInstancesScreen({
       return cachedRows.data;
     }
 
-    if (hasCurrentSnapshot) {
+    if (hasCurrentSnapshot && !quiet) {
       setIsRefreshing(true);
-    } else {
+    } else if (!hasCurrentSnapshot) {
       setIsLoading(true);
     }
 
@@ -636,12 +639,16 @@ export function SingleInstancesScreen({
         return nextRows;
       }
 
-      setBatchGroups(nextRows.batchGroups);
-      setInstances(nextRows.instances);
-      setJobs(nextRows.jobs);
+      const snapshot = JSON.stringify(nextRows);
+      if (!hasCurrentSnapshot || rowSnapshotRef.current[nextListMode] !== snapshot) {
+        setBatchGroups(nextRows.batchGroups);
+        setInstances(nextRows.instances);
+        setJobs(nextRows.jobs);
+        rowSnapshotRef.current[nextListMode] = snapshot;
+        if (!quiet) markTableContentUpdated(nextListMode);
+      }
       loadedListModeRef.current = nextListMode;
       setLoadedListMode(nextListMode);
-      markTableContentUpdated(nextListMode);
       return nextRows;
     } catch (error: unknown) {
       if (requestId === listRequestIdRef.current && !isUnauthorizedError(error)) {
@@ -667,6 +674,7 @@ export function SingleInstancesScreen({
       setInstances([]);
       setJobs([]);
       loadedListModeRef.current = null;
+      rowSnapshotRef.current = {};
       setLoadedListMode(null);
       setTableContentVersions({ active: 0, history: 0 });
       setListErrorMessage(null);
@@ -765,25 +773,52 @@ export function SingleInstancesScreen({
     };
   }, [apiBaseUrl, isPageActive, router, screenCache, session.isReady, session.token]);
 
+  const allListedInstances = [...instances, ...batchGroups.flatMap((group) => group.instances)];
+  const hasChangingInstances = allListedInstances.some((instance) =>
+    ['pending_create', 'creating', 'pending_destroy', 'destroying'].includes(instance.status),
+  );
+  const hasListedInstances = allListedInstances.length > 0;
+
   useEffect(() => {
-    if (!isPageActive || !session.isReady || !session.token || pollIntervalMs <= 0 || listMode === 'history') {
+    if (!isPageActive || !session.isReady || !session.token || pollIntervalMs <= 0 || listMode === 'history' || loadedListMode !== listMode) {
       return;
     }
 
     const token = session.token;
-    const timer = window.setInterval(() => {
-      void refreshSingleInstanceRows(token, listMode, true).catch((error: unknown) => {
-        if (isUnauthorizedError(error)) {
+    let active = true;
+    let timer: number | undefined;
+    const refresh = () => {
+      if (!active || document.hidden || pollPendingRef.current) return;
+      pollPendingRef.current = true;
+      void refreshSingleInstanceRows(token, listMode, true, true).catch((error: unknown) => {
+        if (active && isUnauthorizedError(error)) {
           session.logout();
           router.replace('/admin/login');
         }
-      });
-    }, pollIntervalMs);
+      }).finally(() => { pollPendingRef.current = false; });
+    };
+    const startTimer = () => {
+      if (!document.hidden && hasListedInstances) {
+        timer = window.setInterval(refresh, hasChangingInstances ? pollIntervalMs : Math.max(pollIntervalMs, 60_000));
+      }
+    };
+    const handleVisibility = () => {
+      window.clearInterval(timer);
+      timer = undefined;
+      if (!document.hidden) refresh();
+      startTimer();
+    };
+    startTimer();
+    document.addEventListener('visibilitychange', handleVisibility);
+    window.addEventListener('focus', refresh);
 
     return () => {
+      active = false;
       window.clearInterval(timer);
+      document.removeEventListener('visibilitychange', handleVisibility);
+      window.removeEventListener('focus', refresh);
     };
-  }, [isPageActive, listMode, loadedListMode, pollIntervalMs, router, session, session.isReady, session.token]);
+  }, [apiBaseUrl, hasChangingInstances, hasListedInstances, isPageActive, listMode, loadedListMode, pollIntervalMs, router, screenCache, session.isReady, session.logout, session.token]);
 
   useEffect(() => {
     return () => {
