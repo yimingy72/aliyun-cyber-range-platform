@@ -81,7 +81,16 @@ export class RangeNetworkDiagnosticsService {
     const context = await this.prisma.cloudAccountContext.findUnique({ where: { provider_accountUid_regionId: { provider: 'alibaba_cloud', accountUid, regionId } } });
     if (!context) fail('context', 'bound account context not found');
     same(context.accountUid, accountUid, 'context'); same(context.regionId, regionId, 'context');
-    const credentials: Context = { accountUid, regionId, accessKeyId: string(context.accessKeyId, 'context'), accessKeySecret: string(context.accessKeySecret, 'context') };
+    let credentials: Context;
+    if (context.accessKeySecret.startsWith('cloud-credential:v1:')) {
+      if (!this.systemConfigService) fail('context', 'encrypted account credential resolver unavailable');
+      const resolved = await this.systemConfigService.getExecutionAccountContext({ cloudAccountContextId: context.id });
+      if (resolved.provider !== 'alibaba_cloud' || resolved.accountUid !== accountUid || resolved.defaultRegion !== regionId
+        || resolved.cloudAccountContextId !== context.id) fail('context', 'resolved frozen account identity mismatch');
+      credentials = { accountUid,regionId,accessKeyId:string(resolved.accessKeyId,'context'),accessKeySecret:string(resolved.accessKeySecret,'context') };
+    } else {
+      credentials = { accountUid, regionId, accessKeyId: string(context.accessKeyId, 'context'), accessKeySecret: string(context.accessKeySecret, 'context') };
+    }
     const caller = await this.rpc(credentials, 'sts', 'GetCallerIdentity', {});
     same(uid(caller.AccountId, 'GetCallerIdentity'), accountUid, 'GetCallerIdentity');
 
