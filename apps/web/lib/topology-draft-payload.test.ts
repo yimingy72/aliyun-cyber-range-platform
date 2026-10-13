@@ -164,6 +164,23 @@ describe('buildTopologyDraftPayload', () => {
     expect(payload.compiledProvisionSpec.eips.filter((eip) => eip.key === 'eip-snat-shared')).toHaveLength(provider === 'tencent_cloud' ? 1 : 0);
   });
 
+  it('rejects Windows host passwords starting with a forward slash without affecting Linux hosts', () => {
+    const windowsGraph = createValidGraph();
+    const windowsHost = windowsGraph.nodes.find((node) => node.kind === 'ecs')!;
+    windowsHost.imageName = 'Windows Server 2022';
+    windowsHost.customPassword = '/Abcd1234';
+
+    expect(() => buildTopologyDraftPayload({ graph: windowsGraph, metadata: validMetadata, viewport: null }))
+      .toThrow('Windows instance passwords must not start with a forward slash');
+
+    const linuxGraph = createValidGraph();
+    const linuxHost = linuxGraph.nodes.find((node) => node.kind === 'ecs')!;
+    linuxHost.imageName = 'Ubuntu 24.04 LTS';
+    linuxHost.customPassword = '/Abcd1234';
+
+    expect(() => buildTopologyDraftPayload({ graph: linuxGraph, metadata: validMetadata, viewport: null })).not.toThrow();
+  });
+
   it('rejects duplicate DNAT protocol and external port pairs', () => {
     const graph = createValidGraph();
     const switchNode = graph.nodes.find((node) => node.id === 'switch-dmz')!;

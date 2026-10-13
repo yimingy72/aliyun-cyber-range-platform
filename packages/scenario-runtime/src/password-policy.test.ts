@@ -12,7 +12,7 @@ describe('validateAliyunEcsPassword', () => {
   });
 
   it('accepts documented special characters', () => {
-    for (const value of ['Abcd1234!', '(Abc1234)', '~Abc1234', 'A1!|bcd', "Abc1!'def", 'Abcd1234/']) {
+    for (const value of ['Abcd1234!', '(Abc1234)', '~Abc1234', 'A1!|bcde', "Abc1!'def", 'Abcd1234/']) {
       expect(validateAliyunEcsPassword(value)).toEqual({ valid: true, code: null, message: null });
     }
   });

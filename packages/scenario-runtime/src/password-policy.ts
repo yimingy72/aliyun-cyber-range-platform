@@ -83,7 +83,7 @@ export function describeAliyunEcsPasswordFailure(code: AliyunEcsPasswordValidati
     case 'whitespace':
       return '不能包含空格';
     case 'unsupported-characters':
-      return '仅支持字母、数字和 ( ) ~ ` ! @ # $ % ^ & * - _ + = | { } [ ] : ; \' < > , . ? /，不能包含中文、引号或反斜杠等其他字符';
+      return '仅支持字母、数字与特殊字符 ( ) ~ ` ! @ # $ % ^ & * - _ + = | { } [ ] : ; \' < > , . ? /，不能包含中文、双引号或反斜杠等其他字符';
     case 'character-classes':
       return '至少包含大写字母、小写字母、数字、特殊字符中的 3 类';
     case 'windows-leading-slash':

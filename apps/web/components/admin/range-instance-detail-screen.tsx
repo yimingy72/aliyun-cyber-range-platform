@@ -968,14 +968,14 @@ export function RangeInstanceDetailScreen({
   const persistedSnapshotRef = useRef('');
   const loadedRangeIdRef = useRef(rangeId);
   const [trackedUpdateJobId, setTrackedUpdateJobId] = useState<string | null>(null);
-  const [trackedRecoveryJobId, setTrackedRecoveryJobId] = useState<string | null>(null);
   const [pendingRecoveryTrigger, setPendingRecoveryTrigger] = useState<'retry' | 'destroy' | null>(null);
   const [isRecoverySubmitting, setIsRecoverySubmitting] = useState(false);
+  const recoveryTriggeredJobsRef = useRef<Set<string>>(new Set());
   const [, setHistoryState] = useState<TopologyHistory | null>(null);
   const instanceTypeAvailabilityRequestRef = useRef(0);
   useEffect(() => {
     setChangePreview(null); setIsTemplateCopyDialogOpen(false); copyRequestRef.current = null;
-    setTrackedRecoveryJobId(null); setPendingRecoveryTrigger(null); setIsRecoverySubmitting(false);
+    setPendingRecoveryTrigger(null); setIsRecoverySubmitting(false);
   }, [identityKey]);
 
   useEffect(() => {
@@ -1053,7 +1053,6 @@ export function RangeInstanceDetailScreen({
       loadedRangeIdRef.current = '';
       setDetail(null);
       setTrackedUpdateJobId(null);
-      setTrackedRecoveryJobId(null);
       setPendingRecoveryTrigger(null);
       setIsRecoverySubmitting(false);
       setPackImageDialog(null);
@@ -1108,29 +1107,41 @@ export function RangeInstanceDetailScreen({
     let timer: number | undefined;
     const token = session.token;
     const jobId = trackedUpdateJobId;
+    const detailStatus = detail?.status ?? '';
 
     async function refreshUpdateJob() {
       try {
         const { job } = await fetchProvisionJobDetail(apiBaseUrl, token, jobId);
         if (!isActive) return;
-        if (job.jobType !== 'update') {
+        // Restored lastJobId values that are neither updates nor in-flight lifecycle
+        // jobs must not keep the tracker (or surface stale messages) alive.
+        const inFlightLifecycle = ['pending_create', 'creating', 'pending_destroy', 'destroying'].includes(detailStatus);
+        if (job.jobType !== 'update' && !inFlightLifecycle && !recoveryTriggeredJobsRef.current.has(jobId)) {
           setTrackedUpdateJobId(null);
           return;
         }
 
         if (job.status === 'succeeded' || job.status === 'failed' || job.status === 'cancelled') {
-          const payload = await fetchRangeInstanceDetail(apiBaseUrl, token, rangeId);
-          if (!isActive) return;
-          receiveDetailSnapshot(payload);
           setTrackedUpdateJobId(null);
+          recoveryTriggeredJobsRef.current.delete(jobId);
           screenCache?.invalidate(apiBaseUrl, token, 'range-instances:');
-          screenCache?.invalidate(apiBaseUrl, token, resourceKey);
-          setSuccessMessage(job.status === 'succeeded' ? '实例配置变更已应用。' : null);
-          setErrorMessage(job.status === 'succeeded' ? null : [job.errorSummary || '实例配置变更未完成，请检查任务。', payload.status === 'destroy_failed' ? '部分云变更可能已生效，资源尚未确认全部回收；请查看任务并执行回收。' : ''].filter(Boolean).join(' '));
+          // Sequence-guarded reload: an older detail response must never overwrite the
+          // fresher terminal snapshot.
+          const payload = await reloadDetailSnapshot();
+          if (!isActive || !payload) return;
+          if (job.jobType === 'update') {
+            setSuccessMessage(job.status === 'succeeded' ? '实例配置变更已应用。' : null);
+            setErrorMessage(job.status === 'succeeded' ? null : [job.errorSummary || '实例配置变更未完成，请检查任务。', payload.status === 'destroy_failed' ? '部分云变更可能已生效，资源尚未确认全部回收；请查看任务并执行回收。' : ''].filter(Boolean).join(' '));
+          } else {
+            setSuccessMessage(job.status === 'succeeded' ? '任务已完成，实例状态已更新。' : null);
+            setErrorMessage(job.status === 'succeeded' ? null : [job.errorSummary || '任务未完成，请查看任务详情后重试。', payload.status === 'destroy_failed' ? '部分云变更可能已生效，资源尚未确认全部回收；请查看任务并执行回收。' : ''].filter(Boolean).join(' '));
+          }
           return;
         }
-        setErrorMessage(null);
-        setSuccessMessage('实例配置变更正在应用。');
+        if (job.jobType === 'update') {
+          setErrorMessage(null);
+          setSuccessMessage('实例配置变更正在应用。');
+        }
       } catch (error) {
         if (!isActive) return;
         if (isUnauthorizedAdminError(error)) {
@@ -1149,52 +1160,6 @@ export function RangeInstanceDetailScreen({
       if (timer !== undefined) window.clearTimeout(timer);
     };
   }, [apiBaseUrl, isPageActive, rangeId, router, screenCache, session.token, trackedUpdateJobId, scopeKey]);
-
-  useEffect(() => {
-    if (!isPageActive || !session.token || !trackedRecoveryJobId) {
-      return;
-    }
-
-    let isActive = true;
-    let timer: number | undefined;
-    const token = session.token;
-    const jobId = trackedRecoveryJobId;
-
-    async function refreshRecoveryJob() {
-      try {
-        const { job } = await fetchProvisionJobDetail(apiBaseUrl, token, jobId);
-        if (!isActive) return;
-        if (job.status === 'succeeded' || job.status === 'failed' || job.status === 'cancelled') {
-          const payload = await fetchRangeInstanceDetail(apiBaseUrl, token, rangeId);
-          if (!isActive) return;
-          receiveDetailSnapshot(payload);
-          setTrackedRecoveryJobId(null);
-          screenCache?.invalidate(apiBaseUrl, token, 'range-instances:');
-          screenCache?.invalidate(apiBaseUrl, token, resourceKey);
-          setSuccessMessage(job.status === 'succeeded' ? '恢复任务已完成，实例状态已更新。' : null);
-          setErrorMessage(job.status === 'succeeded' ? null : job.errorSummary || '恢复任务未完成，请查看任务详情后重试。');
-          return;
-        }
-        setErrorMessage(null);
-        setSuccessMessage('恢复任务正在执行，完成后会自动刷新实例状态。');
-      } catch (error) {
-        if (!isActive) return;
-        if (isUnauthorizedAdminError(error)) {
-          session.logout();
-          router.replace('/admin/login');
-          return;
-        }
-        setErrorMessage('恢复任务状态刷新失败，正在重试。');
-      }
-      if (isActive) timer = window.setTimeout(() => void refreshRecoveryJob(), 2000);
-    }
-
-    void refreshRecoveryJob();
-    return () => {
-      isActive = false;
-      if (timer !== undefined) window.clearTimeout(timer);
-    };
-  }, [apiBaseUrl, isPageActive, rangeId, router, screenCache, session.token, scopeKey, trackedRecoveryJobId]);
 
   const topologyDraft = useMemo(() => {
     return (
@@ -1231,7 +1196,7 @@ export function RangeInstanceDetailScreen({
   const canOperateInstance = !workspace?.isReadOnly && (!workspace || workspace.capabilities.provisioning) && detail?.status === 'running';
   const canApplyInstance = canOperateInstance && workspace?.capabilities.rangeProvisioning !== false;
   const canEditTopology = canOperateInstance && !isSavingDraft && !isCopyingTemplate && !trackedUpdateJobId;
-  const recoveryActionsDisabled = Boolean(workspace?.isReadOnly) || isRecoverySubmitting || Boolean(trackedRecoveryJobId);
+  const recoveryActionsDisabled = Boolean(workspace?.isReadOnly) || isRecoverySubmitting;
   const canRetryRecovery = detail?.recoverySummary?.canRetry !== false;
   useEffect(() => { if (!canApplyInstance) setChangePreview(null); }, [canApplyInstance]);
   const linkedSwitchIdsByHostId = useMemo(() => {
@@ -1525,7 +1490,10 @@ export function RangeInstanceDetailScreen({
     try {
       const job = (await triggerRangeAction(apiBaseUrl, session.token, detail.id, trigger)) as { id?: string } | null;
       if (scopeRef.current !== scopeKey) return;
-      if (job?.id) setTrackedRecoveryJobId(job.id);
+      if (job?.id) {
+        recoveryTriggeredJobsRef.current.add(job.id);
+        setTrackedUpdateJobId(job.id);
+      }
       screenCache?.invalidate(apiBaseUrl, session.token, 'range-instances:');
       screenCache?.invalidate(apiBaseUrl, session.token, resourceKey);
       setSuccessMessage(trigger === 'destroy' ? '回收任务已提交，正在回收剩余云资源。' : detail.status === 'destroy_failed' ? '重试回收任务已提交。' : '重试创建任务已提交，实例将重新开通。');
@@ -2164,12 +2132,14 @@ export function RangeInstanceDetailScreen({
                         ))}
                       </ul>
                     ) : null}
+                    {detail.status === 'create_failed' && !canRetryRecovery ? (
+                      <p className="mt-1 text-xs text-destructive">该失败通常需要先按上述建议处理根因；确认已处理后可直接重试创建。</p>
+                    ) : null}
                   </div>
                   <div className="flex shrink-0 flex-wrap gap-2">
                     {detail.status === 'create_failed' ? (
                       <Button
-                        disabled={recoveryActionsDisabled || !canRetryRecovery}
-                        title={!canRetryRecovery ? '请先按恢复建议处理根因，再重试创建。' : undefined}
+                        disabled={recoveryActionsDisabled}
                         onClick={() => void performRecoveryAction('retry')}
                         size="sm"
                         type="button"

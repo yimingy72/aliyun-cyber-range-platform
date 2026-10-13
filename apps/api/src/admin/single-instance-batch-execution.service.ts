@@ -952,9 +952,19 @@ export class SingleInstanceBatchExecutionService {
       const code = await readAliyunErrorCode(response);
       throw new Error(`Aliyun ${input.action} request failed with status ${response.status}${code ? ` (${code})` : ''}`);
     }
-    const payload = await response.json() as ResponsePayload & {
+    let payload: ResponsePayload & {
       Code?: string;
     };
+    try {
+      payload = await response.json() as ResponsePayload & {
+        Code?: string;
+      };
+    } catch {
+      // The parse error itself can echo response bytes; never surface it.
+      throw new Error(`Aliyun ${input.action} returned an invalid response`);
+    }
+    if (!payload || typeof payload !== 'object' || Array.isArray(payload))
+      throw new Error(`Aliyun ${input.action} returned an invalid response`);
     if (payload.Code !== undefined)
       throw new Error(`Aliyun ${input.action} rejected: ${sanitizeAliyunErrorCode(payload.Code) ?? 'UNCLASSIFIED'}`);
     return payload;

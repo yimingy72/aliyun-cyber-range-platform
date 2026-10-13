@@ -514,7 +514,14 @@ function validateGraph(graph: ScenarioGraphDraft, metadata: TemplateAuthoringMet
         throw new Error(`ECS 缺少镜像：${node.id}`);
       }
       if (typeof node.customPassword === 'string' && node.customPassword.length > 0) {
-        const passwordValidation = validateAliyunEcsPassword(node.customPassword);
+        // Node definitions carry no authoritative OS metadata; use the same image-name
+        // heuristic the runtime already relies on when mapping Windows credentials.
+        const windowsHint = [node.imageName, node.imageId, node.image]
+          .filter((value): value is string => typeof value === 'string')
+          .join(' ')
+          .toLowerCase()
+          .includes('windows');
+        const passwordValidation = validateAliyunEcsPassword(node.customPassword, { windows: windowsHint });
         if (!passwordValidation.valid) {
           throw new Error(`ECS 自定义密码不合法：${node.id}${passwordValidation.message ? `（${passwordValidation.message}）` : ''}`);
         }

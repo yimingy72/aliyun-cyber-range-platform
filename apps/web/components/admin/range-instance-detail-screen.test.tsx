@@ -1553,6 +1553,67 @@ describe('RangeInstanceDetailScreen', () => {
     expect(await screen.findByText(/任务已提交|正在执行/)).toBeTruthy();
   });
 
+  it('restores polling for an in-flight lifecycle job after a page reload', async () => {
+    let detailCall = 0;
+    fetchRangeInstanceDetailMock.mockReset();
+    fetchRangeInstanceDetailMock.mockImplementation(() => {
+      detailCall += 1;
+      return Promise.resolve(detailCall === 1
+        ? { id: 'range-1', status: 'pending_create', name: '恢复中靶场', lastJobId: 'job-create-1', runtimeTopologyGraph: createValidTopologyGraph('host') }
+        : { id: 'range-1', status: 'running', name: '恢复中靶场', runtimeTopologyGraph: createValidTopologyGraph('host') });
+    });
+    fetchProvisionJobDetailMock.mockResolvedValue({ job: { id: 'job-create-1', jobType: 'create', status: 'succeeded' }, steps: [] });
+
+    render(<RangeInstanceDetailScreen rangeId="range-1" apiBaseUrl="http://localhost:3001" />);
+
+    expect(await screen.findByText('任务已完成，实例状态已更新。')).toBeTruthy();
+    expect((await screen.findAllByText('运行中')).length).toBeGreaterThan(0);
+  });
+
+  it('keeps the freshest detail snapshot when a stale recovery reload resolves late', async () => {
+    let resolveStaleReload!: (value: unknown) => void;
+    let detailCall = 0;
+    const createFailedDetail = {
+      id: 'range-1',
+      status: 'create_failed',
+      name: '恢复竞态靶场',
+      runtimeTopologyGraph: createValidTopologyGraph('host'),
+      recoverySummary: { category: 'capacity', severity: 'warning', canRetry: true, summary: '容量不足', suggestions: ['调整规格后重试。'] },
+    };
+    const runningDetail = {
+      id: 'range-1',
+      status: 'running',
+      name: '恢复竞态靶场',
+      runtimeTopologyGraph: createValidTopologyGraph('host'),
+    };
+    fetchRangeInstanceDetailMock.mockReset();
+    fetchRangeInstanceDetailMock.mockImplementation(() => {
+      detailCall += 1;
+      if (detailCall === 1) {
+        return Promise.resolve(createFailedDetail);
+      }
+      if (detailCall === 2) {
+        return new Promise((resolve) => {
+          resolveStaleReload = resolve;
+        });
+      }
+      return Promise.resolve(runningDetail);
+    });
+    triggerRangeActionMock.mockResolvedValue({ id: 'job-retry-1', jobType: 'retry', status: 'pending' });
+    fetchProvisionJobDetailMock.mockResolvedValue({ job: { id: 'job-retry-1', jobType: 'retry', status: 'succeeded' }, steps: [] });
+
+    render(<RangeInstanceDetailScreen rangeId="range-1" apiBaseUrl="http://localhost:3001" />);
+
+    fireEvent.click(await screen.findByRole('button', { name: '重试创建' }));
+    expect(await screen.findByText('任务已完成，实例状态已更新。')).toBeTruthy();
+    expect((await screen.findAllByText('运行中')).length).toBeGreaterThan(0);
+
+    resolveStaleReload(createFailedDetail);
+    await waitFor(() => expect(screen.queryByText('创建中')).toBeNull());
+    expect(screen.queryByText('任务已完成，实例状态已更新。')).toBeTruthy();
+    expect(screen.queryByRole('button', { name: '重试创建' })).toBeNull();
+  });
+
   it('confirms before reclaiming a failed creation and cancels safely', async () => {
     fetchRangeInstanceDetailMock.mockReset();
     fetchRangeInstanceDetailMock.mockResolvedValue({
@@ -1602,7 +1663,7 @@ describe('RangeInstanceDetailScreen', () => {
     );
   });
 
-  it('does not let a non-retryable cause block resource reclaim', async () => {
+  it('keeps retry and reclaim available while surfacing a non-retryable root cause', async () => {
     fetchRangeInstanceDetailMock.mockReset();
     fetchRangeInstanceDetailMock.mockResolvedValue({
       id: 'range-1',
@@ -1621,7 +1682,8 @@ describe('RangeInstanceDetailScreen', () => {
     render(<RangeInstanceDetailScreen rangeId="range-1" apiBaseUrl="http://localhost:3001" />);
 
     expect(await screen.findByText('实例恢复 · 模板定义')).toBeTruthy();
-    expect(screen.getByRole('button', { name: '重试创建' }).hasAttribute('disabled')).toBe(true);
+    expect(screen.getByText(/确认已处理后可直接重试创建/)).toBeTruthy();
+    expect(screen.getByRole('button', { name: '重试创建' }).hasAttribute('disabled')).toBe(false);
     expect(screen.getByRole('button', { name: '回收资源' }).hasAttribute('disabled')).toBe(false);
   });
 

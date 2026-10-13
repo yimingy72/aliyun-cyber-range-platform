@@ -874,13 +874,27 @@ function readPersistTopologyErrorMessage(error: unknown) {
   return '拓扑保存失败，请稍后重试';
 }
 
-function readInvalidCustomPasswordMessage(nodes: TemplateNode[]) {
+function readNodeWindowsImageHint(node: EcsTemplateNode, platformImageAssets: PlatformImageAsset[]) {
+  const asset = platformImageAssets.find((candidate) => candidate.id === node.platformImageAssetId);
+  const osHint = `${asset?.osType ?? ''} ${asset?.platform ?? ''}`.trim().toLowerCase();
+
+  if (osHint) {
+    return osHint.includes('windows');
+  }
+
+  return [node.imageName, node.imageId, node.image]
+    .some((value) => typeof value === 'string' && value.toLowerCase().includes('windows'));
+}
+
+function readInvalidCustomPasswordMessage(nodes: TemplateNode[], platformImageAssets: PlatformImageAsset[]) {
   for (const node of nodes) {
     if (node.kind !== 'ecs' || typeof node.customPassword !== 'string' || node.customPassword.length === 0) {
       continue;
     }
 
-    const validationResult = validateAliyunEcsPassword(node.customPassword);
+    const validationResult = validateAliyunEcsPassword(node.customPassword, {
+      windows: readNodeWindowsImageHint(node, platformImageAssets),
+    });
 
     if (!validationResult.valid && validationResult.message) {
       return `${node.label} 自定义密码不合法：${validationResult.message}`;
@@ -1254,7 +1268,9 @@ export function TemplateEditorScreen({
       const imageOs = platformImageAssets.find((asset) => asset.id === hostNode.platformImageAssetId)?.osType?.toLowerCase();
       if (hostNode.dns && imageOs && imageOs !== 'windows') validationErrors.push(`${hostNode.label} 自定义 DNS 需要 Windows 镜像`);
       if (typeof hostNode.customPassword === 'string' && hostNode.customPassword.length > 0) {
-        const passwordValidationResult = validateAliyunEcsPassword(hostNode.customPassword);
+        const passwordValidationResult = validateAliyunEcsPassword(hostNode.customPassword, {
+          windows: readNodeWindowsImageHint(hostNode, platformImageAssets),
+        });
 
         if (!passwordValidationResult.valid && passwordValidationResult.message) {
           validationErrors.push(`${hostNode.label} 自定义密码不合法：${passwordValidationResult.message}`);
@@ -1828,7 +1844,7 @@ export function TemplateEditorScreen({
       return;
     }
 
-    const invalidCustomPasswordMessage = readInvalidCustomPasswordMessage(nodes);
+    const invalidCustomPasswordMessage = readInvalidCustomPasswordMessage(nodes, platformImageAssets);
 
     if (invalidCustomPasswordMessage) {
       setStatusMessage(invalidCustomPasswordMessage);
@@ -1907,7 +1923,7 @@ export function TemplateEditorScreen({
       return;
     }
 
-    const invalidCustomPasswordMessage = readInvalidCustomPasswordMessage(nodes);
+    const invalidCustomPasswordMessage = readInvalidCustomPasswordMessage(nodes, platformImageAssets);
 
     if (invalidCustomPasswordMessage) {
       setStatusMessage(invalidCustomPasswordMessage);
