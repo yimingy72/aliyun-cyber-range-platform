@@ -110,7 +110,7 @@ export function preserveDeployedRangeHostFacts<T extends Variables>(state: Works
   return nextVariables;
 }
 
-function desiredResources(vars: Variables, tencent: boolean) {
+export function desiredResources(vars: Variables, tencent: boolean) {
   const addresses = new Map<string, { type: string; key: string | null; host?: string; kind: ResourceKind }>();
   const add = (type: string, name: string, key: string | null, kind: ResourceKind, host?: string) => {
     const address = `module.range.${type}.${name}${key === null ? '' : `[${JSON.stringify(key)}]`}`;

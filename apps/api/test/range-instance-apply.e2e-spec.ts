@@ -198,7 +198,7 @@ describe('Range instance apply API', () => {
 
     const instance = await repository.createRangeInstance({
       name: 'apply-range',
-      expiresAt: '2099-01-01T00:00:00Z',
+      expiresAt: new Date(Date.now() + 30 * 24 * 3600_000).toISOString(),
       createdBy: 'admin',
       templateId: template.id,
       sourceTemplateVersionId: template.currentDraftVersionId,

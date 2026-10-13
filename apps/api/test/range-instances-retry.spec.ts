@@ -177,7 +177,7 @@ describe('RangeInstancesService retry flow', () => {
         {
           templateId: template.id,
           name: 'legacy-range',
-          expiresAt: '2030-07-22T00:00:00.000Z',
+          expiresAt: new Date(Date.now() + 30 * 24 * 3600_000).toISOString(),
         },
         { id: 'user-1', role: 'user' },
       ),
