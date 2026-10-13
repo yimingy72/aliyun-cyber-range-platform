@@ -34,6 +34,8 @@ export function createMemoryResourcePatrolRepository(repository: AdminRepository
     },
     resolve: async (id: string) => { const row = alerts.find(row => row.id === id)!; row.status = 'resolved'; row.remainingResources = []; },
     failed: async (id: string, remainingResources: any[], error: string) => { Object.assign(alerts.find(row => row.id === id)!,{ status: 'failed',remainingResources,errorSummary:error }); },
+    completeConfirmedCleanup:async(jobId:string,_uid:string,_region:string)=>{alerts.filter(row=>row.jobId===jobId).forEach(row=>Object.assign(row,{status:'resolved',remainingResources:[],errorSummary:null}));},
+    failConfirmedCleanup:async(jobId:string,_uid:string,_region:string,remainingResources:any[])=>{alerts.filter(row=>row.jobId===jobId).forEach(row=>Object.assign(row,{status:'failed',remainingResources,errorSummary:'cleanup failed'}));},
     reconcileBillingObservation: async (input:any)=>{
       const workspace=requireCurrentCloudWorkspaceId();
       const assertCurrent=()=>{if (lease!==input.leaseToken || target.cloudWorkspaceId!==workspace) throw new ConflictException('lease or manager selection changed');};

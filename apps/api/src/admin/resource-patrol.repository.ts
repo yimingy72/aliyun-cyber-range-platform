@@ -119,6 +119,15 @@ export class ResourcePatrolRepository {
       data: { patrolStatus: 'failed', remainingResources: remainingResources as Prisma.InputJsonValue, errorSummary: message } }));
   }
 
+  async completeConfirmedCleanup(jobId:string,accountUid:string,regionId:string,verifiedAt:Date) {
+    await this.prisma.cloudResourceDrift.updateMany({where:{reclaimJobId:jobId,accountUid,regionId,resolvedAt:null},
+      data:{patrolStatus:'resolved',resolvedAt:verifiedAt,remainingResources:[],errorSummary:null}});
+  }
+  async failConfirmedCleanup(jobId:string,accountUid:string,regionId:string,remaining:ResourceIdentity[]) {
+    await this.prisma.cloudResourceDrift.updateMany({where:{reclaimJobId:jobId,accountUid,regionId,resolvedAt:null},
+      data:{patrolStatus:'failed',remainingResources:remaining as Prisma.InputJsonValue,errorSummary:'准确库存原生回收失败或未核验，保留剩余清单。'}});
+  }
+
   private async withScanLease<T>(token: string | undefined, work: (db: Prisma.TransactionClient | PrismaService) => Promise<T>): Promise<T> {
     if (!token) return work(this.prisma);
     const workspace = requireCurrentCloudWorkspaceId();
@@ -179,7 +188,8 @@ export class ResourcePatrolRepository {
   }
 
   async queueReclaim(input: { alert: StoredResourceAlert; instance: RangeInstanceRecord; summary: RangeResourceSummary;
-    resources: ResourceIdentity[]; planDigest: string; idempotencyKey: string; actorUserId: string }) {
+    resources: ResourceIdentity[]; planDigest: string; idempotencyKey: string; actorUserId: string;
+    creationProofs?: Record<string,string> }) {
     const cloudWorkspaceId = requireCurrentCloudWorkspaceId();
     return this.prisma.$transaction(async tx => {
       const [lock] = await tx.$queryRaw<Array<{ acquired: boolean }>>`SELECT pg_try_advisory_xact_lock(hashtextextended(${`resource-reclaim:${cloudWorkspaceId}:${input.instance.id}`}, 0)) AS acquired`;
@@ -198,7 +208,10 @@ export class ResourcePatrolRepository {
         status: { in: ['pending', 'running'] } } })) throw new ConflictException('实例状态或作业已变化，请重新预览。');
       const job = await tx.provisionJob.create({ data: { rangeInstanceId: input.instance.id, jobType: 'destroy',
         triggeredBy: `resource-alert:${input.actorUserId}`, topologySnapshot: { resourceAlertPlan: {
+          version:1,mode:'confirmed_inventory',cloudWorkspaceId,
           alertId: input.alert.id, accountUid: input.alert.accountUid, regionId: input.alert.regionId,
+          provider:input.alert.provider,ownerUserId:input.instance.ownerUserId,
+          executionContext:input.summary.executionContext,creationProofs:input.creationProofs??{},
           planDigest: input.planDigest, resources: input.resources } } as Prisma.InputJsonValue } });
       await tx.rangeInstance.update({ where: { id: input.instance.id }, data: { status: 'pending_destroy', lastJobId: job.id,
         resourceSummary: input.summary as unknown as Prisma.InputJsonValue, errorSummary: null } });

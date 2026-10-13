@@ -2,6 +2,7 @@ import { assertExistingHostBootstrapUnchanged } from '../admin/range-host-bootst
 import { buildRangeChangeApproval, rangeChangeDigest, type RangeChangeApproval } from '../admin/range-draft-change-policy';
 import { RangeDnsVerificationService } from '../admin/range-dns-verification.service';
 import { ResourceAlertsService } from '../admin/resource-alerts.service';
+import { ResourceAlertReclaimer } from '../admin/resource-alert-reclaimer';
 import { randomUUID } from 'node:crypto';
 import { runInSystemCloudWorkspaceScope } from '../auth/cloud-workspace-scope';
 import { listExecutionCloudWorkspaces, runInExecutionCloudWorkspace } from '../auth/background-cloud-workspace';
@@ -99,6 +100,7 @@ export class ProvisioningWorkerService {
     @Optional() singleInstanceOpenTofuExecutionService?: SingleInstanceOpenTofuExecutionService,
     @Optional() private readonly dnsVerification?: RangeDnsVerificationService,
     @Optional() private readonly resourceAlerts?: ResourceAlertsService,
+    @Optional() private readonly resourceAlertReclaimer?: ResourceAlertReclaimer,
   ) {
     this.singleInstanceBatchExecutionService =
       singleInstanceBatchExecutionService ??
@@ -403,6 +405,21 @@ export class ProvisioningWorkerService {
 
     try {
       const effectiveJobType = this.resolveEffectiveJobType(job, instance);
+      if(ResourceAlertReclaimer.handles(job)) {
+        if(effectiveJobType!=='destroy'||!this.resourceAlertReclaimer) throw new Error('Confirmed inventory cleanup executor is unavailable');
+        const assertCurrent=async()=>{signal?.throwIfAborted();if(!await this.ownsProvisionJobClaim(job)) throw new Error('Confirmed cleanup claim was lost');};
+        if(instance.instanceMode==='range') await this.updateRangeForClaim(job,{status:'destroying'});
+        else if(!await this.adminRepository.commitSingleInstanceClaim(job,{status:'destroying'})) return;
+        await this.runWorkerStep(reportStep,'verify_destroy',async()=>{await this.resourceAlertReclaimer!.execute(job,instance,assertCurrent);});
+        await assertCurrent();
+        const summary=instance.resourceSummary?.executionContext?{mode:'opentofu' as const,creationAttempted:false,executionContext:instance.resourceSummary.executionContext}:null;
+        if(instance.instanceMode==='range') {
+          await this.updateRangeForClaim(job,{status:'destroyed',resourceSummary:summary,accessEntry:null,errorSummary:null});
+          if(!await this.adminRepository.updateRangeProvisionJob(job.id,job.startedAt!,{status:'succeeded',finishedAt:new Date(),errorSummary:null})) return;
+        } else if(!await this.adminRepository.commitSingleInstanceClaim(job,{status:'destroyed',resourceSummary:summary,accessEntry:null,errorSummary:null},
+          {status:'succeeded',finishedAt:new Date(),errorSummary:null})) return;
+        await this.finalizeDispatchedOperation(job,'succeeded');this.nextResourceReconciliationAt=0;return;
+      }
       const rangeContext = instance.instanceMode === 'range' ? await this.resolveRangeAccountContext(instance, job) : null;
       const runtimeConfig = rangeContext!;
 

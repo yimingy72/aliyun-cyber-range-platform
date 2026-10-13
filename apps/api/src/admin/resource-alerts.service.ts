@@ -69,6 +69,7 @@ export class ResourceAlertsService {
     if (prepared.preview.planDigest !== input.planDigest) throw new ConflictException('资源状态或回收清单已变化，请重新预览确认。');
     const queued = await this.store.queueReclaim({ alert: prepared.alert, instance: prepared.inventory.instance,
       summary: prepared.inventory.summary, resources: prepared.preview.resources, planDigest: input.planDigest,
+      creationProofs:Object.fromEntries(prepared.preview.resources.map(resource=>[patrolResourceKey(resource),prepared.inventory!.birthSources.get(patrolResourceKey(resource))!])),
       idempotencyKey: input.idempotencyKey, actorUserId: user.id });
     return { alertId: id, status: 'reclaiming' as const, jobId: queued.jobId };
   }
@@ -148,6 +149,8 @@ export class ResourceAlertsService {
       if (sharedIds.has(resource.id) || resource.parentId && sharedIds.has(resource.parentId)) continue;
       const owners = inventory.filter(row => row.proven.has(patrolResourceKey(resource)));
       const source = owners.length === 1 ? owners[0] : null;
+      if (resource.type==='eni'&&resource.isPrimary&&resource.attachedInstanceId
+        && inventory.some(row=>row.proven.has(`ecs:${resource.attachedInstanceId}`))) continue;
       if (source && (busyInstances.has(source.instance.id) || !inactive.has(source.instance.status))) continue;
       if (source && !(await this.unchangedInactive(source.instance))) continue;
       const contextMatches = source && source.context.cloudAccountUid === account.accountUid;
@@ -213,7 +216,8 @@ export class ResourceAlertsService {
       await this.cloud.verifyAccount(account);
       const observations = await this.cloud.inspect(account,inventory.resources);
       const ownedVpc = new Set(inventory.resources.filter(resource => ['vpc','nat_gateway'].includes(resource.type)).map(resource => resource.id));
-      const foreign = observations.some(row => row.parentId && ownedVpc.has(row.parentId) && !inventory.proven.has(patrolResourceKey(row)));
+      const foreign = observations.some(row => row.parentId && ownedVpc.has(row.parentId) && !inventory.proven.has(patrolResourceKey(row))
+        && !(row.type==='eni'&&row.isPrimary&&row.attachedInstanceId&&inventory.proven.has(`ecs:${row.attachedInstanceId}`)));
       if (foreign) reason = '云端网络包含没有创建库存证明的关联资源，不能回收整套网络。';
       const hostIds = new Set(inventory.resources.filter(resource => ['ecs','nat_gateway'].includes(resource.type)).map(resource => resource.id));
       if (observations.some(row => inventory.proven.has(patrolResourceKey(row))
@@ -222,8 +226,6 @@ export class ResourceAlertsService {
       resources = sort(observations.filter(row => inventory.proven.has(patrolResourceKey(row))).map(({type,id}) => ({type,id})));
       const currentIds = patrolResourceIdentities(inventory.summary);
       if (currentIds.some(resource => !inventory.proven.has(patrolResourceKey(resource)))) reason = '运行状态包含未证明来源的物理资源，需要先核验。';
-      const represented = new Set(currentIds.map(patrolResourceKey));
-      if (resources.some(resource => !represented.has(patrolResourceKey(resource)))) reason = '历史库存存在未纳入可恢复状态的物理资源，不能通过整套回收跳过核验。';
       if (!resources.length) reason = '准确库存中的资源已不存在，请等待巡检核验解决。';
     }
     const planDigest = digest({ cloudWorkspaceId: alert.cloudWorkspaceId, provider: alert.provider, accountUid: alert.accountUid,

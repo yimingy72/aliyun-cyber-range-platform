@@ -11,7 +11,8 @@ export type TencentResourceEvidence = { provider: 'tencent_cloud'; accountUid: s
 export type TencentResource = { id: string; kind: TencentResourceKind; tags: Record<string, string>; evidence: TencentResourceEvidence;
   instanceId: string | null; vpcId: string | null; diskUsage: string | null; deleteWithInstance: boolean | null;
   name?: string; state?: string; publicIp?: string; publicIpAddresses?: string[]; instanceType?: string; imageId?: string; zoneId?: string; subnetId?: string; natProductVersion?: number; bandwidth?: number; maxConcurrent?: number;
-  shared: boolean; chargeType: string | null; createdAt?: string; detail?: NormalizedInstanceDetail };
+  shared: boolean; chargeType: string | null; createdAt?: string; detail?: NormalizedInstanceDetail;
+  primary?: boolean; networkInterfaceId?: string; relatedEipIds?: string[]; relatedSubnetIds?: string[] };
 type Query = { ids?: string[]; tags?: Record<string, string>; vpcId?: string; instanceId?: string; diskIds?: string[];
   onEvidence?: (evidence: TencentResourceEvidence) => void };
 const TAG_KEYS = new Set(['CloudProvider', 'PlatformManaged', 'CreatedBy', 'PlatformScope', 'PlatformUserId', 'RangeInstanceId',
@@ -81,12 +82,12 @@ export async function describeTencentResourceInventory(account: SystemCloudAccou
   if (query.diskIds && (kind !== 'snapshot' || !query.diskIds.length || query.diskIds.length > 10 || query.diskIds.some(id => !/^disk-[A-Za-z0-9]+$/.test(id)))) throw new Error('Tencent snapshot disk filter exceeds the documented scope');
   if (Object.keys(query.tags ?? {}).some(key => !TAG_KEYS.has(key))) throw new Error('Unsupported Tencent ownership tag filter');
   if (query.vpcId && (!/^vpc-[A-Za-z0-9]+$/.test(query.vpcId) || !['ecs', 'vswitch', 'eni', 'nat', 'network_acl'].includes(kind))) throw new Error('Unsupported Tencent VPC inventory filter');
-  if (query.instanceId && (kind !== 'disk' || !/^ins-[A-Za-z0-9]+$/.test(query.instanceId))) throw new Error('Unsupported Tencent attachment inventory filter');
+  if (query.instanceId && (!['disk','eni'].includes(kind) || !/^ins-[A-Za-z0-9]+$/.test(query.instanceId))) throw new Error('Unsupported Tencent attachment inventory filter');
   if (kind === 'network_acl' && !query.ids && !query.vpcId) throw new Error('Tencent ACL inventory requires a known ID or VPC; the API has no tag filter');
   const filters: Array<{ Name: string; Values: string[] }> = [];
   if (query.vpcId) filters.push({ Name: 'vpc-id', Values: [query.vpcId] });
   if (query.diskIds) filters.push({ Name: 'disk-id', Values: query.diskIds });
-  if (query.instanceId) filters.push({ Name: 'instance-id', Values: [query.instanceId] });
+  if (query.instanceId) filters.push({ Name: kind==='eni'?'attachment.instance-id':'instance-id', Values: [query.instanceId] });
   if (kind === 'nat') {
     const key = Object.keys(query.tags ?? {})[0];
     if (key) filters.push({ Name: 'tag-key', Values: [key] });
@@ -131,7 +132,7 @@ export async function describeTencentResourceInventory(account: SystemCloudAccou
       const vpc = row.VirtualPrivateCloud ? object(row.VirtualPrivateCloud) : {};
       const vpcId = string(row.VpcId ?? vpc.VpcId);
       if (query.vpcId && query.vpcId !== vpcId) throw new Error('Tencent inventory contains a resource in an unrequested VPC');
-      if (query.instanceId && row.InstanceId !== query.instanceId) throw new Error('Tencent disk inventory contains an unrequested attachment');
+      if (query.instanceId && (row.InstanceId??attachment.InstanceId) !== query.instanceId) throw new Error('Tencent attachment inventory contains an unrequested attachment');
       if (kind === 'snapshot' && query.diskIds && !query.diskIds.includes(String(row.DiskId))) throw new Error('Tencent snapshot inventory returned an unrequested source disk');
       const resource: TencentResource = { id, kind, tags: resourceTags,
         evidence: { provider: 'tencent_cloud', accountUid: account.accountUid!, cloudAccountContextId: account.cloudAccountContextId!,
@@ -140,6 +141,10 @@ export async function describeTencentResourceInventory(account: SystemCloudAccou
         deleteWithInstance: typeof row.DeleteWithInstance === 'boolean' ? row.DeleteWithInstance : null,
         shared: row.Shareable === true || Array.isArray(row.InstanceIdList) && row.InstanceIdList.length > 1,
         chargeType: string(row.InstanceChargeType ?? row.DiskChargeType),
+        ...(typeof row.Primary==='boolean'?{primary:row.Primary}:{}),
+        ...(typeof row.NetworkInterfaceId==='string'?{networkInterfaceId:row.NetworkInterfaceId}:{}),
+        ...(Array.isArray(row.PublicIpAddressSet)?{relatedEipIds:row.PublicIpAddressSet.map(value=>string(object(value).AddressId)??'')}:{}),
+        ...(Array.isArray(row.SubnetSet)?{relatedSubnetIds:row.SubnetSet.map(value=>string(object(value).SubnetId)??'')}:{}),
         ...(typeof (row.CreateTime ?? row.CreatedTime) === 'string' ? { createdAt: String(row.CreateTime ?? row.CreatedTime) } : {}),
         name: string(row.NatGatewayName ?? row.AddressName ?? row.InstanceName) ?? undefined, state: string(row.State ?? row.AddressStatus ?? row.InstanceState) ?? undefined, publicIp: string(row.AddressIp) ?? undefined,
         publicIpAddresses: Array.isArray(row.PublicIpAddressSet) ? row.PublicIpAddressSet.map(value => string(object(value).PublicIpAddress) ?? '') : undefined,

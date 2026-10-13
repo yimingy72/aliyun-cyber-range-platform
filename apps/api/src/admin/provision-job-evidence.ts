@@ -8,6 +8,10 @@ const descriptions: Record<string, string> = {
   single_instance_creation_receipt: 'Persist exact provider creation identity',
   platform_billing_origin_repair: 'Restore a verified billing creation source',
   cleanup_failed_create_resources: 'Clean up partial creation',
+  confirmed_inventory_absence: 'Verify confirmed physical inventory is absent',
+  confirmed_inventory_remaining: 'Preserve confirmed cleanup remaining resources',
+  confirmed_inventory_delete_intent: 'Persist exact native cleanup intent',
+  confirmed_inventory_delete_receipt: 'Record native cleanup request acknowledgement',
 };
 const identity = (value: unknown) => typeof value === 'string' && /^[A-Za-z0-9][A-Za-z0-9:_-]{0,255}$/.test(value);
 const object = (value: unknown): value is Record<string, unknown> => Boolean(value) && typeof value === 'object' && !Array.isArray(value);

@@ -6,7 +6,7 @@ import { requestTencentCloud } from './tencent-cloud-client';
 import { describeTencentResourceInventory, type TencentResourceKind } from './tencent-cloud-resources';
 import type { PatrolResourceType, ResourceIdentity } from './resource-alert-types';
 
-export type PatrolCloudResource = ResourceIdentity & { tags: Record<string, string>; parentId: string | null; attachedInstanceId: string | null;
+export type PatrolCloudResource = ResourceIdentity & { tags: Record<string, string>; parentId: string | null; attachedInstanceId: string | null; isPrimary?: boolean;
   systemDisk: boolean; raw: Record<string, unknown> };
 const coreTypes: PatrolResourceType[] = ['ecs','disk','eip','nat_gateway','eni','vpc','vswitch','security_group','network_acl'];
 class CloudPatrolReadError extends Error {
@@ -31,6 +31,42 @@ const alibaba = {
 
 @Injectable()
 export class ResourcePatrolCloudClient {
+  async mutate(account: SystemCloudAccountContext,service: 'ecs'|'cvm'|'vpc',action: string,parameters: Record<string,unknown>) {
+    const allowed=new Set(['DeleteInstances','TerminateInstances','DetachNetworkInterface','DeleteNetworkInterface','UnassociateEipAddress',
+      'ReleaseEipAddress','DisassociateAddress','ReleaseAddresses','DeleteNatGateway','DeleteSecurityGroup','DeleteNetworkAcl',
+      'UnassociateNetworkAcl','DisassociateNetworkAclSubnets','DeleteVSwitch','DeleteSubnet','DeleteVpc','DeleteRouteTable',
+      'DeleteSnatEntry','DeleteForwardEntry','DeleteNatGatewaySourceIpTranslationNatRule','DeleteNatGatewayDestinationIpPortTranslationNatRule']);
+    if (!allowed.has(action)) throw new Error('UNSUPPORTED_RECLAIM_ACTION');
+    const result=account.provider==='tencent_cloud'
+      ? await requestTencentCloud<Record<string,unknown>>({service,version:'2017-03-12',action,regionId:account.defaultRegion,
+        accessKeyId:account.accessKeyId,accessKeySecret:account.accessKeySecret,parameters})
+      : await this.rpc(account,service,action,Object.fromEntries(Object.entries(parameters).map(([key,value])=>[key,String(value)])));
+    return {requestId:String(result.RequestId)};
+  }
+
+  async exact(account: SystemCloudAccountContext,resources: ResourceIdentity[],parents: ResourceIdentity[]=[]): Promise<PatrolCloudResource[]> {
+    const result: PatrolCloudResource[]=[];
+    for (const type of coreTypes) result.push(...await this.list(account,type,resources.filter(row=>row.type===type).map(row=>row.id)));
+    const rules=resources.filter(row=>['snat_entry','dnat_entry'].includes(row.type));
+    if (rules.length) for (const parent of await this.list(account,'nat_gateway',parents.filter(row=>row.type==='nat_gateway').map(row=>row.id))) {
+      result.push(...(await this.natRules(account,parent)).filter(row=>rules.some(rule=>rule.type===row.type&&rule.id===row.id)));
+    }
+    const routes=resources.filter(row=>row.type==='route_table');
+    if (routes.length) result.push(...(await this.inspect(account,routes)).filter(row=>row.type==='route_table'));
+    return result;
+  }
+
+  async attachedDisks(account: SystemCloudAccountContext,instanceId: string) {
+    if (account.provider==='tencent_cloud') return (await describeTencentResourceInventory(account,'disk',{instanceId})).map(row=>this.tencent('disk',row));
+    return this.aliList(account,'disk',{InstanceId:instanceId},true);
+  }
+  async attachedInterfaces(account:SystemCloudAccountContext,instanceId:string) {
+    const rows=account.provider==='tencent_cloud'
+      ? (await describeTencentResourceInventory(account,'eni',{instanceId})).map(row=>this.tencent('eni',row))
+      : await this.aliList(account,'eni',{InstanceId:instanceId});
+    if(rows.some(row=>row.attachedInstanceId!==instanceId)) throw new Error('UNREQUESTED_INTERFACE_ATTACHMENT');
+    return rows;
+  }
   async verifyAccount(account: SystemCloudAccountContext) {
     const payload = account.provider === 'tencent_cloud'
       ? await requestTencentCloud<Record<string, unknown>>({ service: 'sts', version: '2018-08-13', action: 'GetCallerIdentity',
@@ -128,7 +164,7 @@ export class ResourcePatrolCloudClient {
 
   private tencent(type: PatrolResourceType, row: any): PatrolCloudResource {
     return { type, id: row.id, tags: row.tags, parentId: row.vpcId, attachedInstanceId: row.instanceId,
-      systemDisk: row.diskUsage === 'SYSTEM_DISK', raw: row };
+      isPrimary:row.primary===true,systemDisk: row.diskUsage === 'SYSTEM_DISK', raw: row };
   }
 
   private async aliList(account: SystemCloudAccountContext, type: PatrolResourceType, parameters: Record<string, string>, exactIds = false) {
@@ -146,9 +182,10 @@ export class ResourcePatrolCloudClient {
         tags[key] = value;
       }
       const attachment = row.Attachment as Record<string,unknown> | undefined;
-      return { type, id: String(row[idKey]), tags, parentId: typeof row.VpcId === 'string' ? row.VpcId : null,
+      return { type, id: String(row[idKey]), tags, parentId: typeof row.VpcId === 'string' ? row.VpcId
+        : typeof (row.VpcAttributes as any)?.VpcId==='string'?(row.VpcAttributes as any).VpcId:null,
         attachedInstanceId: typeof row.InstanceId === 'string' ? row.InstanceId : typeof attachment?.InstanceId === 'string' ? attachment.InstanceId : null,
-        systemDisk: type === 'disk' && row.Type === 'system', raw: row };
+        isPrimary:type==='eni'&&row.Type==='Primary',systemDisk: type === 'disk' && row.Type === 'system', raw: row };
     });
   }
 
