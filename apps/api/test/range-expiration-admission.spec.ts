@@ -17,7 +17,7 @@ describe('range cloud deadline admission', () => {
     expect(consume).not.toHaveBeenCalled(); expect(allocate).not.toHaveBeenCalled(); expect(dispatch).not.toHaveBeenCalled();
     expect(await repository.listProvisionJobs()).toEqual([]);
   });
-  it('rejects a new host in a legacy excessive-duration range without queuing an update or altering its original host', async () => {
+  it.each(['excessive_expiry','reused_host_key'])('rejects an invalid host addition before queuing work: %s', async reason => {
     const repository = createMemoryAdminRepository();
     const metadata = { name: 'expiry fixture', slug: 'expiry-fixture', version: 'v1', cloudProvider: 'alibaba_cloud' as const, iacType: 'opentofu' as const,
       modulePathOrRef: 'infra/opentofu/modules/alicloud-enterprise-range' };
@@ -32,7 +32,12 @@ describe('range cloud deadline admission', () => {
     nextGraph.edges.push({ id: 'sn', fromNodeId: 'switch', toNodeId: 'new', relationType: 'manual' });
     const draft = compileTemplateTopology(nextGraph, metadata);
     const instance = await repository.createRangeInstance({ name: 'legacy range', status: 'running', instanceMode: 'range', cloudProvider: 'alibaba_cloud', ownerUserId: 'admin',
-      expiresAt: new Date(Date.now() + 1100 * 24 * 60 * 60_000).toISOString(), templateModulePathSnapshot: metadata.modulePathOrRef,
+      expiresAt: new Date(Date.now() + (reason === 'excessive_expiry' ? 1100 * 24 * 60 * 60_000 : 2 * 60 * 60_000)).toISOString(), templateModulePathSnapshot: metadata.modulePathOrRef,
+      ...(reason === 'reused_host_key' ? { resourceSummary: { cloudReleaseDeadlines: { new: {
+        provider: 'alibaba_cloud' as const, platformExpiresAt: new Date(Date.now() + 2 * 60 * 60_000).toISOString(),
+        creationPhaseStartedAt: '2026-10-13T00:00:00Z', cloudReleaseAt: '2026-10-13T01:00:00Z',
+        sourceProvisionJobId: 'previous-create', status: 'verified' as const, instanceId: 'i-previous',
+      } } } } : {}),
       runtimeTopologyGraph: baseline.topologyGraph as any, runtimeCompiledProvisionSpec: baseline.compiledProvisionSpec });
     await repository.updateRangeInstance(instance.id, { draftRevision: 1, draftTopologyGraph: draft.topologyGraph as any, draftTopologySpec: draft.topologySpec,
       draftScenarioTemplateSpec: draft.scenarioTemplateSpec, draftCompiledProvisionSpec: draft.compiledProvisionSpec });
@@ -40,7 +45,7 @@ describe('range cloud deadline admission', () => {
     const dispatch = jest.fn();
     const service = new RangeInstancesService(repository, new RangeTemplatesService(repository), {} as any, {} as any, { dispatch } as any);
     jest.spyOn(service as any, 'resolveDraftCompilationMetadata').mockResolvedValue(metadata);
-    await expect(service.applyDraft(instance.id, { expectedDraftRevision: 1, previewToken: 'unused' } as any, { id: 'admin', role: 'admin' } as any)).rejects.toThrow('1095');
+    await expect(service.applyDraft(instance.id, { expectedDraftRevision: 1, previewToken: 'unused' } as any, { id: 'admin', role: 'admin' } as any)).rejects.toThrow(reason === 'excessive_expiry' ? '1095' : '不能复用历史主机标识');
     expect(dispatch).not.toHaveBeenCalled(); expect(await repository.listProvisionJobs()).toEqual([]);
     expect((await repository.getRangeInstanceById(instance.id))?.runtimeTopologyGraph).toEqual(baseline.topologyGraph);
   });

@@ -1734,7 +1734,10 @@ export function RangeInstanceDetailScreen({
 
     let kindOrdinal = topologyNodes.filter((node) => node.kind === kind).length + 1;
     while (topologyNodes.some((node) => node.kind === kind && node.label === readDefaultNodeLabel(kind, kindOrdinal))) kindOrdinal += 1;
-    const nextNodeId = nextAvailableGraphId(kind, [...new Set([...topologyNodes, ...deployedNodes].map(node => node.id))]);
+    const nextNodeId = nextAvailableGraphId(kind, [...new Set([
+      ...[...topologyNodes, ...deployedNodes].map(node => node.id),
+      ...Object.keys(detail?.resourceSummary?.cloudReleaseDeadlines ?? {}),
+    ])]);
     let switchCidr = '';
     if (kind === 'switch') {
       try {

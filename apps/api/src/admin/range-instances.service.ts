@@ -451,6 +451,9 @@ export class RangeInstancesService {
     const current = new Set((Array.isArray(instance.runtimeTopologyGraph?.nodes) ? instance.runtimeTopologyGraph.nodes : [])
       .filter((node: any) => node.kind === 'ecs').map((node: any) => node.id));
     const added = (Array.isArray(graph.nodes) ? graph.nodes : []).filter((node: any) => node.kind === 'ecs' && !current.has(node.id));
+    if (added.some((node: any) => Object.hasOwn(instance.resourceSummary?.cloudReleaseDeadlines ?? {}, node.id))) {
+      throw new BadRequestException('新增主机不能复用历史主机标识，请使用新的节点 ID。');
+    }
     await this.rangeTemplatesService.assertTopologyGraphEcsImageSelections({ nodes: added }, currentUser);
   }
 
