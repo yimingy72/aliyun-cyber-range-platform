@@ -356,6 +356,13 @@ describe('RangeInstancesScreen', () => {
     render(<RangeInstancesScreen apiBaseUrl="http://localhost:3001" />);
 
     fireEvent.click(await screen.findByRole('button', { name: '关闭' }));
+    expect(triggerRangeActionMock).not.toHaveBeenCalled();
+    fireEvent.click(await screen.findByRole('button', { name: '取消' }));
+    expect(screen.queryByRole('button', { name: '确认关闭' })).toBeNull();
+    expect(triggerRangeActionMock).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole('button', { name: '关闭' }));
+    fireEvent.click(await screen.findByRole('button', { name: '确认关闭' }));
 
     await waitFor(() => {
       expect(triggerRangeActionMock).toHaveBeenCalledWith(

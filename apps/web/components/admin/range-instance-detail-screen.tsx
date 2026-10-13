@@ -21,6 +21,7 @@ import {
   saveRangeInstanceDraft,
   previewRangeInstanceDraft,
   saveRangeInstanceAsTemplate,
+  triggerRangeAction,
 } from '../../lib/admin-api';
 import { useAdminScreenCache } from '../../lib/admin-screen-cache';
 import { tencentImageError, verifiedTencentInstanceTypes } from '@/lib/cloud-execution-policy';
@@ -32,6 +33,7 @@ import type {
   PlatformImageAsset,
   RangeInstanceDetail,
   RangeInstanceChangePreview,
+  RangeRecoverySummary,
 } from '../../lib/admin-types';
 import { resolvePreferredInstanceTypes } from '../../lib/instance-type-catalog';
 import {
@@ -52,6 +54,7 @@ import { useAdminRouteIsActive } from './admin-page-cache';
 import { AdminDialog } from './shared/admin-dialog';
 import { AdminPageHeader } from './shared/admin-page-header';
 import { RangeChangePreviewDialog } from './range-change-preview-dialog';
+import { ConfirmActionDialog } from './shared/confirm-action-dialog';
 import { Input } from '@/components/ui/input';
 import type { TemplateEdge } from './template-editor/template-editor-screen';
 import { readTopologyViewport, writeTopologyViewport } from './template-editor/topology-flow-adapter';
@@ -161,6 +164,23 @@ function readNodeLabel(node: Record<string, unknown>) {
 
 function readNodeKind(node: Record<string, unknown>) {
   return typeof node.kind === 'string' ? node.kind : 'unknown';
+}
+
+function readRecoveryCategoryLabel(category: RangeRecoverySummary['category']) {
+  switch (category) {
+    case 'capacity':
+      return '云容量';
+    case 'quota':
+      return '云配额';
+    case 'credentials':
+      return '凭据/权限';
+    case 'provider_setup':
+      return '云账号配置';
+    case 'template_blueprint':
+      return '模板定义';
+    default:
+      return '未分类';
+  }
 }
 
 function getStatusLabel(status: string) {
@@ -948,9 +968,15 @@ export function RangeInstanceDetailScreen({
   const persistedSnapshotRef = useRef('');
   const loadedRangeIdRef = useRef(rangeId);
   const [trackedUpdateJobId, setTrackedUpdateJobId] = useState<string | null>(null);
+  const [trackedRecoveryJobId, setTrackedRecoveryJobId] = useState<string | null>(null);
+  const [pendingRecoveryTrigger, setPendingRecoveryTrigger] = useState<'retry' | 'destroy' | null>(null);
+  const [isRecoverySubmitting, setIsRecoverySubmitting] = useState(false);
   const [, setHistoryState] = useState<TopologyHistory | null>(null);
   const instanceTypeAvailabilityRequestRef = useRef(0);
-  useEffect(() => { setChangePreview(null); setIsTemplateCopyDialogOpen(false); copyRequestRef.current = null; }, [identityKey]);
+  useEffect(() => {
+    setChangePreview(null); setIsTemplateCopyDialogOpen(false); copyRequestRef.current = null;
+    setTrackedRecoveryJobId(null); setPendingRecoveryTrigger(null); setIsRecoverySubmitting(false);
+  }, [identityKey]);
 
   useEffect(() => {
     if (isPageActive && detail?.id) void preloadRangeInstanceTopologyWorkspace().catch(() => undefined);
@@ -1027,6 +1053,9 @@ export function RangeInstanceDetailScreen({
       loadedRangeIdRef.current = '';
       setDetail(null);
       setTrackedUpdateJobId(null);
+      setTrackedRecoveryJobId(null);
+      setPendingRecoveryTrigger(null);
+      setIsRecoverySubmitting(false);
       setPackImageDialog(null);
       setIsTemplateCopyDialogOpen(false);
       setPendingNodeAction(null);
@@ -1121,6 +1150,52 @@ export function RangeInstanceDetailScreen({
     };
   }, [apiBaseUrl, isPageActive, rangeId, router, screenCache, session.token, trackedUpdateJobId, scopeKey]);
 
+  useEffect(() => {
+    if (!isPageActive || !session.token || !trackedRecoveryJobId) {
+      return;
+    }
+
+    let isActive = true;
+    let timer: number | undefined;
+    const token = session.token;
+    const jobId = trackedRecoveryJobId;
+
+    async function refreshRecoveryJob() {
+      try {
+        const { job } = await fetchProvisionJobDetail(apiBaseUrl, token, jobId);
+        if (!isActive) return;
+        if (job.status === 'succeeded' || job.status === 'failed' || job.status === 'cancelled') {
+          const payload = await fetchRangeInstanceDetail(apiBaseUrl, token, rangeId);
+          if (!isActive) return;
+          receiveDetailSnapshot(payload);
+          setTrackedRecoveryJobId(null);
+          screenCache?.invalidate(apiBaseUrl, token, 'range-instances:');
+          screenCache?.invalidate(apiBaseUrl, token, resourceKey);
+          setSuccessMessage(job.status === 'succeeded' ? '恢复任务已完成，实例状态已更新。' : null);
+          setErrorMessage(job.status === 'succeeded' ? null : job.errorSummary || '恢复任务未完成，请查看任务详情后重试。');
+          return;
+        }
+        setErrorMessage(null);
+        setSuccessMessage('恢复任务正在执行，完成后会自动刷新实例状态。');
+      } catch (error) {
+        if (!isActive) return;
+        if (isUnauthorizedAdminError(error)) {
+          session.logout();
+          router.replace('/admin/login');
+          return;
+        }
+        setErrorMessage('恢复任务状态刷新失败，正在重试。');
+      }
+      if (isActive) timer = window.setTimeout(() => void refreshRecoveryJob(), 2000);
+    }
+
+    void refreshRecoveryJob();
+    return () => {
+      isActive = false;
+      if (timer !== undefined) window.clearTimeout(timer);
+    };
+  }, [apiBaseUrl, isPageActive, rangeId, router, screenCache, session.token, scopeKey, trackedRecoveryJobId]);
+
   const topologyDraft = useMemo(() => {
     return (
       readTopologyGraphDraft(draftGraph) ??
@@ -1156,6 +1231,8 @@ export function RangeInstanceDetailScreen({
   const canOperateInstance = !workspace?.isReadOnly && (!workspace || workspace.capabilities.provisioning) && detail?.status === 'running';
   const canApplyInstance = canOperateInstance && workspace?.capabilities.rangeProvisioning !== false;
   const canEditTopology = canOperateInstance && !isSavingDraft && !isCopyingTemplate && !trackedUpdateJobId;
+  const recoveryActionsDisabled = Boolean(workspace?.isReadOnly) || isRecoverySubmitting || Boolean(trackedRecoveryJobId);
+  const canRetryRecovery = detail?.recoverySummary?.canRetry !== false;
   useEffect(() => { if (!canApplyInstance) setChangePreview(null); }, [canApplyInstance]);
   const linkedSwitchIdsByHostId = useMemo(() => {
     const nodeById = new Map(topologyNodes.map((node) => [node.id, node]));
@@ -1435,6 +1512,38 @@ export function RangeInstanceDetailScreen({
         if (scopeRef.current === scopeKey && payload?.lastJobId && payload.lastJobId !== detail.lastJobId) setTrackedUpdateJobId(payload.lastJobId);
       }).catch(() => undefined); }
     } finally { if (scopeRef.current === scopeKey) setIsSavingDraft(false); }
+  }
+
+  async function performRecoveryAction(trigger: 'retry' | 'destroy') {
+    if (!session.token || !detail || isRecoverySubmitting || workspace?.isReadOnly) {
+      return;
+    }
+
+    setIsRecoverySubmitting(true);
+    setErrorMessage(null);
+    setSuccessMessage(null);
+    try {
+      const job = (await triggerRangeAction(apiBaseUrl, session.token, detail.id, trigger)) as { id?: string } | null;
+      if (scopeRef.current !== scopeKey) return;
+      if (job?.id) setTrackedRecoveryJobId(job.id);
+      screenCache?.invalidate(apiBaseUrl, session.token, 'range-instances:');
+      screenCache?.invalidate(apiBaseUrl, session.token, resourceKey);
+      setSuccessMessage(trigger === 'destroy' ? '回收任务已提交，正在回收剩余云资源。' : detail.status === 'destroy_failed' ? '重试回收任务已提交。' : '重试创建任务已提交，实例将重新开通。');
+      await reloadDetailSnapshot();
+    } catch (error) {
+      if (scopeRef.current !== scopeKey) return;
+      if (isUnauthorizedAdminError(error)) {
+        session.logout();
+        router.replace('/admin/login');
+        return;
+      }
+      setErrorMessage(error instanceof Error ? error.message : '恢复操作提交失败，请刷新任务状态后重试。');
+    } finally {
+      if (scopeRef.current === scopeKey) {
+        setIsRecoverySubmitting(false);
+        setPendingRecoveryTrigger(null);
+      }
+    }
   }
 
   async function handleSaveDraft() {
@@ -2038,6 +2147,52 @@ export function RangeInstanceDetailScreen({
                 ) : null}
             </section>
 
+            {detail.status === 'create_failed' || detail.status === 'destroy_failed' ? (
+              <section aria-label="失败恢复" className="mt-4 rounded-md border border-destructive/40 bg-destructive/5 px-4 py-3">
+                <div className="flex flex-wrap items-start justify-between gap-3">
+                  <div className="min-w-0">
+                    <p className="text-sm font-semibold">
+                      实例恢复{detail.recoverySummary ? ` · ${readRecoveryCategoryLabel(detail.recoverySummary.category)}` : ''}
+                    </p>
+                    <p className="mt-1 text-sm text-muted-foreground">
+                      {detail.recoverySummary?.summary ?? detail.errorSummary?.trim() ?? '实例当前处于失败状态，请查看任务详情确认原因。'}
+                    </p>
+                    {detail.recoverySummary?.suggestions.length ? (
+                      <ul className="mt-1 list-disc pl-5 text-xs text-muted-foreground">
+                        {detail.recoverySummary.suggestions.map((suggestion) => (
+                          <li key={suggestion}>{suggestion}</li>
+                        ))}
+                      </ul>
+                    ) : null}
+                  </div>
+                  <div className="flex shrink-0 flex-wrap gap-2">
+                    {detail.status === 'create_failed' ? (
+                      <Button
+                        disabled={recoveryActionsDisabled || !canRetryRecovery}
+                        title={!canRetryRecovery ? '请先按恢复建议处理根因，再重试创建。' : undefined}
+                        onClick={() => void performRecoveryAction('retry')}
+                        size="sm"
+                        type="button"
+                        variant="outline"
+                      >
+                        {isRecoverySubmitting && pendingRecoveryTrigger === null ? '处理中...' : '重试创建'}
+                      </Button>
+                    ) : null}
+                    {detail.status === 'destroy_failed' ? (
+                      <Button disabled={recoveryActionsDisabled} onClick={() => setPendingRecoveryTrigger('retry')} size="sm" type="button" variant="outline">
+                        重试回收
+                      </Button>
+                    ) : null}
+                    {detail.status === 'create_failed' ? (
+                      <Button disabled={recoveryActionsDisabled} onClick={() => setPendingRecoveryTrigger('destroy')} size="sm" type="button" variant="destructive">
+                        回收资源
+                      </Button>
+                    ) : null}
+                  </div>
+                </div>
+              </section>
+            ) : null}
+
             <div className="range-instance-detail-toolbar">
               <Tabs onValueChange={(value) => setActiveTab(value as WorkbenchTab)} value={activeTab}>
                 <TabsList aria-label="实例详情视图切换" variant="line">
@@ -2142,6 +2297,25 @@ export function RangeInstanceDetailScreen({
       </section>
 
       <RangeChangePreviewDialog preview={changePreview} pending={isSavingDraft} onClose={() => setChangePreview(null)} onConfirm={() => void handleConfirmApply()} />
+      <ConfirmActionDialog
+        confirmLabel={pendingRecoveryTrigger === 'retry' ? '确认重试' : '确认回收'}
+        description={pendingRecoveryTrigger === 'retry'
+          ? `将重新执行回收任务，继续删除“${detail?.name?.trim() || rangeId}”的剩余云资源；回收完成后无法恢复。`
+          : `将回收“${detail?.name?.trim() || rangeId}”已创建的云主机与随实例磁盘；回收完成后无法恢复。`}
+        open={pendingRecoveryTrigger !== null}
+        pending={isRecoverySubmitting}
+        title={pendingRecoveryTrigger === 'retry' ? '重试回收实例资源' : '回收失败实例资源'}
+        onConfirm={() => {
+          if (pendingRecoveryTrigger) {
+            void performRecoveryAction(pendingRecoveryTrigger);
+          }
+        }}
+        onOpenChange={(open) => {
+          if (!open && !isRecoverySubmitting) {
+            setPendingRecoveryTrigger(null);
+          }
+        }}
+      />
       <AdminDialog open={isTemplateCopyDialogOpen} title="另存为新拓扑" description="保存当前草稿为新的私有编排拓扑，原拓扑和运行资源保持不变。" pending={isCopyingTemplate}
         onOpenChange={setIsTemplateCopyDialogOpen} footer={<><Button disabled={isCopyingTemplate} variant="outline" onClick={() => setIsTemplateCopyDialogOpen(false)}>取消</Button><Button disabled={isCopyingTemplate || !templateCopyName.trim()} onClick={() => void handleConfirmCopyTemplate()}>{isCopyingTemplate ? '正在保存…' : '保存新拓扑'}</Button></>}>
         <div className="grid gap-3"><label className="grid gap-2 text-sm"><span>新拓扑名称</span><Input autoFocus maxLength={80} aria-label="新拓扑名称" value={templateCopyName} disabled={isCopyingTemplate} onChange={event => setTemplateCopyName(event.target.value)} /></label><label className="grid gap-2 text-sm"><span>描述</span><Input aria-label="新拓扑描述" value={templateCopyDescription} disabled={isCopyingTemplate} onChange={event => setTemplateCopyDescription(event.target.value)} /></label></div>

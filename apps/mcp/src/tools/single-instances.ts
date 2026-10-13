@@ -65,8 +65,10 @@ const singleInstanceCloudResourceStatusOutputSchema = resultOutputSchema(
 );
 
 function escapeCsvCell(value: string) {
-  const normalizedValue = value.replaceAll('"', '""');
-  return /[",\n]/.test(normalizedValue) ? `"${normalizedValue}"` : normalizedValue;
+  // Formula-prefix every risky string, including credentials, before CSV quoting.
+  const safeText = /^[\s\u0000-\u001f]*[=+@-]/.test(value) ? `'${value}` : value;
+  const normalizedValue = safeText.replaceAll('"', '""');
+  return /[",\r\n]/.test(normalizedValue) ? `"${normalizedValue}"` : normalizedValue;
 }
 
 function readSingleInstanceCredential(instance: Record<string, unknown>) {
@@ -339,7 +341,7 @@ export const singleInstanceTools: ToolDefinition[] = [
         const publicIp = typeof accessEntry?.publicIp === 'string' && accessEntry.publicIp.trim() ? accessEntry.publicIp.trim() : '暂无';
         const name = typeof instance.name === 'string' && instance.name.trim() ? instance.name.trim() : instance.id;
 
-        return [/^[=+@-]/.test(name) ? `'${name}` : name, publicIp, credential.username, credential.password].map(escapeCsvCell).join(',');
+        return [name, publicIp, credential.username, credential.password].map(escapeCsvCell).join(',');
       }));
       const csv = [['实例名', '公网 IP', '账号', '密码'].join(','), ...rows].join('\n');
       const batchName = typeof group.batch.name === 'string' && group.batch.name.trim() ? group.batch.name.trim() : group.batch.id;

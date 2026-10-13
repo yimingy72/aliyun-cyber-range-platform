@@ -156,6 +156,7 @@ const {
   previewRangeInstanceDraftMock,
   saveRangeInstanceAsTemplateMock,
   runRangeInstanceNodeActionMock,
+  triggerRangeActionMock,
   writeTextMock,
   pushMock,
   replaceMock,
@@ -178,6 +179,7 @@ const {
     previewRangeInstanceDraftMock: vi.fn(),
     saveRangeInstanceAsTemplateMock: vi.fn(),
     runRangeInstanceNodeActionMock: vi.fn(),
+    triggerRangeActionMock: vi.fn(),
     writeTextMock: vi.fn(),
     pushMock,
     replaceMock,
@@ -214,6 +216,7 @@ vi.mock('../../lib/admin-api', () => ({
   previewRangeInstanceDraft: previewRangeInstanceDraftMock,
   saveRangeInstanceAsTemplate: saveRangeInstanceAsTemplateMock,
   runRangeInstanceNodeAction: runRangeInstanceNodeActionMock,
+  triggerRangeAction: triggerRangeActionMock,
 }));
 
 vi.mock('./use-admin-session', () => ({
@@ -292,6 +295,7 @@ describe('RangeInstanceDetailScreen', () => {
     sessionState.profile = { id: 'admin', username: 'admin', role: 'admin' };
     fetchProvisionJobDetailMock.mockReset();
     fetchProvisionJobDetailMock.mockResolvedValue({ job: { id: 'job-1', jobType: 'update', status: 'succeeded' }, steps: [] });
+    triggerRangeActionMock.mockReset();
     fetchInstanceTypeAvailabilityMock.mockResolvedValue({
       cpu: 2,
       memory: 2,
@@ -1515,6 +1519,145 @@ describe('RangeInstanceDetailScreen', () => {
     await act(async () => { resolveSave({ id: 'range-1', status: 'running', draftRevision: 1, draftTopologyGraph: createValidTopologyGraph('旧保存节点') }); });
     expect(screen.queryByRole('button', { name: '旧保存节点' })).toBeNull();
     expect(screen.getByRole('button', { name: '新范围节点' })).toBeTruthy();
+  });
+
+  it('shows recovery guidance and retries a failed creation from the detail page', async () => {
+    fetchRangeInstanceDetailMock.mockReset();
+    fetchRangeInstanceDetailMock.mockResolvedValue({
+      id: 'range-1',
+      status: 'create_failed',
+      name: '恢复靶场',
+      runtimeTopologyGraph: createValidTopologyGraph('host'),
+      errorSummary: 'Aliyun RunInstances request failed with status 400 (InvalidParameter.Password)',
+      recoverySummary: {
+        category: 'capacity',
+        severity: 'warning',
+        canRetry: true,
+        summary: '当前可用区没有匹配的可售实例规格',
+        suggestions: ['切换可用区或调整实例规格偏好后再重试。'],
+      },
+    });
+    triggerRangeActionMock.mockResolvedValue({ id: 'job-retry-1', jobType: 'retry', status: 'pending' });
+    fetchProvisionJobDetailMock.mockResolvedValue({ job: { id: 'job-retry-1', jobType: 'retry', status: 'pending' }, steps: [] });
+
+    render(<RangeInstanceDetailScreen rangeId="range-1" apiBaseUrl="http://localhost:3001" />);
+
+    expect(await screen.findByText('实例恢复 · 云容量')).toBeTruthy();
+    expect(screen.getByText('当前可用区没有匹配的可售实例规格')).toBeTruthy();
+    expect(screen.getByText('切换可用区或调整实例规格偏好后再重试。')).toBeTruthy();
+
+    fireEvent.click(screen.getByRole('button', { name: '重试创建' }));
+    await waitFor(() =>
+      expect(triggerRangeActionMock).toHaveBeenCalledWith('http://localhost:3001', 'dev-admin-token', 'range-1', 'retry'),
+    );
+    expect(await screen.findByText(/任务已提交|正在执行/)).toBeTruthy();
+  });
+
+  it('confirms before reclaiming a failed creation and cancels safely', async () => {
+    fetchRangeInstanceDetailMock.mockReset();
+    fetchRangeInstanceDetailMock.mockResolvedValue({
+      id: 'range-1',
+      status: 'create_failed',
+      name: '恢复靶场',
+      runtimeTopologyGraph: createValidTopologyGraph('host'),
+      recoverySummary: { category: 'quota', severity: 'warning', canRetry: true, summary: '配额不足', suggestions: ['申请配额后重试。'] },
+    });
+    triggerRangeActionMock.mockResolvedValue({ id: 'job-destroy-1', jobType: 'destroy', status: 'pending' });
+    fetchProvisionJobDetailMock.mockResolvedValue({ job: { id: 'job-destroy-1', jobType: 'destroy', status: 'pending' }, steps: [] });
+
+    render(<RangeInstanceDetailScreen rangeId="range-1" apiBaseUrl="http://localhost:3001" />);
+
+    fireEvent.click(await screen.findByRole('button', { name: '回收资源' }));
+    expect(triggerRangeActionMock).not.toHaveBeenCalled();
+    fireEvent.click(await screen.findByRole('button', { name: '取消' }));
+    expect(screen.queryByRole('button', { name: '确认回收' })).toBeNull();
+    expect(triggerRangeActionMock).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole('button', { name: '回收资源' }));
+    fireEvent.click(await screen.findByRole('button', { name: '确认回收' }));
+    await waitFor(() =>
+      expect(triggerRangeActionMock).toHaveBeenCalledWith('http://localhost:3001', 'dev-admin-token', 'range-1', 'destroy'),
+    );
+  });
+
+  it('offers a reclaim retry for destroy_failed instances behind a confirmation', async () => {
+    fetchRangeInstanceDetailMock.mockReset();
+    fetchRangeInstanceDetailMock.mockResolvedValue({
+      id: 'range-1',
+      status: 'destroy_failed',
+      name: '回收失败靶场',
+      runtimeTopologyGraph: createValidTopologyGraph('host'),
+      recoverySummary: { category: 'unknown', severity: 'critical', canRetry: true, summary: '暂无可解析失败分类', suggestions: ['建议进入任务详情查看完整时间线后再决定是否重试。'] },
+    });
+    triggerRangeActionMock.mockResolvedValue({ id: 'job-retry-2', jobType: 'retry', status: 'pending' });
+    fetchProvisionJobDetailMock.mockResolvedValue({ job: { id: 'job-retry-2', jobType: 'retry', status: 'pending' }, steps: [] });
+
+    render(<RangeInstanceDetailScreen rangeId="range-1" apiBaseUrl="http://localhost:3001" />);
+
+    fireEvent.click(await screen.findByRole('button', { name: '重试回收' }));
+    expect(triggerRangeActionMock).not.toHaveBeenCalled();
+    fireEvent.click(await screen.findByRole('button', { name: '确认重试' }));
+    await waitFor(() =>
+      expect(triggerRangeActionMock).toHaveBeenCalledWith('http://localhost:3001', 'dev-admin-token', 'range-1', 'retry'),
+    );
+  });
+
+  it('does not let a non-retryable cause block resource reclaim', async () => {
+    fetchRangeInstanceDetailMock.mockReset();
+    fetchRangeInstanceDetailMock.mockResolvedValue({
+      id: 'range-1',
+      status: 'create_failed',
+      name: '根因未修复靶场',
+      runtimeTopologyGraph: createValidTopologyGraph('host'),
+      recoverySummary: {
+        category: 'template_blueprint',
+        severity: 'warning',
+        canRetry: false,
+        summary: '模板蓝图或编译产物异常',
+        suggestions: ['回到模板中心重新发布模板，确认拓扑与编译产物一致。'],
+      },
+    });
+
+    render(<RangeInstanceDetailScreen rangeId="range-1" apiBaseUrl="http://localhost:3001" />);
+
+    expect(await screen.findByText('实例恢复 · 模板定义')).toBeTruthy();
+    expect(screen.getByRole('button', { name: '重试创建' }).hasAttribute('disabled')).toBe(true);
+    expect(screen.getByRole('button', { name: '回收资源' }).hasAttribute('disabled')).toBe(false);
+  });
+
+  it('keeps recovery actions disabled in a read-only workspace', async () => {
+    workspaceState.workspace = { id: 'legacy', provider: 'alibaba_cloud', isReadOnly: true, capabilities: { provisioning: true, rangeProvisioning: true } };
+    fetchRangeInstanceDetailMock.mockReset();
+    fetchRangeInstanceDetailMock.mockResolvedValue({
+      id: 'range-1',
+      status: 'create_failed',
+      name: '只读恢复靶场',
+      runtimeTopologyGraph: createValidTopologyGraph('host'),
+      recoverySummary: { category: 'credentials', severity: 'warning', canRetry: true, summary: '凭据失效', suggestions: [] },
+    });
+
+    render(<RangeInstanceDetailScreen rangeId="range-1" apiBaseUrl="http://localhost:3001" />);
+
+    expect(await screen.findByText('实例恢复 · 凭据/权限')).toBeTruthy();
+    expect(screen.getByRole('button', { name: '重试创建' }).hasAttribute('disabled')).toBe(true);
+    expect(screen.getByRole('button', { name: '回收资源' }).hasAttribute('disabled')).toBe(true);
+  });
+
+  it('hides the recovery panel for healthy instances', async () => {
+    fetchRangeInstanceDetailMock.mockReset();
+    fetchRangeInstanceDetailMock.mockResolvedValue({
+      id: 'range-1',
+      status: 'running',
+      name: '运行中靶场',
+      runtimeTopologyGraph: createValidTopologyGraph('host'),
+    });
+
+    render(<RangeInstanceDetailScreen rangeId="range-1" apiBaseUrl="http://localhost:3001" />);
+
+    expect((await screen.findAllByText('运行中')).length).toBeGreaterThan(0);
+    expect(screen.queryByText(/实例恢复/)).toBeNull();
+    expect(screen.queryByRole('button', { name: '回收资源' })).toBeNull();
+    expect(screen.queryByRole('button', { name: '重试创建' })).toBeNull();
   });
 
 });

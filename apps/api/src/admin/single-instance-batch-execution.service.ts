@@ -949,16 +949,38 @@ export class SingleInstanceBatchExecutionService {
         : {}),
     });
     if (!response.ok) {
-      const body = await response.text();
-      throw new Error(`Aliyun ${input.action} request failed with status ${response.status}${body ? ` - ${body}` : ''}`);
+      const code = await readAliyunErrorCode(response);
+      throw new Error(`Aliyun ${input.action} request failed with status ${response.status}${code ? ` (${code})` : ''}`);
     }
     const payload = await response.json() as ResponsePayload & {
       Code?: string;
     };
-    if (payload.Code)
-      throw new Error(`Aliyun ${input.action} rejected: ${payload.Code}`);
+    if (payload.Code !== undefined)
+      throw new Error(`Aliyun ${input.action} rejected: ${sanitizeAliyunErrorCode(payload.Code) ?? 'UNCLASSIFIED'}`);
     return payload;
   }
+}
+
+// Provider error bodies can echo request material; only the machine-readable error code
+// may surface. The status prefix stays intact because destroy verification and automatic
+// retries classify failures from these messages.
+const ALIYUN_ERROR_CODE_PATTERN = /^[A-Za-z0-9._-]{1,128}$/;
+
+function sanitizeAliyunErrorCode(value: unknown) {
+  return typeof value === 'string' && ALIYUN_ERROR_CODE_PATTERN.test(value) ? value : null;
+}
+
+async function readAliyunErrorCode(response: Response) {
+  let payload: unknown;
+  try {
+    payload = JSON.parse(await response.text());
+  } catch {
+    return null;
+  }
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
+    return null;
+  }
+  return sanitizeAliyunErrorCode((payload as { Code?: unknown }).Code);
 }
 class LostSingleInstanceClaimError extends Error {
 }
