@@ -34,6 +34,27 @@ export function createMemoryResourcePatrolRepository(repository: AdminRepository
     },
     resolve: async (id: string) => { const row = alerts.find(row => row.id === id)!; row.status = 'resolved'; row.remainingResources = []; },
     failed: async (id: string, remainingResources: any[], error: string) => { Object.assign(alerts.find(row => row.id === id)!,{ status: 'failed',remainingResources,errorSummary:error }); },
+    reconcileBillingObservation: async (input:any)=>{
+      const workspace=requireCurrentCloudWorkspaceId();
+      const assertCurrent=()=>{if (lease!==input.leaseToken || target.cloudWorkspaceId!==workspace) throw new ConflictException('lease or manager selection changed');};
+      assertCurrent();
+      const current=await repository.getRangeInstanceById(input.instance.id),job=await repository.getProvisionJobById(input.sourceJobId);
+      if (!current || current.updatedAt.getTime()!==input.instance.updatedAt.getTime() || !job?.startedAt
+        || !['create','retry','update'].includes(job.jobType) || (await repository.listProvisionJobs()).some(item=>item.rangeInstanceId===current.id&&['pending','running'].includes(item.status))) throw new ConflictException('source changed');
+      const identity={cloudProvider:input.provider,regionId:input.regionId,cloudResourceId:input.resource.id,cloudResourceType:input.resource.type};
+      const row=await repository.findBillingLedgerResource(identity);assertCurrent();
+      if (row && (row.cloudAccountUid!==input.accountUid || row.rangeInstanceId!==current.id || row.ownerUserId!==current.ownerUserId
+        || row.singleInstanceBatchId!==current.singleInstanceBatchId)) throw new ConflictException('billing ownership');
+      const previousReleasedAt=row?.releasedAt??null;
+      if (input.present) {
+        if (!row) await repository.createBillingLedgerResource({...identity,cloudAccountUid:input.accountUid,billingScope:current.ownerUserId?'user':'platform',
+          ownerUserId:current.ownerUserId,rangeInstanceId:current.id,singleInstanceBatchId:current.singleInstanceBatchId,sourceProvisionJobId:job.id,billingStartAt:job.startedAt});
+        else if (row.releasedAt||!row.sourceProvisionJobId) await repository.updateBillingLedgerResource(row.id,{releasedAt:null,...(!row.sourceProvisionJobId?{sourceProvisionJobId:job.id}:{})});
+      } else if (row&&!row.releasedAt) await repository.updateBillingLedgerResource(row.id,{releasedAt:input.observedAt});
+      const changed=input.present?(!row||Boolean(previousReleasedAt)):Boolean(row&&!previousReleasedAt);
+      if (changed) await repository.createProvisionJobStepLog({jobId:job.id,status:'succeeded',stepName:input.present?'resource_patrol_billing_continues':'resource_patrol_release_verified',
+        message:JSON.stringify({previousReleasedAt,resource:input.resource,observedAt:input.observedAt}),startedAt:input.observedAt,finishedAt:input.observedAt});
+    },
     queueReclaim: async (input: any) => repository.withSingleInstanceControlLock(async () => {
       const existing = alerts.find(row => row.id === input.alert.id)!;
       if (existing.status === 'reclaiming' && existing.jobId) return { jobId: existing.jobId };

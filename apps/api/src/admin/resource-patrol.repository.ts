@@ -50,8 +50,10 @@ export class ResourcePatrolRepository {
 
   async tryLease(now: Date): Promise<string | null> {
     return runInSystemCloudWorkspaceScope(async () => {
-      const token = randomUUID();
-      const result = await this.prisma.resourcePatrolSettings.updateMany({ where: { id: 'default', managerUserId: { not: null },
+      const settings=await this.prisma.resourcePatrolSettings.findUnique({where:{id:'default'}});
+      if (!settings?.managerUserId) return null;
+      const token = `${randomUUID()}:${Buffer.from(settings.managerUserId).toString('base64url')}`;
+      const result = await this.prisma.resourcePatrolSettings.updateMany({ where: { id: 'default', managerUserId: settings.managerUserId,
         OR: [{ leaseUntil: null }, { leaseUntil: { lte: now } }] }, data: { leaseToken: token, leaseUntil: new Date(now.getTime() + 120_000) } });
       return result.count === 1 ? token : null;
     });
@@ -120,15 +122,60 @@ export class ResourcePatrolRepository {
   private async withScanLease<T>(token: string | undefined, work: (db: Prisma.TransactionClient | PrismaService) => Promise<T>): Promise<T> {
     if (!token) return work(this.prisma);
     const workspace = requireCurrentCloudWorkspaceId();
+    const encodedManager=token.slice(37);
+    if (!/^[A-Za-z0-9_-]+$/.test(encodedManager) || token[36]!==':') throw new ConflictException('巡检租约无效。');
+    const managerUserId=Buffer.from(encodedManager,'base64url').toString('utf8');
     return this.prisma.$transaction(async tx => {
+      // Acquire ordinary writer locks before the manager row: account removal uses
+      // NOWAIT table locks, so it must fail rather than form manager -> ledger cycles.
+      await tx.$executeRaw`LOCK TABLE "BillingLedgerResource", "ProvisionJobStepLog", "CloudResourceDrift" IN ROW EXCLUSIVE MODE NOWAIT`;
       const held = await tx.$queryRaw<Array<{id:string}>>`SELECT s.id FROM "ResourcePatrolSettings" s
         JOIN "PlatformUser" u ON u.id=s."managerUserId"
         WHERE s.id='default' AND s."leaseToken"=${token} AND s."leaseUntil">CURRENT_TIMESTAMP
+          AND s."managerUserId"=${managerUserId}
           AND u."selectedCloudWorkspaceId"=${workspace} AND u."isPlatformManager"=TRUE AND u.status='active'
-        FOR UPDATE OF s`;
+        FOR UPDATE OF s,u`;
       if (held.length !== 1) throw new ConflictException('巡检目标或租约已变化，保留旧告警。');
       return work(tx);
     }, {timeout:10_000,maxWait:5_000});
+  }
+
+  async reconcileBillingObservation(input: { leaseToken: string; instance: RangeInstanceRecord; resource: ResourceIdentity;
+    sourceJobId: string; provider: 'alibaba_cloud'|'tencent_cloud'; accountUid: string; regionId: string; observedAt: Date; present: boolean }) {
+    if (!['ecs','disk','eip','nat_gateway','snat_entry','dnat_entry'].includes(input.resource.type)) return;
+    const workspace=requireCurrentCloudWorkspaceId();
+    await this.withScanLease(input.leaseToken,async db=>{
+      if (input.instance.lastJobId) await db.$queryRaw`SELECT id FROM "ProvisionJob" WHERE id=${input.instance.lastJobId}
+        AND "cloudWorkspaceId"=${workspace} FOR UPDATE`;
+      const current=await db.$queryRaw<Array<{id:string}>>`SELECT id FROM "RangeInstance" WHERE id=${input.instance.id}
+        AND "cloudWorkspaceId"=${workspace} AND "updatedAt"=${input.instance.updatedAt}
+        AND status IN ('destroyed','create_failed','destroy_failed') FOR UPDATE`;
+      if (current.length!==1 || await db.provisionJob.count({where:{rangeInstanceId:input.instance.id,status:{in:['pending','running']}}})) {
+        throw new ConflictException('实例或作业在巡检期间变化，保留原账单状态。');
+      }
+      const source=await db.provisionJob.findUnique({where:{id:input.sourceJobId}});
+      if (!source?.startedAt || source.cloudWorkspaceId!==workspace || source.rangeInstanceId!==input.instance.id
+        || !['create','retry','update'].includes(source.jobType) || input.instance.cloudProvider!==input.provider) throw new ConflictException('巡检账单缺少准确创建来源。');
+      const type=input.resource.type as 'ecs'|'disk'|'eip'|'nat_gateway'|'snat_entry'|'dnat_entry';
+      const identity={cloudWorkspaceId:workspace,cloudProvider:input.provider,regionId:input.regionId,cloudResourceId:input.resource.id,cloudResourceType:type};
+      const ledger=await db.billingLedgerResource.findUnique({where:{cloudWorkspaceId_cloudProvider_regionId_cloudResourceId_cloudResourceType:identity}});
+      if (ledger && (ledger.cloudAccountUid!==input.accountUid || ledger.rangeInstanceId!==input.instance.id
+        || ledger.ownerUserId!==input.instance.ownerUserId || ledger.singleInstanceBatchId!==input.instance.singleInstanceBatchId)) throw new ConflictException('巡检账单归属与准确库存冲突。');
+      const previousReleasedAt=ledger?.releasedAt??null;
+      if (input.present) {
+        if (!ledger) await db.billingLedgerResource.create({data:{...identity,cloudAccountUid:input.accountUid,
+          billingScope:input.instance.ownerUserId?'user':'platform',ownerUserId:input.instance.ownerUserId,rangeInstanceId:input.instance.id,
+          singleInstanceBatchId:input.instance.singleInstanceBatchId,sourceProvisionJobId:source.id,billingStartAt:source.startedAt,tagsSnapshot:{}}});
+        else if (ledger.releasedAt || !ledger.sourceProvisionJobId) await db.billingLedgerResource.update({where:{id:ledger.id},
+          data:{releasedAt:null,...(!ledger.sourceProvisionJobId?{sourceProvisionJobId:source.id}:{})}});
+      } else if (ledger && !ledger.releasedAt) await db.billingLedgerResource.update({where:{id:ledger.id},data:{releasedAt:input.observedAt}});
+      const changed=input.present?(!ledger||Boolean(previousReleasedAt)):Boolean(ledger&&!previousReleasedAt);
+      if (changed) await db.provisionJobStepLog.create({data:{jobId:source.id,
+        stepName:input.present?'resource_patrol_billing_continues':'resource_patrol_release_verified',status:'succeeded',
+        startedAt:input.observedAt,finishedAt:input.observedAt,
+        message:JSON.stringify({version:1,cloudWorkspaceId:workspace,accountUid:input.accountUid,regionId:input.regionId,
+          resource:input.resource,previousReleasedAt,observedAt:input.observedAt,present:input.present})}});
+    });
   }
 
   async queueReclaim(input: { alert: StoredResourceAlert; instance: RangeInstanceRecord; summary: RangeResourceSummary;

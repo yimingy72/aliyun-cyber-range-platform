@@ -113,7 +113,7 @@ export class ResourceAlertsService {
             const observations = await this.cloud.inspect({ ...account, defaultRegion: region }, known,candidates);
             await assertCurrent();
             // A completed bounded read is required before any absence may close an alert.
-            drifts += await this.observeRegion({ ...account, defaultRegion: region }, data, observations, now, assertCurrent, token);
+            drifts += await this.observeRegion({ ...account, defaultRegion: region }, data, observations, new Date(), assertCurrent, token);
           } catch { error = safeError(); }
         }
       });
@@ -158,7 +158,7 @@ export class ResourceAlertsService {
         evidence: { recordedInventory: Boolean(contextMatches), sourceJobIds: source?.sourceJobIds ?? [], accountVerified: true,
           rangeName: source?.instance.name ?? null, cloudAccountContextId: source?.context.cloudAccountContextId ?? null,
           parentId: resource.parentId, identity: { type: resource.type, id: resource.id } } });
-      if (source && contextMatches) await this.retainResourceBilling(source,resource,account,now);
+      if (source && contextMatches) await this.reconcileResourceBilling(source,resource,account,now,leaseToken,true);
       drifts++;
     }
     for (const alert of existing.filter(row => row.status !== 'resolved')) {
@@ -168,7 +168,7 @@ export class ResourceAlertsService {
       if (owner && !(await this.unchangedInactive(owner.instance))) continue;
       // Tag candidates are never closed on tag disappearance; known inventory IDs were independently queried.
       if (owner && !observed.has(`${alert.type}:${alert.resourceId}`)) {
-        await this.verifyResourceBillingReleased(owner,{type:alert.type,id:alert.resourceId},account,now);
+        await this.reconcileResourceBilling(owner,{type:alert.type,id:alert.resourceId},account,now,leaseToken,false);
         await this.store.resolve(alert.id, now, leaseToken);
       }
       else if (!owner && !observed.has(`${alert.type}:${alert.resourceId}`)
@@ -242,43 +242,13 @@ export class ResourceAlertsService {
     return !job || !['pending','running'].includes(job.status);
   }
 
-  private async retainResourceBilling(source: ProvenInventory, resource: ResourceIdentity, account: SystemCloudAccountContext, now: Date) {
+  private async reconcileResourceBilling(source: ProvenInventory, resource: ResourceIdentity, account: SystemCloudAccountContext,
+    now: Date,leaseToken: string,present: boolean) {
     if (!['ecs','disk','eip','nat_gateway','snat_entry','dnat_entry'].includes(resource.type)) return;
     const sourceJobId = source.birthSources.get(patrolResourceKey(resource));
-    const job = sourceJobId ? await this.repository.getProvisionJobById(sourceJobId) : null;
-    if (!job?.startedAt || !['create','retry','update'].includes(job.jobType)
-      || job.rangeInstanceId !== source.instance.id || job.cloudWorkspaceId !== source.instance.cloudWorkspaceId) throw new Error('BILLING_SOURCE_UNVERIFIED');
-    const type = resource.type as 'ecs'|'disk'|'eip'|'nat_gateway'|'snat_entry'|'dnat_entry';
-    const ledger = await this.repository.findBillingLedgerResource({cloudProvider:account.provider,regionId:account.defaultRegion,
-      cloudResourceId:resource.id,cloudResourceType:type});
-    if (ledger && (ledger.cloudAccountUid !== account.accountUid || ledger.rangeInstanceId !== source.instance.id
-      || ledger.ownerUserId !== source.instance.ownerUserId || ledger.singleInstanceBatchId !== source.instance.singleInstanceBatchId)) throw new Error('BILLING_OWNERSHIP_CONFLICT');
-    const previousReleasedAt = ledger?.releasedAt ?? null;
-    if (!ledger) await this.repository.createBillingLedgerResource({cloudProvider:account.provider,cloudAccountUid:account.accountUid,
-      regionId:account.defaultRegion,cloudResourceId:resource.id,cloudResourceType:type,billingScope:source.instance.ownerUserId?'user':'platform',
-      ownerUserId:source.instance.ownerUserId,rangeInstanceId:source.instance.id,singleInstanceBatchId:source.instance.singleInstanceBatchId,
-      sourceProvisionJobId:job.id,billingStartAt:job.startedAt,tagsSnapshot:{}});
-    else if (ledger.releasedAt || !ledger.sourceProvisionJobId) await this.repository.updateBillingLedgerResource(ledger.id,
-      {releasedAt:null,...(!ledger.sourceProvisionJobId ? {sourceProvisionJobId:job.id} : {})});
-    if (!ledger || previousReleasedAt) await this.repository.createProvisionJobStepLog({jobId:job.id,
-      stepName:'resource_patrol_billing_continues',status:'succeeded',startedAt:now,finishedAt:now,
-      message:JSON.stringify({version:1,cloudWorkspaceId:source.instance.cloudWorkspaceId,accountUid:account.accountUid,
-        regionId:account.defaultRegion,resource,previousReleasedAt,observedAt:now,reason:'accurate_inventory_resource_still_present'}),
-      stdoutExcerpt:null,stderrExcerpt:null});
-  }
-
-  private async verifyResourceBillingReleased(source: ProvenInventory,resource: ResourceIdentity,account: SystemCloudAccountContext,now: Date) {
-    if (!['ecs','disk','eip','nat_gateway','snat_entry','dnat_entry'].includes(resource.type)) return;
-    const ledger=await this.repository.findBillingLedgerResource({cloudProvider:account.provider,regionId:account.defaultRegion,
-      cloudResourceId:resource.id,cloudResourceType:resource.type as 'ecs'|'disk'|'eip'|'nat_gateway'|'snat_entry'|'dnat_entry'});
-    if (!ledger || ledger.releasedAt) return;
-    if (ledger.cloudAccountUid!==account.accountUid || ledger.rangeInstanceId!==source.instance.id
-      || ledger.ownerUserId!==source.instance.ownerUserId || !source.birthSources.has(patrolResourceKey(resource))) throw new Error('BILLING_RELEASE_SOURCE_UNVERIFIED');
-    await this.repository.updateBillingLedgerResource(ledger.id,{releasedAt:now});
-    await this.repository.createProvisionJobStepLog({jobId:source.birthSources.get(patrolResourceKey(resource))!,
-      stepName:'resource_patrol_release_verified',status:'succeeded',startedAt:now,finishedAt:now,
-      message:JSON.stringify({version:1,cloudWorkspaceId:source.instance.cloudWorkspaceId,accountUid:account.accountUid,
-        regionId:account.defaultRegion,resource,verifiedAbsentAt:now}),stdoutExcerpt:null,stderrExcerpt:null});
+    if (!sourceJobId || !account.accountUid) throw new Error('BILLING_SOURCE_UNVERIFIED');
+    await this.store.reconcileBillingObservation({leaseToken,instance:source.instance,resource,sourceJobId,
+      provider:account.provider,accountUid:account.accountUid,regionId:account.defaultRegion,observedAt:now,present});
   }
 
   private async requireAlert(id: string): Promise<StoredResourceAlert> {

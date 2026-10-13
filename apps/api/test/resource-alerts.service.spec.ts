@@ -163,4 +163,19 @@ describe('current-account residual patrol',() => {
     expect(f.store.alerts[0].status).toBe('unverified');
     f.cloud.inspect.mockResolvedValue([]);await f.service.scanCurrent();expect(f.store.alerts[0].status).toBe('resolved');
   });
+  it('does not write old-account billing after the manager switches between alert recording and ledger reconciliation',async()=>{
+    const f=await fixture();const record=f.store.observe.bind(f.store);
+    jest.spyOn(f.store,'observe').mockImplementation(async input=>{await record(input);f.store.targetValue.cloudWorkspaceId='space-b';});
+    f.cloud.inspect.mockResolvedValue([cloudRow('ecs','i-real')] as never[]);await f.service.scanCurrent();
+    expect(f.store.settingsValue.lastScanError).toBeTruthy();
+    await runInCloudWorkspace(scope,()=>expect(f.repository.listBillingLedgerResources()).resolves.toEqual([]));
+  });
+  it('records verified absence after the cloud read, never at the earlier scan scheduling time',async()=>{
+    const f=await fixture();f.cloud.inspect.mockResolvedValue([cloudRow('ecs','i-real')] as never[]);await f.service.scanCurrent();
+    const readCompletedAt=new Date();f.cloud.inspect.mockResolvedValue([]);
+    await f.service.scanCurrent(new Date('2025-01-01T00:00:00Z'));
+    await runInCloudWorkspace(scope,async()=>{
+      const row=(await f.repository.listBillingLedgerResources())[0];expect(row.releasedAt!.getTime()).toBeGreaterThanOrEqual(readCompletedAt.getTime());
+    });
+  });
 });

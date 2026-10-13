@@ -62,4 +62,41 @@ database('resource patrol PostgreSQL atomicity',()=>{
       expect(await prisma.provisionJob.count({where:{rangeInstanceId:instance.id,jobType:'destroy'}})).toBe(0);
     });
   });
+  it('fences billing writes after a manager account switch and rejects a changed designated manager even in the same workspace',async()=>{
+    const token=await store.tryLease(new Date());expect(token).toBeTruthy();
+    await runInCloudWorkspace(scope,async()=>{
+      const instance=await prisma.rangeInstance.create({data:{name:'billing fence',status:'destroyed',instanceMode:'range',cloudProvider:scope.provider}});
+      const job=await prisma.provisionJob.create({data:{rangeInstanceId:instance.id,jobType:'create',status:'failed',triggeredBy:manager,startedAt:new Date()}});
+      const current=await prisma.rangeInstance.update({where:{id:instance.id},data:{lastJobId:job.id}});
+      const input={leaseToken:token!,instance:current as any,resource:{type:'ecs' as const,id:'i-billing'},sourceJobId:job.id,
+        provider:scope.provider,accountUid:scope.accountUid,regionId:'cn-hangzhou',observedAt:new Date(),present:true};
+      await runInSystemCloudWorkspaceScope(()=>prisma.platformUser.update({where:{id:manager},data:{selectedCloudWorkspaceId:null}}));
+      await expect(store.reconcileBillingObservation(input)).rejects.toThrow('租约');
+      expect(await prisma.billingLedgerResource.count({where:{rangeInstanceId:instance.id}})).toBe(0);
+      await runInSystemCloudWorkspaceScope(()=>prisma.platformUser.update({where:{id:manager},data:{selectedCloudWorkspaceId:workspace}}));
+      const replacement=`replacement-${randomUUID()}`;
+      await runInSystemCloudWorkspaceScope(async()=>{
+        await prisma.platformUser.create({data:{id:replacement,username:replacement,loginUsername:replacement,passwordHash:'fixture',
+          role:'admin',status:'active',isPlatformManager:true,selectedCloudWorkspaceId:workspace}});
+        await store.setManager(replacement);
+      });
+      await expect(store.reconcileBillingObservation(input)).rejects.toThrow('租约');
+      await store.setManager(manager);
+      await store.reconcileBillingObservation(input);
+      expect(await prisma.billingLedgerResource.findFirst({where:{rangeInstanceId:instance.id}})).toMatchObject({sourceProvisionJobId:job.id,releasedAt:null});
+    });
+    await store.finish(token!,new Date(),[],null,workspace);
+  });
+  it('holds the designated manager row until the fenced write commits, so a concurrent switch cannot interleave',async()=>{
+    const token=await store.tryLease(new Date());expect(token).toBeTruthy();
+    let entered!:()=>void,finish!:()=>void;const ready=new Promise<void>(resolve=>{entered=resolve;}),gate=new Promise<void>(resolve=>{finish=resolve;});
+    const write=runInCloudWorkspace(scope,()=>(store as any).withScanLease(token,async()=>{entered();await gate;}));
+    await ready;let switched=false;
+    const change=runInSystemCloudWorkspaceScope(()=>prisma.platformUser.update({where:{id:manager},data:{selectedCloudWorkspaceId:null}})).then(()=>{switched=true;});
+    try {await new Promise(resolve=>setTimeout(resolve,50));expect(switched).toBe(false);}
+    finally {finish();await write;await change;}
+    expect(switched).toBe(true);
+    await runInSystemCloudWorkspaceScope(()=>prisma.platformUser.update({where:{id:manager},data:{selectedCloudWorkspaceId:workspace}}));
+    await store.finish(token!,new Date(),[],null,workspace);
+  });
 });
