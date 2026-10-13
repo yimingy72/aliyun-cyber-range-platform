@@ -37,6 +37,35 @@ describe('resource patrol bounded cloud reads',()=>{
     ]}}]}}));
     await expect((new ResourcePatrolCloudClient() as any).list(account,'ecs',['i-original'])).rejects.toThrow('TAG');
   });
+  it('respects security-group page size 50 and reads every page',async()=>{
+    global.fetch=jest.fn(async(url:any)=>{
+      const params=new URL(String(url)).searchParams;
+      expect(params.get('PageSize')).toBe('50');
+      const page=Number(params.get('PageNumber'));
+      return response({RequestId:'sg-page',TotalCount:51,SecurityGroups:{SecurityGroup:Array.from({length:page===1?50:1},(_,index)=>({SecurityGroupId:`sg-${page}-${index}`}))}});
+    });
+    expect(await (new ResourcePatrolCloudClient() as any).aliList(account,'security_group',{})).toHaveLength(51);
+    expect(global.fetch).toHaveBeenCalledTimes(2);
+  });
+  it('accepts documented decimal-string ACL counts without weakening completeness checks',async()=>{
+    global.fetch=jest.fn(async(url:any)=>{
+      const page=new URL(String(url)).searchParams.get('PageNumber');
+      return response({RequestId:'acl-page',TotalCount:page==='1'?'2':2,NetworkAcls:{NetworkAcl:[{NetworkAclId:`acl-${page}`} ]}});
+    });
+    expect(await (new ResourcePatrolCloudClient() as any).aliList(account,'network_acl',{})).toHaveLength(2);
+  });
+  it.each(['', ' ', '1.0', '+1','1e0','9007199254740992','-1'])('rejects malformed or unsafe TotalCount %j',async count=>{
+    global.fetch=jest.fn(async()=>response({RequestId:'acl-page',TotalCount:count,NetworkAcls:{NetworkAcl:[]}}));
+    await expect((new ResourcePatrolCloudClient() as any).aliList(account,'network_acl',{})).rejects.toThrow('PAGINATION');
+  });
+  it.each(['alibaba_cloud','tencent_cloud'] as const)('requires a valid RequestId before returning a %s deletion receipt',async provider=>{
+    for(const id of [undefined,null,123,'','bad\nvalue',account.accessKeyId]) {
+      global.fetch=jest.fn(async()=>response(provider==='tencent_cloud'?{Response:{RequestId:id}}:{RequestId:id}));
+      await expect(new ResourcePatrolCloudClient().mutate({...account,provider},provider==='tencent_cloud'?'cvm':'ecs',provider==='tencent_cloud'?'TerminateInstances':'DeleteInstances',{})).rejects.toThrow();
+    }
+    global.fetch=jest.fn(async()=>response(provider==='tencent_cloud'?{Response:{RequestId:'safe-request'}}:{RequestId:'safe-request'}));
+    await expect(new ResourcePatrolCloudClient().mutate({...account,provider},provider==='tencent_cloud'?'cvm':'ecs',provider==='tencent_cloud'?'TerminateInstances':'DeleteInstances',{})).resolves.toEqual({requestId:'safe-request'});
+  });
   it('queries Tencent SNAT by its documented gateway parameter and preserves the composite inventory ID',async()=>{
     const calls:any[]=[];
     global.fetch=jest.fn(async(_url:any,options:any)=>{

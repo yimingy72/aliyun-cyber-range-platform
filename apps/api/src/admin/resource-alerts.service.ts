@@ -178,8 +178,15 @@ export class ResourceAlertsService {
         && (['ecs','disk','eip','nat_gateway','eni','vpc','vswitch','security_group','network_acl','route_table'].includes(alert.type)
           || ['snat_entry','dnat_entry'].includes(alert.type) && inventory.some(row => row.resources.some(resource => resource.type === 'nat_gateway'
             && resource.id === alert.evidence.parentId)))) {
-        // Exact candidate reads prove physical absence only; they never turn missing creation evidence into deletion authority.
-        await this.store.resolve(alert.id,now,leaseToken);
+        // Recheck the exact ID twice: missing tags never prove absence or grant deletion authority.
+        const identity = {type:alert.type,id:alert.resourceId};
+        const parents = inventory.flatMap(row => row.resources);
+        await assertCurrent();
+        if ((await this.cloud.exact(account,[identity],parents)).length) continue;
+        await assertCurrent();
+        if ((await this.cloud.exact(account,[identity],parents)).length) continue;
+        await assertCurrent();
+        await this.store.resolve(alert.id,new Date(),leaseToken);
       }
       else if (alert.status === 'reclaiming' && alert.jobId) {
         const job = data.jobs.find(job => job.id === alert.jobId);

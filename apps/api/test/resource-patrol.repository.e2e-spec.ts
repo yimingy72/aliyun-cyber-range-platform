@@ -2,6 +2,8 @@ import { PrismaService } from '../src/database/prisma.service';
 import { ResourcePatrolRepository } from '../src/admin/resource-patrol.repository';
 import { runInCloudWorkspace, runInSystemCloudWorkspaceScope } from '../src/auth/cloud-workspace-scope';
 import { randomUUID } from 'node:crypto';
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 
 const database = process.env.RESOURCE_PATROL_DATABASE_TEST === '1' ? describe : describe.skip;
 database('resource patrol PostgreSQL atomicity',()=>{
@@ -17,6 +19,22 @@ database('resource patrol PostgreSQL atomicity',()=>{
     });
   });
   afterAll(async()=>{await prisma.$disconnect();});
+  it('backfills only same-provider bound workspace UID without granting old candidates creation proof',async()=>{
+    await runInSystemCloudWorkspaceScope(async()=>{
+      const unbound=`unbound-${randomUUID()}`;
+      await prisma.cloudWorkspace.create({data:{id:unbound,provider:scope.provider,accountUid:null,displayName:'unbound fixture'}});
+      const create=(cloudWorkspaceId:string,cloudProvider:'alibaba_cloud'|'tencent_cloud',resourceId:string,accountUid:string|null=null)=>
+        prisma.cloudResourceDrift.create({data:{cloudWorkspaceId,cloudProvider,cloudResourceId:resourceId,cloudResourceType:'snapshot',regionId:'cn-hangzhou',
+          accountUid,reason:'old candidate',lastSeenAt:new Date()}});
+      const same=await create(workspace,scope.provider,'s-old'),mismatch=await create(workspace,'tencent_cloud','s-foreign-provider'),
+        unknown=await create(unbound,scope.provider,'s-unbound'),existing=await create(workspace,scope.provider,'s-previous-uid','previous-uid');
+      const sql=readFileSync(resolve(__dirname,'../../../packages/database/prisma/migrations/20261013020000_resource_patrol_legacy_identity/migration.sql'),'utf8');
+      await prisma.$executeRawUnsafe(sql);await prisma.$executeRawUnsafe(sql);
+      expect(await prisma.cloudResourceDrift.findUnique({where:{id:same.id}})).toMatchObject({accountUid:scope.accountUid,patrolStatus:'unverified',sourceEvidence:{},resolvedAt:null});
+      for(const row of [mismatch,unknown])expect(await prisma.cloudResourceDrift.findUnique({where:{id:row.id}})).toMatchObject({accountUid:null,patrolStatus:'unverified'});
+      expect(await prisma.cloudResourceDrift.findUnique({where:{id:existing.id}})).toMatchObject({accountUid:'previous-uid',sourceEvidence:{}});
+    });
+  });
   it('acquires one lease across independent callers and fences stale writes and workspace switches',async()=>{
     const leases=await Promise.all([store.tryLease(new Date()),store.tryLease(new Date())]);
     expect(leases.filter(Boolean)).toHaveLength(1);const token=leases.find(Boolean)!;

@@ -32,7 +32,8 @@ async function fixture(provider:'alibaba_cloud'|'tencent_cloud'='alibaba_cloud',
     for(const resource of resources) state.set(patrolResourceKey(resource),{...resource,tags:{CreatedBy:'cyber-range-platform'},
       parentId:['vswitch','security_group','network_acl','eni','ecs','nat_gateway'].includes(resource.type)&&!single?'vpc-owned':null,
       attachedInstanceId:resource.type==='eni'||resource.type==='disk'?summary.hostIds.node:resource.type==='eip'?Object.values(summary.natGatewayIds??{})[0]:null,
-      systemDisk:resource.type==='disk',raw:resource.type==='disk'?{DeleteWithInstance:true}:resource.type==='network_acl'?{relatedSubnetIds:[]}:{} });
+      systemDisk:resource.type==='disk',raw:resource.type==='disk'?provider==='tencent_cloud'?{diskUsage:'SYSTEM_DISK',deleteWithInstance:true}:{DeleteWithInstance:true}
+        : resource.type==='ecs'&&provider==='tencent_cloud'?{detail:{systemDiskId:summary.systemDiskIds.node}}:resource.type==='network_acl'?{relatedSubnetIds:[]}:{} });
     for(const value of state.values()) if(['snat_entry','dnat_entry'].includes(value.type)) {
       value.parentId=provider==='alibaba_cloud'?'ngw-owned':'nat-owned';
       value.raw={NatGatewaySnatId:'snat-owned',IpProtocol:'TCP',PublicIpAddress:'203.0.113.1',PublicPort:3389,PrivateIpAddress:'10.0.0.10',PrivatePort:3389};
@@ -138,5 +139,42 @@ describe('confirmed inventory native cleanup without Terraform state',()=>{
     f.cloud.mutate.mockImplementation(async(...args:any[])=>{const result=await (mutate as any)(...args);if(args[2]==='TerminateInstances')throw new Error('response lost');return result;});
     await runInCloudWorkspace(f.scope,()=>f.service.execute(f.job,f.instance,f.claim));
     expect(f.calls.filter(call=>call.action==='TerminateInstances')).toHaveLength(1);expect(f.alerts.alerts[0].status).toBe('resolved');
+  });
+  it('accepts mandatory Tencent system-disk lifecycle only when native CVM and CBS identities agree',async()=>{
+    const f=await fixture('tencent_cloud',true);f.state.get('disk:disk-owned').raw.deleteWithInstance=null;
+    await runInCloudWorkspace(f.scope,()=>f.service.execute(f.job,f.instance,f.claim));
+    expect(f.alerts.alerts[0].status).toBe('resolved');expect(f.calls.map(call=>call.action)).toEqual(['TerminateInstances']);
+  });
+  it.each(['alibaba_cloud','tencent_cloud'] as const)('keeps %s hosts and disks when deletion lifecycle is explicitly false',async provider=>{
+    const f=await fixture(provider,true),diskId=provider==='alibaba_cloud'?'d-owned':'disk-owned';
+    f.state.get(`disk:${diskId}`).raw=provider==='alibaba_cloud'?{DeleteWithInstance:false}:{diskUsage:'SYSTEM_DISK',deleteWithInstance:false};
+    await runInCloudWorkspace(f.scope,()=>expect(f.service.execute(f.job,f.instance,f.claim)).rejects.toThrow('preserved'));
+    expect(f.calls).toHaveLength(0);expect(f.alerts.alerts[0]).toMatchObject({status:'failed',remainingResources:expect.arrayContaining([{type:'disk',id:diskId}])});
+    const logs=await runInCloudWorkspace(f.scope,()=>f.repo.listProvisionJobStepLogs(f.job.id));
+    expect(logs.find(row=>row.stepName==='confirmed_inventory_remaining')?.message).toContain('system_disk_lifecycle_unverified');
+  });
+  it.each(['alibaba_cloud','tencent_cloud'] as const)('keeps an unverified %s disk lifecycle instead of guessing',async provider=>{
+    const f=await fixture(provider,true),hostId=provider==='alibaba_cloud'?'i-owned':'ins-owned',diskId=provider==='alibaba_cloud'?'d-owned':'disk-owned';
+    if(provider==='alibaba_cloud')f.state.get(`disk:${diskId}`).raw={};
+    else f.state.get(`ecs:${hostId}`).raw.detail.systemDiskId='disk-other';
+    await runInCloudWorkspace(f.scope,()=>expect(f.service.execute(f.job,f.instance,f.claim)).rejects.toThrow('preserved'));
+    expect(f.calls).toHaveLength(0);expect(f.alerts.alerts[0].status).toBe('failed');
+  });
+  it.each(['alibaba_cloud','tencent_cloud'] as const)('never uses a data-disk deletion API for a %s residual system disk after host disappearance',async provider=>{
+    const f=await fixture(provider,true),hostId=provider==='alibaba_cloud'?'i-owned':'ins-owned',diskId=provider==='alibaba_cloud'?'d-owned':'disk-owned';
+    f.state.delete(`ecs:${hostId}`);f.state.delete('eni:eni-primary');f.state.get(`disk:${diskId}`).attachedInstanceId=null;
+    await runInCloudWorkspace(f.scope,()=>expect(f.service.execute(f.job,f.instance,f.claim)).rejects.toThrow('preserved'));
+    expect(f.calls).toHaveLength(0);expect(f.alerts.alerts[0]).toMatchObject({status:'failed',remainingResources:[{type:'disk',id:diskId}]});
+    const logs=await runInCloudWorkspace(f.scope,()=>f.repo.listProvisionJobStepLogs(f.job.id));
+    expect(logs.find(row=>row.stepName==='confirmed_inventory_remaining')?.message).toContain('system_disk_still_present');
+  });
+  it.each([true,false])('treats a missing delete RequestId as unknown and independently checks absence (gone=%s)',async gone=>{
+    const f=await fixture('alibaba_cloud',true),mutate=f.cloud.mutate.getMockImplementation()!;
+    f.cloud.mutate.mockImplementation(async(...args:any[])=>{if(gone)await(mutate as any)(...args);else f.calls.push({action:args[2],parameters:args[3]});return{} as any;});
+    await runInCloudWorkspace(f.scope,async()=>{
+      if(gone)await f.service.execute(f.job,f.instance,f.claim);else await expect(f.service.execute(f.job,f.instance,f.claim)).rejects.toThrow('preserved');
+      const logs=await f.repo.listProvisionJobStepLogs(f.job.id);expect(logs.some(row=>row.stepName==='confirmed_inventory_delete_receipt')).toBe(false);
+    });
+    expect(f.calls.filter(call=>call.action==='DeleteInstances')).toHaveLength(1);expect(f.alerts.alerts[0].status).toBe(gone?'resolved':'failed');
   });
 });

@@ -50,7 +50,11 @@ export class ResourceAlertReclaimer {
         if (!current) continue;
         this.validate([current],proof,confirmed,instance);
         if (['vpc','nat_gateway','security_group','network_acl','vswitch','route_table'].includes(type)) await snapshot();
-        if (type==='disk') {await this.waitGone(account,resource,recorded,assertClaim);continue;}
+        if (type==='disk') {
+          // Both vendors require system disks to follow host deletion; independent disk APIs manage data disks only.
+          try {await this.waitGone(account,resource,recorded,assertClaim);} catch {throw new Error('system_disk_still_present');}
+          continue;
+        }
         if (type==='eni'&&current.isPrimary) {deferredPrimary.push(resource);continue;}
         if(/terminating|deleting|releasing/i.test(String(current.raw.Status??current.raw.state??''))) {await this.waitGone(account,resource,recorded,assertClaim);continue;}
         if (type==='ecs') {
@@ -61,7 +65,7 @@ export class ResourceAlertReclaimer {
           const disks=await this.cloud.attachedDisks(account,current.id);
           if(!disks.some(disk=>disk.systemDisk)) throw new Error('Host system disk relationship is unverified');
           for(const disk of disks) if(!disk.systemDisk||!proof.proven.has(patrolResourceKey(disk))||!confirmed.has(patrolResourceKey(disk))
-            || disk.attachedInstanceId!==current.id||this.deleteWithHost(disk)!==true) throw new Error('Host attached disks lack exact confirmed system-disk deletion proof');
+            || disk.attachedInstanceId!==current.id||!this.deleteWithHost(plan.provider,current,disk)) throw new Error('system_disk_lifecycle_unverified');
         }
         await this.remove(account,current,proof,confirmed,assertClaim,job);
         await this.waitGone(account,resource,recorded,assertClaim);
@@ -92,8 +96,10 @@ export class ResourceAlertReclaimer {
           return {verifiedAt:new Date(),resources:plan.resources};
         }
       } catch { /* Failed reads retain the entire previous remaining list. */ }
-      await this.log(job,'confirmed_inventory_remaining',{resources:remaining,reason:'native_cleanup_failed_or_unverified'});
-      await assertClaim();await this.alerts.failConfirmedCleanup(job.id,plan.accountUid,plan.regionId,remaining);
+      const systemDiskFailure=error instanceof Error && ['system_disk_still_present','system_disk_lifecycle_unverified'].includes(error.message)
+        ? error.message as 'system_disk_still_present'|'system_disk_lifecycle_unverified' : undefined;
+      await this.log(job,'confirmed_inventory_remaining',{resources:remaining,reason:systemDiskFailure??'native_cleanup_failed_or_unverified'});
+      await assertClaim();await this.alerts.failConfirmedCleanup(job.id,plan.accountUid,plan.regionId,remaining,systemDiskFailure);
       throw new Error('Confirmed inventory cleanup failed or is unverified; accurate remaining inventory was preserved');
     }
   }
@@ -169,11 +175,19 @@ export class ResourceAlertReclaimer {
     }
   }
 
-  private deleteWithHost(row:PatrolCloudResource) {return row.raw.DeleteWithInstance??row.raw.deleteWithInstance;}
+  private deleteWithHost(provider:ConfirmedPlan['provider'],host:PatrolCloudResource,disk:PatrolCloudResource) {
+    const flag=disk.raw.DeleteWithInstance??disk.raw.deleteWithInstance;
+    if(flag===false) return false;
+    if(provider==='alibaba_cloud') return flag===true;
+    // Tencent system-disk lifecycle is mandatory; generic CBS attributes may omit DeleteWithInstance.
+    return disk.raw.diskUsage==='SYSTEM_DISK' && (host.raw.detail as any)?.systemDiskId===disk.id;
+  }
   private async remove(account:SystemCloudAccountContext,row:PatrolCloudResource,proof:ProvenInventory,confirmed:Set<string>,assertClaim:()=>Promise<void>,job:ProvisionJobRecord) {
     const write=async(service:'ecs'|'cvm'|'vpc',action:string,parameters:Record<string,unknown>)=>{
       await assertClaim();await this.log(job,'confirmed_inventory_delete_intent',{resource:{type:row.type,id:row.id},action,regionId:account.defaultRegion,accountUid:account.accountUid});
       await assertClaim();const response=await this.cloud.mutate(account,service,action,parameters);
+      if(typeof response.requestId!=='string'||!/^[A-Za-z0-9][A-Za-z0-9-]{0,127}$/.test(response.requestId)
+        || [account.accessKeyId,account.accessKeySecret].some(secret=>secret&&response.requestId.includes(secret))) throw new Error('UNKNOWN_RECLAIM_RESPONSE');
       await this.log(job,'confirmed_inventory_delete_receipt',{resource:{type:row.type,id:row.id},action,requestId:response.requestId});return response;
     };
     const tencent=account.provider==='tencent_cloud';

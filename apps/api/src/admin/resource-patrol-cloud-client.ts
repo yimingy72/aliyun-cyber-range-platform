@@ -9,6 +9,10 @@ import type { PatrolResourceType, ResourceIdentity } from './resource-alert-type
 export type PatrolCloudResource = ResourceIdentity & { tags: Record<string, string>; parentId: string | null; attachedInstanceId: string | null; isPrimary?: boolean;
   systemDisk: boolean; raw: Record<string, unknown> };
 const coreTypes: PatrolResourceType[] = ['ecs','disk','eip','nat_gateway','eni','vpc','vswitch','security_group','network_acl'];
+function validRequestId(value: unknown,account: SystemCloudAccountContext): value is string {
+  return typeof value==='string' && /^[A-Za-z0-9][A-Za-z0-9-]{0,127}$/.test(value)
+    && ![account.accessKeyId,account.accessKeySecret].some(secret => secret && value.includes(secret));
+}
 class CloudPatrolReadError extends Error {
   constructor(readonly action: string, readonly status: number, readonly code: string, readonly requestId: string | null) { super(`CLOUD_READ_FAILED:${action}:${status}`); }
 }
@@ -41,7 +45,8 @@ export class ResourcePatrolCloudClient {
       ? await requestTencentCloud<Record<string,unknown>>({service,version:'2017-03-12',action,regionId:account.defaultRegion,
         accessKeyId:account.accessKeyId,accessKeySecret:account.accessKeySecret,parameters})
       : await this.rpc(account,service,action,Object.fromEntries(Object.entries(parameters).map(([key,value])=>[key,String(value)])));
-    return {requestId:String(result.RequestId)};
+    if (!validRequestId(result.RequestId,account)) throw new Error('UNKNOWN_RECLAIM_RESPONSE');
+    return {requestId:result.RequestId};
   }
 
   async exact(account: SystemCloudAccountContext,resources: ResourceIdentity[],parents: ResourceIdentity[]=[]): Promise<PatrolCloudResource[]> {
@@ -259,12 +264,14 @@ export class ResourcePatrolCloudClient {
     const rows: Record<string,unknown>[] = [], seen = new Set<string>();
     let total: number | null = null;
     for (let page = 1; page <= 100; page++) {
-      const payload = await this.rpc(account, service, action, { ...parameters, PageNumber: String(page), PageSize: '100' });
+      const payload = await this.rpc(account, service, action, { ...parameters, PageNumber: String(page), PageSize: '50' });
       let set: any = payload;
       for (const key of path) set = set?.[key];
-      if (!Array.isArray(set) || !Number.isSafeInteger(payload.TotalCount) || Number(payload.TotalCount) < 0
-        || payload.NextToken || !payload.RequestId || total !== null && payload.TotalCount !== total) throw new Error('INCOMPLETE_RESOURCE_PAGINATION');
-      total = Number(payload.TotalCount);
+      const count=typeof payload.TotalCount==='number' || typeof payload.TotalCount==='string' && /^\d+$/.test(payload.TotalCount)
+        ? Number(payload.TotalCount) : NaN;
+      if (!Array.isArray(set) || set.length>50 || !Number.isSafeInteger(count) || count < 0
+        || payload.NextToken || total !== null && count !== total) throw new Error('INCOMPLETE_RESOURCE_PAGINATION');
+      total = count;
       for (const row of set) {
         if (!row || typeof row !== 'object' || Array.isArray(row)) throw new Error('MALFORMED_RESOURCE');
         const fingerprint = JSON.stringify(row);
@@ -286,8 +293,8 @@ export class ResourcePatrolCloudClient {
     const response = await fetch(`https://${service === 'sts' ? 'sts.aliyuncs.com' : `${service}.${account.defaultRegion}.aliyuncs.com`}/?${query}`,
       { signal: AbortSignal.timeout(30_000) });
     const payload = await response.json() as Record<string,unknown>;
-    if (!response.ok || payload.Code || !payload.RequestId) throw new CloudPatrolReadError(action,response.status,
-      typeof payload.Code === 'string' ? payload.Code : 'UNKNOWN', typeof payload.RequestId === 'string' ? payload.RequestId : null);
+    if (!response.ok || payload.Code || !validRequestId(payload.RequestId,account)) throw new CloudPatrolReadError(action,response.status,
+      typeof payload.Code === 'string' ? payload.Code : 'UNKNOWN', validRequestId(payload.RequestId,account) ? payload.RequestId : null);
     return payload;
   }
 }

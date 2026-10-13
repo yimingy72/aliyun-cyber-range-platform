@@ -123,9 +123,12 @@ export class ResourcePatrolRepository {
     await this.prisma.cloudResourceDrift.updateMany({where:{reclaimJobId:jobId,accountUid,regionId,resolvedAt:null},
       data:{patrolStatus:'resolved',resolvedAt:verifiedAt,remainingResources:[],errorSummary:null}});
   }
-  async failConfirmedCleanup(jobId:string,accountUid:string,regionId:string,remaining:ResourceIdentity[]) {
+  async failConfirmedCleanup(jobId:string,accountUid:string,regionId:string,remaining:ResourceIdentity[],systemDiskFailure?:'system_disk_still_present'|'system_disk_lifecycle_unverified') {
     await this.prisma.cloudResourceDrift.updateMany({where:{reclaimJobId:jobId,accountUid,regionId,resolvedAt:null},
-      data:{patrolStatus:'failed',remainingResources:remaining as Prisma.InputJsonValue,errorSummary:'准确库存原生回收失败或未核验，保留剩余清单。'}});
+      data:{patrolStatus:'failed',remainingResources:remaining as Prisma.InputJsonValue,errorSummary:systemDiskFailure==='system_disk_still_present'
+        ? '源系统盘仍存在，厂商仅支持随主机释放；保留准确盘 ID 待核验，不调用数据盘删除接口。'
+        : systemDiskFailure==='system_disk_lifecycle_unverified' ? '源系统盘随主机释放关系未核验，保留主机和系统盘，不执行不确定的删除。'
+        : '准确库存原生回收失败或未核验，保留剩余清单。'}});
   }
 
   private async withScanLease<T>(token: string | undefined, work: (db: Prisma.TransactionClient | PrismaService) => Promise<T>): Promise<T> {

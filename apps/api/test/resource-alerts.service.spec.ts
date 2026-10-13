@@ -18,7 +18,8 @@ async function fixture(provider: 'alibaba_cloud'|'tencent_cloud' = 'alibaba_clou
     defaultRegion:frozenContext.regionId,defaultZoneId:frozenContext.zoneId,accessKeyId:'fixture',accessKeySecret:'fixture',imageImportBucket:'' };
   const config = { runInWorkspace: async (id: string,work: () => Promise<any>) => runInCloudWorkspace({...workspaceScope,cloudWorkspaceId:id},work),
     getExecutionAccountContext: jest.fn(async () => account) };
-  const cloud = {verifyAccount:jest.fn(async (_account: any) => undefined),inspect:jest.fn(async (_account: any,_known: any,_candidateIds?:any): Promise<any[]> => [])};
+  const cloud = {verifyAccount:jest.fn(async (_account: any) => undefined),inspect:jest.fn(async (_account: any,_known: any,_candidateIds?:any): Promise<any[]> => []),
+    exact:jest.fn(async (_account:any,_ids:any,_parents?:any):Promise<any[]>=>[])};
   const service = new ResourceAlertsService(repository,config as any,store,cloud as unknown as ResourcePatrolCloudClient);
   const instance = await runInCloudWorkspace(workspaceScope,async () => {
     const row = await repository.createRangeInstance({name:'historical',status:'destroyed',instanceMode:'range',cloudProvider:provider});
@@ -162,6 +163,28 @@ describe('current-account residual patrol',() => {
     expect(f.cloud.inspect.mock.calls.at(-1)?.[2]).toEqual([{type:'eip',id:'eip-unproven'}]);
     expect(f.store.alerts[0].status).toBe('unverified');
     f.cloud.inspect.mockResolvedValue([]);await f.service.scanCurrent();expect(f.store.alerts[0].status).toBe('resolved');
+    expect(f.cloud.exact.mock.calls).toHaveLength(2);
+    expect(f.cloud.exact.mock.calls.every(([account,ids])=>account.accountUid==='uid-a'&&account.defaultRegion==='cn-hangzhou'
+      && JSON.stringify(ids)===JSON.stringify([{type:'eip',id:'eip-unproven'}]))).toBe(true);
+    await runInCloudWorkspace(scope,()=>expect(f.repository.listBillingLedgerResources()).resolves.toEqual([]));
+    await runInCloudWorkspace(scope,()=>expect(f.repository.listProvisionJobs()).resolves.toHaveLength(1));
+  });
+  it.each(['failed-read','reappeared','account-switch'] as const)('retains an unverified candidate when second exact absence check is %s',async situation=>{
+    const f=await fixture();f.cloud.inspect.mockResolvedValue([cloudRow('eip','eip-unproven')] as never[]);await f.service.scanCurrent();
+    f.cloud.inspect.mockResolvedValue([]);
+    if(situation==='failed-read')f.cloud.exact.mockResolvedValueOnce([]).mockRejectedValueOnce(new Error('Forbidden'));
+    if(situation==='reappeared')f.cloud.exact.mockResolvedValueOnce([]).mockResolvedValueOnce([cloudRow('eip','eip-unproven')] as never[]);
+    if(situation==='account-switch')f.cloud.exact.mockImplementationOnce(async()=>{f.store.targetValue.cloudWorkspaceId='space-b';return [];});
+    await f.service.scanCurrent();expect(f.store.alerts[0].status).toBe('unverified');
+    if(situation!=='reappeared')expect(f.store.settingsValue.lastScanError).toBeTruthy();
+    await runInCloudWorkspace(scope,()=>expect(f.repository.listBillingLedgerResources()).resolves.toEqual([]));
+  });
+  it('retains excluded legacy snapshot alerts instead of interpreting an unsupported exact lookup as absence',async()=>{
+    const f=await fixture();f.cloud.inspect.mockResolvedValue([cloudRow('eip','eip-unproven')] as never[]);await f.service.scanCurrent();
+    Object.assign(f.store.alerts[0],{type:'snapshot',resourceId:'s-old',status:'unverified'});
+    f.cloud.inspect.mockResolvedValue([]);await f.service.scanCurrent();
+    expect(f.store.alerts[0].status).toBe('unverified');expect(f.cloud.exact).not.toHaveBeenCalled();
+    await runInCloudWorkspace(scope,()=>expect(f.repository.listBillingLedgerResources()).resolves.toEqual([]));
   });
   it('does not write old-account billing after the manager switches between alert recording and ledger reconciliation',async()=>{
     const f=await fixture();const record=f.store.observe.bind(f.store);
