@@ -23,11 +23,21 @@ describe('replay create approval', () => {
     expect(resolveReplayCreateApproval(instance(['dmz-entry', 'office-backend']), snapshot(['dmz-entry']))).toBeNull();
     expect(resolveReplayCreateApproval(instance(['dmz-entry']), snapshot(['dmz-entry', 'office-backend']))).toBeNull();
   });
-  it('refuses to approve a replay that would drop release rules or the frozen host identity', () => {
+  it('refuses a replay whose rules or network definitions no longer match the frozen launch', () => {
+    const frozenRule = { key: 'entry-http', direction: 'ingress', policy: 'accept', protocol: 'tcp', portRange: '80/80', sourceCidr: '198.51.100.20/32', priority: 10 };
+    const frozenSpec = { security_group_rules: [frozenRule], zone_acls: [{ key: 'office', rules: [] }] };
+    expect(resolveReplayCreateApproval(instance(['dmz-entry'], frozenSpec),
+      snapshot(['dmz-entry'], { security_group_rules: [{ ...frozenRule, sourceCidr: '0.0.0.0/0' }], zone_acls: frozenSpec.zone_acls }))).toBeNull();
+    expect(resolveReplayCreateApproval(instance(['dmz-entry'], frozenSpec),
+      snapshot(['dmz-entry'], { security_group_rules: [], zone_acls: frozenSpec.zone_acls }))).toBeNull();
+    expect(resolveReplayCreateApproval(instance(['dmz-entry'], frozenSpec),
+      snapshot(['dmz-entry'], { security_group_rules: frozenSpec.security_group_rules, zone_acls: [] }))).toBeNull();
+  });
+  it('refuses to approve any drift from the frozen launch definition', () => {
     expect(resolveReplayCreateApproval(instance(['dmz-entry'], { snatEntries: [{ key: 'snat-office' }] }), snapshot(['dmz-entry']))).toBeNull();
     expect(resolveReplayCreateApproval(instance(['dmz-entry'], { dnatEntries: [{ key: 'dnat-entry' }] }), snapshot(['dmz-entry']))).toBeNull();
-    expect(() => resolveReplayCreateApproval({ ...(instance(['dmz-entry']) as Record<string, unknown>),
+    expect(resolveReplayCreateApproval({ ...(instance(['dmz-entry']) as Record<string, unknown>),
       runtimeTopologyGraph: { nodes: [{ ...ecs('dmz-entry'), cpu: 2 }] } } as never, { ...(snapshot(['dmz-entry']) as Record<string, unknown>),
-      topologyGraph: { nodes: [{ ...ecs('dmz-entry'), cpu: 4 }] } } as never)).toThrow('不能修改');
+      topologyGraph: { nodes: [{ ...ecs('dmz-entry'), cpu: 4 }] } } as never)).toBeNull();
   });
 });

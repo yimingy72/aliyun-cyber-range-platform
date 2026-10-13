@@ -298,6 +298,30 @@ describeWithDatabase('PostgreSQL multi-user range lifecycle isolation', () => {
     expect(ledgersAfter.filter(row => row.rangeInstanceId === b.id).every(row => row.releasedAt === null)).toBe(true);
   });
 
+  it('retains an applied range when a legacy replay no longer matches the frozen definition', async () => {
+    const { a } = await launchBoth();
+    const statePath = path.join(root, a.id, 'terraform.tfstate');
+    const stateBefore = await fs.readFile(statePath, 'utf8');
+    const frozenHostId = a.resourceSummary!.hostIds!['office-backend'];
+    // A legacy row without frozen definitions can only resolve the current
+    // template; that is not proof the deployed range may be replayed.
+    await repository.updateRangeInstance(a.id, { status: 'create_failed', runtimeTopologyGraph: null,
+      runtimeCompiledProvisionSpec: null, sourceTemplateVersionId: null });
+    const retry = await repository.createProvisionJob({ rangeInstanceId: a.id, jobType: 'retry', triggeredBy: alice.id, retryCount: 1 });
+    await repository.updateRangeInstance(a.id, { lastJobId: retry.id });
+    await workers[0].process(retry.id);
+
+    const after = (await repository.getRangeInstanceById(a.id))!;
+    expect((await repository.getProvisionJobById(retry.id))!.status).toBe('failed');
+    expect(after.status).toBe('destroy_failed');
+    expect(after.errorSummary).toContain('confirmed preview');
+    expect(after.errorSummary).toContain('preserved; recovery is required');
+    expect(await fs.readFile(statePath, 'utf8')).toBe(stateBefore);
+    expect(cloudCalls.some(call => call.action === 'DeleteInstances')).toBe(false);
+    expect(after.resourceSummary!.hostIds!['office-backend']).toBe(frozenHostId);
+    expect((await repository.listBillingLedgerResources()).filter(row => row.rangeInstanceId === a.id).every(row => row.releasedAt === null)).toBe(true);
+  });
+
   it('allows only one concurrent same-instance apply/destroy and defers expiration while update is active', async () => {
     const { a } = await launchBoth();
     const saved = await service.saveDraft(a.id, draftInput(compile(graph())), alice);
