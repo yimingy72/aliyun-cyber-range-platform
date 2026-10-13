@@ -1,4 +1,4 @@
-import { readAttachedDiskInventory, findExistingInventoryDiskIds, mergeDiskInventory, assertDiskInventorySafe, hasVerifiedSystemDiskReleasePolicy } from '../src/admin/instance-disk-inventory';
+import { readAttachedDiskInventory, findExistingInventoryDiskIds, mergeDiskInventory, assertDiskInventorySafe, hasVerifiedSystemDiskReleasePolicy, verifyCloudReleaseSystemDiskPolicies } from '../src/admin/instance-disk-inventory';
 
 const expectedTags = { CreatedBy: 'cyber-range-platform', RangeInstanceId: 'range-a', PlatformScope: 'user', PlatformUserId: 'alice', CloudAccountUid: 'uid-a', CloudAccountContextId: 'ctx-a' };
 const tags = (patch = {}) => ({ Tag: Object.entries({ ...expectedTags, ...patch }).map(([TagKey, TagValue]) => ({ TagKey, TagValue })) });
@@ -24,6 +24,12 @@ describe('owned ECS disk inventory', () => {
     expect(hasVerifiedSystemDiskReleasePolicy(summary, 'i-owned')).toBe(policy === true);
     expect(hasVerifiedSystemDiskReleasePolicy(summary, 'i-other')).toBe(false);
     expect(() => assertDiskInventorySafe(inventory, false)).not.toThrow();
+    const deadline = { provider: 'alibaba_cloud' as const, platformExpiresAt: '2026-10-13T01:00:00Z',
+      creationPhaseStartedAt: '2026-10-13T00:00:00Z', cloudReleaseAt: '2026-10-13T01:05:00Z',
+      sourceProvisionJobId: 'job-a', status: 'verified' as const, instanceId: 'i-owned', verifiedAt: '2026-10-13T00:01:00Z' };
+    const checked = verifyCloudReleaseSystemDiskPolicies({ ...summary, hostIds: { host: 'i-owned' }, cloudReleaseDeadlines: { host: deadline } });
+    expect(checked.cloudReleaseDeadlines?.host.status).toBe(policy === true ? 'verified' : 'unverified');
+    expect(deadline.status).toBe('verified');
   });
   it.each([{}, { ImageId: 'm-shared', SourceSnapshotId: 's-shared', CreationTime: '2026-10-09T08:00:00Z', AttachedTime: '2026-10-09T08:00:00Z' }])('does not infer untagged disk ownership from attachment or source metadata %j', async patch => {
     const inventory = await read(async () => page([disk('d-foreign','data',{ Tags: undefined, ...patch })]));

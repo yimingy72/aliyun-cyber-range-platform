@@ -32,7 +32,7 @@ export function ResourceAlertsScreen({ apiBaseUrl = '/api' }: { apiBaseUrl?: str
   const workspace = useCloudWorkspace();
   const active = useAdminRouteIsActive('/admin/resource-alerts');
   const workspaceId = workspace?.workspace?.id ?? '';
-  const source = `${workspaceId}:${session.token}`;
+  const source = `${workspaceId}:${session.profile?.id ?? ''}`;
   const sourceRef = useRef(source); sourceRef.current = source;
   const [rows, setRows] = useState<ResourceAlert[] | null>(null);
   const [patrol, setPatrol] = useState<ResourcePatrol | null>(null);
@@ -59,11 +59,13 @@ export function ResourceAlertsScreen({ apiBaseUrl = '/api' }: { apiBaseUrl?: str
   }, [session.token, session.profile?.isPlatformManager, active, apiBaseUrl, workspaceId]);
   useEffect(() => {
     setRows(null); setPatrol(null); setReview(null); setError(null); setNotice(null);
+  }, [source]);
+  useEffect(() => {
     void refresh();
     if (!active) return;
     const timer = setInterval(() => void refresh(), 30_000);
     return () => { clearInterval(timer); request.current++; };
-  }, [source, active, refresh]);
+  }, [active, refresh]);
 
   async function followMe() {
     if (!session.token || !session.profile || mutation.current) return;
@@ -73,7 +75,7 @@ export function ResourceAlertsScreen({ apiBaseUrl = '/api' }: { apiBaseUrl?: str
       const result = await setResourcePatrolManager(apiBaseUrl, session.token, session.profile.id);
       if (sourceRef.current === started) { setPatrol(result); setNotice('后台巡检已跟随你的当前工作账号。'); }
     } catch (failure) { if (sourceRef.current === started) setError(failure instanceof Error ? failure.message : '巡检配置失败。'); }
-    finally { mutation.current = false; if (sourceRef.current === started) setBusy(false); }
+    finally { mutation.current = false; setBusy(false); }
   }
   async function inspect(id: string) {
     if (!session.token || mutation.current) return;
@@ -85,7 +87,7 @@ export function ResourceAlertsScreen({ apiBaseUrl = '/api' }: { apiBaseUrl?: str
       if (preview.cloudWorkspaceId !== workspaceId) throw new Error('预览账号已变化，请重新查看。');
       setReview({ preview, workspaceId, idempotencyKey: crypto.randomUUID() });
     } catch (failure) { if (sourceRef.current === started) setError(failure instanceof Error ? failure.message : '资源核验失败。'); }
-    finally { mutation.current = false; if (sourceRef.current === started) setBusy(false); }
+    finally { mutation.current = false; setBusy(false); }
   }
   async function confirm() {
     const selected = review;
@@ -112,7 +114,7 @@ export function ResourceAlertsScreen({ apiBaseUrl = '/api' }: { apiBaseUrl?: str
         setError(failure instanceof Error ? failure.message : '回收结果未知，请查看原告警与作业。');
         setReview(null); void refresh();
       }
-    } finally { mutation.current = false; if (sourceRef.current === started) setBusy(false); }
+    } finally { mutation.current = false; setBusy(false); }
   }
   if (!session.isReady || !session.token) return null;
   if (!session.profile?.isPlatformManager) return <p className="admin-empty">仅平台超管可查看和处理资源告警。</p>;
