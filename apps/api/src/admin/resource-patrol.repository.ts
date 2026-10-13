@@ -203,7 +203,9 @@ export class ResourcePatrolRepository {
       await tx.rangeInstance.update({ where: { id: input.instance.id }, data: { status: 'pending_destroy', lastJobId: job.id,
         resourceSummary: input.summary as unknown as Prisma.InputJsonValue, errorSummary: null } });
       await tx.cloudResourceDrift.updateMany({ where: { rangeInstanceId: input.instance.id, resolvedAt: null,
-        accountUid: input.alert.accountUid, regionId: input.alert.regionId }, data: { patrolStatus: 'reclaiming', reclaimJobId: job.id,
+        accountUid: input.alert.accountUid, regionId: input.alert.regionId,
+        OR:[{id:input.alert.id},...input.resources.map(resource=>({cloudResourceType:resource.type,cloudResourceId:resource.id}))] },
+        data: { patrolStatus: 'reclaiming', reclaimJobId: job.id,
         reclaimKey: input.idempotencyKey, remainingResources: input.resources as Prisma.InputJsonValue, errorSummary: null } });
       return { jobId: job.id };
     }, { timeout: 10_000, maxWait: 5_000 });

@@ -99,4 +99,19 @@ database('resource patrol PostgreSQL atomicity',()=>{
     await runInSystemCloudWorkspaceScope(()=>prisma.platformUser.update({where:{id:manager},data:{selectedCloudWorkspaceId:workspace}}));
     await store.finish(token!,new Date(),[],null,workspace);
   });
+  it('does not mark an unproven candidate linked to the same instance as reclaiming when it is outside the confirmed plan',async()=>{
+    await runInCloudWorkspace(scope,async()=>{
+      const instance=await prisma.rangeInstance.create({data:{name:'precise alert plan',status:'destroyed',instanceMode:'range',cloudProvider:scope.provider}});
+      const source=await prisma.provisionJob.create({data:{rangeInstanceId:instance.id,jobType:'create',status:'failed',triggeredBy:manager,startedAt:new Date()}});
+      const current=await prisma.rangeInstance.update({where:{id:instance.id},data:{lastJobId:source.id}});
+      for (const [id,status] of [['i-confirmed','pending'],['i-unproven','unverified']] as const) await store.observe({provider:scope.provider,
+        accountUid:scope.accountUid,regionId:'cn-hangzhou',resource:{type:'ecs',id},rangeInstanceId:instance.id,status,reason:'fixture',
+        evidence:{recordedInventory:status==='pending',sourceJobIds:status==='pending'?[source.id]:[],accountVerified:true},now:new Date()});
+      const rows=(await store.list()).filter(row=>row.rangeInstanceId===instance.id),alert=rows.find(row=>row.resourceId==='i-confirmed')!;
+      await store.queueReclaim({alert,instance:current as any,summary:{mode:'opentofu',hostIds:{node:'i-confirmed'}},
+        resources:[{type:'ecs',id:'i-confirmed'}],planDigest:'c'.repeat(64),idempotencyKey:'exact-plan',actorUserId:manager});
+      expect(await store.get(alert.id)).toMatchObject({status:'reclaiming'});
+      expect(await store.get(rows.find(row=>row.resourceId==='i-unproven')!.id)).toMatchObject({status:'unverified',jobId:null});
+    });
+  });
 });

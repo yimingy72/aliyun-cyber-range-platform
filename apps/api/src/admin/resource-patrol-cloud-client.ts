@@ -111,7 +111,7 @@ export class ResourcePatrolCloudClient {
     // Exact single IDs avoid ambiguous multi-ID not-found responses and per-API batch limits.
     for (const id of [...new Set(ids)]) {
       const pluralJson = ['ecs','disk','security_group'].includes(type);
-      const parameters = { [config[5]]: pluralJson ? JSON.stringify([id]) : id };
+      const parameters = { [type==='eni'?'NetworkInterfaceId.1':config[5]]: pluralJson ? JSON.stringify([id]) : id };
       let found: PatrolCloudResource[];
       try { found = await this.aliList(account, type, parameters, true); }
       catch (error) {
@@ -133,7 +133,8 @@ export class ResourcePatrolCloudClient {
 
   private async aliList(account: SystemCloudAccountContext, type: PatrolResourceType, parameters: Record<string, string>, exactIds = false) {
     const [service, action, container, setKey, idKey] = alibaba[type as keyof typeof alibaba];
-    const rows = await this.pages(account, service, action, parameters, [container, setKey]);
+    const rows = type==='eni' ? await this.eniPages(account,parameters)
+      : await this.pages(account, service, action, parameters, [container, setKey]);
     return rows.filter(row => exactIds || type !== 'disk' || row.Type === 'system').map((row): PatrolCloudResource => {
       if (typeof row[idKey] !== 'string' || !String(row[idKey]).trim()) throw new Error('MALFORMED_RESOURCE_ID');
       const rawTags = (row.Tags as any)?.Tag ?? (row.Tags as any)?.TagSet ?? [];
@@ -149,6 +150,29 @@ export class ResourcePatrolCloudClient {
         attachedInstanceId: typeof row.InstanceId === 'string' ? row.InstanceId : typeof attachment?.InstanceId === 'string' ? attachment.InstanceId : null,
         systemDisk: type === 'disk' && row.Type === 'system', raw: row };
     });
+  }
+
+  private async eniPages(account: SystemCloudAccountContext,parameters: Record<string,string>) {
+    const result: Record<string,unknown>[]=[],seenIds=new Set<string>(),seenTokens=new Set<string>();
+    let token: string|undefined,total: number|undefined;
+    for(let page=0;page<100;page++) {
+      const body=await this.rpc(account,'ecs','DescribeNetworkInterfaces',{...parameters,MaxResults:'100',...(token?{NextToken:token}:{})});
+      const rows=(body.NetworkInterfaceSets as any)?.NetworkInterfaceSet;
+      if(!Array.isArray(rows)||rows.length>100 || body.TotalCount!==undefined
+        && (!Number.isSafeInteger(body.TotalCount)||Number(body.TotalCount)<0||total!==undefined&&body.TotalCount!==total)) throw new Error('INCOMPLETE_ENI_PAGINATION');
+      if(body.TotalCount!==undefined) total=Number(body.TotalCount);
+      for(const row of rows) {
+        if(!row||typeof row.NetworkInterfaceId!=='string'||seenIds.has(row.NetworkInterfaceId)) throw new Error('DUPLICATED_OR_MALFORMED_ENI');
+        seenIds.add(row.NetworkInterfaceId);result.push(row);
+      }
+      if(body.NextToken===undefined||body.NextToken===null||body.NextToken==='') {
+        if(total!==undefined&&result.length!==total) throw new Error('INCOMPLETE_ENI_PAGINATION');
+        return result;
+      }
+      if(typeof body.NextToken!=='string'||!rows.length||seenTokens.has(body.NextToken)) throw new Error('INCOMPLETE_ENI_PAGINATION');
+      token=body.NextToken;seenTokens.add(token);
+    }
+    throw new Error('ENI_PAGINATION_LIMIT');
   }
 
   private async natRules(account: SystemCloudAccountContext, parent: PatrolCloudResource): Promise<PatrolCloudResource[]> {

@@ -63,7 +63,9 @@ export function createMemoryResourcePatrolRepository(repository: AdminRepository
         || (await repository.listProvisionJobs()).some(job => job.rangeInstanceId === instance.id && ['pending','running'].includes(job.status))) throw new ConflictException();
       const job = await repository.createProvisionJob({ rangeInstanceId: instance.id, jobType:'destroy', triggeredBy:`resource-alert:${input.actorUserId}` });
       await repository.updateRangeInstance(instance.id,{ status:'pending_destroy',lastJobId:job.id,resourceSummary:input.summary });
-      alerts.filter(row => row.rangeInstanceId === instance.id && row.status !== 'resolved').forEach(row => Object.assign(row,{status:'reclaiming',jobId:job.id,remainingResources:input.resources}));
+      alerts.filter(row => row.rangeInstanceId === instance.id && row.status !== 'resolved' && (row.id===input.alert.id
+        || input.resources.some((resource:any)=>resource.type===row.type&&resource.id===row.resourceId)))
+        .forEach(row => Object.assign(row,{status:'reclaiming',jobId:job.id,remainingResources:input.resources}));
       return {jobId:job.id};
     }),
   } as unknown as ResourcePatrolRepository & { alerts: StoredResourceAlert[]; settingsValue: PatrolSettings; targetValue: Record<string,any> };

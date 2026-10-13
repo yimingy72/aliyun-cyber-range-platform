@@ -56,4 +56,25 @@ describe('resource patrol bounded cloud reads',()=>{
       expect.objectContaining({id:'d-original',type:'disk',systemDisk:false}),
     ]);
   });
+  it('uses the indexed exact ENI parameter and supports the documented token response without TotalCount',async()=>{
+    global.fetch=jest.fn(async(url:any)=>{
+      const params=new URL(String(url)).searchParams;
+      expect(params.get('NetworkInterfaceId.1')).toBe('eni-original');expect(params.has('NetworkInterfaceId')).toBe(false);
+      expect(params.get('MaxResults')).toBe('100');expect(params.has('PageNumber')).toBe(false);
+      return response({RequestId:'eni',NextToken:'',NetworkInterfaceSets:{NetworkInterfaceSet:[{NetworkInterfaceId:'eni-original'}]}});
+    });
+    await expect((new ResourcePatrolCloudClient() as any).list(account,'eni',['eni-original'])).resolves.toEqual([
+      expect.objectContaining({type:'eni',id:'eni-original'}),
+    ]);
+  });
+  it('reads every ENI token page and refuses repeated cursors instead of treating truncation as absence',async()=>{
+    const service=new ResourcePatrolCloudClient();
+    global.fetch=jest.fn(async(url:any)=>{
+      const token=new URL(String(url)).searchParams.get('NextToken');
+      return response({RequestId:'eni',NextToken:token?'':'next',NetworkInterfaceSets:{NetworkInterfaceSet:[{NetworkInterfaceId:token?'eni-second':'eni-first'}]}});
+    });
+    expect(await (service as any).aliList(account,'eni',{})).toHaveLength(2);
+    global.fetch=jest.fn(async()=>response({RequestId:'eni',NextToken:'same',NetworkInterfaceSets:{NetworkInterfaceSet:[{NetworkInterfaceId:'eni-repeat'}]}}));
+    await expect((service as any).aliList(account,'eni',{})).rejects.toThrow();
+  });
 });
