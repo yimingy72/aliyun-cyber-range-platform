@@ -354,6 +354,64 @@ describe('legacy native batches: real ECS response contract, two platform users 
     f.native.performAliyunRpcRequest=async()=>({Instances:{Instance:[]},TotalCount:0});
     await expect(f.service.getCloudResourceStatus(a.instances[0].id,alice)).rejects.toThrow('incomplete or malformed');
   });
+  it('persists the claimed member type and frozen deadline together instead of a stale launch value', async () => {
+    const f = await fixture();
+    const a = await f.launch(alice);
+    for (const member of a.instances) {
+      const instance = (await f.repo.getRangeInstanceById(member.id))!;
+      await f.repo.updateRangeInstance(member.id, { singleInstanceConfig: { ...instance.singleInstanceConfig!, resolvedInstanceType: 'ecs.stale.large' } });
+    }
+    await f.drain();
+    for (const member of a.instances) {
+      const running = (await f.repo.getRangeInstanceById(member.id))!;
+      expect(running.status).toBe('running');
+      expect(running.singleInstanceConfig!.resolvedInstanceType).toBe('ecs.u1-c1m1.large');
+      expect(running.resourceSummary!.resolvedInstanceType).toBe('ecs.u1-c1m1.large');
+      expect(running.singleInstanceConfig!.autoReleaseTime).toBe(running.singleInstanceConfig!.cloudReleaseDeadline!.cloudReleaseAt);
+    }
+  });
+  it('leaves no request marker or submission when the atomic claim cannot be persisted', async () => {
+    const f = await fixture();
+    const a = await f.launch(alice);
+    const instance = a.instances[0];
+    const job = (await f.repo.getProvisionJobById(instance.lastJobId!))!;
+    const claimed = await f.repo.claimProvisionJob(job.id, new Date());
+    const original = f.repo.commitSingleInstanceClaim.bind(f.repo);
+    const spy = jest.spyOn(f.repo, 'commitSingleInstanceClaim').mockImplementation(async () => false);
+    try {
+      await f.native.executeCreateBatch([{ instance: (await f.repo.getRangeInstanceById(instance.id))!, job: claimed }]);
+    } finally { spy.mockRestore(); }
+    const after = (await f.repo.getRangeInstanceById(instance.id))!;
+    expect(after.singleInstanceConfig?.nativeCreateJobId).toBeUndefined();
+    expect(f.calls.filter(call => call.action === 'RunInstances')).toHaveLength(0);
+    // No marker means the next attempt is a clean submission, not an uncertain replay.
+    await f.repo.updateProvisionJob(job.id, { status: 'failed', finishedAt: new Date() });
+    const retry = await f.repo.createProvisionJob({ rangeInstanceId: instance.id, jobType: 'retry', triggeredBy: alice.id });
+    await f.repo.updateRangeInstance(instance.id, { lastJobId: retry.id, status: 'creating' });
+    const reclaimed = await f.repo.claimProvisionJob(retry.id, new Date());
+    await f.native.executeCreateBatch([{ instance: (await f.repo.getRangeInstanceById(instance.id))!, job: reclaimed }]);
+    expect(f.calls.filter(call => call.action === 'RunInstances')).toHaveLength(1);
+    expect((await f.repo.getRangeInstanceById(instance.id))!.status).toBe('creating');
+    expect(original).toBeDefined();
+  });
+  it('refuses a new submission whose frozen fallback deadline is already too close', async () => {
+    const f = await fixture();
+    const a = await f.launch(alice);
+    const instance = a.instances[0];
+    const close = new Date(Date.now() + 10 * 60_000).toISOString();
+    const current = (await f.repo.getRangeInstanceById(instance.id))!;
+    await f.repo.updateRangeInstance(instance.id, { singleInstanceConfig: { ...current.singleInstanceConfig!, autoReleaseTime: close,
+      cloudReleaseDeadline: { provider: 'alibaba_cloud', platformExpiresAt: close, creationPhaseStartedAt: new Date().toISOString(),
+        cloudReleaseAt: close, sourceProvisionJobId: 'earlier-create-job', status: 'unverified' } } });
+    const job = (await f.repo.getProvisionJobById(instance.lastJobId!))!;
+    const claimed = await f.repo.claimProvisionJob(job.id, new Date());
+    await f.native.executeCreateBatch([{ instance: (await f.repo.getRangeInstanceById(instance.id))!, job: claimed }]);
+    const after = (await f.repo.getRangeInstanceById(instance.id))!;
+    expect(f.calls.filter(call => call.action === 'RunInstances')).toHaveLength(0);
+    expect(after.status).toBe('create_failed');
+    expect(after.errorSummary).toContain('too close');
+    expect(after.singleInstanceConfig?.nativeCreateJobId).toBeUndefined();
+  });
   it('does not falsely clear failed cleanup when a cloud query is malformed', async () => {
     const f = await fixture();
     const a = await f.launch(alice);

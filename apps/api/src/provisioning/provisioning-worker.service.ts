@@ -583,11 +583,8 @@ export class ProvisioningWorkerService {
           return;
         }
         if (frozen) await this.assertRangeSnapshotImages(instance, frozen);
-        // A create/retry replay over an already-applied workspace is a frozen
-        // no-op replay, not a new topology change: the original launch snapshot
-        // is its own approval. A real host change still fails the plan checks.
         const replayApproval = (job.jobType === 'retry' || job.retryCount > 0) && topologyGraph && compiledProvisionSpec
-          ? buildRangeChangeApproval(instance, { topologyGraph: topologyGraph as Record<string, unknown>,
+          ? resolveReplayCreateApproval(instance, { topologyGraph: topologyGraph as Record<string, unknown>,
               compiledProvisionSpec: compiledProvisionSpec as Record<string, unknown> } as ProvisionJobTopologySnapshot)
           : null;
         const result = await this.rangeProvisioner.create({
@@ -2554,6 +2551,15 @@ function needsSingleInstancePublicIpRefresh(instance: RangeInstanceRecord | null
       instance.resourceSummary?.hostIds &&
       (instance.status === 'creating' || !instance.accessEntry?.publicIp),
   );
+}
+
+/** Only an unchanged create/retry replay of the already-applied workspace may
+ *  reuse the original launch as its approval; any host addition or removal and
+ *  any release-rule removal must go through the confirmed preview/update flow. */
+export function resolveReplayCreateApproval(instance: RangeInstanceRecord, snapshot: ProvisionJobTopologySnapshot): RangeChangeApproval | null {
+  const candidate = buildRangeChangeApproval(instance, snapshot);
+  return candidate.addedHostKeys.length === 0 && candidate.deletedHostKeys.length === 0
+    && !candidate.allowDnatRemoval && !candidate.allowSnatRemoval ? candidate : null;
 }
 
 function appendCleanupFailureMessage(createFailureMessage: string, cleanupFailureMessage: string | null) {

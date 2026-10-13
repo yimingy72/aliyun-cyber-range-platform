@@ -161,23 +161,26 @@ export class SingleInstanceBatchExecutionService {
               if (item.instance.expiresAt && item.instance.expiresAt <= new Date())
                 throw new Error('Single instance has already expired');
               const expectedHostName = item.instance.singleInstanceConfig?.hostName?.trim();
-              if (!previousRequest && !(await this.adminRepository.commitSingleInstanceClaim(item.job,{singleInstanceConfig:{...item.instance.singleInstanceConfig!,resolvedInstanceType:memberType,nativeCreateJobId:item.job.id}}))) throw new LostSingleInstanceClaimError();
-              // Freeze the durable cloud-side fallback before the request: long-lived
-              // legacy members keep their automatic release, retries reuse the exact
-              // absolute deadline, and short-lived members stay without one.
-              const frozenConfig = item.instance.singleInstanceConfig!;
-              const persistedDeadline = frozenConfig.cloudReleaseDeadline;
-              const frozenExpiry = item.instance.expiresAt;
-              if (persistedDeadline ? frozenConfig.autoReleaseTime !== persistedDeadline.cloudReleaseAt
-                : Boolean(frozenExpiry && frozenExpiry.getTime() - Date.now() >= 30 * 60_000 + 15_000)) {
-                const record = persistedDeadline ?? createHostCloudReleaseDeadline({ provider: 'alibaba_cloud',
-                  platformExpiresAt: frozenExpiry!.toISOString(), creationPhaseStartedAt: new Date().toISOString(), sourceProvisionJobId: item.job.id });
-                assertCloudReleaseDeadlineCanCreate(record);
-                const nextConfig = { ...frozenConfig, resolvedInstanceType: frozenConfig.resolvedInstanceType ?? memberType,
-                  nativeCreateJobId: frozenConfig.nativeCreateJobId ?? item.job.id,
-                  autoReleaseTime: record.cloudReleaseAt, cloudReleaseDeadline: structuredClone(record) };
-                if (!(await this.adminRepository.commitSingleInstanceClaim(item.job, { singleInstanceConfig: nextConfig }))) throw new LostSingleInstanceClaimError();
-                item.instance.singleInstanceConfig = nextConfig;
+              if (!previousRequest) {
+                // Freeze the durable cloud-side fallback and the request marker in
+                // ONE claim: a failed write must never leave a marker without its
+                // deadline. Long-lived members keep their automatic release, a
+                // recovered host reuses its exact frozen record, short-lived
+                // members stay without one, and a new submission always validates
+                // the fallback it is about to send.
+                const frozenConfig = item.instance.singleInstanceConfig!;
+                const frozenExpiry = item.instance.expiresAt;
+                const maySubmit = !knownIds.length;
+                let deadline = frozenConfig.cloudReleaseDeadline ?? null;
+                if (!deadline && maySubmit && frozenExpiry && frozenExpiry.getTime() - Date.now() >= 30 * 60_000 + 15_000) {
+                  deadline = createHostCloudReleaseDeadline({ provider: 'alibaba_cloud', platformExpiresAt: frozenExpiry.toISOString(),
+                    creationPhaseStartedAt: new Date().toISOString(), sourceProvisionJobId: item.job.id });
+                }
+                if (deadline && maySubmit) assertCloudReleaseDeadlineCanCreate(deadline);
+                const claimedConfig = { ...frozenConfig, resolvedInstanceType: memberType, nativeCreateJobId: item.job.id,
+                  ...(deadline ? { autoReleaseTime: deadline.cloudReleaseAt, cloudReleaseDeadline: structuredClone(deadline) } : {}) };
+                if (!(await this.adminRepository.commitSingleInstanceClaim(item.job, { singleInstanceConfig: claimedConfig }))) throw new LostSingleInstanceClaimError();
+                item.instance.singleInstanceConfig = claimedConfig;
               }
               if (previousRequest && !knownIds.length) {
                 // The cloud token has a finite lifetime; replaying an old accepted request can create another ECS.
