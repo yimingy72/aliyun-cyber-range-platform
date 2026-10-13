@@ -10,6 +10,7 @@ import type {
   HostCloudReleaseDeadline,
 } from '../admin/admin.repository';
 import type { RangeChangeApproval } from './range-update-plan-safety';
+import type { PatrolResourceType } from '../admin/resource-alert-types';
 
 export const RANGE_PROVISIONER = Symbol('RANGE_PROVISIONER');
 
@@ -24,6 +25,14 @@ export type RangeProvisionStepEvent = {
 export type RangeProvisionStepReporter = (
   event: RangeProvisionStepEvent,
 ) => Promise<void> | void;
+
+export type RangeResourceCreatedEvent = {
+  address: string;
+  providerResourceType: string;
+  type: PatrolResourceType;
+  id: string;
+  logicalKey?: string;
+};
 
 export type ResolvedProvisioningRuntimeConfig = {
   provider?: 'alibaba_cloud' | 'tencent_cloud';
@@ -58,6 +67,7 @@ export type RangeProvisionCreateInput = {
   requirePersistedState?: boolean;
   onApplyStart?: () => Promise<void>;
   onHostCreationPhase?: (deadlines: Record<string, HostCloudReleaseDeadline>) => Promise<void>;
+  onResourceCreated?: (event: RangeResourceCreatedEvent) => Promise<void>;
   runtimeConfig?: ResolvedProvisioningRuntimeConfig;
   runtimeCredentials?: RangeRuntimeCredentials;
   topologyGraph?: Record<string, unknown> | null;

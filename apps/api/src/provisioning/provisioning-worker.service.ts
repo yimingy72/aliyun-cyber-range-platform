@@ -31,6 +31,8 @@ import { SingleInstanceBatchExecutionService } from '../admin/single-instance-ba
 import { SystemConfigService, type SystemCloudAccountContext } from '../admin/system-config.service';
 import { SingleInstanceOpenTofuExecutionService, type SingleInstanceOpenTofuBatchLease } from '../admin/single-instance-opentofu-execution.service';
 import { FAILED_CREATE_CLEANUP_PROOF_STEP, readFailedCreateCleanupProof, type FailedCreateCleanupProof } from '../admin/failed-create-cleanup-evidence';
+import { validRangeResourceCreatedEvent } from './range-resource-creation-receipts';
+import type { RangeResourceCreatedEvent } from './provisioning.types';
 import {
   AliyunEcsResourceClient,
   AliyunResourceRequestError,
@@ -586,6 +588,7 @@ export class ProvisioningWorkerService {
           knownResourceSummary: (await this.adminRepository.getRangeInstanceById(instance.id))?.resourceSummary ?? undefined,
           preserveWorkspaceState: job.jobType === 'retry' || job.retryCount > 0,
           onHostCreationPhase: deadlines => this.persistHostCloudReleaseDeadlines(job, deadlines, signal),
+          onResourceCreated: event => this.persistRangeCreationReceipt(job, instance, accountContext, event, signal),
           onApplyStart: async () => {
             await this.recordRangeApplyStart(instance, job, accountContext, signal);
             failedCreateCleanupInput!.requirePersistedState = true;
@@ -775,6 +778,7 @@ export class ProvisioningWorkerService {
       allocatedCidr: input.instance.allocatedCidr,
       preserveWorkspaceState: true,
       onHostCreationPhase: deadlines => this.persistHostCloudReleaseDeadlines(input.job, deadlines, input.signal),
+      onResourceCreated: event => this.persistRangeCreationReceipt(input.job, input.instance, input.accountContext, event, input.signal),
       requirePersistedState: true,
       signal: input.signal,
       onApplyStart: async () => {
@@ -1005,6 +1009,32 @@ export class ProvisioningWorkerService {
       executionContext: current.resourceSummary?.executionContext ?? { provider: context.provider, cloudAccountContextId: context.cloudAccountContextId, cloudAccountUid: context.accountUid,
         regionId: context.defaultRegion, zoneId: context.defaultZoneId } } });
     signal?.throwIfAborted();
+  }
+
+  private async persistRangeCreationReceipt(job: ProvisionJobRecord, instance: RangeInstanceRecord, context: SystemCloudAccountContext,
+    event: RangeResourceCreatedEvent, signal?: AbortSignal) {
+    signal?.throwIfAborted();
+    if (this.rangeProvisioner.mode !== 'opentofu' || !['create','retry','update'].includes(job.jobType)
+      || job.jobType === 'retry' && job.topologySnapshot?.operation === 'destroy'
+      || !validRangeResourceCreatedEvent(event, context.provider) || !context.accountUid || !context.cloudAccountContextId
+      || !context.defaultRegion || !context.defaultZoneId || !await this.ownsProvisionJobClaim(job))
+      throw new Error('Range creation receipt requires its original active creation claim');
+    const current = await this.adminRepository.getRangeInstanceById(instance.id);
+    const workspaceId = job.cloudWorkspaceId ?? 'legacy-unbound';
+    const bound = current?.resourceSummary?.executionContext;
+    if (!current || current.id !== job.rangeInstanceId || current.instanceMode !== 'range' || current.ownerUserId !== instance.ownerUserId
+      || (current.cloudWorkspaceId ?? 'legacy-unbound') !== workspaceId || current.cloudProvider !== context.provider
+      || !bound || bound.cloudAccountUid !== context.accountUid || bound.cloudAccountContextId !== context.cloudAccountContextId
+      || bound.regionId !== context.defaultRegion || bound.provider && bound.provider !== context.provider)
+      throw new Error('Range creation receipt differs from its frozen workspace or cloud account');
+    signal?.throwIfAborted();
+    const now = new Date();
+    await this.adminRepository.createProvisionJobStepLog({ jobId: job.id, cloudWorkspaceId: workspaceId,
+      stepName: 'range_resource_creation_receipt', status: 'succeeded', startedAt: now, finishedAt: now,
+      stdoutExcerpt: null, stderrExcerpt: null, message: JSON.stringify({ version: 1, cloudProvider: context.provider,
+        cloudWorkspaceId: workspaceId, rangeInstanceId: instance.id, sourceJobId: job.id, ownerUserId: instance.ownerUserId,
+        executionContext: { provider: context.provider, cloudAccountUid: context.accountUid, cloudAccountContextId: context.cloudAccountContextId,
+          regionId: context.defaultRegion, zoneId: bound.zoneId }, resources: [event] }) });
   }
 
   private async persistHostCloudReleaseDeadlines(job: ProvisionJobRecord, deadlines: NonNullable<RangeResourceSummary['cloudReleaseDeadlines']>, signal?: AbortSignal) {

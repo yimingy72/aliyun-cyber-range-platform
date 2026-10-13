@@ -6,6 +6,7 @@ import { createHash, createHmac, randomUUID } from 'node:crypto';
 import { requestTencentCloud } from '../admin/tencent-cloud-client';
 import { assertApprovedRangeUpdatePlan, assertRangeStateOwnership, assertRangeStateMatchesInventory, preserveDeployedRangeHostFacts } from './range-update-plan-safety';
 import { createHostCloudReleaseDeadline, assertCloudReleaseDeadlineCanCreate, verifyCloudReleaseDeadlines, assertPlatformExpirationSupportsCloudDeadline } from './cloud-release-deadlines';
+import { createRangeResourceReceiptObserver } from './range-resource-creation-receipts';
 
 import {
   OpenTofuRunner,
@@ -391,8 +392,9 @@ export class OpenTofuRangeProvisioner implements RangeProvisioner {
               const networkPlan = await this.runner.showPlan({ workspaceDir: workspace.workspaceDir, signal: input.signal, env: workspace.runnerEnv, planFilePath: networkPlanPath });
               assertNetworkPreparationPlan(networkPlan, planned);
               await input.onApplyStart?.();
+              const beforeState = input.onResourceCreated ? await readWorkspaceState(workspace.workspaceDir) : null;
               await recordApplyPlan(workspace.workspaceDir, networkPlan, input.billingTags?.PlatformCreateJobId);
-              const command = await this.runner.apply({ workspaceDir: workspace.workspaceDir, signal: input.signal, env: workspace.runnerEnv, planFilePath: networkPlanPath });
+              const command = await this.applyWithCreationReceipts(input, workspace, networkPlanPath, networkPlan, beforeState);
               await completeApply(workspace.workspaceDir);
               return { result: command, message: 'New host network resources are ready.', stdoutExcerpt: command.stdout, stderrExcerpt: command.stderr };
             });
@@ -423,13 +425,9 @@ export class OpenTofuRangeProvisioner implements RangeProvisioner {
         }
       }
       await input.onApplyStart?.();
+      const beforeState = input.onResourceCreated ? await readWorkspaceState(workspace.workspaceDir) : null;
       await recordApplyPlan(workspace.workspaceDir, planned,input.billingTags?.PlatformCreateJobId);
-      const command = await this.runner.apply({
-        workspaceDir: workspace.workspaceDir,
-        signal: input.signal,
-        env: workspace.runnerEnv,
-        planFilePath: workspace.planFilePath,
-      });
+      const command = await this.applyWithCreationReceipts(input, workspace, workspace.planFilePath, planned, beforeState);
 
       await completeApply(workspace.workspaceDir);
       return {
@@ -533,6 +531,16 @@ export class OpenTofuRangeProvisioner implements RangeProvisioner {
         ...(plan ? { topologySpec: plan.topologySummary } : {}),
       },
     };
+  }
+
+  private async applyWithCreationReceipts(input: RangeProvisionCreateInput, workspace: PreparedWorkspace, planFilePath: string, plan: unknown, priorState?: WorkspaceState | null) {
+    const observer = input.onResourceCreated ? createRangeResourceReceiptObserver({ plan,
+      priorState: priorState === undefined ? await readWorkspaceState(workspace.workspaceDir) : priorState,
+      provider: input.runtimeConfig?.provider ?? 'alibaba_cloud', onCreated: input.onResourceCreated }) : null;
+    try {
+      return await this.runner.apply({ workspaceDir: workspace.workspaceDir, signal: input.signal, env: workspace.runnerEnv, planFilePath,
+        ...(observer ? { onResourceApplied: observer.onResourceApplied } : {}) });
+    } finally { await observer?.drain(); }
   }
 
   private async freezeHostDeadlines(input: RangeProvisionCreateInput, workspace: PreparedWorkspace, addedHostKeys: string[]) {

@@ -120,6 +120,7 @@ describe('range host phase execution', () => {
     const tags={CloudProvider:'alibaba_cloud',CloudAccountUid:account.accountUid,CloudAccountContextId:account.cloudAccountContextId,RangeInstanceId:'range-test',range_instance_id:'range-test',PlatformCreateJobId:'job-create',CreatedBy:'cyber-range-platform',PlatformManaged:'true',PlatformScope:'user',PlatformUserId:'owner'};
     const addresses=['module.range.alicloud_vpc.range','module.range.alicloud_security_group.hosts["a"]','module.range.alicloud_instance.hosts["a"]'];
     const kinds=['alicloud_vpc','alicloud_security_group','alicloud_instance'];
+    const creationReceipts:any[]=[];
     let networkApplied=false;
     const plan=(network:boolean)=>({format_version:'1.2',terraform_version:'1.13.1',errored:false,resource_changes:addresses.slice(0,network?2:3).map((address,index)=>({address,type:kinds[index],mode:'managed',change:{actions:[!network && networkApplied && index<2?'no-op':'create']}})),planned_values:{root_module:{resources:addresses.slice(0,network?2:3).map(address=>({address,mode:'managed'}))}}});
     const state=(network:boolean)=>({version:4,lineage:'lineage-a',serial:network?1:2,resources:kinds.slice(0,network?2:3).map((type,index)=>({module:'module.range',type,name:index===0?'range':'hosts',mode:'managed',instances:[{...(index===0?{}:{index_key:'a'}),attributes:{id:['vpc-a','sg-a','i-a'][index],tags,...(index===2?{system_disk_id:'d-a'}:{})}}]}))});
@@ -131,6 +132,7 @@ describe('range host phase execution', () => {
       apply:jest.fn(async(options:any)=>{
         const network=options.planFilePath.endsWith('host-network.tfplan');events.push(network?'network-apply':'host-apply');
         if(!network){expect(frozen?.a.cloudReleaseAt).toBeTruthy();expect(Date.parse(frozen!.a.creationPhaseStartedAt)).toBeGreaterThanOrEqual(firstApplyDoneAt);expect(frozen!.a.platformExpiresAt).toBe(expiry);const variables=JSON.parse(await fs.readFile(path.join(dir,'range.auto.tfvars.json'),'utf8'));expect(variables.hosts[0].auto_release_time).toBe(frozen!.a.cloudReleaseAt);}
+        for(const index of (network?[0,1]:[2]))options.onResourceApplied?.({address:addresses[index],resourceType:kinds[index],action:'create',resourceId:['vpc-a','sg-a','i-a'][index]});
         await fs.writeFile(path.join(dir,'terraform.tfstate'),JSON.stringify(state(network)));if(network){firstApplyDoneAt=Date.now();networkApplied=true;}return {stdout:'',stderr:''};
       }),
       output:jest.fn(async()=>({resource_summary:{value:{vpc_id:'vpc-a',security_group_ids:{a:'sg-a'},host_ids:{a:'i-a'}}}})),
@@ -139,8 +141,9 @@ describe('range host phase execution', () => {
     jest.spyOn(provisioner,'buildVariables').mockResolvedValue({hosts:[{key:'a',instance_type:'ecs.type',image_id:'m-a'}],tags});jest.spyOn(provisioner,'buildRunnerEnv').mockResolvedValue({});
     (imageRpc as jest.Mock).mockImplementation(async()=>({TotalCount:1,Instances:{Instance:[{InstanceId:'i-a',AutoReleaseTime:frozen!.a.cloudReleaseAt}]}}));
     try {
-      const result=await provisioner.create({rangeInstanceId:'range-test',templateModulePath:'infra/module',allocatedCidr:null,expiresAt:expiry,runtimeConfig:account,billingTags:tags,onHostCreationPhase:async(records:any)=>{events.push('freeze');frozen=records;},topologySpec:{vpcCidr:'10.0.0.0/16',networkZones:[{key:'main',name:'Main',purpose:'internal',cidr:'10.0.0.0/24'}],hosts:[{key:'a',name:'A',zoneKey:'main',role:'entry',privateIp:'10.0.0.10'}],publicEntry:{hostKey:'a',protocols:[]}}});
+      const result=await provisioner.create({rangeInstanceId:'range-test',templateModulePath:'infra/module',allocatedCidr:null,expiresAt:expiry,runtimeConfig:account,billingTags:tags,onResourceCreated:async(event:any)=>{creationReceipts.push(event);},onHostCreationPhase:async(records:any)=>{events.push('freeze');frozen=records;},topologySpec:{vpcCidr:'10.0.0.0/16',networkZones:[{key:'main',name:'Main',purpose:'internal',cidr:'10.0.0.0/24'}],hosts:[{key:'a',name:'A',zoneKey:'main',role:'entry',privateIp:'10.0.0.10'}],publicEntry:{hostKey:'a',protocols:[]}}});
       expect(events.indexOf('network-apply')).toBeLessThan(events.indexOf('freeze'));expect(events.indexOf('freeze')).toBeLessThan(events.indexOf('host-apply'));expect(result.resourceSummary.cloudReleaseDeadlines.a.status).toBe('verified'); expect(runner.apply).toHaveBeenCalledTimes(2);
+      expect(creationReceipts.map(value=>[value.type,value.id])).toEqual([['vpc','vpc-a'],['security_group','sg-a'],['ecs','i-a']]);
       expect(await fs.readFile(path.join(dir,'host-cloud-release-deadlines.json'),'utf8')).toContain(frozen!.a.cloudReleaseAt);
     } finally {await fs.rm(root,{recursive:true,force:true});}
   });
