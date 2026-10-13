@@ -48,6 +48,8 @@ import { AdminListToolbar } from './shared/admin-list-toolbar';
 import { AdminDialog, type AdminDialogSize } from './shared/admin-dialog';
 import { AdminPaginatedList } from './shared/admin-paginated-list';
 import { AdminPageHeader } from './shared/admin-page-header';
+import { CloudReleaseStatus } from './shared/cloud-release-status';
+import Link from 'next/link';
 import { StatusBadge } from './shared/status-badge';
 import { TableLoadingState } from './shared/table-loading-state';
 import { useAdminSession } from './use-admin-session';
@@ -1518,7 +1520,7 @@ export function SingleInstancesScreen({
           <StatusBadge status={instance.status} />
         </AdminDataTableCell>
         <AdminDataTableCell column={columns[5]}>{formatDateTime(instance.createdAt)}</AdminDataTableCell>
-        <AdminDataTableCell column={columns[6]}>{formatDateTime(instance.expiresAt)}</AdminDataTableCell>
+        <AdminDataTableCell column={columns[6]}><span>{formatDateTime(instance.expiresAt)}</span><CloudReleaseStatus deadline={Object.values(instance.resourceSummary?.cloudReleaseDeadlines ?? {})[0] ?? instance.singleInstanceConfig?.cloudReleaseDeadline ?? undefined} /></AdminDataTableCell>
         <AdminDataTableCell column={columns[7]}>{instance.createdBy?.trim() || '暂无'}</AdminDataTableCell>
         <AdminDataTableCell column={columns[8]}>{renderCredentials(instance)}</AdminDataTableCell>
         <AdminDataTableCell column={columns[9]}>{renderInstanceActions(instance, actions)}</AdminDataTableCell>
@@ -1599,7 +1601,7 @@ export function SingleInstancesScreen({
       ) : null}
 
       <section className="admin-workbench-surface admin-pagination-surface">
-        <AdminPageHeader description="创建并管理训练实例、批次与生命周期。" title="实例管理" />
+        <AdminPageHeader description="创建并管理训练实例、批次与生命周期。" title="实例管理" action={session.profile?.isPlatformManager ? <Button asChild variant="outline"><Link href="/admin/resource-alerts">资源告警</Link></Button> : undefined} />
         {!canProvision && workspace ? <p className="mt-4 text-sm text-muted-foreground">{workspace.isReadOnly ? "当前账号工作空间为只读历史。" : `${cloudProviderLabel(workspace.provider)}实例创建仍在开发。`}</p> : null}
 
         <div className="mt-4 flex min-h-0 flex-1 flex-col gap-4">

@@ -163,7 +163,7 @@ describe('Tencent frozen inventory and complete pagination', () => {
       disk('disk-shared', { Shareable: true, InstanceIdList: ['ins-owned', 'ins-other'] })]));
     const result = await readTencentAttachedDiskInventory(account, 'ins-owned', { systemDiskIds: ['disk-owned', 'disk-shared'] }, expected);
     expect(result.systemDiskIds).toEqual(['disk-owned']);
-    expect(result.proofs).toEqual({ 'disk-owned': { instanceId: 'ins-owned', method: 'persisted' } });
+    expect(result.proofs).toEqual({ 'disk-owned': { instanceId: 'ins-owned', method: 'persisted', deleteWithInstance: true } });
     expect(result.unverifiedDisks.map(row => row.id)).toEqual(['disk-external', 'disk-shared']);
   });
   it('does not retry a write whose cloud submission is unknown', async () => {

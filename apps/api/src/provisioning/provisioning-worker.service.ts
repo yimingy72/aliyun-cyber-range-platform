@@ -1,6 +1,8 @@
 import { assertExistingHostBootstrapUnchanged } from '../admin/range-host-bootstrap-policy';
 import { buildRangeChangeApproval, rangeChangeDigest, type RangeChangeApproval } from '../admin/range-draft-change-policy';
 import { RangeDnsVerificationService } from '../admin/range-dns-verification.service';
+import { ResourceAlertsService } from '../admin/resource-alerts.service';
+import { ResourceAlertReclaimer } from '../admin/resource-alert-reclaimer';
 import { randomUUID } from 'node:crypto';
 import { runInSystemCloudWorkspaceScope } from '../auth/cloud-workspace-scope';
 import { listExecutionCloudWorkspaces, runInExecutionCloudWorkspace } from '../auth/background-cloud-workspace';
@@ -21,7 +23,7 @@ import { buildBillingTags } from '../admin/billing-tagging';
 import { RangeTemplatesService } from '../admin/range-templates.service';
 import { releaseRangeInstanceBillingLedger, syncRangeInstanceBillingLedger } from '../admin/billing-ledger-sync';
 import { retiredResourceInventory, retiredBillableIds } from './retired-resource-inventory';
-import { readAttachedDiskInventory, mergeDiskInventory, assertDiskInventorySafe, inventoryDiskIds } from '../admin/instance-disk-inventory';
+import { readAttachedDiskInventory, mergeDiskInventory, assertDiskInventorySafe, inventoryDiskIds, verifyCloudReleaseSystemDiskPolicies } from '../admin/instance-disk-inventory';
 import { describeTencentResourceInventory, readTencentAttachedDiskInventory } from '../admin/tencent-cloud-resources';
 import { TencentCloudRequestError } from '../admin/tencent-cloud-client';
 import { signAliyunRpcQuery } from '../admin/image-catalog-rpc-signer';
@@ -29,6 +31,8 @@ import { SingleInstanceBatchExecutionService } from '../admin/single-instance-ba
 import { SystemConfigService, type SystemCloudAccountContext } from '../admin/system-config.service';
 import { SingleInstanceOpenTofuExecutionService, type SingleInstanceOpenTofuBatchLease } from '../admin/single-instance-opentofu-execution.service';
 import { FAILED_CREATE_CLEANUP_PROOF_STEP, readFailedCreateCleanupProof, type FailedCreateCleanupProof } from '../admin/failed-create-cleanup-evidence';
+import { validRangeResourceCreatedEvent } from './range-resource-creation-receipts';
+import type { RangeResourceCreatedEvent } from './provisioning.types';
 import {
   AliyunEcsResourceClient,
   AliyunResourceRequestError,
@@ -97,6 +101,8 @@ export class ProvisioningWorkerService {
     platformResourceReconciliationService?: PlatformResourceReconciliationService,
     @Optional() singleInstanceOpenTofuExecutionService?: SingleInstanceOpenTofuExecutionService,
     @Optional() private readonly dnsVerification?: RangeDnsVerificationService,
+    @Optional() private readonly resourceAlerts?: ResourceAlertsService,
+    @Optional() private readonly resourceAlertReclaimer?: ResourceAlertReclaimer,
   ) {
     this.singleInstanceBatchExecutionService =
       singleInstanceBatchExecutionService ??
@@ -147,6 +153,7 @@ export class ProvisioningWorkerService {
   }
 
   async reconcilePlatformResources(now: Date) {
+    if (this.resourceAlerts) return this.resourceAlerts.scanCurrent(now);
     const spaces = await runInSystemCloudWorkspaceScope(() => listExecutionCloudWorkspaces(this.systemConfigService));
     if (!spaces) return this.platformResourceReconciliationService.reconcile(now);
     const results: Awaited<ReturnType<PlatformResourceReconciliationService['reconcile']>>[] = [];
@@ -400,6 +407,23 @@ export class ProvisioningWorkerService {
 
     try {
       const effectiveJobType = this.resolveEffectiveJobType(job, instance);
+      if(ResourceAlertReclaimer.handles(job)) {
+        if(effectiveJobType!=='destroy'||!this.resourceAlertReclaimer) throw new Error('Confirmed inventory cleanup executor is unavailable');
+        const assertCurrent=async()=>{signal?.throwIfAborted();await batchLease?.assertCurrent();if(!await this.ownsProvisionJobClaim(job)) throw new Error('Confirmed cleanup claim was lost');};
+        if(instance.instanceMode==='range') await this.updateRangeForClaim(job,{status:'destroying'});
+        else if(!await this.adminRepository.commitSingleInstanceClaim(job,{status:'destroying'})) return;
+        await this.runWorkerStep(reportStep,'verify_destroy',async()=>{await this.resourceAlertReclaimer!.execute(job,instance,assertCurrent);});
+        await assertCurrent();
+        const summary=instance.resourceSummary?.executionContext?{mode:'opentofu' as const,creationAttempted:false,
+          cloudReleaseDeadlines:instance.resourceSummary.cloudReleaseDeadlines,executionContext:instance.resourceSummary.executionContext}:null;
+        if(instance.instanceMode==='range') {
+          await this.updateRangeForClaim(job,{status:'destroyed',resourceSummary:summary,accessEntry:null,errorSummary:null});
+          if(!await this.adminRepository.updateRangeProvisionJob(job.id,job.startedAt!,{status:'succeeded',finishedAt:new Date(),errorSummary:null})) return;
+        } else if(!await this.adminRepository.commitSingleInstanceClaim(job,{status:'destroyed',resourceSummary:summary,accessEntry:null,errorSummary:null,
+          singleInstanceConfig: instance.singleInstanceConfig ? { ...instance.singleInstanceConfig, opentofuCreateJobId: null } : null},
+          {status:'succeeded',finishedAt:new Date(),errorSummary:null})) return;
+        await this.finalizeDispatchedOperation(job,'succeeded');this.nextResourceReconciliationAt=0;return;
+      }
       const rangeContext = instance.instanceMode === 'range' ? await this.resolveRangeAccountContext(instance, job) : null;
       const runtimeConfig = rangeContext!;
 
@@ -561,7 +585,10 @@ export class ProvisioningWorkerService {
         if (frozen) await this.assertRangeSnapshotImages(instance, frozen);
         const result = await this.rangeProvisioner.create({
           ...failedCreateCleanupInput,
+          knownResourceSummary: (await this.adminRepository.getRangeInstanceById(instance.id))?.resourceSummary ?? undefined,
           preserveWorkspaceState: job.jobType === 'retry' || job.retryCount > 0,
+          onHostCreationPhase: deadlines => this.persistHostCloudReleaseDeadlines(job, deadlines, signal),
+          onResourceCreated: event => this.persistRangeCreationReceipt(job, instance, accountContext, event, signal),
           onApplyStart: async () => {
             await this.recordRangeApplyStart(instance, job, accountContext, signal);
             failedCreateCleanupInput!.requirePersistedState = true;
@@ -701,6 +728,7 @@ export class ProvisioningWorkerService {
     await releaseRangeInstanceBillingLedger(this.adminRepository, instance.id, new Date());
     await this.updateRangeForClaim(job, { status: 'destroyed', accessEntry: null,
       resourceSummary: instance.resourceSummary?.executionContext ? { mode: 'opentofu', creationAttempted: false,
+        cloudReleaseDeadlines: instance.resourceSummary.cloudReleaseDeadlines,
         executionContext: instance.resourceSummary.executionContext } : null, errorSummary: null });
     if (!(await this.adminRepository.updateRangeProvisionJob(job.id, job.startedAt!, {
       status: 'succeeded', finishedAt: new Date(), errorSummary: null,
@@ -749,6 +777,8 @@ export class ProvisioningWorkerService {
       templateModulePath: topologySnapshot.templateModulePath,
       allocatedCidr: input.instance.allocatedCidr,
       preserveWorkspaceState: true,
+      onHostCreationPhase: deadlines => this.persistHostCloudReleaseDeadlines(input.job, deadlines, input.signal),
+      onResourceCreated: event => this.persistRangeCreationReceipt(input.job, input.instance, input.accountContext, event, input.signal),
       requirePersistedState: true,
       signal: input.signal,
       onApplyStart: async () => {
@@ -976,13 +1006,56 @@ export class ProvisioningWorkerService {
     if (!current || current.expiresAt && current.expiresAt <= new Date()) throw new Error('Range expired before cloud creation started');
     if (!context.cloudAccountContextId || !context.accountUid) throw new Error('Range execution account is not verified');
     await this.updateRangeForClaim(job, { resourceSummary: { ...current.resourceSummary, mode: 'opentofu', creationAttempted: true,
-      executionContext: { provider: context.provider, cloudAccountContextId: context.cloudAccountContextId, cloudAccountUid: context.accountUid,
+      executionContext: current.resourceSummary?.executionContext ?? { provider: context.provider, cloudAccountContextId: context.cloudAccountContextId, cloudAccountUid: context.accountUid,
         regionId: context.defaultRegion, zoneId: context.defaultZoneId } } });
     signal?.throwIfAborted();
   }
 
+  private async persistRangeCreationReceipt(job: ProvisionJobRecord, instance: RangeInstanceRecord, context: SystemCloudAccountContext,
+    event: RangeResourceCreatedEvent, signal?: AbortSignal) {
+    signal?.throwIfAborted();
+    if (this.rangeProvisioner.mode !== 'opentofu' || !['create','retry','update'].includes(job.jobType)
+      || job.jobType === 'retry' && job.topologySnapshot?.operation === 'destroy'
+      || !validRangeResourceCreatedEvent(event, context.provider) || !context.accountUid || !context.cloudAccountContextId
+      || !context.defaultRegion || !context.defaultZoneId || !await this.ownsProvisionJobClaim(job))
+      throw new Error('Range creation receipt requires its original active creation claim');
+    const current = await this.adminRepository.getRangeInstanceById(instance.id);
+    const workspaceId = job.cloudWorkspaceId ?? 'legacy-unbound';
+    const bound = current?.resourceSummary?.executionContext;
+    if (!current || current.id !== job.rangeInstanceId || current.instanceMode !== 'range' || current.ownerUserId !== instance.ownerUserId
+      || (current.cloudWorkspaceId ?? 'legacy-unbound') !== workspaceId || current.cloudProvider !== context.provider
+      || !bound || bound.cloudAccountUid !== context.accountUid || bound.cloudAccountContextId !== context.cloudAccountContextId
+      || bound.regionId !== context.defaultRegion || bound.provider && bound.provider !== context.provider)
+      throw new Error('Range creation receipt differs from its frozen workspace or cloud account');
+    signal?.throwIfAborted();
+    const now = new Date();
+    await this.adminRepository.createProvisionJobStepLog({ jobId: job.id, cloudWorkspaceId: workspaceId,
+      stepName: 'range_resource_creation_receipt', status: 'succeeded', startedAt: now, finishedAt: now,
+      stdoutExcerpt: null, stderrExcerpt: null, message: JSON.stringify({ version: 1, cloudProvider: context.provider,
+        cloudWorkspaceId: workspaceId, rangeInstanceId: instance.id, sourceJobId: job.id, ownerUserId: instance.ownerUserId,
+        executionContext: { provider: context.provider, cloudAccountUid: context.accountUid, cloudAccountContextId: context.cloudAccountContextId,
+          regionId: context.defaultRegion, zoneId: bound.zoneId }, resources: [event] }) });
+  }
+
+  private async persistHostCloudReleaseDeadlines(job: ProvisionJobRecord, deadlines: NonNullable<RangeResourceSummary['cloudReleaseDeadlines']>, signal?: AbortSignal) {
+    signal?.throwIfAborted();
+    if (!(await this.ownsProvisionJobClaim(job))) throw new Error('Range operation claim is no longer active');
+    const current = await this.adminRepository.getRangeInstanceById(job.rangeInstanceId);
+    if (!current?.expiresAt || current.expiresAt <= new Date()) throw new Error('Range expired before host creation');
+    for (const [key, record] of Object.entries(deadlines)) {
+      const previous = current.resourceSummary?.cloudReleaseDeadlines?.[key];
+      if (Date.parse(record.platformExpiresAt) !== current.expiresAt.getTime()
+        || previous && ['provider','platformExpiresAt','creationPhaseStartedAt','cloudReleaseAt','sourceProvisionJobId'].some(field => (previous as any)[field] !== (record as any)[field]))
+        throw new Error('Frozen host deadline changed before cloud creation');
+    }
+    await this.updateRangeForClaim(job, { resourceSummary: { ...current.resourceSummary, mode: 'opentofu', cloudReleaseDeadlines: deadlines } });
+    const now = new Date();
+    await this.adminRepository.createProvisionJobStepLog({ jobId: job.id, stepName: 'host_cloud_release_deadlines', status: 'succeeded',
+      message: JSON.stringify({ version: 1, deadlines }), startedAt: now, finishedAt: now, stdoutExcerpt: null, stderrExcerpt: null });
+  }
+
   private async recordRangeResourceInventory(job: ProvisionJobRecord, summary: RangeResourceSummary) {
-    const inventory = Object.fromEntries(['retiredResources','vpcId','routeTableIds','subnetIds','networkAclIds','securityGroupIds','hostIds','systemDiskIds','dataDiskIds','unverifiedDiskIds','diskOwnershipProofs','diskInventoryHostIds',
+    const inventory = Object.fromEntries(['cloudReleaseDeadlines','retiredResources','vpcId','routeTableIds','subnetIds','networkAclIds','securityGroupIds','hostIds','systemDiskIds','dataDiskIds','unverifiedDiskIds','diskOwnershipProofs','diskInventoryHostIds',
       'secondaryNetworkInterfaceIds','natGatewayIds','snatEntryIds','dnatEntryIds','eipAllocationId','eipAllocationIds']
       .filter(key => (summary as any)[key] != null).map(key => [key, (summary as any)[key]]));
     const now = new Date();
@@ -1085,6 +1158,7 @@ export class ProvisioningWorkerService {
       summary = mergeDiskInventory(summary, hostKey, disks, instanceId);
       inventories.push(disks);
     }
+    summary = verifyCloudReleaseSystemDiskPolicies(summary);
     const persisted = await this.updateRangeForClaim(job, { resourceSummary: summary });
     await this.recordRangeResourceInventory(job, summary);
     await syncRangeInstanceBillingLedger({ repository: this.adminRepository, instance: persisted, resourceSummary: summary,
@@ -1324,7 +1398,7 @@ export class ProvisioningWorkerService {
     const groupedItems = candidateInstances.flatMap((instance) => {
       const job = instance.lastJobId ? jobsById.get(instance.lastJobId) : null;
 
-      if (!job || job.cloudWorkspaceId !== instance.cloudWorkspaceId || job.rangeInstanceId !== instance.id || job.status !== 'pending'
+      if (!job || ResourceAlertReclaimer.handles(job) || job.cloudWorkspaceId !== instance.cloudWorkspaceId || job.rangeInstanceId !== instance.id || job.status !== 'pending'
         || this.resolveEffectiveJobType(job, instance) !== input.effectiveJobType) {
         return [];
       }
@@ -1702,6 +1776,14 @@ export class ProvisioningWorkerService {
     }
     for (const id of new Set(Object.values(resourceSummary.natGatewayIds ?? {}).filter(Boolean))) {
       checks.push(async () => await this.checkNatGatewayExists(id, runtimeConfig, regionId) ? [`nat:${id}`] : []);
+    }
+    // A missing ECS (including a cloud scheduled release) does not prove that
+    // its range-owned firewall or NAT rules have disappeared.
+    for (const [field, kind] of [['securityGroupIds', 'security_group'], ['networkAclIds', 'network_acl'],
+      ['snatEntryIds', 'snat_entry'], ['dnatEntryIds', 'dnat_entry']] as const) {
+      for (const id of new Set(Object.values(resourceSummary[field] ?? {}).filter(Boolean))) {
+        checks.push(async () => await this.checkAliyunRecordedNetworkResource(kind, id, runtimeConfig, regionId) ? [`${kind}:${id}`] : []);
+      }
     }
     const eipIds = new Set([resourceSummary.eipAllocationId, ...Object.values(resourceSummary.eipAllocationIds ?? {})].filter((id): id is string => Boolean(id)));
     for (const id of eipIds) {
@@ -2083,6 +2165,46 @@ export class ProvisioningWorkerService {
     return this.readVerificationPage(payload, payload.EipAddresses?.EipAddress, 'AllocationId', [allocationId]).length > 0;
   }
 
+  private async checkAliyunRecordedNetworkResource(kind: 'security_group' | 'network_acl' | 'snat_entry' | 'dnat_entry',
+    recordedId: string, runtimeConfig: { accessKeyId: string; accessKeySecret: string }, regionId: string) {
+    const specs = {
+      security_group: { service: 'ecs', action: 'DescribeSecurityGroups', collection: 'SecurityGroups', item: 'SecurityGroup', field: 'SecurityGroupId', prefix: 'sg', parent: null },
+      network_acl: { service: 'vpc', action: 'DescribeNetworkAcls', collection: 'NetworkAcls', item: 'NetworkAcl', field: 'NetworkAclId', prefix: 'nacl', parent: null },
+      snat_entry: { service: 'vpc', action: 'DescribeSnatTableEntries', collection: 'SnatTableEntries', item: 'SnatTableEntry', field: 'SnatEntryId', prefix: 'snat', parent: 'SnatTableId' },
+      dnat_entry: { service: 'vpc', action: 'DescribeForwardTableEntries', collection: 'ForwardTableEntries', item: 'ForwardTableEntry', field: 'ForwardEntryId', prefix: 'fwd', parent: 'ForwardTableId' },
+    } as const;
+    const spec = specs[kind], parts = recordedId.split(':'), id = parts.at(-1)!;
+    if (parts.length > 2 || !new RegExp(`^${spec.prefix}-[a-zA-Z0-9]+$`).test(id)
+      || (!spec.parent && parts.length !== 1)
+      || (spec.parent && parts.length === 2 && !new RegExp(`^${kind === 'snat_entry' ? 'stb' : 'ftb'}-[a-zA-Z0-9]+$`).test(parts[0]))) {
+      throw new Error('Cloud network verification requires an exact recorded resource and parent identity');
+    }
+    const parameters: Record<string, string> = { RegionId: regionId, [spec.field]: id, PageSize: '50', PageNumber: '1' };
+    if (spec.parent && parts.length === 2) parameters[spec.parent] = parts[0];
+    let payload: Record<string, any>;
+    try {
+      payload = await this.performAliyunRpcRequest({ endpoint: `${spec.service}.${regionId}.aliyuncs.com`,
+        version: spec.service === 'ecs' ? ALICLOUD_ECS_API_VERSION : ALICLOUD_VPC_API_VERSION,
+        action: spec.action, ...runtimeConfig, parameters });
+    } catch (error) {
+      // Only a typed receipt for this exact queried resource (or its frozen
+      // parent table) proves absence. Permission and region errors do not.
+      if (error instanceof AliyunVerificationRequestError && error.requestId
+        && error.action === spec.action && [400, 404].includes(error.status)
+        && (error.code === `Invalid${spec.field}.NotFound`
+          || spec.parent && parts.length === 2 && error.code === `Invalid${spec.parent}.NotFound`)) return false;
+      throw error;
+    }
+    const numeric = (value: unknown) => (typeof value === 'number' || typeof value === 'string') && /^\d+$/.test(String(value))
+      && Number.isSafeInteger(Number(value)) ? Number(value) : NaN;
+    const rows = Array.isArray(payload[spec.collection]) ? payload[spec.collection] : payload[spec.collection]?.[spec.item];
+    const checked = this.readVerificationPage({ ...payload, TotalCount: numeric(payload.TotalCount), PageNumber: numeric(payload.PageNumber), PageSize: numeric(payload.PageSize) },
+      rows, spec.field, [id]);
+    if (checked.some(row => spec.parent && row[spec.parent] !== undefined && row[spec.parent] !== parameters[spec.parent]
+      || row.RegionId !== undefined && row.RegionId !== regionId)) throw new Error('Cloud network verification returned a foreign region or parent identity');
+    return checked.length > 0;
+  }
+
   private readVerificationPage(payload: unknown, items: unknown, field: string, ids: string[]): Record<string, string>[] {
     const page = this.readJsonObject(payload);
     const rows = Array.isArray(items) ? items : items && typeof items === 'object' ? [items] : null;
@@ -2233,7 +2355,10 @@ export class ProvisioningWorkerService {
           stdoutExcerpt: null, stderrExcerpt: null,
         });
       }
-      await this.updateRangeForClaim(input.job, { accessEntry: null, resourceSummary: null });
+      await this.updateRangeForClaim(input.job, { accessEntry: null, resourceSummary: evidence.resourceSummary?.executionContext ? {
+        mode: 'opentofu', creationAttempted: false, executionContext: evidence.resourceSummary.executionContext,
+        cloudReleaseDeadlines: evidence.resourceSummary.cloudReleaseDeadlines,
+      } : null });
       return null;
     } catch (error) {
       return error instanceof Error ? error.message : 'Unknown automatic cleanup failure';

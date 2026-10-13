@@ -182,3 +182,14 @@ run "rejects_unowned_dnat_address" {
   }
   expect_failures = [check.dnat_owned_nic_targets]
 }
+
+run "does_not_extend_existing_cvm_deadline" {
+  command = plan
+  variables {
+    hosts = [{ key = "entry", name = "Entry", host_name = "entry", image_id = "img-fixture", instance_type = "S5.MEDIUM4", private_ip = "10.0.1.10", zone_key = "dmz", system_disk_type = "CLOUD_PREMIUM", system_disk_size = 40, terminate_at = "2100-01-02T00:00:00Z", creation_intent_id = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", user_data = "" }]
+  }
+  assert {
+    condition     = tencentcloud_instance.hosts["entry"].action_timer_terminate_at == "2100-01-01T00:00:00Z"
+    error_message = "Changing rendered metadata must not extend an existing CVM timer."
+  }
+}

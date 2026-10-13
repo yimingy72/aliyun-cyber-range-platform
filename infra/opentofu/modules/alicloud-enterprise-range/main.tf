@@ -508,6 +508,7 @@ resource "alicloud_instance" "hosts" {
   user_data             = try(local.host_user_data_map[each.key], null)
   system_disk_category  = var.system_disk_category
   system_disk_size      = coalesce(try(each.value.system_disk_size, null), var.system_disk_size)
+  auto_release_time     = try(each.value.auto_release_time, null)
 
   dynamic "network_interfaces" {
     for_each = (
@@ -528,6 +529,10 @@ resource "alicloud_instance" "hosts" {
     PlatformResourceType = "ecs"
     PlatformHostKey      = each.key
   })
+
+  lifecycle {
+    ignore_changes = [auto_release_time]
+  }
 }
 
 resource "alicloud_network_interface" "secondary" {

@@ -25,6 +25,28 @@ function fixture(tencent: boolean) {
 const vm = (f: ReturnType<typeof fixture>) => f.plan.resource_changes.find((resource: any) => resource.type.endsWith('_instance'));
 
 describe.each([false, true])('approved runtime update safety, Tencent=%s', tencent => {
+  it('rejects recreation of an original cloud-released host even when refresh plans the same logical address', () => {
+    const f = fixture(tencent), original = vm(f);
+    original.change.actions = ['create']; original.change.before = null; delete original.change.after.id; original.change.after_unknown = { id: true };
+    expect(() => assertApprovedRangeUpdatePlan(f.input)).toThrow();
+    expect(f.approval.addedHostKeys).toEqual([]);
+  });
+  it('refuses a network-only state when the original exact platform host inventory still exists', async () => {
+    const f = fixture(tencent), dir = await fs.mkdtemp(path.join(os.tmpdir(), 'missing-host-state-'));
+    const workspace = path.join(dir, f.rangeInstanceId); await fs.mkdir(workspace);
+    await fs.writeFile(path.join(workspace, 'terraform.tfstate'), JSON.stringify({ version: 4, lineage: 'owned-lineage', serial: 2,
+      resources: [{ module: 'module.range', mode: 'managed', type: tencent ? 'tencentcloud_vpc' : 'alicloud_vpc', name: 'range', instances: [{ attributes: { id: 'vpc-owned', tags: f.billingTags } }] }] }));
+    const runner = { init: jest.fn(), plan: jest.fn(), apply: jest.fn(), destroy: jest.fn() };
+    const provisioner = new OpenTofuRangeProvisioner({ projectRootDir: '/app', workspacesRootDir: dir, runner: runner as any, env: {} }) as any;
+    const applyStart = jest.fn();
+    try {
+      await expect(provisioner.prepareWorkspace({ rangeInstanceId: f.rangeInstanceId, templateModulePath: `infra/opentofu/modules/${tencent ? 'tencentcloud' : 'alicloud'}-enterprise-range`,
+        runtimeConfig: f.account, knownResourceSummary: f.knownResourceSummary, requirePersistedState: true, onApplyStart: applyStart },
+        { preserveWorkspaceState: true, requireRuntimePasswords: true })).rejects.toThrow('Original host state is missing');
+      expect(runner.apply).not.toHaveBeenCalled(); expect(runner.destroy).not.toHaveBeenCalled(); expect(applyStart).not.toHaveBeenCalled();
+      expect(JSON.parse(await fs.readFile(path.join(workspace, 'terraform.tfstate'), 'utf8')).serial).toBe(2);
+    } finally { await fs.rm(dir, { recursive: true, force: true }); }
+  });
   it('accepts a complete same-identity no-op plan', () => expect(() => assertApprovedRangeUpdatePlan(fixture(tencent).input)).not.toThrow());
   it.each(['image_id','instance_type','system_disk_size','private_ip','user_data','password','availability_zone'])('rejects implicit VM change in %s', field => {
     const f = fixture(tencent); vm(f).change.actions = ['update']; vm(f).change.after[field] = 'changed';

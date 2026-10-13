@@ -13,6 +13,11 @@ type ClientStub = PlatformApiClientLike & {
 
 function createClientStub(): ClientStub {
   return {
+    getResourcePatrol: vi.fn(),
+    setResourcePatrolManager: vi.fn(),
+    listResourceAlerts: vi.fn(),
+    previewResourceReclaim: vi.fn(),
+    reclaimResourceAlert: vi.fn(),
     listRangeTemplates: vi.fn().mockResolvedValue([{ id: 'tpl-1' }]),
     getRangeTemplate: vi.fn().mockResolvedValue({ id: 'tpl-1' }),
     createRangeTemplate: vi.fn().mockResolvedValue({ id: 'tpl-2' }),

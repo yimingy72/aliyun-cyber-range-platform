@@ -89,6 +89,7 @@ const navigationItems: readonly AdminNavigationItem[] = [
     shortLabel: '配置',
     requiresAdmin: true,
   },
+  { href: '/admin/resource-alerts', label: '资源告警', shortLabel: '告警', requiresAdmin: true },
 ];
 
 const SESSION_REFRESH_BUFFER_MS = 60_000;

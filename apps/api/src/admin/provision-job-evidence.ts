@@ -5,8 +5,13 @@ const descriptions: Record<string, string> = {
   prepare: 'Prepare the recorded operation', tofu_init: 'Initialize OpenTofu', tofu_apply: 'Apply the recorded topology',
   tofu_destroy: 'Destroy the recorded topology', verify_destroy: 'Platform cloud absence verification',
   persist_access_entry: 'Persist cloud resources and billing sources', range_resource_inventory: 'Persist resource identities',
+  single_instance_creation_receipt: 'Persist exact provider creation identity',
   platform_billing_origin_repair: 'Restore a verified billing creation source',
   cleanup_failed_create_resources: 'Clean up partial creation',
+  confirmed_inventory_absence: 'Verify confirmed physical inventory is absent',
+  confirmed_inventory_remaining: 'Preserve confirmed cleanup remaining resources',
+  confirmed_inventory_delete_intent: 'Persist exact native cleanup intent',
+  confirmed_inventory_delete_receipt: 'Record native cleanup request acknowledgement',
 };
 const identity = (value: unknown) => typeof value === 'string' && /^[A-Za-z0-9][A-Za-z0-9:_-]{0,255}$/.test(value);
 const object = (value: unknown): value is Record<string, unknown> => Boolean(value) && typeof value === 'object' && !Array.isArray(value);
@@ -60,7 +65,7 @@ export function buildProvisionJobEvidence(job: ProvisionJobRecord, steps: Provis
   const scopedSteps = steps.filter(step => step.jobId === job.id && step.cloudWorkspaceId === job.cloudWorkspaceId);
   const inventories: ReturnType<typeof inventory>[] = [];
   let invalidInventoryCount = 0;
-  for (const step of scopedSteps.filter(step => step.stepName === 'range_resource_inventory' && step.status === 'succeeded')) {
+  for (const step of scopedSteps.filter(step => ['range_resource_inventory', 'single_instance_creation_receipt'].includes(step.stepName) && step.status === 'succeeded')) {
     try { inventories.push(inventory(step, job.rangeInstanceId)); } catch { invalidInventoryCount++; }
   }
   return { coverage: 'platform_recorded_job_evidence' as const, inventories, invalidInventoryCount,

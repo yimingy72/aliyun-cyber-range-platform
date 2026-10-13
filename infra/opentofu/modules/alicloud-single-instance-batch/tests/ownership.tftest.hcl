@@ -32,3 +32,33 @@ run "keeps_each_member_identity_and_disk_billing_tags" {
     error_message = "Frozen network assignments and explicit single-member deletion must be preserved."
   }
 }
+
+run "persists_absolute_cloud_release_time" {
+  command = apply
+  variables {
+    members = {
+      first = {
+        instance_name        = "first-host", host_name = "first-host", instance_type = "ecs.u1-c1m2.large", image_id = "fixture-image", vswitch_id = "vsw-first"
+        system_disk_category = "cloud_essd", system_disk_size = 40, internet_max_bandwidth_out = 10, auto_release_time = "2100-01-01T00:00:00Z"
+        tags                 = { PlatformUserId = "owner-first", RangeInstanceId = "first", SingleInstanceBatchId = "fixture-batch", PlatformResourceType = "ecs" }
+      }
+      second = {
+        instance_name        = "second-host", host_name = "second-host", instance_type = "ecs.u1-c1m2.large", image_id = "fixture-image", vswitch_id = "vsw-second"
+        system_disk_category = "cloud_essd", system_disk_size = 40, internet_max_bandwidth_out = 10, auto_release_time = "2100-01-01T00:00:00Z"
+        tags                 = { PlatformUserId = "owner-second", RangeInstanceId = "second", SingleInstanceBatchId = "fixture-batch", PlatformResourceType = "ecs" }
+      }
+    }
+  }
+  assert {
+    condition     = alicloud_instance.members["first"].auto_release_time == "2100-01-01T00:00:00Z"
+    error_message = "First creation must submit the persisted absolute fallback deadline."
+  }
+}
+
+run "does_not_cancel_absolute_cloud_release_time_on_ordinary_refresh" {
+  command = plan
+  assert {
+    condition     = alicloud_instance.members["first"].auto_release_time == "2100-01-01T00:00:00Z" && alicloud_instance.members["second"].auto_release_time == "2100-01-01T00:00:00Z"
+    error_message = "Omitting a timer during ordinary modification must never cancel an existing fallback."
+  }
+}

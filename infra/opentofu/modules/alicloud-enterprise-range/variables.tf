@@ -39,16 +39,17 @@ variable "network_zones" {
 
 variable "hosts" {
   type = list(object({
-    key              = string
-    name             = string
-    host_name        = optional(string)
-    zone_key         = string
-    private_ip       = string
-    role             = string
-    expose_public    = bool
-    instance_type    = optional(string)
-    image_id         = optional(string)
-    system_disk_size = optional(number)
+    key               = string
+    name              = string
+    host_name         = optional(string)
+    zone_key          = string
+    private_ip        = string
+    role              = string
+    expose_public     = bool
+    instance_type     = optional(string)
+    image_id          = optional(string)
+    system_disk_size  = optional(number)
+    auto_release_time = optional(string)
   }))
   description = "Structured host definitions compiled from the published template."
   default     = []

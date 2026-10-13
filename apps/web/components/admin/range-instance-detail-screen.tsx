@@ -7,6 +7,8 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 
 import { Button } from '@/components/ui/button';
+import Link from 'next/link';
+import { CloudReleaseSummary } from './shared/cloud-release-status';
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
 
 import {
@@ -1732,7 +1734,10 @@ export function RangeInstanceDetailScreen({
 
     let kindOrdinal = topologyNodes.filter((node) => node.kind === kind).length + 1;
     while (topologyNodes.some((node) => node.kind === kind && node.label === readDefaultNodeLabel(kind, kindOrdinal))) kindOrdinal += 1;
-    const nextNodeId = nextAvailableGraphId(kind, [...new Set([...topologyNodes, ...deployedNodes].map(node => node.id))]);
+    const nextNodeId = nextAvailableGraphId(kind, [...new Set([
+      ...[...topologyNodes, ...deployedNodes].map(node => node.id),
+      ...Object.keys(detail?.resourceSummary?.cloudReleaseDeadlines ?? {}),
+    ])]);
     let switchCidr = '';
     if (kind === 'switch') {
       try {
@@ -1980,6 +1985,7 @@ export function RangeInstanceDetailScreen({
         <AdminPageHeader
           description="查看实例运行状态、节点目录与拓扑编排。"
           title="实例详情"
+          action={session.profile?.isPlatformManager ? <Button asChild variant="outline"><Link href="/admin/resource-alerts">资源告警</Link></Button> : undefined}
         />
 
         {errorMessage ? <p className="mt-4 text-sm text-destructive" role="alert">{errorMessage}</p> : null}
@@ -2009,8 +2015,12 @@ export function RangeInstanceDetailScreen({
                   <strong>{formatAdminDateTime(detail.createdAt)}</strong>
                 </div>
                 <div className="range-instance-overview-item">
-                  <span>到期时间</span>
+                  <span>平台到期</span>
                   <strong>{formatAdminDateTime(detail.expiresAt)}</strong>
+                </div>
+                <div className="range-instance-overview-item">
+                  <span>云端兜底</span>
+                  <strong><CloudReleaseSummary deadlines={detail.resourceSummary?.cloudReleaseDeadlines} hostIds={detail.resourceSummary?.hostIds} /></strong>
                 </div>
                 <div className="range-instance-overview-item">
                   <span>公网IP（DNAT IP）</span>
@@ -2091,6 +2101,7 @@ export function RangeInstanceDetailScreen({
                       ...node,
                       createdBy: detail.createdBy ?? 'admin',
                       expiresAt: formatAdminDateTime(detail.expiresAt),
+                      cloudReleaseDeadline: detail.resourceSummary?.cloudReleaseDeadlines?.[node.id],
                       createdAt: formatAdminDateTime(detail.createdAt),
                     }))}
                     onNodeAction={handleNodeAction}

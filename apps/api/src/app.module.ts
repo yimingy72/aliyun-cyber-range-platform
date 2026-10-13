@@ -30,6 +30,11 @@ import { BillingSyncService } from './admin/billing-sync.service';
 import { BillingOssBindingController } from './admin/billing-oss-binding.controller';
 import { BillingOssBindingService } from './admin/billing-oss-binding.service';
 import { AliyunOssManagedBucketService } from './admin/aliyun-oss-managed-bucket.service';
+import { ResourceAlertsController } from './admin/resource-alerts.controller';
+import { ResourceAlertsService } from './admin/resource-alerts.service';
+import { ResourcePatrolRepository } from './admin/resource-patrol.repository';
+import { ResourcePatrolCloudClient } from './admin/resource-patrol-cloud-client';
+import { ResourceAlertReclaimer } from './admin/resource-alert-reclaimer';
 import { PlatformImagesController } from './admin/platform-images.controller';
 import { PlatformImageTagsController } from './admin/platform-image-tags.controller';
 import { AdminUsersController } from './admin/admin-users.controller';
@@ -102,6 +107,7 @@ function resolveProjectRootDir() {
     ImageImportsController,
     BillingController,
     BillingOssBindingController,
+    ResourceAlertsController,
     PlatformImagesController,
     PlatformImageTagsController,
     SingleInstancesController,
@@ -125,6 +131,10 @@ function resolveProjectRootDir() {
     BillingSyncService,
     BillingOssBindingService,
     AliyunOssManagedBucketService,
+    ResourceAlertsService,
+    ResourcePatrolRepository,
+    ResourcePatrolCloudClient,
+    ResourceAlertReclaimer,
     TencentBillingClient,
     AdminUsersService,
     KeycloakAdminService,

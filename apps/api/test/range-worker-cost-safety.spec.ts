@@ -3,7 +3,7 @@ import { type RangeProvisionCreateInput, type RangeProvisionDestroyInput } from 
 import { type RangeResourceSummary } from '../src/admin/admin.repository';
 import { createMemoryAdminRepository } from './support/create-memory-admin-repository';
 import { FAILED_CREATE_CLEANUP_PROOF_STEP } from '../src/admin/failed-create-cleanup-evidence';
-import { buildRangeChangeApproval } from '../src/admin/range-draft-change-policy';
+import { buildRangeChangeApproval, rangeRuntimeIdentityDigest } from '../src/admin/range-draft-change-policy';
 
 const account = { provider: 'alibaba_cloud' as const, accessKeyId: 'fixture-source-key', accessKeySecret: 'fixture-source-secret',
   defaultRegion: 'cn-hangzhou', defaultZoneId: 'cn-hangzhou-h', imageImportBucket: '', cloudAccountContextId: 'context-source', accountUid: 'uid-source', accountUidResolved: true };
@@ -84,6 +84,19 @@ describe('range worker durable cost safety', () => {
     expect(JSON.parse(inventoryLog.message!)).toMatchObject({ executionContext: binding, resources: { hostIds: resources.hostIds, systemDiskIds: resources.systemDiskIds } });
     expect(inventoryLog.message).not.toContain(account.accessKeySecret);
   });
+  it('does not invalidate a confirmed legacy runtime identity between network and host apply phases', async () => {
+    const f = await fixture('destroy');
+    const claimed = (await f.repository.claimRangeProvisionJob(f.job.id, new Date()))!;
+    const before = (await f.repository.getRangeInstanceById(f.instance.id))!;
+    const digest = rangeRuntimeIdentityDigest(before);
+    expect(before.resourceSummary?.executionContext).not.toHaveProperty('provider');
+    for (let phase = 0; phase < 2; phase++) {
+      await (f.worker as any).recordRangeApplyStart(before, claimed, account);
+      const after = (await f.repository.getRangeInstanceById(f.instance.id))!;
+      expect(after.resourceSummary?.executionContext).toEqual(binding);
+      expect(rangeRuntimeIdentityDigest(after)).toBe(digest);
+    }
+  });
 
   it.each(['missing binding', 'changed identity'])('refuses cloud cleanup with %s instead of using the current account as absence proof', async reason => {
     const f = await fixture('destroy');
@@ -101,6 +114,25 @@ describe('range worker durable cost safety', () => {
     expect(f.provisioner.destroy).toHaveBeenCalledTimes(1);
     expect(await f.repository.getRangeInstanceById(f.instance.id)).toMatchObject({ status: 'destroy_failed', resourceSummary: { hostIds: resources.hostIds, executionContext: binding } });
     expect((await f.repository.listBillingLedgerResources()).every(row => !row.releasedAt)).toBe(true);
+  });
+  it('continues range network destruction after the recorded host and system disk were released by the cloud', async () => {
+    const f = await fixture('destroy');
+    const summary = { ...resources, executionContext: binding, diskInventoryHostIds: { entry: 'i-owned' },
+      securityGroupIds: { entry: 'sg-owned' }, networkAclIds: { zone: 'nacl-owned' },
+      snatEntryIds: { zone: 'stb-owned:snat-owned' }, dnatEntryIds: { entry: 'ftb-owned:fwd-owned' } };
+    await f.repository.updateRangeInstance(f.instance.id, { resourceSummary: summary }); f.provisioner.inspectResources.mockResolvedValue(summary);
+    const collections: Record<string, [string, string]> = { DescribeInstances: ['Instances', 'Instance'], DescribeDisks: ['Disks', 'Disk'], DescribeEipAddresses: ['EipAddresses', 'EipAddress'],
+      DescribeSecurityGroups: ['SecurityGroups', 'SecurityGroup'], DescribeNetworkAcls: ['NetworkAcls', 'NetworkAcl'], DescribeSnatTableEntries: ['SnatTableEntries', 'SnatTableEntry'], DescribeForwardTableEntries: ['ForwardTableEntries', 'ForwardTableEntry'] };
+    f.query.mockImplementation(async (input: any) => {
+      const [collection, item] = collections[input.action];
+      return { RequestId: 'receipt', TotalCount: 0, PageNumber: 1, PageSize: 100, [collection]: { [item]: [] } };
+    });
+    await f.worker.process(f.job.id);
+    expect(f.provisioner.create).not.toHaveBeenCalled(); expect(f.provisioner.destroy).toHaveBeenCalledTimes(1);
+    expect(await f.repository.getRangeInstanceById(f.instance.id)).toMatchObject({ status: 'destroyed' });
+    expect(f.query.mock.calls.map(([input]: any[]) => input.action)).toEqual(expect.arrayContaining(['DescribeSecurityGroups', 'DescribeNetworkAcls', 'DescribeSnatTableEntries', 'DescribeForwardTableEntries']));
+    expect((await f.repository.listBillingLedgerResources()).every(row => row.releasedAt)).toBe(true);
+    expect((await f.repository.listProvisionJobStepLogs(f.job.id)).some(log => log.stepName === 'range_resource_inventory' && log.message?.includes('i-owned'))).toBe(true);
   });
 
   it('keeps the resource inventory if releasing billing fails after verified cloud deletion', async () => {
@@ -121,7 +153,11 @@ describe('range worker durable cost safety', () => {
     const current = await f.repository.getRangeInstanceById(f.instance.id);
     expect(current?.status).toBe(malformed ? 'destroy_failed' : 'create_failed');
     if (malformed) expect(current?.resourceSummary).toMatchObject({ hostIds: resources.hostIds, creationAttempted: true, executionContext: binding });
-    else expect(current?.resourceSummary).toBeNull();
+    else {
+      expect(current?.resourceSummary?.hostIds ?? null).toBeNull();
+      expect(current?.resourceSummary?.creationAttempted).toBe(false);
+      expect(current?.resourceSummary?.executionContext).toMatchObject(binding);
+    }
     expect((await f.repository.listBillingLedgerResources()).every(row => Boolean(row.releasedAt) === !malformed)).toBe(true);
     expect((await f.repository.listProvisionJobStepLogs(f.job.id)).some(log => log.stepName === FAILED_CREATE_CLEANUP_PROOF_STEP)).toBe(!malformed);
   });
@@ -153,6 +189,22 @@ describe('range worker durable cost safety', () => {
       compiledProvisionSpec:{topology:{},networkZones:[],hosts:[]}, compiledSpec:{resources:[],topology:{}} };
     await expect((f.worker as any).processRangeInstanceUpdateJob({ instance, job:{...claimed,topologySnapshot:snapshot}, runtimeConfig:account,accountContext:account,reportStep:async()=>{},onApplyStart:()=>{} })).rejects.toThrow('不能');
     expect(f.provisioner.create).not.toHaveBeenCalled();
+    expect(f.provisioner.destroy).not.toHaveBeenCalled();
+  });
+  it('keeps the original range running and records a pre-apply state recovery error without invoking cleanup', async () => {
+    const f = await fixture('destroy');
+    await f.repository.updateProvisionJob(f.job.id, { status: 'failed', finishedAt: new Date() });
+    const before = await f.repository.updateRangeInstance(f.instance.id, { status: 'running', expiresAt: new Date(Date.now() + 60 * 60_000) });
+    const snapshot: any = { operation: 'update', draftRevision: 1, templateModulePath: 'fixture/range', topologyGraph: before.runtimeTopologyGraph,
+      topologySpec: { vpcCidr: '10.0.0.0/16', networkZones: [], hosts: [], publicEntry: {} }, scenarioTemplateSpec: { metadata: {}, topology: {}, networkZones: [], hosts: [] },
+      compiledProvisionSpec: { topology: {}, networkZones: [], hosts: [] }, compiledSpec: { topology: {}, resources: [] } };
+    snapshot.changeApproval = buildRangeChangeApproval(before, snapshot);
+    const update = await f.repository.createProvisionJob({ rangeInstanceId: before.id, jobType: 'update', triggeredBy: 'alice', topologySnapshot: snapshot });
+    await f.repository.updateRangeInstance(before.id, { lastJobId: update.id });
+    f.provisioner.create.mockRejectedValueOnce(new Error('Original host state is missing; recovery is required without recreating the range'));
+    await f.worker.process(update.id);
+    expect(await f.repository.getRangeInstanceById(before.id)).toMatchObject({ status: 'running', resourceSummary: { hostIds: resources.hostIds }, errorSummary: expect.stringContaining('Original host state is missing') });
+    expect(await f.repository.getProvisionJobById(update.id)).toMatchObject({ status: 'failed' });
     expect(f.provisioner.destroy).not.toHaveBeenCalled();
   });
 

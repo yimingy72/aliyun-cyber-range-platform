@@ -145,7 +145,7 @@ export function SettingsScreen({ apiBaseUrl = 'http://localhost:3001' }: { apiBa
   const isBusy = isSaving || isDeleting || current?.isSwitching === true;
 
   return <div className="admin-screen"><section className="admin-workbench-surface">
-    <AdminPageHeader title="基础配置" />
+    <AdminPageHeader title="基础配置" action={<Button asChild variant="outline"><a href="/admin/resource-alerts">资源巡检与告警</a></Button>} />
     <div className="mt-4 flex flex-wrap items-center justify-between gap-3">
       <Tabs value={provider} onValueChange={changeProvider}><TabsList aria-label="云厂商" variant="line"><TabsTrigger disabled={isBusy} value="alibaba_cloud">阿里云</TabsTrigger><TabsTrigger disabled={isBusy} value="tencent_cloud">腾讯云</TabsTrigger></TabsList></Tabs>
       <div className="flex flex-wrap items-center gap-2">

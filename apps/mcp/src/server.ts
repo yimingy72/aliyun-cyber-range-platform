@@ -11,8 +11,9 @@ import type { ToolContext, ToolDefinition } from './tools/tool-context';
 import { resultOutputSchema } from './tools/output-schemas';
 import { sanitizeToolError, toToolResult } from './tools/tool-result';
 import { billingTools } from './tools/billing';
+import { resourceAlertTools } from './tools/resource-alerts';
 
-const tools = [...imageTools, ...singleInstanceTools, ...templateTools, ...rangeTools, ...adminUserTools, ...billingTools, ...settingsTools, ...jobTools];
+const tools = [...imageTools, ...singleInstanceTools, ...templateTools, ...rangeTools, ...adminUserTools, ...billingTools, ...settingsTools, ...jobTools, ...resourceAlertTools];
 const genericOutputSchema = resultOutputSchema();
 
 export function createToolRegistry(client: PlatformApiClientLike) {

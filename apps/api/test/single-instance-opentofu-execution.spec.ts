@@ -8,10 +8,15 @@ import { SingleInstanceBatchExecutionService } from '../src/admin/single-instanc
 import { SingleInstanceOpenTofuExecutionService, SingleInstanceOpenTofuLeaseLostError } from '../src/admin/single-instance-opentofu-execution.service';
 import * as tencentRpc from '../src/admin/tencent-cloud-client';
 import { SystemConfigService } from '../src/admin/system-config.service';
+import * as deadlines from '../src/provisioning/cloud-release-deadlines';
 
 describe('single-instance OpenTofu batch execution', () => {
   let root: string;
-  beforeEach(async () => { root = await fs.mkdtemp(path.join(os.tmpdir(), 'single-tofu-test-')); });
+  beforeEach(async () => {
+    root = await fs.mkdtemp(path.join(os.tmpdir(), 'single-tofu-test-'));
+    jest.spyOn(deadlines, 'verifyCloudReleaseDeadlines').mockImplementation(async input => Object.fromEntries(
+      Object.entries(input.deadlines).map(([key, record]) => [key, { ...record, status: 'unverified' as const, reason: 'native_timer_check_failed' }])));
+  });
   afterEach(async () => { jest.restoreAllMocks(); await fs.rm(root, { recursive: true, force: true }); });
 
   function fixture(count = 2, tencent = false) {
@@ -25,7 +30,7 @@ describe('single-instance OpenTofu batch execution', () => {
       const job = { id: `job-${index}`, rangeInstanceId: `member-${index}`, jobType: 'create', status: 'running', startedAt: new Date(), createdAt: new Date() } as ProvisionJobRecord;
       jobs.set(job.id, job);
       instances.push({ id: job.rangeInstanceId, name: `instance-${index}`, ownerUserId: 'alice', instanceMode: 'single', status: 'creating', cloudProvider: 'alibaba_cloud',
-        singleInstanceBatchId: 'batch-a', lastJobId: job.id, createdAt: new Date(), resourceSummary: null,
+        singleInstanceBatchId: 'batch-a', lastJobId: job.id, createdAt: new Date(), expiresAt: new Date(Date.now()+3600_000), resourceSummary: null,
         runtimeTopologyGraph: { nodes: [{ id: `host-${index}`, data: { privateIp: 'static-placeholder' } }] },
         runtimeCredentials: { [`host-${index}`]: { username: 'root', password: `test-Passw0rd-${index}!` } },
         singleInstanceConfig: { executionBackend: 'opentofu', cloudAccountContextId: 'ctx-a', cloudAccountUid: 'uid-a', regionId: 'cn-hangzhou', zoneId: 'cn-hangzhou-h',
@@ -242,8 +247,9 @@ describe('single-instance OpenTofu batch execution', () => {
   it.each([true,false])('recovers an untracked Tencent system disk only with CBS attachment and creation-window proof (%s)', async diskOwned => {
     const test = fixture(1,true);
     jest.spyOn(tencentRpc,'requestTencentCloud').mockImplementation(async input => input.action === 'DescribeImages' ? { RequestId: 'fixture-image-request', TotalCount: 1, ImageSet: [{ ImageId: 'img-fixture', ImageState: 'NORMAL', ImageType: 'PRIVATE_IMAGE', Architecture: 'x86_64', ImageSize: 20, SnapshotSet: [] }] } as any : { RequestId: 'fixture-disk-request', TotalCount: 1, DiskSet: [{ DiskId: 'disk-fixture', InstanceId: diskOwned ? 'ins-member1' : 'ins-foreign', DiskUsage: 'SYSTEM_DISK', Shareable: false, DiskChargeType: 'POSTPAID_BY_HOUR', DeleteWithInstance: true, CreateTime: new Date().toISOString() }] } as any);
-    test.onApply = async () => {
+    test.onApply = async options => {
       await test.createMember('member-1');
+      options.onResourceApplied?.({ address: 'module.single_batch.tencentcloud_instance.members["member-1"]', resourceType: 'tencentcloud_instance', action: 'create', resourceId: 'ins-member1' });
       test.cloud.get('ins-member1').systemDiskId = 'disk-fixture';
       await fs.rm(path.join(test.workspace,'terraform.tfstate'));
       throw new Error('response accepted but state lost');
@@ -273,6 +279,9 @@ describe('single-instance OpenTofu batch execution', () => {
   it('rejects expired Tencent cloud termination and foreign provider state before applying', async () => {
     const test = fixture(1,true);
     test.instances[0].singleInstanceConfig!.autoReleaseTime = new Date(Date.now()+60_000).toISOString();
+    test.instances[0].singleInstanceConfig!.cloudReleaseDeadline = { ...deadlines.createHostCloudReleaseDeadline({ provider: 'tencent_cloud',
+      platformExpiresAt: test.instances[0].expiresAt!.toISOString(), creationPhaseStartedAt: new Date().toISOString(), sourceProvisionJobId: 'job-1' }),
+      cloudReleaseAt: test.instances[0].singleInstanceConfig!.autoReleaseTime! };
     await test.service.executeCreateBatch(test.items,test.lease);
     expect(test.runner.apply).not.toHaveBeenCalled();
     expect(test.native.executeCreateBatch).not.toHaveBeenCalled();
@@ -328,7 +337,8 @@ describe('single-instance OpenTofu batch execution', () => {
       if (mismatch === 'duplicate-event') options.onResourceApplied({ ...progressEvent('member-1'), resourceId: 'i-other' });
       await new Promise(resolve => setTimeout(resolve, 300));
       expect(test.instances[0].status).toBe('creating');
-      expect(test.instances[0].resourceSummary).toBeNull();
+      expect(test.instances[0].resourceSummary?.hostIds).toBeUndefined();
+      expect(test.instances[0].resourceSummary?.cloudReleaseDeadlines?.['host-1'].status).toBe('unverified');
       expect(test.jobs.get('job-1')?.status).toBe('running');
       expect(test.ledger).toHaveLength(0);
       test.cloud.set('i-member-1', original);
@@ -555,8 +565,9 @@ describe('single-instance OpenTofu batch execution', () => {
 
   it('cleans proven untracked resources through explicit emergency-api and masks every batch password and account key', async () => {
     const test = fixture();
-    test.onApply = async () => {
+    test.onApply = async options => {
       await test.createMember('member-1'); await test.createMember('member-2');
+      options.onResourceApplied?.(progressEvent('member-1')); options.onResourceApplied?.(progressEvent('member-2'));
       await fs.rm(path.join(test.workspace, 'terraform.tfstate')); test.stateMembers.clear();
       throw new Error(`failure test-Passw0rd-1! test-Passw0rd-2! test-access-key test-secret-key`);
     };
@@ -603,7 +614,7 @@ describe('single-instance OpenTofu batch execution', () => {
     const manifest = JSON.parse(await fs.readFile(path.join(test.workspace, 'single-batch-manifest.json'), 'utf8'));
     expect(manifest.pending.recoveryIds).toEqual(['member-1', 'member-2', 'member-3']);
     expect(test.instances.map(instance => instance.status)).toEqual(['running', 'create_failed', 'destroy_failed']);
-    expect(test.instances[2].resourceSummary?.hostIds).toEqual({ 'host-3': 'i-member-3' });
+    expect(test.instances[2].resourceSummary?.hostIds).toBeUndefined();
   });
 
   it('refuses unknown or cross-owner cloud resources without emergency deletion', async () => {
@@ -611,6 +622,28 @@ describe('single-instance OpenTofu batch execution', () => {
     test.onApply = async () => { await test.createMember('member-1'); test.cloud.get('i-member-1').tags.PlatformUserId = 'bob'; await fs.rm(path.join(test.workspace, 'terraform.tfstate')); test.stateMembers.clear(); throw new Error('state lost'); };
     await test.service.executeCreateBatch(test.items, test.lease);
     expect(test.native.deleteOwnedUntrackedOpenTofuInstances).not.toHaveBeenCalled(); expect(test.instances[0].status).toBe('destroy_failed'); expect(test.cloud.size).toBe(1);
+  });
+  it.each([false, true])('never adopts copied Alibaba tags as creation evidence when original state is missing: known original=%s', async knownOriginal => {
+    const test = fixture(1);
+    if (knownOriginal) await test.service.executeCreateBatch(test.items, test.lease);
+    const run = async () => {
+      await test.createMember('member-1', { nativeId: 'i-forged' });
+      await fs.rm(path.join(test.workspace, 'terraform.tfstate')); test.stateMembers.clear();
+      throw new Error('unknown creation result');
+    };
+    if (knownOriginal) {
+      await run().catch(() => {});
+      await test.service.executeDestroyBatch([test.queueDestroy(0)], test.lease);
+    } else {
+      test.onApply = run;
+      await test.service.executeCreateBatch(test.items, test.lease);
+    }
+    expect(test.instances[0].status).toBe('destroy_failed');
+    expect(test.native.deleteOwnedUntrackedOpenTofuInstances).not.toHaveBeenCalled();
+    expect(test.cloud.has('i-forged')).toBe(true);
+    expect(test.ledger.some(row => row.cloudResourceId === 'i-forged')).toBe(false);
+    const manifest = JSON.parse(await fs.readFile(path.join(test.workspace, 'single-batch-manifest.json'), 'utf8'));
+    expect(Object.values(manifest.pending?.knownIds ?? {}).flat()).not.toContain('i-forged');
   });
 
   it.each(['owner', 'uid', 'region', 'profile'])('rejects mixed frozen %s membership before CLI or cloud mutation', async field => {
@@ -638,14 +671,15 @@ describe('single-instance OpenTofu batch execution', () => {
     expect(test.runner.apply).toHaveBeenCalledTimes(1); expect(test.instances[0].status).toBe('destroy_failed');
   });
 
-  it('recovers an interrupted no-state apply without ever performing a second creation apply', async () => {
+  it('keeps an interrupted no-state apply pending without inventing deletion authority from tags', async () => {
     const test = fixture(1);
     test.onApply = async () => { await test.createMember('member-1'); await fs.rm(path.join(test.workspace, 'terraform.tfstate')); test.stateMembers.clear(); test.controller.abort(); };
     await expect(test.service.executeCreateBatch(test.items, test.lease)).rejects.toBeInstanceOf(SingleInstanceOpenTofuLeaseLostError);
     const retry = test.queueDestroy(0); retry.job.jobType = 'retry'; retry.instance.status = 'creating';
     await test.service.executeCreateBatch([retry], { ...test.lease, signal: new AbortController().signal });
-    expect(test.runner.apply).toHaveBeenCalledTimes(1); expect(test.cloud.size).toBe(0); expect(retry.instance.status).toBe('create_failed');
-    await expect(fs.stat(path.join(test.workspace, '.single-batch-apply-started'))).rejects.toMatchObject({ code: 'ENOENT' });
+    expect(test.runner.apply).toHaveBeenCalledTimes(1); expect(test.cloud.size).toBe(1); expect(retry.instance.status).toBe('destroy_failed');
+    expect(test.native.deleteOwnedUntrackedOpenTofuInstances).not.toHaveBeenCalled();
+    await expect(fs.stat(path.join(test.workspace, '.single-batch-apply-started'))).resolves.toBeDefined();
   });
 
   it('retains an unknown create outcome across empty queries, worker restart and explicit retry', async () => {
@@ -667,16 +701,17 @@ describe('single-instance OpenTofu batch execution', () => {
     expect(retry.instance.status).toBe('destroy_failed');
     test.native.readOpenTofuInstancesByTag.mockImplementation(async () => [...test.cloud.values()]);
     await test.service.executeDestroyBatch([test.queueDestroy(0)], test.lease);
-    expect(test.instances[0].status).toBe('destroyed');
-    expect(test.cloud.size).toBe(0);
+    expect(test.instances[0].status).toBe('destroy_failed');
+    expect(test.cloud.size).toBe(1);
+    expect(test.native.deleteOwnedUntrackedOpenTofuInstances).not.toHaveBeenCalled();
     expect(test.runner.apply).toHaveBeenCalledTimes(1);
   });
 
   it('uses the database create intent to block a second apply after the entire workspace is lost', async () => {
     const test = fixture(1);
-    test.onApply = async () => {
+    test.onApply = async options => {
       expect(test.instances[0].singleInstanceConfig?.opentofuCreateJobId).toBe('job-1');
-      await test.createMember('member-1'); test.stateMembers.clear();
+      await test.createMember('member-1'); options.onResourceApplied?.(progressEvent('member-1')); test.stateMembers.clear();
       await fs.rm(test.workspace, { recursive: true }); throw new Error('all local state and markers lost');
     };
     test.native.readOpenTofuInstancesByTag.mockResolvedValue([]);
@@ -749,7 +784,7 @@ describe('single-instance OpenTofu batch execution', () => {
     await expect(test.service.executeCreateBatch(test.items, test.lease)).rejects.toBeInstanceOf(SingleInstanceOpenTofuLeaseLostError);
     const retry = test.queueDestroy(0); retry.job.jobType = 'retry'; retry.instance.status = 'creating';
     await test.service.executeCreateBatch([retry], { ...test.lease, signal: new AbortController().signal });
-    expect(test.runner.apply).toHaveBeenCalledTimes(1); expect([...test.cloud.keys()]).toEqual(['i-member-2']);
+    expect(test.runner.apply).toHaveBeenCalledTimes(1); expect([...test.cloud.keys()]).toEqual(['i-member-1', 'i-member-2']);
     await expect(fs.stat(path.join(test.workspace, '.single-batch-apply-started'))).resolves.toBeDefined();
     const manifest = JSON.parse(await fs.readFile(path.join(test.workspace, 'single-batch-manifest.json'), 'utf8'));
     expect(manifest.pending.ids).toEqual(['member-1', 'member-2']);
@@ -832,6 +867,8 @@ describe('single-instance OpenTofu batch execution', () => {
 
   it('fences every emergency API retry after a lease loss', async () => {
     const test = fixture(1); const item = test.items[0];
+    item.instance.singleInstanceConfig!.opentofuCreateJobId = item.job.id;
+    item.instance.resourceSummary = { mode: 'opentofu', hostIds: { 'host-1': 'i-owned' }, executionContext: { provider: 'alibaba_cloud', cloudAccountContextId: 'ctx-a', cloudAccountUid: 'uid-a', regionId: 'cn-hangzhou', zoneId: 'cn-hangzhou-h' } };
     const native = new SingleInstanceBatchExecutionService(test.repository as unknown as AdminRepository,
       { getAccountContextById: async () => test.account } as unknown as SystemConfigService);
     let deleted = 0;
@@ -862,5 +899,142 @@ describe('single-instance OpenTofu batch execution', () => {
       expect(fetchMock).toHaveBeenCalledTimes(1);
     } finally { fetchMock.mockRestore(); }
   });
+  it.each([false, true])('freezes a new host deadline after init and persists it before apply (Tencent=%s)', async tencent => {
+    const test = fixture(1, tencent); let initFinishedAt = 0;
+    const init = test.runner.init.getMockImplementation()!;
+    test.runner.init.mockImplementation(async options => { const result = await init(options); initFinishedAt = Date.now(); return result; });
+    test.onApply = async () => {
+      const config = test.instances[0].singleInstanceConfig!;
+      const record = config.cloudReleaseDeadline!;
+      expect(Date.parse(record.creationPhaseStartedAt)).toBeGreaterThanOrEqual(initFinishedAt);
+      expect(record.platformExpiresAt).toBe(test.instances[0].expiresAt!.toISOString());
+      expect(config.autoReleaseTime).toBe(record.cloudReleaseAt);
+      const manifest = JSON.parse(await fs.readFile(path.join(test.workspace, 'single-batch-manifest.json'), 'utf8'));
+      expect(manifest.members['member-1'].cloudReleaseDeadline).toEqual(record);
+      expect(manifest.members['member-1'].definition.auto_release_time).toBe(record.cloudReleaseAt);
+      const vars = JSON.parse(await fs.readFile(path.join(test.workspace, 'terraform.tfvars.json'), 'utf8'));
+      expect(vars.members['member-1'][tencent ? 'action_timer_terminate_at' : 'auto_release_time']).toBe(record.cloudReleaseAt);
+      expect(test.stepLogs.some(log => log.stepName === 'host_cloud_release_deadlines')).toBe(true);
+      await test.createMember('member-1');
+    };
+    await test.service.executeCreateBatch(test.items, test.lease);
+    expect(test.instances[0].status).toBe('running'); expect(test.instances[0].resourceSummary?.cloudReleaseDeadlines?.['host-1'].status).toBe('unverified');
+    if (tencent) expect(Date.parse(test.instances[0].singleInstanceConfig!.autoReleaseTime!)).toBe(Math.floor((test.instances[0].expiresAt!.getTime()+300000)/1000)*1000);
+  });
+
+  it('restores a manifest deadline after its pre-apply database commit was interrupted without calculating a new C', async () => {
+    const test = fixture(1);
+    test.repository.commitSingleInstanceClaim.mockResolvedValueOnce(false);
+    await expect(test.service.executeCreateBatch(test.items, test.lease)).rejects.toBeInstanceOf(SingleInstanceOpenTofuLeaseLostError);
+    expect(test.runner.apply).not.toHaveBeenCalled();
+    const manifest = JSON.parse(await fs.readFile(path.join(test.workspace, 'single-batch-manifest.json'), 'utf8'));
+    const original = manifest.members['member-1'].cloudReleaseDeadline;
+    expect(original.cloudReleaseAt).toBeTruthy(); expect(test.instances[0].singleInstanceConfig!.cloudReleaseDeadline).toBeUndefined();
+    await test.service.executeCreateBatch(test.items, test.lease);
+    expect(test.instances[0].singleInstanceConfig!.cloudReleaseDeadline).toMatchObject({ creationPhaseStartedAt: original.creationPhaseStartedAt, cloudReleaseAt: original.cloudReleaseAt });
+    expect(test.runner.apply).toHaveBeenCalledTimes(1); expect(test.cloud.size).toBe(1);
+  });
+
+  it.each([true, false, null])('reports fallback verified only with native readback and exact system disk deletion policy (%s)', async deleteWithInstance => {
+    const test = fixture(1);
+    (deadlines.verifyCloudReleaseDeadlines as jest.Mock).mockImplementation(async input => Object.fromEntries(
+      Object.entries(input.deadlines).map(([key, value]) => [key, { ...(value as object), status: 'verified', verifiedAt: new Date().toISOString() }])));
+    test.native.captureInstanceDisks.mockImplementation(async (_item, _account, summary) => ({ ...summary,
+      diskOwnershipProofs: { 'd-member-1': { instanceId: 'i-member-1', method: 'persisted', deleteWithInstance } } }));
+    await test.service.executeCreateBatch(test.items, test.lease);
+    const record = test.instances[0].resourceSummary!.cloudReleaseDeadlines!['host-1'];
+    expect(record.status).toBe(deleteWithInstance === true ? 'verified' : 'unverified');
+    if (deleteWithInstance !== true) expect(record.reason).toBe('system_disk_release_unverified');
+    expect(test.instances[0].status).toBe('running'); expect(test.runner.apply).toHaveBeenCalledTimes(1); expect(test.cloud.size).toBe(1);
+    expect(test.native.deleteOwnedUntrackedOpenTofuInstances).not.toHaveBeenCalled();
+  });
+
+  it('checks fifty native deadlines as a batch and keeps each member source separate', async () => {
+    const test = fixture(50);
+    await test.service.executeCreateBatch(test.items, test.lease);
+    expect(deadlines.verifyCloudReleaseDeadlines).toHaveBeenCalledTimes(1);
+    const request = (deadlines.verifyCloudReleaseDeadlines as jest.Mock).mock.calls[0][0];
+    expect(Object.keys(request.hostIds)).toHaveLength(50); expect(Object.keys(request.deadlines)).toHaveLength(50);
+    expect(test.instances.every(instance => instance.status === 'running')).toBe(true);
+    expect(new Set(test.instances.map(instance => instance.singleInstanceConfig!.cloudReleaseDeadline!.sourceProvisionJobId)).size).toBe(50);
+    expect(test.runner.apply).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not create a replacement when refresh proposes recreating a tracked host', async () => {
+    const test = fixture(1); await test.service.executeCreateBatch(test.items, test.lease);
+    const original = structuredClone(test.instances[0].singleInstanceConfig!.cloudReleaseDeadline!);
+    const retry = test.queueDestroy(0); retry.job.jobType = 'retry'; retry.instance.status = 'creating';
+    await test.service.executeCreateBatch([retry], test.lease);
+    expect(test.runner.apply).toHaveBeenCalledTimes(1); expect(test.cloud.size).toBe(1);
+    expect(test.instances[0].singleInstanceConfig!.cloudReleaseDeadline).toMatchObject({ creationPhaseStartedAt: original.creationPhaseStartedAt, cloudReleaseAt: original.cloudReleaseAt });
+  });
+
+  it('bases C on the host phase after initialization queue delay rather than intake', async () => {
+    const started = Date.parse('2026-10-13T01:00:17Z');
+    jest.useFakeTimers({now: started, doNotFake:['setTimeout','clearTimeout','setInterval','clearInterval','setImmediate','clearImmediate','nextTick','performance','queueMicrotask']});
+    try {
+      const test=fixture(1); test.instances[0].expiresAt=new Date(started+10*60000);
+      const init=test.runner.init.getMockImplementation()!;
+      test.runner.init.mockImplementation(async options=>{const result=await init(options);jest.setSystemTime(started+5*60000);return result;});
+      await test.service.executeCreateBatch(test.items,test.lease);
+      const record=test.instances[0].singleInstanceConfig!.cloudReleaseDeadline!;
+      expect(record.creationPhaseStartedAt).toBe('2026-10-13T01:05:17.000Z');
+      expect(record.cloudReleaseAt).toBe('2026-10-13T01:38:00Z');
+      expect(record.platformExpiresAt).toBe('2026-10-13T01:10:17.000Z');
+      expect(test.runner.apply).toHaveBeenCalledTimes(1);
+    } finally {jest.useRealTimers();}
+  });
+
+  it('refuses a frozen deadline that becomes too close while planning and refuses to renew it on retry', async () => {
+    const started = Date.parse('2026-10-13T01:00:00Z');
+    jest.useFakeTimers({now: started, doNotFake:['setTimeout','clearTimeout','setInterval','clearInterval','setImmediate','clearImmediate','nextTick','performance','queueMicrotask']});
+    try {
+      const test=fixture(1); const plan=test.runner.plan.getMockImplementation()!;
+      test.runner.plan.mockImplementation(async options=>{const result=await plan(options);jest.setSystemTime(started+36*60000);return result;});
+      await test.service.executeCreateBatch(test.items,test.lease);
+      const record=structuredClone(test.instances[0].singleInstanceConfig!.cloudReleaseDeadline!);
+      expect(record.cloudReleaseAt).toBe('2026-10-13T02:05:00Z'); expect(test.runner.apply).not.toHaveBeenCalled();
+      const retry=test.queueDestroy(0);retry.job.jobType='retry';retry.instance.status='creating';
+      await test.service.executeCreateBatch([retry],test.lease);
+      expect(test.instances[0].singleInstanceConfig!.cloudReleaseDeadline).toEqual(record);
+      expect(test.runner.apply).not.toHaveBeenCalled(); expect(test.cloud.size).toBe(0);
+    } finally {jest.useRealTimers();}
+  });
+
+  it('retains a legacy native timer without installing or cancelling it during a retry of an existing host', async () => {
+    const test=fixture(1);await test.service.executeCreateBatch(test.items,test.lease);
+    const absolute=test.instances[0].singleInstanceConfig!.autoReleaseTime;
+    delete test.instances[0].singleInstanceConfig!.cloudReleaseDeadline;
+    delete test.instances[0].resourceSummary!.cloudReleaseDeadlines;
+    const manifestFile=path.join(test.workspace,'single-batch-manifest.json');
+    const manifest=JSON.parse(await fs.readFile(manifestFile,'utf8'));delete manifest.members['member-1'].cloudReleaseDeadline;
+    await fs.writeFile(manifestFile,JSON.stringify(manifest));
+    const retry=test.queueDestroy(0);retry.job.jobType='retry';retry.instance.status='creating';
+    await test.service.executeCreateBatch([retry],test.lease);
+    expect(test.instances[0].singleInstanceConfig!.autoReleaseTime).toBe(absolute);
+    expect(test.instances[0].singleInstanceConfig!.cloudReleaseDeadline).toBeUndefined();
+    expect(test.runner.apply).toHaveBeenCalledTimes(1);expect(test.cloud.size).toBe(1);
+  });
+
+  it('does not reuse verified status or an old native ID when a cleaned member is explicitly retried', async () => {
+    const test=fixture(1);
+    (deadlines.verifyCloudReleaseDeadlines as jest.Mock).mockImplementation(async input=>Object.fromEntries(Object.entries(input.deadlines).map(([key,record])=>[key,{...(record as object),status:'verified',instanceId:input.hostIds[key],verifiedAt:new Date().toISOString()}])));
+    test.native.captureInstanceDisks.mockImplementation(async(_item,_account,summary)=>({...summary,diskOwnershipProofs:{[Object.values(summary.systemDiskIds!)[0] as string]:{instanceId:Object.values(summary.hostIds!)[0],method:'persisted',deleteWithInstance:true}}}));
+    await test.service.executeCreateBatch(test.items,test.lease);
+    const original=structuredClone(test.instances[0].singleInstanceConfig!.cloudReleaseDeadline!);
+    expect(original.status).toBe('verified');
+    await test.service.executeDestroyBatch([test.queueDestroy(0)],test.lease);
+    await fs.rm(test.workspace,{recursive:true,force:true});
+    const retry=test.queueDestroy(0);retry.job.jobType='retry';retry.instance.status='creating';
+    test.onApply=async()=>{
+      const record=test.instances[0].singleInstanceConfig!.cloudReleaseDeadline!;
+      expect(record.status).toBe('unverified');expect(record.instanceId).toBeUndefined();expect(record.verifiedAt).toBeUndefined();
+      expect(record.cloudReleaseAt).toBe(original.cloudReleaseAt);expect(record.creationPhaseStartedAt).toBe(original.creationPhaseStartedAt);
+      await test.createMember('member-1',{nativeId:'i-explicitretry',diskId:'d-explicitretry'});
+    };
+    await test.service.executeCreateBatch([retry],test.lease);
+    expect(test.instances[0].status).toBe('running');expect(test.cloud.has('i-explicitretry')).toBe(true);
+  });
+
 });
 function result() { return { command: 'tofu', args: [], exitCode: 0, stdout: '', stderr: '' }; }

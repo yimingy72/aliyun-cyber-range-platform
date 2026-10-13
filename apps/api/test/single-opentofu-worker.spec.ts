@@ -33,6 +33,17 @@ async function fixture(quantity = 2) {
 }
 
 describe('OpenTofu single-instance worker integration', () => {
+  it('does not absorb a confirmed native recovery into another member normal destroy batch', async () => {
+    const f = await fixture(2); await f.worker.process(f.items[0].job.id);
+    const normal = await f.repository.createProvisionJob({ rangeInstanceId: f.items[0].instance.id, jobType: 'destroy', triggeredBy: 'owner-a' });
+    const recovery = await f.repository.createProvisionJob({ rangeInstanceId: f.items[1].instance.id, jobType: 'destroy', triggeredBy: 'resource-alert:admin',
+      topologySnapshot: { resourceAlertPlan: { mode: 'confirmed_inventory' } } as any });
+    for (const [item, job] of [[f.items[0], normal], [f.items[1], recovery]] as const)
+      await f.repository.updateRangeInstance(item.instance.id, { status: 'pending_destroy', lastJobId: job.id });
+    await f.worker.process(normal.id);
+    expect(f.tofu.executeDestroyBatch.mock.calls[0][0].map(item => item.job.id)).toEqual([normal.id]);
+    expect((await f.repository.getProvisionJobById(recovery.id))?.status).toBe('pending');
+  });
   it('recovers all 50 members including early-running members without claiming other operations', async () => {
     const f = await fixture(50);
     for (const item of f.items.slice(0, 20)) await f.repository.updateRangeInstance(item.instance.id, { status: 'running' });

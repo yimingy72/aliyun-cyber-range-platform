@@ -184,7 +184,7 @@ describe('legacy native batches: real ECS response contract, two platform users 
     await f.native.refreshSingleInstanceAccessEntry({ instance, job: claimed });
     expect((await f.repo.getRangeInstanceById(instance!.id))?.status).toBe('destroyed');
   });
-  it('recovers a reclaimed create by its frozen identity without replaying the old cloud request', async () => {
+  it('preserves a reclaimed create without an exact response receipt and never replays the old cloud request', async () => {
     const f = await fixture();
     const a = await f.launch(alice);
     const instance = a.instances[0];
@@ -213,9 +213,10 @@ describe('legacy native batches: real ECS response contract, two platform users 
     await f.native.executeCreateBatch([{ instance:await f.repo.getRangeInstanceById(instance.id), job: reclaimed }]);
     expect(f.cloud.size).toBe(1);
     expect(f.calls.filter(call => call.action === 'RunInstances')).toHaveLength(1);
-    expect((await f.repo.getProvisionJobById(job!.id))?.status).toBe('succeeded');
+    expect((await f.repo.getProvisionJobById(job!.id))?.status).toBe('failed');
+    expect((await f.repo.getRangeInstanceById(instance.id))?.status).toBe('destroy_failed');
   });
-  it('recovers a late tagged ECS after an unknown create response instead of treating the first empty query as cleanup proof',async()=>{
+  it('keeps a late tagged ECS after an unknown response pending until exact creation evidence is recovered',async()=>{
     const f=await fixture();const a=await f.launch(alice);const instance=a.instances[0];const job=await f.repo.claimProvisionJob(instance.lastJobId!,new Date());
     const base=f.native.performAliyunRpcRequest;let missing=true;let firstTag=true;
     f.native.performAliyunRpcRequest=async(input:any)=>{
@@ -225,8 +226,8 @@ describe('legacy native batches: real ECS response contract, two platform users 
     };
     await f.native.executeCreateBatch([{instance,job}]);
     expect((await f.repo.getRangeInstanceById(instance.id))?.errorSummary).not.toMatch(/unverified|malformed|incomplete/);
-    expect(f.cloud.size).toBe(0);expect(f.calls.some(call=>call.action==='DeleteInstances')).toBe(true);
-    expect((await f.repo.getRangeInstanceById(instance.id))?.status).toBe('create_failed');
+    expect(f.cloud.size).toBe(1);expect(f.calls.some(call=>call.action==='DeleteInstances')).toBe(false);
+    expect((await f.repo.getRangeInstanceById(instance.id))?.status).toBe('destroy_failed');
   });
   it('retains an unknown accepted request when the tagged resource stays invisible throughout cleanup', async () => {
     const f = await fixture(); const a = await f.launch(alice); const instance = a.instances[0];

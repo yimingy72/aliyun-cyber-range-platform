@@ -43,6 +43,7 @@ const parameterTableFiles = [
   'references/products/user-management.md',
   'references/products/billing.md',
   'references/products/settings.md',
+  'references/products/resource-alerts.md',
 ].map((relativePath) => resolve(skillRoot, relativePath));
 
 const skillFiles = [
@@ -112,7 +113,7 @@ describe('Skill MCP parameter contract', () => {
     for (const filePath of skillFiles) {
       const content = readFileSync(filePath, 'utf8');
       for (const match of content.matchAll(
-        /`((?:platform|image|billing|range|single|admin|cloud|provision)_[a-z0-9_]+)`/g,
+        /`((?:platform|image|billing|range|single|admin|cloud|provision|resource)_[a-z0-9_]+)`/g,
       )) {
         const toolName = match[1]!;
         expect(registeredToolNames, `${toolName} in ${filePath}`).toContain(toolName);

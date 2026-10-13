@@ -59,7 +59,7 @@ export async function readAttachedDiskInventory(input: { rpc: DiskRpc; instanceI
     const known = (disk.Type === 'system' ? input.knownSystemDiskIds : input.knownDataDiskIds)?.includes(disk.DiskId);
     if (!conflict && (tagged || known)) {
       (disk.Type === 'system' ? result.systemDiskIds : result.dataDiskIds).push(disk.DiskId);
-      result.proofs[disk.DiskId] = { instanceId: input.instanceId, method: known ? 'persisted' : 'tags' };
+      result.proofs[disk.DiskId] = { instanceId: input.instanceId, method: known ? 'persisted' : 'tags', deleteWithInstance: disk.DeleteWithInstance ?? null };
     } else result.unverifiedDisks.push({ id: disk.DiskId, deleteWithInstance: disk.DeleteWithInstance ?? null });
   }
   result.complete ||= result.systemDiskIds.length > 0;
@@ -76,7 +76,7 @@ export async function readAttachedDiskInventory(input: { rpc: DiskRpc; instanceI
         || Object.entries(input.optionalExpectedTags ?? {}).some(([key,value]) => tags[key] !== undefined && tags[key] !== value))
         throw new Error('Detached disk discovery returned an unproven resource');
       (disk.Type === 'system' ? result.systemDiskIds : result.dataDiskIds).push(disk.DiskId);
-      result.proofs[disk.DiskId] = { instanceId: disk.InstanceId ?? null, method: 'tags' };
+      result.proofs[disk.DiskId] = { instanceId: disk.InstanceId ?? null, method: 'tags', deleteWithInstance: disk.DeleteWithInstance ?? null };
     }
   }
   return result;
@@ -100,6 +100,10 @@ export async function findExistingInventoryDiskIds(rpc: DiskRpc, ids: string[]) 
 export function inventoryDiskIds(summary: RangeResourceSummary | null | undefined) {
   return [...new Set([...Object.values(summary?.systemDiskIds ?? {}), ...Object.values(summary?.dataDiskIds ?? {})])];
 }
+export function hasVerifiedSystemDiskReleasePolicy(summary: RangeResourceSummary | null | undefined, instanceId: string) {
+  const ids = [...new Set(Object.values(summary?.systemDiskIds ?? {}))].filter(id => summary?.diskOwnershipProofs?.[id]?.instanceId === instanceId);
+  return ids.length === 1 && summary?.diskOwnershipProofs?.[ids[0]]?.deleteWithInstance === true;
+}
 export function mergeDiskInventory(summary: RangeResourceSummary, hostKey: string, disks: AttachedDiskInventory, instanceId: string): RangeResourceSummary {
   const verified = new Set([...disks.systemDiskIds, ...disks.dataDiskIds]);
   return { ...summary, diskInventoryHostIds: { ...summary.diskInventoryHostIds, ...(disks.complete ? { [hostKey]: instanceId } : {}) }, diskOwnershipProofs: { ...summary.diskOwnershipProofs, ...disks.proofs },
@@ -111,4 +115,18 @@ export function assertDiskInventorySafe(inventory: AttachedDiskInventory, destro
   if (!inventory.complete) throw new Error('ECS disk inventory completeness is unverified; retain historical resource and billing evidence');
   if (inventory.unverifiedDisks.some(disk => !destroying || disk.deleteWithInstance !== false))
     throw new Error('Attached disk ownership is unverified; preserve resource inventory before billing or deleting the ECS');
+}
+export function verifyCloudReleaseSystemDiskPolicies(summary: RangeResourceSummary): RangeResourceSummary {
+  if (!summary.cloudReleaseDeadlines) return summary;
+  const deadlines = structuredClone(summary.cloudReleaseDeadlines);
+  for (const [key, record] of Object.entries(deadlines)) {
+    if (record.status !== 'verified') continue;
+    const id = summary.hostIds?.[key];
+    if (!id || record.instanceId !== id || !hasVerifiedSystemDiskReleasePolicy(summary, id)) {
+      record.status = 'unverified';
+      record.reason = 'system_disk_release_policy_unverified';
+      delete record.verifiedAt;
+    }
+  }
+  return { ...summary, cloudReleaseDeadlines: deadlines };
 }

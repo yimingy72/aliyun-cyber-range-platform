@@ -95,7 +95,7 @@ resource "tencentcloud_instance" "hosts" {
   lifecycle {
     # Private CVMs have no direct public IP or bandwidth. Tencent reads this
     # unused billing field back as empty; preserve that value during updates.
-    ignore_changes = [internet_charge_type]
+    ignore_changes = [internet_charge_type, action_timer_terminate_at]
   }
 }
 resource "tencentcloud_eni" "secondary" {

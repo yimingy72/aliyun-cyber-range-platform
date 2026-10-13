@@ -22,6 +22,15 @@ function repository() {
 }
 
 describe('controlled provisioning evidence', () => {
+  it('projects exact single-instance completion inventory while hiding raw provider output', () => {
+    const receipt = step('single_instance_creation_receipt', JSON.stringify(inventory));
+    const evidence = buildProvisionJobEvidence(job, [receipt, { ...receipt, cloudWorkspaceId: 'foreign' }], [], []);
+    expect(evidence.inventories).toHaveLength(1);
+    expect(evidence.inventories[0].resources.hostIds).toEqual({ win: 'i-win' });
+    expect(evidence.steps).toEqual([{ stepName: 'single_instance_creation_receipt', status: 'succeeded',
+      description: 'Persist exact provider creation identity', startedAt: now, finishedAt: now }]);
+    expect(JSON.stringify(evidence)).not.toContain('private');
+  });
   it('shows billing source repair as a fixed phase without disclosing its audit payload or foreign workspace', () => {
     const repair = step('platform_billing_origin_repair', JSON.stringify({ officialRowsFingerprint: 'private fingerprint', rawPayload: 'private bill' }));
     const evidence = buildProvisionJobEvidence(job, [repair, { ...repair, cloudWorkspaceId: 'foreign' }], [], []);

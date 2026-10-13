@@ -16,4 +16,8 @@ resource "alicloud_instance" "members" {
   auto_release_time          = each.value.auto_release_time == "" ? null : each.value.auto_release_time
   tags                       = each.value.tags
   volume_tags                = merge(each.value.tags, { PlatformResourceType = "disk" })
+
+  lifecycle {
+    ignore_changes = [auto_release_time]
+  }
 }

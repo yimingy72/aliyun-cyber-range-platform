@@ -44,6 +44,30 @@ import type {
 import type { SaveTencentCloudAccountInput, TencentCloudImagesInput, TencentCloudImagesPayload, TencentCloudRegionsInput, TencentCloudRegionsPayload } from './admin-types';
 import type { CloudWorkspaceView, DeleteCloudAccountResult, RangeInstanceChangePreview, RangeInstanceTemplateCopy, SaveCloudAccountInput } from './admin-types';
 import { readCloudWorkspaceSelection } from './cloud-workspace-selection';
+import type { ResourceAlert, ResourceAlertStatus, ResourcePatrol, ResourceReclaimPreview, ResourceReclaimResult } from '@aliyun-cyber-range/platform-api-client';
+
+export async function fetchResourcePatrol(apiBaseUrl: string, token: string) {
+  return readJson<ResourcePatrol>(await fetch(`${apiBaseUrl}/admin/resource-alerts/patrol`, { headers: createAdminHeaders(token) }));
+}
+export async function setResourcePatrolManager(apiBaseUrl: string, token: string, managerUserId: string) {
+  return readJson<ResourcePatrol>(await fetch(`${apiBaseUrl}/admin/resource-alerts/patrol`,
+    { method: 'POST', headers: createAdminHeaders(token), body: JSON.stringify({ managerUserId }) }));
+}
+export async function fetchResourceAlerts(apiBaseUrl: string, token: string, status?: ResourceAlertStatus) {
+  return readJson<ResourceAlert[]>(await fetch(`${apiBaseUrl}/admin/resource-alerts${status ? `?status=${encodeURIComponent(status)}` : ''}`, { headers: createAdminHeaders(token) }));
+}
+export async function previewResourceReclaim(apiBaseUrl: string, token: string, id: string) {
+  return readJson<ResourceReclaimPreview>(await fetch(`${apiBaseUrl}/admin/resource-alerts/${encodeURIComponent(id)}/preview`, { headers: createAdminHeaders(token) }));
+}
+export async function reclaimResourceAlert(apiBaseUrl: string, token: string, preview: ResourceReclaimPreview,
+  workspaceId: string, operation: { idempotencyKey: string; confirmationId?: string }) {
+  const response = await readJson<ResourceReclaimResult | { result: ResourceReclaimResult }>(await fetch(`${apiBaseUrl}/admin/resource-alerts/${encodeURIComponent(preview.alertId)}/reclaim`, {
+    method: 'POST', headers: { ...createAdminHeaders(token, workspaceId), 'x-idempotency-key': operation.idempotencyKey,
+      ...(operation.confirmationId ? { 'x-confirmation-id': operation.confirmationId } : {}) },
+    body: JSON.stringify({ planDigest: preview.planDigest }),
+  }));
+  return 'result' in response ? response.result : response;
+}
 
 export type { AdminProfile, AdminSessionPayload } from './admin-types';
 export async function fetchAuthenticatedAdminProfile(apiBaseUrl: string, token: string) {
