@@ -118,7 +118,7 @@ export class SingleInstanceNetworkService {
   async destroy(id: string, currentUser: SessionUserProfile, cleanupRunId?:string) {
     this.assertAdmin(currentUser);
     return this.adminRepository.withSingleInstanceControlLock(async () => {
-      const profile = await this.requireProfile(id);
+      let profile = await this.requireProfile(id);
       if(!cleanupRunId||profile.cleanupRunId!==cleanupRunId||profile.cleanupRegisteredByUserId!==currentUser.id) throw new ConflictException('Network cleanup requires its pre-registered run ID and registering administrator');
       if (!profile.managedByPlatform || !profile.cloudAccountContextId)
         throw new ConflictException('Legacy or unbound shared networks cannot be destroyed through this endpoint');
@@ -128,6 +128,10 @@ export class SingleInstanceNetworkService {
       const account = { ...sourceAccount, defaultZoneId: profile.zoneId };
       if (account.accountUid !== profile.cloudAccountUid || account.defaultRegion !== profile.regionId)
         throw new ConflictException('Network cloud source does not match its persisted identity');
+      if (profile.status === 'destroying' && (!profile.vpcId || !profile.securityGroupId || !profile.vswitchIds.length)) {
+        const recovered = await this.bootstrap.recoverDefaultProfile(profile, account);
+        profile = await this.adminRepository.upsertSingleInstanceNetworkProfile(recovered);
+      }
       const references = (await this.adminRepository.listRangeInstances()).filter(instance => instance.singleInstanceConfig?.networkProfileId === id || instance.resourceSummary?.vpcId === profile.vpcId || profile.vswitchIds.includes(instance.singleInstanceConfig?.assignedVswitchId ?? ''));
       if (references.some(instance => !['destroyed', 'create_failed'].includes(instance.status) || instance.status === 'create_failed' && Object.values(instance.resourceSummary?.hostIds ?? {}).length))
         throw new ConflictException('Default network is still referenced by an active or uncleared instance');

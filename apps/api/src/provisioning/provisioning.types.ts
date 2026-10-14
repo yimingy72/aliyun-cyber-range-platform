@@ -66,6 +66,7 @@ export type RangeProvisionCreateInput = {
   preserveWorkspaceState?: boolean;
   requirePersistedState?: boolean;
   onApplyStart?: () => Promise<void>;
+  onExecutionZoneSelected?: (zoneId: string) => Promise<void>;
   onHostCreationPhase?: (deadlines: Record<string, HostCloudReleaseDeadline>) => Promise<void>;
   onResourceCreated?: (event: RangeResourceCreatedEvent) => Promise<void>;
   runtimeConfig?: ResolvedProvisioningRuntimeConfig;
@@ -88,6 +89,7 @@ export type RangeProvisionCreateResult = {
 };
 
 export type RangeProvisionDestroyInput = {
+  onExecutionZoneRecovered?: (zoneId: string) => Promise<void>;
   verifyUnresolvedApplyAbsence?: (intent: { sourceProvisionJobId: string; submittedAt: string; hostKeys: string[]; eipNames: string[] }) => Promise<void>;
   assertRecoverySourceJob?: (sourceProvisionJobId: string) => Promise<void>;
   assertRecoveryClaim?: () => Promise<void>;

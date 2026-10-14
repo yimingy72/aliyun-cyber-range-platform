@@ -968,6 +968,23 @@ export class OpenTofuRangeProvisioner implements RangeProvisioner {
       if (['alicloud_instance','tencentcloud_instance'].includes(instance.type) && typeof instance.attributes.system_disk_id === 'string' && instance.attributes.system_disk_id)
         addResourceId(summary.systemDiskIds ??= Object.create(null), instance.address, instance.attributes.system_disk_id);
     }
+    if (input.runtimeConfig?.provider === 'alibaba_cloud' && input.onExecutionZoneRecovered) {
+      const variables = JSON.parse(await fs.readFile(path.join(dir, 'range.auto.tfvars.json'), 'utf8'));
+      if (variables.zone_id !== input.runtimeConfig.defaultZoneId) {
+        if (!state.instances.some(resource => resource.type === 'alicloud_instance')
+          || !input.assertRecoveryClaim || !input.assertRecoverySourceJob)
+          throw new Error('Execution zone recovery requires original native host state and its active claim');
+        assertRangeStateOwnership(state, variables, input.runtimeConfig, input.rangeInstanceId, input.billingTags);
+        const pending = await readPendingApplyEvidence(dir);
+        assertPendingApplyAncestor(state, pending);
+        const sourceJobId = variables.tags?.PlatformCreateJobId;
+        if (typeof sourceJobId !== 'string' || !sourceJobId || pending && pending.sourceProvisionJobId !== sourceJobId)
+          throw new Error('Execution zone recovery has no matching original apply source');
+        await input.assertRecoverySourceJob(sourceJobId);
+        await input.assertRecoveryClaim();
+        await input.onExecutionZoneRecovered(variables.zone_id);
+      }
+    }
     return summary;
   }
 
@@ -1052,6 +1069,9 @@ export class OpenTofuRangeProvisioner implements RangeProvisioner {
     if (priorState && priorVariables) {
       variables = preserveDeployedRangeUserData(input, priorState, priorVariables, variables);
       variables = preserveDeployedRangeHostFacts(priorState, priorVariables, variables, input.runtimeConfig!);
+    }
+    if ('onExecutionZoneSelected' in input && input.onExecutionZoneSelected) {
+      await input.onExecutionZoneSelected(variables.zone_id);
     }
     await fs.writeFile(varsFilePath, `${JSON.stringify(variables, null, 2)}\n`, 'utf8');
 
