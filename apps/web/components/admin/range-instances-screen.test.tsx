@@ -1,6 +1,8 @@
 import React from 'react';
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { readRangeRecoveryIntent } from '../../lib/range-recovery-intent';
+const listSessionState = vi.hoisted(() => ({ profile: { id: 'admin', username: 'admin', role: 'admin' as 'admin' | 'user' } }));
 
 const {
   fetchRangeInstanceDetailMock,
@@ -34,6 +36,7 @@ vi.mock('next/navigation', () => ({
 vi.mock('./use-admin-session', () => ({
   useAdminSession: () => ({
     token: 'dev-admin-token',
+    profile: listSessionState.profile,
     isReady: true,
     login: vi.fn(),
     logout: vi.fn(),
@@ -78,7 +81,53 @@ import { RangeInstancesScreen } from './range-instances-screen';
 import { AdminScreenCacheProvider } from '../../lib/admin-screen-cache';
 
 describe('RangeInstancesScreen', () => {
+
+  function recoveryListFixture() {
+    return { rangeTemplates: [], rangeInstances: [{ id: 'range-1', name: '未知回收', status: 'running', createdAt: '2026-10-14T00:00:00Z' }], provisionJobs: [] };
+  }
+
+  it('recovery-intake: a lost list action persists its key and reload offers a detail continuation without writing', async () => {
+    fetchAdminBootstrapMock.mockResolvedValue(recoveryListFixture());
+    triggerRangeActionMock.mockRejectedValue(new Error('response lost'));
+    const view = render(<RangeInstancesScreen />);
+    fireEvent.click(await screen.findByRole('button', { name: '关闭' }));
+    fireEvent.click(await screen.findByRole('button', { name: '确认关闭' }));
+    await screen.findByText('恢复操作结果未确认，请进入实例详情继续确认原请求。');
+    const scope = { apiBaseUrl: 'http://localhost:3001', userId: 'admin', workspaceId: '', rangeId: 'range-1' };
+    const original = readRangeRecoveryIntent(scope)!;
+    expect(triggerRangeActionMock).toHaveBeenCalledWith(scope.apiBaseUrl, 'dev-admin-token', scope.rangeId, 'destroy', original.key);
+    view.unmount();
+    render(<RangeInstancesScreen />);
+    fireEvent.click(await screen.findByRole('button', { name: '继续确认恢复操作' }));
+    expect(pushMock).toHaveBeenCalledWith('/admin/ranges/range-1');
+    expect(readRangeRecoveryIntent(scope)).toEqual(original);
+    expect(triggerRangeActionMock).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(['user', 'unmount'] as const)('recovery-intake: a delayed list response after %s cannot change the current screen or discard the intent', async change => {
+    fetchAdminBootstrapMock.mockResolvedValue(recoveryListFixture());
+    let rejectAction!: (error: Error) => void;
+    triggerRangeActionMock.mockReturnValue(new Promise((_resolve, reject) => { rejectAction = reject; }));
+    const view = render(<RangeInstancesScreen />);
+    fireEvent.click(await screen.findByRole('button', { name: '关闭' }));
+    fireEvent.click(await screen.findByRole('button', { name: '确认关闭' }));
+    await waitFor(() => expect(triggerRangeActionMock).toHaveBeenCalledTimes(1));
+    const scope = { apiBaseUrl: 'http://localhost:3001', userId: 'admin', workspaceId: '', rangeId: 'range-1' };
+    const original = readRangeRecoveryIntent(scope)!;
+    if (change === 'unmount') view.unmount();
+    else {
+      listSessionState.profile = { id: 'other-user', username: 'other-user', role: 'user' };
+      view.rerender(<RangeInstancesScreen />);
+    }
+    await act(async () => rejectAction(new Error('late old action failure')));
+    expect(readRangeRecoveryIntent(scope)).toEqual(original);
+    expect(screen.queryByText('恢复操作结果未确认，请进入实例详情继续确认原请求。')).toBeNull();
+    expect(replaceMock).not.toHaveBeenCalled();
+  });
+
   beforeEach(() => {
+    window.sessionStorage.clear();
+    listSessionState.profile = { id: 'admin', username: 'admin', role: 'admin' };
     fetchRangeInstanceDetailMock.mockReset();
     fetchRangeInstanceDetailMock.mockResolvedValue({ id: 'range-1', status: 'running' });
     createRangeInstanceMock.mockReset();
@@ -167,7 +216,7 @@ describe('RangeInstancesScreen', () => {
     expect(screen.getByText('状态')).toBeTruthy();
     expect(screen.getByText('创建时间')).toBeTruthy();
     expect(screen.getByText('操作')).toBeTruthy();
-    expect(screen.getByText('蓝队靶场 01')).toBeTruthy();
+    expect(await screen.findByText('蓝队靶场 01')).toBeTruthy();
     expect(screen.getByText('admin')).toBeTruthy();
     expect(screen.queryByText('range-1')).toBeNull();
     expect(screen.getAllByText('企业攻防靶场').length).toBeGreaterThan(0);
@@ -370,6 +419,7 @@ describe('RangeInstancesScreen', () => {
         'dev-admin-token',
         'range-1',
         'destroy',
+        expect.any(String),
       );
     });
   });

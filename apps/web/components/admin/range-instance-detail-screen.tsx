@@ -22,10 +22,13 @@ import {
   previewRangeInstanceDraft,
   saveRangeInstanceAsTemplate,
   triggerRangeAction,
+  fetchRangeRecoveryStatus,
 } from '../../lib/admin-api';
 import { useAdminScreenCache } from '../../lib/admin-screen-cache';
 import { tencentImageError, verifiedTencentInstanceTypes } from '@/lib/cloud-execution-policy';
 import { readCloudWorkspaceSelection } from '@/lib/cloud-workspace-selection';
+import { readAdminSession } from '@/lib/admin-auth-storage';
+import { beginRangeRecoveryIntent, clearRangeRecoveryIntent, readRangeRecoveryIntent, type RangeRecoveryIntent } from '@/lib/range-recovery-intent';
 import { useCloudWorkspace } from './cloud-workspace-provider';
 import { formatAdminDateTime, isUnauthorizedAdminError } from '../../lib/admin-screen';
 import type {
@@ -930,9 +933,21 @@ export function RangeInstanceDetailScreen({
   const isPageActive = useAdminRouteIsActive(`/admin/ranges/${rangeId}`);
   const resourceKey = `range-instance-detail:${rangeId}:${session.profile?.id ?? 'current-session'}:${session.profile?.role ?? ''}`;
   const identityKey = `${apiBaseUrl}\u0000${session.profile?.id ?? 'current-session'}\u0000${session.profile?.role ?? ''}\u0000${rangeId}\u0000${workspace?.id ?? readCloudWorkspaceSelection() ?? ''}`;
-  const scopeKey = `${identityKey}\u0000${session.token}`;
+  const scopeSession = readAdminSession();
+  const scopeKey = `${identityKey}\u0000${session.token}\u0000${scopeSession?.sessionGeneration ?? ''}`;
   const scopeRef = useRef(scopeKey);
   scopeRef.current = scopeKey;
+  const recoveryScope = { apiBaseUrl, userId: session.profile?.id ?? '', workspaceId: workspace?.id ?? readCloudWorkspaceSelection() ?? '', rangeId };
+  const recoveryContextRef = useRef({ scope: scopeKey });
+  if (recoveryContextRef.current.scope !== scopeKey) recoveryContextRef.current = { scope: scopeKey };
+  const mountedRef = useRef(true);
+  useEffect(() => { mountedRef.current = true; return () => { mountedRef.current = false; }; }, []);
+  const isCurrentScope = () => {
+    const currentSession = readAdminSession();
+    const selected = readCloudWorkspaceSelection(recoveryScope.userId);
+    return mountedRef.current && scopeRef.current === scopeKey && (!selected || selected === recoveryScope.workspaceId) &&
+      (!scopeSession || currentSession?.profile.id === scopeSession.profile.id && currentSession.sessionGeneration === scopeSession.sessionGeneration);
+  };
   const cachedDetail = screenCache?.read<RangeInstanceDetail>(apiBaseUrl, session.token, resourceKey);
   const [detailState, setDetailState] = useState(() => ({ scope: identityKey, data: cachedDetail?.data ?? null }));
   const detail = session.isReady && session.token && detailState.scope === identityKey ? detailState.data : null;
@@ -970,15 +985,26 @@ export function RangeInstanceDetailScreen({
   const [trackedUpdateJobId, setTrackedUpdateJobId] = useState<string | null>(null);
   const [pendingRecoveryTrigger, setPendingRecoveryTrigger] = useState<'retry' | 'destroy' | null>(null);
   const [isRecoverySubmitting, setIsRecoverySubmitting] = useState(false);
-  const [pendingRecoveryLookup, setPendingRecoveryLookup] = useState<{ previousJobId: string | null } | null>(null);
+  const [recoveryLookupState, setRecoveryLookupState] = useState(() => ({ scope: identityKey, intent: readRangeRecoveryIntent(recoveryScope) }));
+  const pendingRecoveryLookup = recoveryLookupState.scope === identityKey ? recoveryLookupState.intent : null;
+  const setPendingRecoveryLookup = (intent: RangeRecoveryIntent | null) => setRecoveryLookupState({ scope: identityKey, intent });
+  const recoverySubmittingRef = useRef<string | null>(null);
+  const acceptedRecoveryRef = useRef<{ intent: RangeRecoveryIntent; jobId: string } | null>(null);
   const recoveryTriggeredJobsRef = useRef<Set<string>>(new Set());
   const [, setHistoryState] = useState<TopologyHistory | null>(null);
   const instanceTypeAvailabilityRequestRef = useRef(0);
   useEffect(() => {
     setChangePreview(null); setIsTemplateCopyDialogOpen(false); copyRequestRef.current = null;
     setPendingRecoveryTrigger(null); setIsRecoverySubmitting(false);
-    setPendingRecoveryLookup(null); recoveryTriggeredJobsRef.current.clear();
+    setPendingRecoveryLookup(readRangeRecoveryIntent(recoveryScope)); recoveryTriggeredJobsRef.current.clear();
+    acceptedRecoveryRef.current = null; recoverySubmittingRef.current = null;
   }, [identityKey]);
+  useEffect(() => {
+    if (isPageActive && !acceptedRecoveryRef.current) setPendingRecoveryLookup(readRangeRecoveryIntent(recoveryScope));
+  }, [isPageActive, identityKey]);
+  useEffect(() => {
+    recoverySubmittingRef.current = null; setIsRecoverySubmitting(false); setPendingRecoveryTrigger(null);
+  }, [scopeKey]);
 
   useEffect(() => {
     if (isPageActive && detail?.id) void preloadRangeInstanceTopologyWorkspace().catch(() => undefined);
@@ -1057,7 +1083,6 @@ export function RangeInstanceDetailScreen({
       setTrackedUpdateJobId(null);
       setPendingRecoveryTrigger(null);
       setIsRecoverySubmitting(false);
-      setPendingRecoveryLookup(null);
       setPackImageDialog(null);
       setIsTemplateCopyDialogOpen(false);
       setPendingNodeAction(null);
@@ -1067,7 +1092,7 @@ export function RangeInstanceDetailScreen({
     }
     if (cached) {
       receiveDetailSnapshot(cached.data);
-      setTrackedUpdateJobId(cached.data.lastJobId ?? null);
+      setTrackedUpdateJobId(acceptedRecoveryRef.current?.jobId ?? cached.data.lastJobId ?? null);
     }
     setIsRefreshingDetail(Boolean(cached && !cached.isFresh));
     const load = () => fetchRangeInstanceDetail(apiBaseUrl, session.token!, rangeId);
@@ -1078,7 +1103,7 @@ export function RangeInstanceDetailScreen({
         }
 
         receiveDetailSnapshot(payload);
-        setTrackedUpdateJobId(payload.lastJobId ?? null);
+        setTrackedUpdateJobId(acceptedRecoveryRef.current?.jobId ?? payload.lastJobId ?? null);
       })
       .catch((error: unknown) => {
         if (!isActive || request !== detailRequestRef.current || scopeRef.current !== scopeKey) {
@@ -1101,40 +1126,54 @@ export function RangeInstanceDetailScreen({
     };
   }, [apiBaseUrl, isPageActive, loadAttempt, rangeId, router, screenCache, session.isReady, session.token, session.profile?.id, session.profile?.role, identityKey]);
 
+  function acceptRecoveryIntent(intent: RangeRecoveryIntent, jobId: string, message = '恢复任务已受理，正在跟踪任务。') {
+    acceptedRecoveryRef.current = { intent, jobId };
+    recoveryTriggeredJobsRef.current.add(jobId);
+    setTrackedUpdateJobId(jobId);
+    setPendingRecoveryLookup(null);
+    recoverySubmittingRef.current = null;
+    setIsRecoverySubmitting(false);
+    setPendingRecoveryTrigger(null);
+    setErrorMessage(null);
+    setSuccessMessage(message);
+    screenCache?.invalidate(apiBaseUrl, session.token, 'range-instances:');
+    screenCache?.invalidate(apiBaseUrl, session.token, resourceKey);
+  }
+
   useEffect(() => {
     if (!isPageActive || !session.token || !pendingRecoveryLookup) return;
     let isActive = true;
     let timer: number | undefined;
-    const previousJobId = pendingRecoveryLookup.previousJobId;
+    const intent = pendingRecoveryLookup;
+    const context = recoveryContextRef.current;
+    const isCurrent = () => isActive && isCurrentScope() && recoveryContextRef.current === context && acceptedRecoveryRef.current?.intent.key !== intent.key &&
+      readRangeRecoveryIntent(recoveryScope)?.key === intent.key;
 
     async function refreshRecoveryResult() {
       try {
-        const payload = await reloadDetailSnapshot();
-        if (!isActive) return;
-        if (payload) {
-          const inFlight = ['pending_create', 'creating', 'pending_destroy', 'destroying'].includes(payload.status);
-          if (payload.lastJobId && (payload.lastJobId !== previousJobId || inFlight)) {
-            recoveryTriggeredJobsRef.current.add(payload.lastJobId);
-            setTrackedUpdateJobId(payload.lastJobId);
-            setPendingRecoveryLookup(null);
-            setErrorMessage(null);
-            return;
-          }
-          if (!inFlight) {
-            setPendingRecoveryLookup(null);
-            setTrackedUpdateJobId(null);
-            const failed = payload.status === 'create_failed' || payload.status === 'destroy_failed';
-            setErrorMessage(failed ? '未发现新的恢复任务，已刷新当前状态；请确认后再操作。' : null);
-            setSuccessMessage(failed ? null : '实例状态已更新。');
-            return;
-          }
+        const receipt = await fetchRangeRecoveryStatus(apiBaseUrl, session.token!, rangeId, intent.trigger, intent.key);
+        if (!isCurrent()) return;
+        if (receipt.state === 'accepted' && receipt.jobId) {
+          acceptRecoveryIntent(intent, receipt.jobId);
+          return;
         }
+        if (receipt.state === 'rejected') {
+          clearRangeRecoveryIntent(recoveryScope, intent.key);
+          setPendingRecoveryLookup(null);
+          recoverySubmittingRef.current = null;
+          setIsRecoverySubmitting(false);
+          setPendingRecoveryTrigger(null);
+          setTrackedUpdateJobId(null);
+          setErrorMessage(`恢复请求已被服务端明确拒绝，请确认当前状态后再操作。${receipt.errorCode ? `（${receipt.errorCode}）` : ''}`);
+          return;
+        }
+        setErrorMessage('恢复操作结果未确认，正在只读查询原请求回执。');
       } catch (error) {
-        if (!isActive) return;
+        if (!isCurrent()) return;
         if (isUnauthorizedAdminError(error)) { session.logout(); router.replace('/admin/login'); return; }
         setErrorMessage('恢复操作结果未确认，状态查询失败，正在重试。');
       }
-      if (isActive) timer = window.setTimeout(() => void refreshRecoveryResult(), 2000);
+      if (isCurrent()) timer = window.setTimeout(() => void refreshRecoveryResult(), 2000);
     }
 
     void refreshRecoveryResult();
@@ -1142,7 +1181,8 @@ export function RangeInstanceDetailScreen({
   }, [apiBaseUrl, isPageActive, rangeId, router, screenCache, session.token, pendingRecoveryLookup, scopeKey]);
 
   useEffect(() => {
-    if (!isPageActive || !session.token || !trackedUpdateJobId || pendingRecoveryLookup) {
+    if (!isPageActive || !session.token || detailState.scope !== identityKey || !trackedUpdateJobId || pendingRecoveryLookup ||
+      (readRangeRecoveryIntent(recoveryScope) && !acceptedRecoveryRef.current)) {
       return;
     }
 
@@ -1155,7 +1195,7 @@ export function RangeInstanceDetailScreen({
     async function refreshUpdateJob() {
       try {
         const { job } = await fetchProvisionJobDetail(apiBaseUrl, token, jobId);
-        if (!isActive) return;
+        if (!isActive || !isCurrentScope()) return;
         // Restored lastJobId values that are neither updates nor in-flight lifecycle
         // jobs must not keep the tracker (or surface stale messages) alive.
         const inFlightLifecycle = ['pending_create', 'creating', 'pending_destroy', 'destroying'].includes(detailStatus);
@@ -1170,13 +1210,17 @@ export function RangeInstanceDetailScreen({
           // fresher terminal snapshot. Tracking only stops after the refresh resolves so
           // a failed refresh keeps polling and never swallows the terminal message.
           const payload = await reloadDetailSnapshot();
-          if (!isActive) return;
+          if (!isActive || !isCurrentScope()) return;
           if (!payload) {
             timer = window.setTimeout(() => void refreshUpdateJob(), 2000);
             return;
           }
           setTrackedUpdateJobId(null);
           recoveryTriggeredJobsRef.current.delete(jobId);
+          if (acceptedRecoveryRef.current?.jobId === jobId) {
+            clearRangeRecoveryIntent(recoveryScope, acceptedRecoveryRef.current.intent.key);
+            acceptedRecoveryRef.current = null;
+          }
           if (job.jobType === 'update') {
             setSuccessMessage(job.status === 'succeeded' ? '实例配置变更已应用。' : null);
             setErrorMessage(job.status === 'succeeded' ? null : [job.errorSummary || '实例配置变更未完成，请检查任务。', payload.status === 'destroy_failed' ? '部分云变更可能已生效，资源尚未确认全部回收；请查看任务并执行回收。' : ''].filter(Boolean).join(' '));
@@ -1191,7 +1235,7 @@ export function RangeInstanceDetailScreen({
           setSuccessMessage('实例配置变更正在应用。');
         }
       } catch (error) {
-        if (!isActive) return;
+        if (!isActive || !isCurrentScope()) return;
         if (isUnauthorizedAdminError(error)) {
           session.logout();
           router.replace('/admin/login');
@@ -1241,11 +1285,12 @@ export function RangeInstanceDetailScreen({
         : null,
     [selection, topologyNodes],
   );
-  const canOperateInstance = !workspace?.isReadOnly && (!workspace || workspace.capabilities.provisioning) && detail?.status === 'running';
+  const recoveryInFlight = Boolean(trackedUpdateJobId && recoveryTriggeredJobsRef.current.has(trackedUpdateJobId));
+  const canOperateInstance = !workspace?.isReadOnly && (!workspace || workspace.capabilities.provisioning) && detail?.status === 'running'
+    && !isRecoverySubmitting && !pendingRecoveryLookup && !recoveryInFlight;
   const canApplyInstance = canOperateInstance && workspace?.capabilities.rangeProvisioning !== false;
   const canEditTopology = canOperateInstance && !isSavingDraft && !isCopyingTemplate && !trackedUpdateJobId;
-  const recoveryActionsDisabled = Boolean(workspace?.isReadOnly) || isRecoverySubmitting || Boolean(pendingRecoveryLookup)
-    || Boolean(trackedUpdateJobId && recoveryTriggeredJobsRef.current.has(trackedUpdateJobId));
+  const recoveryActionsDisabled = Boolean(workspace?.isReadOnly) || !session.profile?.id || isRecoverySubmitting || Boolean(pendingRecoveryLookup) || recoveryInFlight;
   const canRetryRecovery = detail?.recoverySummary?.canRetry !== false;
   useEffect(() => { if (!canApplyInstance) setChangePreview(null); }, [canApplyInstance]);
   const linkedSwitchIdsByHostId = useMemo(() => {
@@ -1529,46 +1574,50 @@ export function RangeInstanceDetailScreen({
     } finally { if (scopeRef.current === scopeKey) setIsSavingDraft(false); }
   }
 
-  async function performRecoveryAction(trigger: 'retry' | 'destroy') {
-    if (!session.token || !detail || recoveryActionsDisabled) {
+  async function performRecoveryAction(trigger: 'retry' | 'destroy', replayOriginal = false) {
+    if (!session.token || !detail || workspace?.isReadOnly || recoverySubmittingRef.current ||
+      (!replayOriginal && recoveryActionsDisabled)) return;
+    let intent: RangeRecoveryIntent;
+    try {
+      const existing = readRangeRecoveryIntent(recoveryScope);
+      if (existing && !replayOriginal) { setPendingRecoveryLookup(existing); return; }
+      if (replayOriginal && !existing) return;
+      intent = existing ?? beginRangeRecoveryIntent(recoveryScope, trigger);
+    } catch {
+      setErrorMessage('无法保存恢复请求标识，请检查浏览器存储后重试。');
       return;
     }
-
+    const context = recoveryContextRef.current;
+    const isCurrent = () => isCurrentScope() && recoveryContextRef.current === context &&
+      readRangeRecoveryIntent(recoveryScope)?.key === intent.key;
+    recoverySubmittingRef.current = intent.key;
     setIsRecoverySubmitting(true);
+    setPendingRecoveryLookup(intent);
     setErrorMessage(null);
     setSuccessMessage(null);
-    let recoveryJobId: string | null = null;
+    let receivedJob = false;
     try {
-      const job = (await triggerRangeAction(apiBaseUrl, session.token, detail.id, trigger)) as { id?: string } | null;
-      if (scopeRef.current !== scopeKey) return;
-      recoveryJobId = job?.id ?? null;
-      screenCache?.invalidate(apiBaseUrl, session.token, 'range-instances:');
-      screenCache?.invalidate(apiBaseUrl, session.token, resourceKey);
-      if (!recoveryJobId) {
-        setPendingRecoveryLookup({ previousJobId: detail.lastJobId ?? null });
-        setErrorMessage('恢复操作结果未确认，正在查询任务状态。');
-        return;
+      const job = await triggerRangeAction(apiBaseUrl, session.token, detail.id, intent.trigger, intent.key);
+      if (!isCurrent()) return;
+      if (job?.id) {
+        receivedJob = true;
+        acceptRecoveryIntent(intent, job.id, intent.trigger === 'destroy' ? '回收任务已提交，正在回收剩余云资源。' : detail.status === 'destroy_failed' ? '重试回收任务已提交。' : '重试创建任务已提交，实例将重新开通。');
+        await reloadDetailSnapshot();
+      } else {
+        setErrorMessage('恢复操作结果未确认，正在只读查询原请求回执。');
       }
-      recoveryTriggeredJobsRef.current.add(recoveryJobId);
-      setTrackedUpdateJobId(recoveryJobId);
-      setSuccessMessage(trigger === 'destroy' ? '回收任务已提交，正在回收剩余云资源。' : detail.status === 'destroy_failed' ? '重试回收任务已提交。' : '重试创建任务已提交，实例将重新开通。');
-      await reloadDetailSnapshot();
     } catch (error) {
-      if (scopeRef.current !== scopeKey) return;
-      if (isUnauthorizedAdminError(error)) {
-        session.logout();
-        router.replace('/admin/login');
-        return;
-      }
-      if (!recoveryJobId) {
-        screenCache?.invalidate(apiBaseUrl, session.token, 'range-instances:');
-        setPendingRecoveryLookup({ previousJobId: detail.lastJobId ?? null });
-        setErrorMessage('恢复操作结果未确认，正在查询任务状态。');
-      } else if (recoveryTriggeredJobsRef.current.has(recoveryJobId)) {
+      if (!isCurrent()) return;
+      if (!acceptedRecoveryRef.current) {
+        // HTTP errors (including 4xx) cannot replace the durable rejection receipt.
+        setPendingRecoveryLookup(intent);
+        setErrorMessage('恢复操作结果未确认，正在只读查询原请求回执。');
+      } else if (receivedJob) {
         setErrorMessage('任务状态刷新失败，正在重试。');
       }
     } finally {
-      if (scopeRef.current === scopeKey) {
+      if (isCurrentScope() && recoveryContextRef.current === context && recoverySubmittingRef.current === intent.key) {
+        recoverySubmittingRef.current = null;
         setIsRecoverySubmitting(false);
         setPendingRecoveryTrigger(null);
       }
@@ -2176,6 +2225,15 @@ export function RangeInstanceDetailScreen({
                 ) : null}
             </section>
 
+            {pendingRecoveryLookup ? (
+              <section aria-label="恢复请求确认" className="mt-4 rounded-md border border-border px-4 py-3">
+                <p className="text-sm">原{pendingRecoveryLookup.trigger === 'destroy' ? '回收' : '重试'}请求结果尚未确认，正在只读查询。请继续确认原请求后再修改恢复目标。</p>
+                <div className="mt-2 flex flex-wrap gap-2">
+                  <Button onClick={() => setPendingRecoveryLookup({ ...pendingRecoveryLookup })} size="sm" type="button" variant="outline">查询恢复状态</Button>
+                  <Button disabled={Boolean(workspace?.isReadOnly) || isRecoverySubmitting} onClick={() => void performRecoveryAction(pendingRecoveryLookup.trigger, true)} size="sm" type="button" variant="outline">安全重试原请求</Button>
+                </div>
+              </section>
+            ) : null}
             {detail.status === 'create_failed' || detail.status === 'destroy_failed' ? (
               <section aria-label="失败恢复" className="mt-4 rounded-md border border-destructive/40 bg-destructive/5 px-4 py-3">
                 <div className="flex flex-wrap items-start justify-between gap-3">
@@ -2198,11 +2256,6 @@ export function RangeInstanceDetailScreen({
                     ) : null}
                   </div>
                   <div className="flex shrink-0 flex-wrap gap-2">
-                    {pendingRecoveryLookup ? (
-                      <Button onClick={() => setPendingRecoveryLookup({ ...pendingRecoveryLookup })} size="sm" type="button" variant="outline">
-                        查询恢复状态
-                      </Button>
-                    ) : null}
                     {detail.status === 'create_failed' ? (
                       <Button
                         disabled={recoveryActionsDisabled}

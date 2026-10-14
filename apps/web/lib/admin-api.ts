@@ -464,13 +464,22 @@ export async function triggerRangeAction(
   token: string,
   id: string,
   action: 'create' | 'destroy' | 'retry',
+  idempotencyKey?: string,
 ) {
   const response = await fetch(`${apiBaseUrl}/admin/ranges/${id}/${action}`, {
     method: 'POST',
-    headers: createAdminHeaders(token),
+    headers: { ...createAdminHeaders(token), ...(idempotencyKey ? { 'x-idempotency-key': idempotencyKey } : {}) },
   });
 
   return readJson<ProvisionJob>(response);
+}
+
+export type RangeRecoveryStatus = { state: 'unconfirmed' } | { state: 'accepted'; jobId: string } | { state: 'rejected'; errorCode: string | null };
+
+export async function fetchRangeRecoveryStatus(apiBaseUrl: string, token: string, id: string, trigger: 'retry' | 'destroy', key: string) {
+  return readJson<RangeRecoveryStatus>(await fetch(`${apiBaseUrl}/admin/ranges/${encodeURIComponent(id)}/recovery/${trigger}`, {
+    headers: { ...createAdminHeaders(token), 'x-idempotency-key': key },
+  }));
 }
 
 export async function fetchCloudConfig(

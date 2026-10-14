@@ -35,6 +35,7 @@ vi.mock('next/navigation', () => ({
 vi.mock('./use-admin-session', () => ({
   useAdminSession: () => ({
     token: 'dev-admin-token',
+    profile: { id: 'admin', username: 'admin', role: 'admin' },
     isReady: true,
     logout: vi.fn(),
   }),
@@ -67,6 +68,7 @@ function createPendingPromise<T>() {
 
 describe('RangeInstancesScreen list states', () => {
   beforeEach(() => {
+    window.sessionStorage.clear();
     fetchProvisionJobsMock.mockReset();
     fetchRangeInstancesMock.mockReset();
     triggerRangeActionMock.mockReset();
@@ -335,6 +337,7 @@ describe('RangeInstancesScreen list states', () => {
         'dev-admin-token',
         'range-running',
         'destroy',
+        expect.any(String),
       );
     });
   });

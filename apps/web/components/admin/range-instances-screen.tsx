@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useLayoutEffect, useMemo, useState } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 
 import { Button } from '@/components/ui/button';
@@ -13,6 +13,9 @@ import {
   triggerRangeAction,
 } from '../../lib/admin-api';
 import { useAdminScreenCache } from '../../lib/admin-screen-cache';
+import { readCloudWorkspaceSelection } from '@/lib/cloud-workspace-selection';
+import { readAdminSession } from '@/lib/admin-auth-storage';
+import { beginRangeRecoveryIntent, readRangeRecoveryIntent } from '@/lib/range-recovery-intent';
 import { useCloudWorkspace } from './cloud-workspace-provider';
 import { formatAdminDateTime, isUnauthorizedAdminError } from '../../lib/admin-screen';
 import type {
@@ -175,6 +178,17 @@ export function RangeInstancesScreen({
   const searchParams = useSearchParams();
   const session = useAdminSession();
   const workspace = useCloudWorkspace()?.workspace;
+  const actionSession = readAdminSession();
+  const actionWorkspaceId = workspace?.id ?? readCloudWorkspaceSelection() ?? '';
+  const actionScopeKey = JSON.stringify([apiBaseUrl, session.profile?.id, session.profile?.role, actionWorkspaceId, session.token, actionSession?.sessionGeneration]);
+  const actionContextRef = useRef({ scope: actionScopeKey });
+  if (actionContextRef.current.scope !== actionScopeKey) actionContextRef.current = { scope: actionScopeKey };
+  const mountedRef = useRef(true);
+  const submittingRef = useRef<string | null>(null);
+  useEffect(() => { mountedRef.current = true; return () => { mountedRef.current = false; }; }, []);
+  function recoveryScopeFor(instanceId: string) {
+    return { apiBaseUrl, userId: session.profile?.id ?? '', workspaceId: actionWorkspaceId, rangeId: instanceId };
+  }
   const isPageActive = useAdminRouteIsActive('/admin/ranges');
   const [listMode, setListMode] = useState<RangeListMode>(() => readRangeListMode(searchParams.get('view')));
   const screenCache = useAdminScreenCache();
@@ -210,6 +224,9 @@ export function RangeInstancesScreen({
   const [isSubmittingAction, setIsSubmittingAction] = useState<'destroy' | null>(null);
   const [confirmDestroyTarget, setConfirmDestroyTarget] = useState<ExtendedRangeInstance | null>(null);
   const [isConfirmingDestroy, setIsConfirmingDestroy] = useState(false);
+  useEffect(() => {
+    submittingRef.current = null; setIsSubmittingAction(null); setIsConfirmingDestroy(false); setConfirmDestroyTarget(null); setActionErrorMessage(null);
+  }, [actionScopeKey]);
   const [listPages, setListPages] = useState<Record<RangeListMode, number>>({ active: 1, history: 1 });
   const [jumpPageValue, setJumpPageValue] = useState('1');
   const { pageSize, setPageSize } = useAdminPageSize();
@@ -459,34 +476,41 @@ export function RangeInstancesScreen({
   }
 
   async function performListDestroyAction(instance: ExtendedRangeInstance) {
-    if (!session.token) {
-      return;
-    }
-
+    if (!session.token || submittingRef.current || workspace?.isReadOnly) return;
+    const recoveryScope = recoveryScopeFor(instance.id);
+    const existing = readRangeRecoveryIntent(recoveryScope);
+    if (existing) { handleViewDetail(instance.id); return; }
+    const context = actionContextRef.current;
+    const isCurrent = () => {
+      const selected = readCloudWorkspaceSelection(recoveryScope.userId);
+      const currentSession = readAdminSession();
+      return mountedRef.current && actionContextRef.current === context && (!selected || selected === recoveryScope.workspaceId) &&
+        (!actionSession || currentSession?.profile.id === actionSession.profile.id && currentSession.sessionGeneration === actionSession.sessionGeneration);
+    };
+    let key: string | null = null;
     setActionErrorMessage(null);
     setIsSubmittingAction('destroy');
-
     try {
-      const trigger = getActionTrigger(instance);
-      const job = (await triggerRangeAction(apiBaseUrl, session.token, instance.id, trigger)) as ExtendedProvisionJob;
+      const intent = beginRangeRecoveryIntent(recoveryScope, getActionTrigger(instance));
+      key = intent.key;
+      submittingRef.current = key;
+      const job = (await triggerRangeAction(apiBaseUrl, session.token, instance.id, intent.trigger, key)) as ExtendedProvisionJob | null;
+      if (!isCurrent()) return;
       screenCache?.invalidate(apiBaseUrl, session.token, 'range-instances:');
-
-      upsertInstanceInSnapshot({
-        ...instance,
-        status: 'pending_destroy',
-        lastJobId: job.id,
-      });
-      upsertJobInSnapshot(job);
-    } catch (error: unknown) {
-      if (isUnauthorizedAdminError(error)) {
-        session.logout();
-        router.replace('/admin/login');
+      if (!job?.id) {
+        setActionErrorMessage('恢复操作结果未确认，请进入实例详情继续确认原请求。');
         return;
       }
-
-      setActionErrorMessage('实例生命周期操作失败，请稍后重试。');
+      upsertInstanceInSnapshot({ ...instance, status: 'pending_destroy', lastJobId: job.id });
+      upsertJobInSnapshot(job);
+    } catch (error) {
+      if (!isCurrent()) return;
+      setActionErrorMessage(key ? '恢复操作结果未确认，请进入实例详情继续确认原请求。' : '无法保存恢复请求标识，请检查浏览器存储后重试。');
     } finally {
-      setIsSubmittingAction(null);
+      if (isCurrent()) {
+        if (submittingRef.current === key) submittingRef.current = null;
+        setIsSubmittingAction(null);
+      }
     }
   }
 
@@ -702,6 +726,7 @@ export function RangeInstancesScreen({
                       );
                     }
 
+                    const pendingIntent = readRangeRecoveryIntent(recoveryScopeFor(instance.id));
                     const actionLabel = getInstanceActionLabel(instance);
 
                     return (
@@ -726,15 +751,15 @@ export function RangeInstancesScreen({
                             <Button onMouseEnter={() => prefetchDetail(instance.id)} onFocus={() => prefetchDetail(instance.id)} onClick={() => void handleViewDetail(instance.id)} size="sm" type="button" variant="outline">
                               查看详情
                             </Button>
-                            {actionLabel ? (
+                            {actionLabel || pendingIntent ? (
                               <Button
                                 disabled={workspace?.isReadOnly || isSubmittingAction !== null}
-                                onClick={() => setConfirmDestroyTarget(instance)}
+                                onClick={() => pendingIntent ? handleViewDetail(instance.id) : setConfirmDestroyTarget(instance)}
                                 size="sm"
                                 type="button"
                                 variant="destructive"
                               >
-                                {isSubmittingAction !== null ? '处理中...' : actionLabel}
+                                {pendingIntent ? '继续确认恢复操作' : isSubmittingAction !== null ? '处理中...' : actionLabel}
                               </Button>
                             ) : null}
                           </div>
@@ -765,13 +790,16 @@ export function RangeInstancesScreen({
               return;
             }
             const target = confirmDestroyTarget;
+            const context = actionContextRef.current;
             void (async () => {
               setIsConfirmingDestroy(true);
               try {
                 await performListDestroyAction(target);
               } finally {
-                setIsConfirmingDestroy(false);
-                setConfirmDestroyTarget(null);
+                if (mountedRef.current && actionContextRef.current === context) {
+                  setIsConfirmingDestroy(false);
+                  setConfirmDestroyTarget(null);
+                }
               }
             })();
           }}
