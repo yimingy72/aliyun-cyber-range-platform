@@ -233,18 +233,18 @@ export class ImageImportsService {
         job = await this.recoverSubmission(context, job);
         if (!job.imageId) return this.toView(job);
       }
-      if (this.hasExceededImportDuration(job)) return this.toView(await this.failTimedOutImport(job));
-      const importJob = await this.ensureImportArtifacts(context, job);
-      const image = await this.describeImage(context, importJob.imageId!);
+      const image = await this.describeImage(context, job.imageId!);
 
       if (!image) {
-        return this.toView(importJob);
+        return this.toView(job);
       }
 
       const rawStatus = image.Status?.trim() || 'Creating';
       const status = this.buildSnapshotStatus(image) ?? rawStatus;
       const isAvailable = rawStatus === 'Available';
       const failed = /Failed|Error|Unavailable/i.test(rawStatus);
+      if (!isAvailable && !failed && this.hasExceededImportDuration(job)) return this.toView(await this.failTimedOutImport(job));
+      const importJob = await this.ensureImportArtifacts(context, job);
       const syncedAt = new Date();
       await this.adminRepository.upsertImageSnapshots({
         provider: context.provider,
@@ -327,7 +327,10 @@ export class ImageImportsService {
       this.prisma.imageImportJob.findMany({
         where: {
           ...workspaceFilter,
-          OR: [{ status: 'awaiting_upload' }, { status: 'failed', submissionRejected: true }],
+          OR: [
+            { status: 'awaiting_upload', OR: [{ uploadCompletedAt: null }, { submissionRejected: true }] },
+            { status: 'failed', submissionRejected: true },
+          ],
           imageId: null,
           uploadExpiresAt: { lt: new Date() },
         },
@@ -779,7 +782,7 @@ export class ImageImportsService {
   }
 
   private async cancelExpiredUpload(job: ImageImportJobRow) {
-    if (!((job.status === 'awaiting_upload' && !job.uploadCompletedAt) || (job.status === 'failed' && job.submissionRejected)) || job.imageId || job.uploadExpiresAt > new Date()) return;
+    if (!((job.status === 'awaiting_upload' && (!job.uploadCompletedAt || job.submissionRejected)) || (job.status === 'failed' && job.submissionRejected)) || job.imageId || job.uploadExpiresAt > new Date()) return;
     const cancelled = await this.updateJob(job, { status: 'cancelled', errorMessage: '上传地址已过期，临时镜像文件已进入清理流程。' });
     await this.cleanupTerminalObject(cancelled);
   }

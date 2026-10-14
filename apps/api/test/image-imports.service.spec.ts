@@ -132,6 +132,37 @@ describe('Image import resource ownership and recovery', () => {
     expect(actions()).not.toContain('DeleteSnapshot');
     expect((await repository.listBillingLedgerResources()).every(row => row.releasedAt === null)).toBe(true);
   });
+  it.each([false, true])('recovers an overdue Available image without deleting it or its snapshots (lost ImageId: %s)', async lostImageId => {
+    await submitted();
+    image.Status = 'Available';
+    job.uploadCompletedAt = new Date(Date.now() - 25 * 60 * 60_000);
+    job.uploadExpiresAt = new Date(0);
+    if (lostImageId) job.imageId = null;
+    calls.length = 0;
+    service = new ImageImportsService(repository, { imageImportJob } as unknown as PrismaService, { getCredentials: credentials } as unknown as CloudAccountContextsService);
+    expect(await service.refreshImport(job.id)).toMatchObject({ status: 'available', imageId: 'm-imported', snapshotCleanupCompletedAt: null, cloudImageDeletedAt: null });
+    expect(await repository.getPlatformImageAssetById(job.platformImageAssetId)).toMatchObject({ enabled: true });
+    expect(actions().filter(action => action.startsWith('Delete'))).toEqual([]);
+    expect(snapshots.has('s-system')).toBe(true);
+    expect((await repository.listBillingLedgerResources()).every(row => row.releasedAt === null)).toBe(true);
+  });
+  it('keeps an overdue Available import recoverable when asset synchronization fails', async () => {
+    await submitted(); image.Status = 'Available';
+    job.uploadCompletedAt = new Date(Date.now() - 25 * 60 * 60_000);
+    calls.length = 0;
+    jest.spyOn(repository, 'setPlatformImageAssetEnabled').mockRejectedValueOnce(new Error('asset synchronization unavailable'));
+    expect(await service.refreshImport(job.id)).toMatchObject({ status: 'importing', errorMessage: 'asset synchronization unavailable' });
+    expect(actions().filter(action => action.includes('DELETE') || action.startsWith('Delete'))).toEqual([]);
+    expect(await service.refreshImport(job.id)).toMatchObject({ status: 'available' });
+  });
+  it.each(['invisible', 'query failure'])('does not time out an overdue import before a confirmed cloud result: %s', async failure => {
+    await submitted(); job.uploadCompletedAt = new Date(Date.now() - 25 * 60 * 60_000);
+    calls.length = 0;
+    fault = action => action === 'DescribeImages' ? failure === 'invisible'
+      ? response({ TotalCount: 0, Images: { Image: [] } }) : response({ Code: 'Forbidden' }, 403) : undefined;
+    expect(await service.refreshImport(job.id)).toMatchObject({ status: 'importing', cloudImageDeletedAt: null, snapshotCleanupCompletedAt: null });
+    expect(actions().filter(action => action.includes('DELETE') || action.startsWith('Delete'))).toEqual([]);
+  });
   it('retains pollable state when enabling the private asset fails and recovers later', async () => {
     await submitted(); image.Status = 'Available';
     const spy = jest.spyOn(repository, 'setPlatformImageAssetEnabled').mockRejectedValueOnce(new Error('asset unavailable'));
@@ -243,6 +274,42 @@ describe('Image import resource ownership and recovery', () => {
     fault = action => action === 'ImportImage' ? response({ Code: 'Forbidden' }, 403) : undefined;
     await service.completeUpload(job.id, USER); job.uploadExpiresAt = new Date(0); calls.length = 0;
     await service.refreshPendingImports(); expect(job.status).toBe('cancelled'); expect(cloudWrites()).toEqual(['OSS_DELETE']);
+  });
+  it.each(['missing object', 'HEAD disconnected'])('cleans an expired rejected retry interrupted by %s', async failure => {
+    fault = action => action === 'ImportImage' ? response({ Code: 'Forbidden' }, 403) : undefined;
+    await service.completeUpload(job.id, USER);
+    const submittedAt = job.uploadCompletedAt;
+    fault = action => {
+      if (action !== 'OSS_HEAD') return undefined;
+      if (failure === 'missing object') return response({}, 404);
+      throw new Error('HEAD disconnected');
+    };
+    await expect(service.retry(job.id, USER)).rejects.toThrow();
+    expect(job).toMatchObject({ status: 'awaiting_upload', submissionRejected: true, imageId: null, uploadCompletedAt: submittedAt });
+    job.uploadExpiresAt = new Date(0); fault = undefined; calls.length = 0;
+    service = new ImageImportsService(repository, { imageImportJob } as unknown as PrismaService, { getCredentials: credentials } as unknown as CloudAccountContextsService);
+    await service.refreshPendingImports();
+    expect(job).toMatchObject({ status: 'cancelled', temporaryObjectDeletedAt: expect.any(Date), uploadCompletedAt: submittedAt });
+    expect(cloudWrites()).toEqual(['OSS_DELETE']);
+  });
+  it.each(['awaiting_upload', 'importing', 'failed'])('preserves expired unknown submissions in %s without cancelling, deleting or resubmitting', async status => {
+    fault = action => action === 'ImportImage' ? Promise.reject(new Error('submission disconnected')) : undefined;
+    await service.completeUpload(job.id, USER);
+    job.status = status; job.uploadCompletedAt = new Date(Date.now() - 25 * 60 * 60_000);
+    job.uploadExpiresAt = new Date(0); fault = undefined; calls.length = 0;
+    await service.refreshPendingImports();
+    expect(job.status).toBe(status === 'failed' ? 'importing' : status);
+    expect(job).toMatchObject({ imageId: null, submissionRejected: false, temporaryObjectDeletedAt: null });
+    expect(cloudWrites()).toEqual([]);
+  });
+  it('does not let twenty unknown upload intents starve a later expired rejected retry', async () => {
+    job.uploadCompletedAt = new Date(Date.now() - 25 * 60 * 60_000);
+    job.uploadExpiresAt = new Date(0); job.submissionRejected = true;
+    const unknownIntents = Array.from({ length: 20 }, (_, index) => ({ ...job, id: `unknown-${index}`, submissionRejected: false }));
+    imageImportJob.findMany.mockImplementation(async ({ where, take }: any) => [...unknownIntents, job].filter(row => matches(row, where)).slice(0, take));
+    expect(await service.refreshPendingImports()).toBe(1);
+    expect(job).toMatchObject({ status: 'cancelled', temporaryObjectDeletedAt: expect.any(Date) });
+    expect(cloudWrites()).toEqual(['OSS_DELETE']);
   });
   it('does not delete a failed image whose backing snapshot mapping is incomplete', async () => {
     await submitted(); image.DiskDeviceMappings.DiskDeviceMapping = [];
