@@ -2134,6 +2134,12 @@ export class PrismaAdminRepository implements AdminRepository {
     }, { timeout: 15 * 60_000, maxWait: 30_000 });
   }
 
+  async withSingleInstanceTransaction<T>(work: (repository: AdminRepository) => Promise<T>): Promise<T> {
+    // Network preparation and the outer control lock belong to the caller.
+    return this.prisma.$transaction(tx => work(new PrismaAdminRepository(tx as unknown as PrismaService)),
+      { timeout: 10_000, maxWait: 5_000 });
+  }
+
   async tryWithSingleInstanceBatchProvisionLock<T>(batchId: string, work: (lease: SingleInstanceBatchProvisionLease) => Promise<T>): Promise<{ acquired: boolean; result?: T }> {
     const controller = new AbortController();
     try {
