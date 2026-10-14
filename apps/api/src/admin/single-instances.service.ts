@@ -527,7 +527,7 @@ export class SingleInstancesService {
       return;
     }
     const snapshot = image.sourceSnapshotId ? await this.adminRepository.getImageSnapshotById(image.sourceSnapshotId) : null;
-    const windows = `${snapshot?.osType ?? ''} ${snapshot?.platform ?? image.displayName}`.toLowerCase().includes('windows');
+    const windows = `${snapshot?.osType ?? ''} ${snapshot?.platform ?? ''}`.toLowerCase().includes('windows');
     const validation = validateAliyunEcsPassword(normalized, { windows });
     if (!validation.valid && validation.code) {
       throw new BadRequestException(`密码不符合阿里云 ECS 要求：${describeAliyunEcsPasswordFailure(validation.code)}。`);

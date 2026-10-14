@@ -70,6 +70,16 @@ describe('SingleInstancesService', () => {
     expect(f.network.ensureDefaultProfile).not.toHaveBeenCalled();
   });
 
+  it('accepts a Linux slash password when platform is null and the display name contains Windows', async () => {
+    const f = createLaunchFixture();
+    f.image.displayName = 'Windows training Ubuntu';
+    (f.repository.getImageSnapshotById as jest.Mock).mockResolvedValue({ id: 'source-1', isAvailable: true, osType: 'linux', platform: null });
+
+    await expect(f.service.launch({ ...f.input, password: '/Abcd1234' }, f.actor.id)).resolves.toMatchObject({ batch: { quantity: 2 } });
+    expect(f.config.getInstanceTypeAvailabilityInContext).toHaveBeenCalled();
+    expect(await f.repository.listProvisionJobs()).toHaveLength(2);
+  });
+
   it('accepts compliant passwords and keeps generating random passwords when blank', async () => {
     const f = createLaunchFixture();
     const launched = await f.service.launch({ ...f.input, password: 'Valid1234!' }, f.actor.id);
