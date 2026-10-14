@@ -59,6 +59,7 @@ import {
   ProvisionJobStepLogRecord,
   ReconcileImageSnapshotsInput,
   RangeInstanceRecord,
+  RangeResourceSummary,
   RangeInstanceSchedulingRecord,
   RangeInstanceDraftRevisionConflictError,
   SaveRangeInstanceDraftInput,
@@ -1634,7 +1635,9 @@ export class PrismaAdminRepository implements AdminRepository {
       return null;
     }
 
-    return this.getProvisionJobById(id);
+    const job = await this.getProvisionJobById(id);
+    // A delayed read must never lend this worker the next worker's claim.
+    return job?.status === 'running' && job.startedAt?.getTime() === startedAt.getTime() ? job : null;
   }
 
   async heartbeatProvisionJob(id: string, startedAt: Date, heartbeatAt: Date): Promise<boolean> {
@@ -1665,7 +1668,48 @@ export class PrismaAdminRepository implements AdminRepository {
       },
     });
 
+    await this.recoverSingleInstanceRefreshJobs(new Date());
     return result.count;
+  }
+
+  private async recoverSingleInstanceRefreshJobs(now: Date) {
+    const candidates = await this.prisma.rangeInstance.findMany({ where: {
+      instanceMode: 'single', status: 'creating', expiresAt: { gt: now },
+      lastJob: { OR: [
+        { status: 'succeeded', jobType: { in: ['create', 'retry', 'refresh_status'] } },
+        { status: 'failed', jobType: 'refresh_status' },
+      ] },
+    }, select: { id: true }, take: 100, orderBy: [{ updatedAt: 'asc' }, { id: 'asc' }] });
+    for (const candidate of candidates) {
+      await this.prisma.$transaction(async tx => {
+        const [lock] = await tx.$queryRaw<Array<{ acquired: boolean }>>`SELECT pg_try_advisory_xact_lock(714921, 1) AS acquired`;
+        if (!lock?.acquired) return;
+        const observed = await tx.rangeInstance.findUnique({ where: { id: candidate.id } });
+        if (!observed?.lastJobId) return;
+        // Use the same job -> instance lock order as completion and expiry.
+        await tx.$queryRaw`SELECT id FROM "ProvisionJob" WHERE id = ${observed.lastJobId}
+          AND "cloudWorkspaceId" = ${observed.cloudWorkspaceId} FOR UPDATE`;
+        const locked = await tx.rangeInstance.updateMany({ where: { id: observed.id,
+          lastJobId: observed.lastJobId, instanceMode: 'single', status: 'creating', expiresAt: { gt: now } },
+          data: { draftRevision: { increment: 0 } } });
+        if (locked.count !== 1) return;
+        const instance = await tx.rangeInstance.findUniqueOrThrow({ where: { id: observed.id } });
+        const config = instance.singleInstanceConfig as Record<string, unknown> | null;
+        const summary = instance.resourceSummary as RangeResourceSummary | null;
+        const hostKey = typeof config?.hostKey === 'string' ? config.hostKey : '';
+        if (!hostKey || !summary || !['ecs-native', 'opentofu'].includes(summary.mode)
+          || !summary.hostIds?.[hostKey] || !config?.cloudAccountUid || !config.cloudAccountContextId || !config.regionId) return;
+        const previous = await tx.provisionJob.findUnique({ where: { id: observed.lastJobId } });
+        if (!previous || previous.rangeInstanceId !== instance.id || previous.cloudWorkspaceId !== instance.cloudWorkspaceId
+          || previous.status !== 'succeeded' && !(previous.status === 'failed' && previous.jobType === 'refresh_status')
+          || !['create', 'retry', 'refresh_status'].includes(previous.jobType)
+          || await tx.provisionJob.count({ where: { rangeInstanceId: instance.id, status: { in: ['pending', 'running'] } } })) return;
+        const job = await tx.provisionJob.create({ data: { cloudWorkspaceId: instance.cloudWorkspaceId,
+          rangeInstanceId: instance.id, jobType: 'refresh_status', triggeredBy: previous.triggeredBy,
+          availableAt: new Date(now.getTime() + 2_000) } });
+        await tx.rangeInstance.update({ where: { id: instance.id }, data: { lastJobId: job.id } });
+      }, { timeout: 10_000, maxWait: 5_000 });
+    }
   }
 
   async updateProvisionJob(id: string, input: UpdateProvisionJobInput): Promise<ProvisionJobRecord> {
