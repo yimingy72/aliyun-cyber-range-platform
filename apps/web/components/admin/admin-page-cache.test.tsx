@@ -35,6 +35,19 @@ function RouteActivityProbe({ pathname, onActive }: { pathname: string; onActive
 }
 
 describe('AdminPageCache', () => {
+  it('audit-ui: mounts a fresh new-template page after returning to the list', () => {
+    const view = render(<TestAdminPageCache pathname="/admin/scenarios/new" pages={{
+      '/admin/scenarios/new': <RetainedPage label="first draft" />,
+    }} />);
+    fireEvent.click(screen.getByRole('button', { name: 'first draft:0' }));
+    view.rerender(<TestAdminPageCache pathname="/admin/scenarios" pages={{ '/admin/scenarios': <p>list</p> }} />);
+    expect(screen.queryByText('first draft:1')).toBeNull();
+    view.rerender(<TestAdminPageCache pathname="/admin/scenarios/new" pages={{
+      '/admin/scenarios/new': <RetainedPage label="second draft" />,
+    }} />);
+    expect(screen.getByRole('button', { name: 'second draft:0' })).toBeTruthy();
+    view.unmount();
+  });
   it('keeps high-frequency list pages, including billing, mounted while another route is active', () => {
     const { rerender } = render(
       <TestAdminPageCache

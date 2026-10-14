@@ -190,6 +190,19 @@ function selectTemplateView(view: 'mine' | 'platform') {
 }
 
 describe('TemplatesScreen', () => {
+  it.each(['private', 'platform'] as const)('audit-ui: submits the displayed all-view revision for %s visibility', async visibility => {
+    const template = { ...bootstrapPayload.rangeTemplates[1], id: 'other-owner', ownerUserId: 'another-user',
+      name: 'All view target', canManage: true, visibility, status: visibility === 'platform' ? 'published' : 'private', revision: 7 };
+    window.history.replaceState(null, '', '/admin/scenarios?view=all');
+    fetchRangeTemplatesMock.mockImplementation(async (_url, _token, view) => view === 'all' ? [template] : []);
+    const action = visibility === 'platform' ? unshareRangeTemplateMock : shareRangeTemplateMock;
+    action.mockResolvedValue({ ...template, revision: 8, visibility: visibility === 'platform' ? 'private' : 'platform' });
+    render(<TemplatesScreen />);
+    openTemplateActionMenu(await screen.findByRole('row', { name: /All view target/ }));
+    fireEvent.click(screen.getByRole('menuitem', { name: visibility === 'platform' ? '回退为私有' : '发布到平台' }));
+    await waitFor(() => expect(action).toHaveBeenCalledWith('http://localhost:3001', 'dev-admin-token', template.id, { expectedRevision: 7 }));
+    expect(fetchRangeTemplatesMock.mock.calls.every(call => call[2] === 'all')).toBe(true);
+  });
   it('shows all workspace drafts to administrators and opens another owner template for management', async () => {
     const draft = { ...bootstrapPayload.rangeTemplates[1], id: 'other-owner-draft', name: 'test1-test1', ownerUserId: 'other-user', createdBy: 'other-user', canManage: true };
     fetchRangeTemplatesMock.mockImplementation(async (_url: string, _token: string, view: string) => view === 'all' ? [draft] : []);

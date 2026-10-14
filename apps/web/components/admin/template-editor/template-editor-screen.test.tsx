@@ -1,13 +1,15 @@
 // @vitest-environment jsdom
 import React from 'react';
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { writeAdminSession } from '../../../lib/admin-auth-storage';
+import { invalidateAdminSessionForLogout, writeAdminSession } from '../../../lib/admin-auth-storage';
+import { AdminPageCache } from '../admin-page-cache';
 import { setCloudWorkspaceSelection, workspaceStorageKey } from '../../../lib/cloud-workspace-selection';
 import type { TopologyFlowCanvas } from './topology-flow-canvas';
 
 const workspaceState = vi.hoisted(() => ({ value: null as any }));
+const editorSessionState = vi.hoisted(() => ({ profile: { id: 'template-author-fixture', username: 'author', role: 'admin' as const } }));
 vi.mock('../cloud-workspace-provider', () => ({ useCloudWorkspace: () => workspaceState.value }));
 
 type TopologyFlowCanvasMockProps = React.ComponentProps<typeof TopologyFlowCanvas>;
@@ -268,6 +270,7 @@ vi.mock('../use-admin-session', () => ({
   useAdminSession: () => ({
     isReady: true,
     token: 'dev-admin-token',
+    profile: editorSessionState.profile,
     logout: () => undefined,
   }),
 }));
@@ -315,6 +318,7 @@ function buildUpdatedTemplateResponse(
 }
 
 beforeEach(() => {
+  editorSessionState.profile = { id: 'template-author-fixture', username: 'author', role: 'admin' };
   workspaceState.value = null;
   setCloudWorkspaceSelection('template-author-fixture', null);
   const store = new Map<string, string>();
@@ -4453,4 +4457,109 @@ it.each([80, 8081])('surfaces the Alibaba compiler DNAT backend constraint befor
       expect.objectContaining({ externalPort: 8080, internalPort: 80 }), expect.objectContaining({ externalPort: 8081, internalPort: 8081 }),
     ]));
   }
+});
+
+
+function userFlowTemplate(id = 'new', name = 'Draft A') {
+  return {
+    id, name, slug: 'user-flow', version: 'v1', draftId: name, status: 'private' as const, visibility: 'private' as const, revision: 1,
+    topologyGraph: {
+      schemaVersion: '2.0.0',
+      nodes: [
+        { id: 'router', kind: 'router', label: 'Router', routeRole: 'egress', egressType: 'internet', bindEip: false },
+        { id: 'switch', kind: 'switch', label: 'Switch', zoneKey: 'dmz', cidr: '10.0.10.0/24', purpose: 'dmz', aclRules: [],
+          nat: { snatEnabled: true, dnatMappings: [{ key: 'ssh', targetHostId: 'host', protocol: 'tcp', externalPort: 22, internalPort: 22 }] } },
+        { id: 'host', kind: 'ecs', label: 'Host', hostName: 'fixture', zoneKey: 'dmz', role: 'entry', privateIp: '10.0.10.10',
+          cpu: 2, memory: 2, exposePublic: true, image: 'Ubuntu 24.04 LTS', imageName: 'Ubuntu 24.04 LTS',
+          imageId: 'ubuntu_24_04_x64_20G_alibase', platformImageAssetId: 'platform-image-1',
+          imageStrategy: { mode: 'fixed', imageId: 'ubuntu_24_04_x64_20G_alibase' },
+          instanceTypeStrategy: { mode: 'auto' }, initScript: '', portGroups: [], networkInterfaces: [], dnatMappings: [],
+          nics: [{ id: 'nic', switchId: 'switch', zoneKey: 'dmz', privateIp: '10.0.10.10', secondaryIps: [], securityGroupRules: [] }] },
+      ],
+      edges: [{ id: 'router-switch', fromNodeId: 'router', toNodeId: 'switch', relationType: 'manual' },
+        { id: 'switch-host', fromNodeId: 'switch', toNodeId: 'host', relationType: 'manual' }],
+    },
+  };
+}
+
+describe('template user-flow regressions', () => {
+  it('audit-ui: a second new draft creates a second resource instead of saving the first template', async () => {
+    createRangeTemplateMock.mockImplementation(async (_url, _token, payload) =>
+      buildUpdatedTemplateResponse(payload, { id: payload.name === 'Draft A' ? 'saved-a' : 'saved-b', name: payload.name }));
+    const page = (name: string) => <AdminPageCache pathname="/admin/scenarios/new" createPage={() => null}>
+      <TemplateEditorScreen templateId="new" template={userFlowTemplate('new', name)} />
+    </AdminPageCache>;
+    const view = render(page('Draft A'));
+    fireEvent.click(screen.getByRole('button', { name: '检测与保存' }));
+    await waitFor(() => expect(replaceMock).toHaveBeenCalledWith('/admin/scenarios/saved-a'));
+    view.rerender(<AdminPageCache pathname="/admin/scenarios" createPage={() => null}><p>list</p></AdminPageCache>);
+    view.rerender(page('Draft B'));
+    expect(screen.getByRole('heading', { name: 'Draft B' })).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: '检测与保存' }));
+    await waitFor(() => expect(replaceMock).toHaveBeenCalledWith('/admin/scenarios/saved-b'));
+    expect(createRangeTemplateMock).toHaveBeenCalledTimes(2);
+    expect(validateAndSaveRangeTemplateMock).not.toHaveBeenCalled();
+  });
+
+  it.each(['unmount', 'workspace', 'identity', 'logout'] as const)(
+    'audit-ui: ignores a delayed new-template response after %s', async change => {
+      const originalProfile = editorSessionState.profile;
+      writeAdminSession({ token: 'dev-admin-token', profile: originalProfile });
+      setCloudWorkspaceSelection(originalProfile.id, 'space-a');
+      workspaceState.value = { workspace: { id: 'space-a', provider: 'alibaba_cloud', isReadOnly: false, capabilities: { provisioning: true } } };
+      let resolveSave!: (value: unknown) => void;
+      createRangeTemplateMock.mockReturnValue(new Promise(resolve => { resolveSave = resolve; }));
+      const child = <TemplateEditorScreen templateId="new" template={userFlowTemplate()} />;
+      const view = render(child);
+      fireEvent.click(screen.getByRole('button', { name: '检测与保存' }));
+      await waitFor(() => expect(createRangeTemplateMock).toHaveBeenCalledTimes(1));
+      if (change === 'unmount') view.unmount();
+      if (change === 'workspace') {
+        setCloudWorkspaceSelection(originalProfile.id, 'space-b');
+        workspaceState.value = { workspace: { ...workspaceState.value.workspace, id: 'space-b' } };
+      }
+      if (change === 'identity') {
+        editorSessionState.profile = { ...originalProfile, id: 'other-author' };
+        writeAdminSession({ token: 'other-token', profile: editorSessionState.profile });
+        setCloudWorkspaceSelection(editorSessionState.profile.id, 'space-a');
+      }
+      if (change === 'logout') {
+        invalidateAdminSessionForLogout();
+        writeAdminSession({ token: 'new-login-token', profile: originalProfile });
+      }
+      if (change !== 'unmount') view.rerender(<TemplateEditorScreen templateId="new" template={userFlowTemplate()} />);
+      const currentDraftKey = workspaceStorageKey('template-editor:new-template');
+      window.sessionStorage.setItem(currentDraftKey, '{"draftId":"current","name":"Current draft"}');
+      const currentCacheKey = workspaceStorageKey('template-editor:topology-cache:saved-a:4');
+      const payload = createRangeTemplateMock.mock.calls[0]![2];
+      await act(async () => resolveSave(buildUpdatedTemplateResponse(payload, { id: 'saved-a' })));
+      expect(window.sessionStorage.getItem(currentDraftKey)).toContain('Current draft');
+      expect(window.localStorage.getItem(currentCacheKey)).toBeNull();
+      expect(replaceMock).not.toHaveBeenCalled();
+      expect(screen.queryByText('拓扑检测通过，已保存')).toBeNull();
+      if (change !== 'unmount') expect(screen.getByRole('button', { name: '检测与保存' }).hasAttribute('disabled')).toBe(false);
+    },
+  );
+
+  it.each(['success', 'failure'] as const)('audit-ui: ignores delayed publish %s after switching workspaces', async outcome => {
+    writeAdminSession({ token: 'dev-admin-token', profile: editorSessionState.profile });
+    setCloudWorkspaceSelection(editorSessionState.profile.id, 'space-a');
+    workspaceState.value = { workspace: { id: 'space-a', provider: 'alibaba_cloud', isReadOnly: false, capabilities: { provisioning: true } } };
+    let rejectPublish!: (error: Error) => void;
+    let resolvePublish!: (value: unknown) => void;
+    shareRangeTemplateMock.mockReturnValue(new Promise((resolve, reject) => { resolvePublish = resolve; rejectPublish = reject; }));
+    const view = render(<TemplateEditorScreen templateId="template-1" template={userFlowTemplate('template-1')} />);
+    fireEvent.click(screen.getByRole('button', { name: '发布到平台' }));
+    await waitFor(() => expect(shareRangeTemplateMock).toHaveBeenCalledTimes(1));
+    setCloudWorkspaceSelection(editorSessionState.profile.id, 'space-b');
+    workspaceState.value = { workspace: { ...workspaceState.value.workspace, id: 'space-b' } };
+    view.rerender(<TemplateEditorScreen templateId="template-1" template={userFlowTemplate('template-1')} />);
+    await act(async () => {
+      if (outcome === 'failure') rejectPublish(new Error('old workspace failure'));
+      else resolvePublish({ ...userFlowTemplate('template-1'), status: 'published', visibility: 'platform', revision: 2 });
+    });
+    expect(screen.queryByText(/old workspace failure/)).toBeNull();
+    expect(screen.queryByText('拓扑已发布到平台。')).toBeNull();
+    expect(screen.getByRole('button', { name: '发布到平台' }).hasAttribute('disabled')).toBe(false);
+  });
 });

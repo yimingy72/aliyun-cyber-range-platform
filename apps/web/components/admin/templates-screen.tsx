@@ -613,7 +613,7 @@ export function TemplatesScreen({
     }
   }
 
-  async function handleShareTemplate(id: string): Promise<Scenario> {
+  async function handleShareTemplate(template: Scenario): Promise<Scenario> {
     if (!session.token) {
       throw new Error('admin session missing');
     }
@@ -622,9 +622,8 @@ export function TemplatesScreen({
     setActionSuccessMessage(null);
 
     try {
-      const template = myTemplates.find((item) => item.id === id) ?? platformTemplates.find((item) => item.id === id);
-      const savedTemplate = await shareRangeTemplate(apiBaseUrl, session.token, id, {
-        expectedRevision: template?.revision ?? 0,
+      const savedTemplate = await shareRangeTemplate(apiBaseUrl, session.token, template.id, {
+        expectedRevision: template.revision,
       });
       syncOwnedTemplate(savedTemplate);
       setActionSuccessMessage('已发布到平台。');
@@ -634,7 +633,7 @@ export function TemplatesScreen({
     }
   }
 
-  async function handleUnshareTemplate(id: string): Promise<Scenario> {
+  async function handleUnshareTemplate(template: Scenario): Promise<Scenario> {
     if (!session.token) {
       throw new Error('admin session missing');
     }
@@ -643,9 +642,8 @@ export function TemplatesScreen({
     setActionSuccessMessage(null);
 
     try {
-      const template = myTemplates.find((item) => item.id === id) ?? platformTemplates.find((item) => item.id === id);
-      const savedTemplate = await unshareRangeTemplate(apiBaseUrl, session.token, id, {
-        expectedRevision: template?.revision ?? 0,
+      const savedTemplate = await unshareRangeTemplate(apiBaseUrl, session.token, template.id, {
+        expectedRevision: template.revision,
       });
       syncOwnedTemplate(savedTemplate);
       setActionSuccessMessage('已回退为私有。');
@@ -1000,11 +998,11 @@ export function TemplatesScreen({
                                         编辑信息
                                       </DropdownMenuItem>
                                       {isShared ? (
-                                        <DropdownMenuItem onSelect={() => void handleUnshareTemplate(template.id)}>
+                                        <DropdownMenuItem onSelect={() => void handleUnshareTemplate(template)}>
                                           回退为私有
                                         </DropdownMenuItem>
                                       ) : (
-                                        <DropdownMenuItem onSelect={() => void handleShareTemplate(template.id)}>
+                                        <DropdownMenuItem onSelect={() => void handleShareTemplate(template)}>
                                           发布到平台
                                         </DropdownMenuItem>
                                       )}

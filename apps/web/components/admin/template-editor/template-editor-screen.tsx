@@ -24,6 +24,7 @@ import {
   validateAndSaveRangeTemplate,
 } from '../../../lib/admin-api';
 import { useAdminScreenCache } from '../../../lib/admin-screen-cache';
+import { readAdminSession } from '../../../lib/admin-auth-storage';
 import { tencentImageError, verifiedTencentInstanceTypes } from '@/lib/cloud-execution-policy';
 import { readCloudWorkspaceSelection, workspaceStorageKey } from '../../../lib/cloud-workspace-selection';
 import { useCloudWorkspace } from '../cloud-workspace-provider';
@@ -1136,6 +1137,24 @@ export function TemplateEditorScreen({
   const [loadError, setLoadError] = useState<string | null>(null);
   const [loadAttempt, setLoadAttempt] = useState(0);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const storedSession = readAdminSession();
+  const requestScope = JSON.stringify([apiBaseUrl, session.profile?.id, session.profile?.role, storedSession?.sessionGeneration, workspace?.id, templateId]);
+  const requestContextRef = useRef({ scope: requestScope });
+  if (requestContextRef.current.scope !== requestScope) requestContextRef.current = { scope: requestScope };
+  const mountedRef = useRef(true);
+  useEffect(() => { mountedRef.current = true; return () => { mountedRef.current = false; }; }, []);
+  useEffect(() => { setIsSubmitting(false); }, [requestScope]);
+
+  function captureRequestGuard() {
+    const context = requestContextRef.current;
+    return () => {
+      if (!mountedRef.current || requestContextRef.current !== context) return false;
+      if (workspace?.id && readCloudWorkspaceSelection(session.profile?.id) !== workspace.id) return false;
+      const currentSession = readAdminSession();
+      return !storedSession || (currentSession?.profile.id === storedSession.profile.id && currentSession.profile.role === storedSession.profile.role &&
+        currentSession?.sessionGeneration === storedSession.sessionGeneration);
+    };
+  }
   const [platformImageAssets, setPlatformImageAssets] = useState<PlatformImageAsset[]>([]);
   const [instanceTypeAvailability, setInstanceTypeAvailability] = useState<InstanceTypeAvailabilitySnapshot | null>(
     null,
@@ -1853,8 +1872,9 @@ export function TemplateEditorScreen({
     }
 
     let payload: ReturnType<typeof buildValidatedDraftPayload>;
+    const isCurrentRequest = captureRequestGuard();
+    const newTemplateSessionKey = workspaceStorageKey(NEW_TEMPLATE_SESSION_KEY);
     setIsSubmitting(true);
-    const sourceWorkspaceId = workspace?.id;
     try {
       let validatedNodes = nodes;
       if (currentProvider() === 'tencent_cloud') {
@@ -1872,9 +1892,10 @@ export function TemplateEditorScreen({
           return { ...node, instanceType: instanceTypes[0], instanceTypeStrategy: { mode: 'prefer-list' as const, preferredInstanceTypes: instanceTypes } };
         }));
       }
-      if (sourceWorkspaceId && readCloudWorkspaceSelection() !== sourceWorkspaceId) throw new Error('云账号工作空间已切换，请在当前空间重新检测。');
+      if (!isCurrentRequest()) return;
       payload = buildValidatedDraftPayload(template, validatedNodes, edges, viewport);
     } catch (error) {
+      if (!isCurrentRequest()) return;
       setStatusMessage(readPersistTopologyErrorMessage(error));
       setIsSubmitting(false);
       return;
@@ -1895,6 +1916,7 @@ export function TemplateEditorScreen({
               ...payload,
               expectedRevision: template.revision,
             });
+      if (!isCurrentRequest()) return;
       const nextCacheKey = readTopologyCacheKey(nextTemplate, nextTemplate.id);
 
       if (previousCacheKey && previousCacheKey !== nextCacheKey) {
@@ -1902,7 +1924,7 @@ export function TemplateEditorScreen({
       }
 
       if (template.id === 'new' && typeof window !== 'undefined') {
-        window.sessionStorage.removeItem(workspaceStorageKey(NEW_TEMPLATE_SESSION_KEY));
+        window.sessionStorage.removeItem(newTemplateSessionKey);
       }
 
       applyTemplateState(nextTemplate);
@@ -1913,9 +1935,10 @@ export function TemplateEditorScreen({
         router.replace(`/admin/scenarios/${nextTemplate.id}`);
       }
     } catch (error) {
+      if (!isCurrentRequest()) return;
       setStatusMessage(readPersistTopologyErrorMessage(error));
     } finally {
-      setIsSubmitting(false);
+      if (isCurrentRequest()) setIsSubmitting(false);
     }
   }
 
@@ -1941,6 +1964,7 @@ export function TemplateEditorScreen({
       return;
     }
 
+    const isCurrentRequest = captureRequestGuard();
     setIsSubmitting(true);
 
     try {
@@ -1948,6 +1972,7 @@ export function TemplateEditorScreen({
       const nextTemplate = await shareRangeTemplate(apiBaseUrl, session.token, template.id, {
         expectedRevision: template.revision,
       });
+      if (!isCurrentRequest()) return;
       const nextCacheKey = readTopologyCacheKey(nextTemplate, nextTemplate.id);
 
       if (previousCacheKey && previousCacheKey !== nextCacheKey) {
@@ -1958,9 +1983,10 @@ export function TemplateEditorScreen({
       screenCache?.invalidate(apiBaseUrl, session.token, 'templates:');
       setStatusMessage('拓扑已发布到平台。');
     } catch (error) {
+      if (!isCurrentRequest()) return;
       setStatusMessage(readPublishErrorMessage(error));
     } finally {
-      setIsSubmitting(false);
+      if (isCurrentRequest()) setIsSubmitting(false);
     }
   }
 

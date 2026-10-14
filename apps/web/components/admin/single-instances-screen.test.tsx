@@ -1,6 +1,9 @@
 import React from 'react';
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { AdminScreenCacheProvider, useAdminScreenCache } from '../../lib/admin-screen-cache';
+
+const singleSessionState = vi.hoisted(() => ({ profile: { id: 'fixture-user', username: 'fixture', role: 'user' as 'user' | 'admin' } }));
 
 const {
   fetchSingleInstancesMock,
@@ -62,6 +65,8 @@ vi.mock('next/navigation', () => ({
 vi.mock('./use-admin-session', () => ({
   useAdminSession: () => ({
     token: 'dev-admin-token',
+    profile: singleSessionState.profile,
+    isAdmin: singleSessionState.profile.role === 'admin',
     isReady: true,
     login: vi.fn(),
     logout: vi.fn(),
@@ -212,6 +217,7 @@ describe('SingleInstancesScreen', () => {
   });
 
   beforeEach(() => {
+    singleSessionState.profile = { id: 'fixture-user', username: 'fixture', role: 'user' };
     workspaceState.value = null;
     fetchSingleInstancesMock.mockReset();
     fetchProvisionJobsMock.mockReset();
@@ -1761,7 +1767,7 @@ describe('SingleInstancesScreen', () => {
     fetchSingleInstancesMock.mockResolvedValue([]);
     fetchProvisionJobsMock.mockResolvedValue([]);
     fetchPlatformImagesMock.mockImplementation(
-      () =>
+      (_url, _token, view) => view === 'mine' ? Promise.resolve({ items: [] }) :
         new Promise((resolve) => {
           resolveImages = resolve;
         }),
@@ -1804,5 +1810,81 @@ describe('SingleInstancesScreen', () => {
 
     expect(await screen.findByText('暂无实例')).toBeTruthy();
     expect(screen.queryByRole('status', { name: '正在加载实例列表' })).toBeNull();
+  });
+});
+
+
+describe('single instance user-flow regressions', () => {
+  beforeEach(() => {
+    singleSessionState.profile = { id: 'fixture-user', username: 'fixture', role: 'user' };
+    fetchSingleInstancesMock.mockReset();
+    fetchPlatformImagesMock.mockReset();
+    fetchInstanceTypeAvailabilityMock.mockReset();
+    triggerSingleInstanceActionMock.mockReset();
+    fetchProvisionJobsMock.mockResolvedValue([]);
+    searchParamsState.value = '';
+    vi.stubGlobal('ResizeObserver', ResizeObserverMock);
+  });
+  afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
+
+  it('audit-ui: an old pack failure cannot navigate a new login to the login page', async () => {
+    fetchSingleInstancesMock.mockResolvedValue([{ id: 'single-running', name: 'running-lab', instanceMode: 'single', status: 'running',
+      createdAt: '2026-07-08T09:00:00Z', singleInstanceConfig: { hostName: 'fixture', imageDisplayName: 'Ubuntu', cpu: 2, memory: 2 } }]);
+    fetchPlatformImagesMock.mockResolvedValue({ items: [] });
+    let rejectPack!: (error: Error) => void;
+    triggerSingleInstanceActionMock.mockReturnValue(new Promise((_resolve, reject) => { rejectPack = reject; }));
+    const view = render(<SingleInstancesScreen />);
+    await screen.findByText('running-lab');
+    fireEvent.keyDown(screen.getByRole('button', { name: '更多操作' }), { key: 'Enter' });
+    fireEvent.click(screen.getByRole('menuitem', { name: '打包为镜像' }));
+    fireEvent.click(screen.getByRole('button', { name: '确认打包' }));
+    await waitFor(() => expect(triggerSingleInstanceActionMock).toHaveBeenCalledTimes(1));
+    replaceMock.mockClear();
+    singleSessionState.profile = { id: 'another-user', username: 'another', role: 'user' };
+    view.rerender(<SingleInstancesScreen />);
+    await act(async () => rejectPack(new AdminApiError(401)));
+    expect(replaceMock).not.toHaveBeenCalledWith('/admin/login');
+    expect(screen.queryByText('镜像打包失败，请稍后重试。')).toBeNull();
+  });
+
+  it.each(['user', 'admin'] as const)('audit-ui: %s can preselect a private image with separate caches and deduplicated options', async role => {
+    singleSessionState.profile.role = role;
+    searchParamsState.value = 'create=1&platformImageAssetId=owned-image';
+    const publicImage = { id: 'shared-image', imageId: 'm-shared', displayName: 'Shared', enabled: true, visibility: 'platform' };
+    const privateImage = { id: 'owned-image', imageId: 'm-private', displayName: 'Owned private', enabled: true, visibility: 'private' };
+    fetchSingleInstancesMock.mockResolvedValue([]);
+    fetchPlatformImagesMock.mockImplementation(async (_url, _token, view) => ({ items: view === 'mine' ? [publicImage, privateImage] : [publicImage] }));
+    fetchInstanceTypeAvailabilityMock.mockResolvedValue({ cpu: 2, memory: 2, exactAvailable: true, matches: [] });
+    let cache: ReturnType<typeof useAdminScreenCache>;
+    function Probe() { cache = useAdminScreenCache(); return null; }
+    render(<AdminScreenCacheProvider><Probe /><SingleInstancesScreen /></AdminScreenCacheProvider>);
+    await screen.findByRole('dialog', { name: '创建实例' });
+    expect(screen.getByLabelText('镜像')).toHaveProperty('value', 'Owned private (m-private)');
+    expect(fetchPlatformImagesMock).toHaveBeenCalledWith('http://localhost:3001', 'dev-admin-token', 'mine');
+    expect(cache!.read<any>('http://localhost:3001', 'dev-admin-token', 'platform-images:platform')!.data.items).toEqual([publicImage]);
+    expect(cache!.read<any>('http://localhost:3001', 'dev-admin-token', 'platform-images:mine')!.data.items).toEqual([publicImage, privateImage]);
+    fireEvent.focus(screen.getByLabelText('镜像'));
+    fireEvent.change(screen.getByLabelText('镜像'), { target: { value: '' } });
+    await waitFor(() => expect(screen.getAllByRole('option', { name: /Shared/ })).toHaveLength(1));
+    expect(screen.getAllByRole('option', { name: /Owned private/ })).toHaveLength(1);
+  });
+
+  it('audit-ui: packing invalidates an already fresh mine snapshot', async () => {
+    fetchSingleInstancesMock.mockResolvedValue([{ id: 'single-running', name: 'running-lab', instanceMode: 'single', status: 'running',
+      createdAt: '2026-07-08T09:00:00Z', singleInstanceConfig: { hostName: 'fixture', imageDisplayName: 'Ubuntu', cpu: 2, memory: 2 } }]);
+    fetchPlatformImagesMock.mockResolvedValue({ items: [] });
+    triggerSingleInstanceActionMock.mockResolvedValue({ status: 'accepted', action: 'pack-image', imageReady: false });
+    let cache: ReturnType<typeof useAdminScreenCache>;
+    function Probe() { cache = useAdminScreenCache(); return null; }
+    render(<AdminScreenCacheProvider><Probe /><SingleInstancesScreen /></AdminScreenCacheProvider>);
+    await screen.findByText('running-lab');
+    await act(async () => { await cache!.load('http://localhost:3001', 'dev-admin-token', 'image-center:mine', async () => ({ assets: [], jobs: [] })); });
+    expect(cache!.read('http://localhost:3001', 'dev-admin-token', 'image-center:mine')?.isFresh).toBe(true);
+    fireEvent.keyDown(screen.getByRole('button', { name: '更多操作' }), { key: 'Enter' });
+    fireEvent.click(screen.getByRole('menuitem', { name: '打包为镜像' }));
+    fireEvent.click(screen.getByRole('button', { name: '确认打包' }));
+    await waitFor(() => expect(triggerSingleInstanceActionMock).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(cache!.read('http://localhost:3001', 'dev-admin-token', 'image-center:mine')).toBeNull());
+    expect(screen.queryByRole('dialog', { name: '打包为镜像' })).toBeNull();
   });
 });

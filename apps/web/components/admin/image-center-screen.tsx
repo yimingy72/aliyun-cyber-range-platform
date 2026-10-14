@@ -744,7 +744,9 @@ function CloudImageCenterScreen({
   }
 
   function syncAssetAcrossViews(nextAsset: PlatformImageAsset) {
+    if (!mountedRef.current) return;
     verifyImageSpace([nextAsset]);
+    discardAssetListRequests();
     setPlatformAssets((previous) => {
       if (nextAsset.visibility === 'private') {
         return previous.filter((item) => item.id !== nextAsset.id);
@@ -762,8 +764,17 @@ function CloudImageCenterScreen({
   }
 
   function removeAssetFromViews(assetId: string) {
+    if (!mountedRef.current) return;
+    discardAssetListRequests();
     setPlatformAssets((previous) => previous.filter((item) => item.id !== assetId));
     setMyAssets((previous) => previous.filter((item) => item.id !== assetId));
+  }
+
+  function discardAssetListRequests() {
+    platformRequestVersionRef.current += 1;
+    mineRequestVersionRef.current += 1;
+    screenCache?.invalidate(apiBaseUrl, session.token, 'platform-images:');
+    screenCache?.invalidate(apiBaseUrl, session.token, 'image-center:mine');
   }
 
   function handleCreateInstance(asset: PlatformImageAsset) {
@@ -983,9 +994,10 @@ function CloudImageCenterScreen({
   }, [apiBaseUrl, isPageActive, screenCache, session.isReady, session.token]);
 
   const hasImportingJobs = imageImportJobs.some((job) => job.status === 'importing');
+  const hasCreatingImages = myAssets.some((asset) => /^Creating\b/i.test(asset.sourceSnapshotStatus?.trim() ?? ''));
 
   useEffect(() => {
-    if (!isPageActive || !session.token || !hasImportingJobs) {
+    if (!isPageActive || !session.token || (!hasImportingJobs && !hasCreatingImages)) {
       return;
     }
 
@@ -1009,7 +1021,7 @@ function CloudImageCenterScreen({
       isActive = false;
       window.clearInterval(interval);
     };
-  }, [apiBaseUrl, hasImportingJobs, isPageActive, session.token]);
+  }, [apiBaseUrl, hasCreatingImages, hasImportingJobs, isPageActive, session.token]);
 
   useEffect(() => {
     if (!isPageActive || !session.isReady) {
@@ -1065,6 +1077,10 @@ function CloudImageCenterScreen({
     let isActive = true;
     setIsLoading(!loadedTabs[activeTab]);
     clearTabError(activeTab);
+    const isCurrentListRequest = () => isActive && (activeTab === 'platform'
+      ? platformRequestVersionRef.current === platformRequestVersion
+      : activeTab === 'custom' ? customScopeRequestVersionRef.current === customRequestVersion
+        : activeTab === 'public' ? publicScopeRequestVersionRef.current === publicRequestVersion : true);
 
     const request =
       activeTab === 'platform'
@@ -1128,7 +1144,7 @@ function CloudImageCenterScreen({
 
     request
       .then((didLoad) => {
-        if (!isActive) {
+        if (!isCurrentListRequest()) {
           return;
         }
 
@@ -1142,7 +1158,7 @@ function CloudImageCenterScreen({
         }
       })
       .catch((error) => {
-        if (!isActive) {
+        if (!isCurrentListRequest()) {
           return;
         }
 
@@ -1193,6 +1209,7 @@ function CloudImageCenterScreen({
 
       if (publicScopeRequestVersionRef.current === requestVersion) {
         setPublicScope(nextScope);
+        markTabLoaded('public');
         markTableContentUpdated('public');
       }
     } catch (error) {
@@ -1226,6 +1243,7 @@ function CloudImageCenterScreen({
 
       if (customScopeRequestVersionRef.current === requestVersion) {
         setCustomScope(nextScope);
+        markTabLoaded('custom');
         markTableContentUpdated('custom');
       }
     } catch (error) {
@@ -1625,21 +1643,19 @@ function CloudImageCenterScreen({
     }
 
     const actionKey = `delete:custom:${snapshot.id}`;
-    const requestVersion = customScopeRequestVersionRef.current + 1;
-    customScopeRequestVersionRef.current = requestVersion;
+    customScopeRequestVersionRef.current += 1;
 
     try {
       setActionErrorMessage('');
       beginAction(actionKey);
       await deleteCustomImageSnapshot(apiBaseUrl, session.token, snapshot.id, { deleteOwnedSnapshots });
-
-      if (customScopeRequestVersionRef.current === requestVersion) {
-        setCustomScope((previous) => {
-          const withoutImage = removeSnapshot(previous, snapshot.id);
-          if (!withoutImage || !previous || deleteOwnedSnapshots || !snapshot.ownedSnapshotCleanup) return withoutImage;
-          return { ...withoutImage, snapshots: previous.snapshots.map(item => item.id === snapshot.id ? { ...item, status: 'Deleted', isAvailable: false } : item) };
-        });
-      }
+      if (!mountedRef.current) return;
+      customScopeRequestVersionRef.current += 1;
+      setCustomScope((previous) => {
+        const withoutImage = removeSnapshot(previous, snapshot.id);
+        if (!withoutImage || !previous || deleteOwnedSnapshots || !snapshot.ownedSnapshotCleanup) return withoutImage;
+        return { ...withoutImage, snapshots: previous.snapshots.map(item => item.id === snapshot.id ? { ...item, status: 'Deleted', isAvailable: false } : item) };
+      });
       for (const asset of [...platformAssets, ...myAssets]) if (asset.sourceSnapshotId === snapshot.id) removeAssetFromViews(asset.id);
       closeConfirmDialog();
     } catch (error) {
