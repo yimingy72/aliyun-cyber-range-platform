@@ -419,6 +419,7 @@ model PackedImageArtifact {
   sourceInstanceId         String
   sourceDiskIds            Json
   sourceSnapshotBaseline   Json?
+  assetConfigCiphertext    String?  @db.Text
   imageId                  String?
   sourceSnapshotId         String?
   platformImageAssetId     String?

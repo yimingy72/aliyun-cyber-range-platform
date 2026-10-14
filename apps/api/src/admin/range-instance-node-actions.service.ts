@@ -187,9 +187,10 @@ export class RangeInstanceNodeActionsService {
     if (!ownerUserId || !accountContext.accountUid || !accountContext.cloudAccountContextId) throw new ConflictException('打包需要明确 owner 和已验证云账号。');
     const artifact = await this.packedImages.begin({ cloudAccountContextId: accountContext.cloudAccountContextId, cloudAccountUid: accountContext.accountUid, regionId: accountContext.defaultRegion, ownerUserId, sourceRangeInstanceId: rangeInstanceId, sourceHostKey: nodeId, sourceInstanceId: hostInstanceId }, {
       id: accountContext.cloudAccountContextId, provider: accountContext.provider, accountUid: accountContext.accountUid, regionId: accountContext.defaultRegion, zoneId: accountContext.defaultZoneId, accessKeyId: accountContext.accessKeyId, accessKeySecret: accountContext.accessKeySecret, imageImportBucket: accountContext.imageImportBucket, status: 'ready',
-    });
+    }, { displayName, defaultHostName, defaultPassword: encryptPlatformImageDefaultPassword(defaultPassword), description });
     let packPhase: PackedImagePhase = 'create_image';
     try {
+      if (accountContext.provider === 'alibaba_cloud') await this.packedImages.updateClaimed(artifact.id, artifact.submissionToken, { status: 'creating' });
       const createImageResponse = accountContext.provider === 'tencent_cloud'
         ? await this.packedImages.submitTencentImage(artifact, { id: accountContext.cloudAccountContextId, provider: 'tencent_cloud', accountUid: accountContext.accountUid, regionId: accountContext.defaultRegion, zoneId: accountContext.defaultZoneId, accessKeyId: accountContext.accessKeyId, accessKeySecret: accountContext.accessKeySecret, imageImportBucket: accountContext.imageImportBucket, status: 'ready' }, { name: displayName, description })
         : await this.performAliyunRpcRequest<{
@@ -259,20 +260,11 @@ export class RangeInstanceNodeActionsService {
         throw new Error('Image snapshot was not persisted after CreateImage');
       }
 
-      const platformImageAsset = await claimed.collectPlatformImageAsset({
-        snapshotId: snapshot.id,
-        displayName,
-        defaultHostName,
-        defaultPassword: encryptPlatformImageDefaultPassword(defaultPassword),
-        description,
-        ownerUserId,
-        visibility: 'private',
-      });
-      const disabledAsset = await claimed.setPlatformImageAssetEnabled(platformImageAsset.id, false);
+      const { platformImageAsset } = await this.packedImages.persistAsset((await claimed.getPackedImageArtifact(artifact.id))!, snapshot.id, claimed, false);
       await claimed.updatePackedImageArtifact(artifact.id, { imageId, sourceSnapshotId: snapshot.id, platformImageAssetId: platformImageAsset.id, status: 'creating' });
       await this.packedImages.upsertLedger((await claimed.getPackedImageArtifact(artifact.id))!, imageId, 'image', undefined, claimed);
 
-      return { platformImageAsset: disabledAsset, snapshot };
+      return { platformImageAsset, snapshot };
       });
 
       return {

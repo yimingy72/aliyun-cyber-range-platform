@@ -62,7 +62,7 @@ describe('Range instance node actions API', () => {
       }
 
       if (url.includes('CreateImage')) {
-        return new Response(JSON.stringify({ ImageId: 'm-image-123' }), { status: 200 });
+        return new Response(JSON.stringify({ ImageId: 'm-packed-image-123' }), { status: 200 });
       }
 
       if (url.includes('DescribeImages')) {
@@ -261,14 +261,14 @@ describe('Range instance node actions API', () => {
       })
       .expect(201);
 
-    expect(response.body.imageId).toBe('m-image-123');
+    expect(response.body.imageId).toBe('m-packed-image-123');
     expect(response.body.defaultHostName).toBe('checker-host');
     expect(response.body.defaultPassword).toBe('DefaultPass123!');
     expect(response.body.description).toBe('snapshot note');
     expect(response.body.imageReady).toBe(false);
     expect(response.body.platformImageAsset).toEqual(
       expect.objectContaining({
-        imageId: 'm-image-123',
+        imageId: 'm-packed-image-123',
         displayName: 'checker-snapshot',
         defaultHostName: 'checker-host',
         defaultPassword: expect.stringMatching(/^enc:v1:/),
