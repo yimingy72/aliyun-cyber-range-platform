@@ -78,6 +78,9 @@ describe('SingleInstancesService', () => {
     await expect(f.service.launch({ ...f.input, password: '/Abcd1234' }, f.actor.id)).resolves.toMatchObject({ batch: { quantity: 2 } });
     expect(f.config.getInstanceTypeAvailabilityInContext).toHaveBeenCalled();
     expect(await f.repository.listProvisionJobs()).toHaveLength(2);
+    for (const instance of await f.repository.listRangeInstances()) {
+      expect(Object.values(instance.runtimeCredentials!)).toEqual([expect.objectContaining({ username: 'root' })]);
+    }
   });
 
   it('accepts compliant passwords and keeps generating random passwords when blank', async () => {

@@ -264,7 +264,7 @@ export class SingleInstancesService {
       if (systemDiskSize < metadata[image.imageId].minimumSystemDiskSize) throw new ConflictException('腾讯云镜像系统盘要求已变化，请重新提交。');
     }
     const sourceSnapshot = image.sourceSnapshotId ? await this.adminRepository.getImageSnapshotById(image.sourceSnapshotId) : null;
-    const runtimeUsername = `${sourceSnapshot?.osType ?? ''} ${sourceSnapshot?.platform ?? image.displayName}`.toLowerCase().includes('windows') ? 'Administrator' : 'root';
+    const runtimeUsername = `${sourceSnapshot?.osType ?? ''} ${sourceSnapshot?.platform ?? ''}`.toLowerCase().includes('windows') ? 'Administrator' : 'root';
     const sharedPassword = input.password?.trim() || null;
     const quantity = input.quantity;
     const activeCount = (await this.adminRepository.listRangeInstances()).filter(
