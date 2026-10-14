@@ -2431,8 +2431,9 @@ export class ProvisioningWorkerService {
     }
 
     const operation = await this.adminRepository.getIdempotentOperationByOperationId(event.operationId);
-    if (operation && operation.status === status) return;
-    if (operation) {
+    const recoveryIntake = operation && ['web_range_instance_retry', 'web_range_instance_destroy'].includes(operation.toolName);
+    if (!recoveryIntake && operation && operation.status === status) return;
+    if (operation && !recoveryIntake) {
       await this.adminRepository.updateIdempotentOperation(operation.id, {
         status,
         errorCode,

@@ -1104,6 +1104,16 @@ export function createMemoryAdminRepository(): AdminRepository {
       return clone(createJobRecord(input));
     },
     async queueRangeInstanceJob(input: QueueRangeInstanceJobInput) {
+      const operation = input.intakeOperation;
+      if (operation) {
+        const previous = idempotentOperations.find(row => row.actorUserId === operation.actorUserId
+          && row.toolName === operation.toolName && row.idempotencyKey === operation.idempotencyKey);
+        if (previous) {
+          if (previous.argumentsHash !== operation.argumentsHash || previous.cloudWorkspaceId !== operation.cloudWorkspaceId) throw new Error('Operation key is bound to another request');
+          return typeof previous.result?.id === 'string'
+            ? cloneIfDefined(provisionJobs.find(job => job.id === previous.result!.id) ?? null) : null;
+        }
+      }
       const instance = rangeInstances.find(record => record.id === input.rangeInstanceId && record.instanceMode === 'range'
         && record.status === input.expectedStatus && record.ownerUserId === input.expectedOwnerUserId);
       if (!instance || provisionJobs.some(job => job.rangeInstanceId === input.rangeInstanceId && ['pending', 'running'].includes(job.status))) return null;
@@ -1111,7 +1121,21 @@ export function createMemoryAdminRepository(): AdminRepository {
       Object.assign(instance, { status: input.nextStatus, lastJobId: job.id, errorSummary: null, updatedAt: now(),
         ...(input.allocatedCidr !== undefined ? { allocatedCidr: input.allocatedCidr } : {}),
       });
+      if (operation) idempotentOperations.unshift({ ...clone(operation), id: nextId(), status: 'succeeded', result: { id: job.id },
+        errorCode: null, createdAt: now(), updatedAt: now() });
       return clone(job);
+    },
+    async rejectRangeInstanceIntake(operation, errorCode) {
+      const previous = idempotentOperations.find(row => row.actorUserId === operation.actorUserId
+        && row.toolName === operation.toolName && row.idempotencyKey === operation.idempotencyKey);
+      if (previous) {
+        if (previous.argumentsHash !== operation.argumentsHash || previous.cloudWorkspaceId !== operation.cloudWorkspaceId) throw new Error('Operation key is bound to another request');
+        return clone(previous);
+      }
+      const rejected: IdempotentOperationRecord = { ...clone(operation), id: nextId(), status: 'failed', result: null,
+        errorCode, createdAt: now(), updatedAt: now() };
+      idempotentOperations.unshift(rejected);
+      return clone(rejected);
     },
     async queueExpiredSingleInstanceDestroy(input) {
       if (singleControlPending) return null;

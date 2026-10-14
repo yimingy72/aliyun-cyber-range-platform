@@ -1466,27 +1466,69 @@ export class PrismaAdminRepository implements AdminRepository {
   }
 
   async queueRangeInstanceJob(input: QueueRangeInstanceJobInput): Promise<ProvisionJobRecord | null> {
-    return this.prisma.$transaction(async transaction => {
-      const locked = await transaction.rangeInstance.updateMany({
-        where: { id: input.rangeInstanceId, instanceMode: 'range', status: input.expectedStatus, ownerUserId: input.expectedOwnerUserId },
-        data: { draftRevision: { increment: 0 } },
+    const operation = input.intakeOperation;
+    try {
+      return await this.prisma.$transaction(async transaction => {
+        if (operation) {
+          if (operation.actorUserId !== input.triggeredBy) throw new ConflictException('恢复请求身份不一致。');
+          const previous = await this.lockRangeIntake(transaction, operation);
+          if (previous) return typeof previous.result?.id === 'string'
+            ? transaction.provisionJob.findFirst({ where: { id: previous.result.id, rangeInstanceId: input.rangeInstanceId } }) as Promise<ProvisionJobRecord | null> : null;
+        }
+        const locked = await transaction.rangeInstance.updateMany({
+          where: { id: input.rangeInstanceId, instanceMode: 'range', status: input.expectedStatus, ownerUserId: input.expectedOwnerUserId },
+          data: { draftRevision: { increment: 0 } },
+        });
+        if (locked.count !== 1 || await transaction.provisionJob.count({ where: {
+          rangeInstanceId: input.rangeInstanceId, status: { in: ['pending', 'running'] },
+        } }) > 0) {
+          return null;
+        }
+        const job = await transaction.provisionJob.create({ data: {
+          rangeInstanceId: input.rangeInstanceId, jobType: input.jobType, triggeredBy: input.triggeredBy,
+          retryCount: input.retryCount ?? 0,
+          topologySnapshot: (input.topologySnapshot ?? Prisma.DbNull) as Prisma.InputJsonValue,
+        } });
+        await transaction.rangeInstance.update({ where: { id: input.rangeInstanceId }, data: {
+          status: input.nextStatus, lastJobId: job.id, errorSummary: null,
+          ...(input.allocatedCidr !== undefined ? { allocatedCidr: input.allocatedCidr } : {}),
+        } });
+        if (operation) await transaction.idempotentOperation.create({ data: { ...operation, status: 'succeeded', result: { id: job.id }, errorCode: null } });
+        return job as ProvisionJobRecord;
       });
-      if (locked.count !== 1 || await transaction.provisionJob.count({ where: {
-        rangeInstanceId: input.rangeInstanceId, status: { in: ['pending', 'running'] },
-      } }) > 0) {
-        return null;
-      }
-      const job = await transaction.provisionJob.create({ data: {
-        rangeInstanceId: input.rangeInstanceId, jobType: input.jobType, triggeredBy: input.triggeredBy,
-        retryCount: input.retryCount ?? 0,
-        topologySnapshot: (input.topologySnapshot ?? Prisma.DbNull) as Prisma.InputJsonValue,
-      } });
-      await transaction.rangeInstance.update({ where: { id: input.rangeInstanceId }, data: {
-        status: input.nextStatus, lastJobId: job.id, errorSummary: null,
-        ...(input.allocatedCidr !== undefined ? { allocatedCidr: input.allocatedCidr } : {}),
-      } });
-      return job as ProvisionJobRecord;
+    } catch (error) {
+      if (!operation || (error as { code?: string }).code !== 'P2002') throw error;
+      const previous = await this.getIdempotentOperation(operation.actorUserId, operation.toolName, operation.idempotencyKey);
+      if (!previous) throw error;
+      this.assertRangeIntakeMatch(previous, operation);
+      return typeof previous.result?.id === 'string'
+        ? this.prisma.provisionJob.findFirst({ where: { id: previous.result.id, rangeInstanceId: input.rangeInstanceId } }) as Promise<ProvisionJobRecord | null> : null;
+    }
+  }
+
+  async rejectRangeInstanceIntake(operation: CreateIdempotentOperationInput, errorCode: string): Promise<IdempotentOperationRecord> {
+    return this.prisma.$transaction(async transaction => {
+      const previous = await this.lockRangeIntake(transaction, operation);
+      if (previous) return previous;
+      return toIdempotentOperationRecord(await transaction.idempotentOperation.create({ data: { ...operation,
+        status: 'failed', result: Prisma.DbNull, errorCode } }));
     });
+  }
+
+  private assertRangeIntakeMatch(previous: IdempotentOperationRecord, operation: CreateIdempotentOperationInput) {
+    if (previous.cloudWorkspaceId !== operation.cloudWorkspaceId || previous.argumentsHash !== operation.argumentsHash) {
+      throw new ConflictException('操作标识已绑定另一恢复请求。');
+    }
+  }
+
+  private async lockRangeIntake(transaction: Prisma.TransactionClient, operation: CreateIdempotentOperationInput) {
+    const cloudWorkspaceId = getCurrentCloudWorkspaceId() ?? 'legacy-unbound';
+    if (operation.cloudWorkspaceId !== cloudWorkspaceId) throw new ForbiddenException('恢复请求工作空间不一致。');
+    await transaction.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${`range-intake:${cloudWorkspaceId}:${operation.actorUserId}:${operation.toolName}:${operation.idempotencyKey}`}, 0))`;
+    const previous = await transaction.idempotentOperation.findUnique({ where: { cloudWorkspaceId_actorUserId_toolName_idempotencyKey: {
+      cloudWorkspaceId, actorUserId: operation.actorUserId, toolName: operation.toolName, idempotencyKey: operation.idempotencyKey } } });
+    if (previous) this.assertRangeIntakeMatch(toIdempotentOperationRecord(previous), operation);
+    return previous ? toIdempotentOperationRecord(previous) : null;
   }
 
   async queueExpiredSingleInstanceDestroy(input: { rangeInstanceId: string; now: Date }): Promise<ProvisionJobRecord | null> {

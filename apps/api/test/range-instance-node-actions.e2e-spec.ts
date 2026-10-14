@@ -39,6 +39,7 @@ async function loginAs(_app: INestApplication, username = 'admin', _password = '
 }
 
 describe('Range instance node actions API', () => {
+  const originalCredentialKey = process.env.CLOUD_CREDENTIALS_ENCRYPTION_KEY;
   let app: INestApplication;
   let repository: AdminRepository;
   let instanceId: string;
@@ -48,6 +49,7 @@ describe('Range instance node actions API', () => {
   let adminToken: string;
 
   beforeAll(async () => {
+    process.env.CLOUD_CREDENTIALS_ENCRYPTION_KEY = 'ab'.repeat(32);
     process.env.ADMIN_USERNAME = 'admin';
     process.env.ADMIN_PASSWORD = 'change-me';
     process.env.ADMIN_TOKEN = 'dev-admin-token';
@@ -200,6 +202,8 @@ describe('Range instance node actions API', () => {
   });
 
   afterAll(async () => {
+    if (originalCredentialKey === undefined) delete process.env.CLOUD_CREDENTIALS_ENCRYPTION_KEY;
+    else process.env.CLOUD_CREDENTIALS_ENCRYPTION_KEY = originalCredentialKey;
     fetchMock.mockRestore();
     await app.close();
   });

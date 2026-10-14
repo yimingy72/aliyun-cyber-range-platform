@@ -1099,6 +1099,7 @@ export type QueueRangeInstanceJobInput = CreateProvisionJobInput & {
   expectedOwnerUserId: string | null;
   nextStatus: 'pending_create' | 'pending_destroy';
   allocatedCidr?: string | null;
+  intakeOperation?: CreateIdempotentOperationInput;
 };
 
 export type SyncRangeInstanceDraftToTemplateInput = {
@@ -1253,6 +1254,7 @@ export interface AdminRepository {
   listPendingProvisionJobs(input?: ListPendingProvisionJobsInput): Promise<ProvisionJobSchedulingRecord[]>;
   createProvisionJob(input: CreateProvisionJobInput): Promise<ProvisionJobRecord>;
   queueRangeInstanceJob(input: QueueRangeInstanceJobInput): Promise<ProvisionJobRecord | null>;
+  rejectRangeInstanceIntake(operation: CreateIdempotentOperationInput, errorCode: string): Promise<IdempotentOperationRecord>;
   queueExpiredSingleInstanceDestroy(input: { rangeInstanceId: string; now: Date }): Promise<ProvisionJobRecord | null>;
   claimRangeProvisionJob(id: string, startedAt: Date): Promise<ProvisionJobRecord | null>;
   heartbeatRangeProvisionJob(id: string, startedAt: Date, heartbeatAt: Date): Promise<boolean>;

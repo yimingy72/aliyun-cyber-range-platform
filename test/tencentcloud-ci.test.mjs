@@ -62,6 +62,9 @@ test('default CI verifies Tencent in Docker with a frozen cache and an isolated 
   const apiTests = calls.find(args => args.some(arg => arg.includes('pnpm test')));
   assert(calls.indexOf(validation) < calls.indexOf(apiTests));
   assert(apiTests.includes('WORKSPACE_TEST_DATABASE_URL=postgresql://postgres:postgres@postgres:5432/cyber_range_workspace_test?schema=public'));
+  assert(apiTests.includes('WORKER_TRANSACTION_TEST_DATABASE_URL=postgresql://postgres:postgres@worker-transaction-test-postgres:5432/worker_transaction_test?schema=public'));
+  assert(calls.some(args => args.includes('--network-alias') && args.includes('worker-transaction-test-postgres')));
+  assert(apiTests.some(arg => arg.includes('DATABASE_URL="$WORKER_TRANSACTION_TEST_DATABASE_URL" pnpm --filter @aliyun-cyber-range/database prisma:migrate:deploy')));
   assert(apiTests.includes('CLOUD_WORKSPACE_MIGRATION_TEST_DATABASE_URL=postgresql://postgres:postgres@postgres:5432/cyber_range_workspace_migration_test?schema=public'));
   assert(apiTests.some(arg => arg.includes('DATABASE_URL="$WORKSPACE_TEST_DATABASE_URL" pnpm --filter @aliyun-cyber-range/database prisma:migrate:deploy')));
   assert(apiTests.some(arg => arg.includes('pnpm --filter @aliyun-cyber-range/database smoke:workspace-migration')));

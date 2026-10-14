@@ -23,6 +23,7 @@ import {
   RangeInstanceDraftRevisionConflictError,
   TemplateRevisionConflictError,
   CreateRangeInstanceInput,
+  type CreateIdempotentOperationInput,
   RangeTemplateCompiledSpec,
   RangeTemplateTopologySpec,
   RangeRuntimeCredentials,
@@ -802,7 +803,7 @@ export class RangeInstancesService {
     return job;
   }
 
-  async triggerDestroy(id: string, currentUserOrTriggeredBy?: AuthenticatedUser | string) {
+  async triggerDestroy(id: string, currentUserOrTriggeredBy?: AuthenticatedUser | string, intakeOperation?: CreateIdempotentOperationInput) {
     const instance = await this.adminRepository.getRangeInstanceById(id);
 
     if (!instance) {
@@ -825,6 +826,7 @@ export class RangeInstancesService {
     const job = await this.adminRepository.queueRangeInstanceJob({
       rangeInstanceId: instance.id, jobType: 'destroy', triggeredBy: actorId,
       expectedStatus: instance.status, expectedOwnerUserId: instance.ownerUserId, nextStatus: 'pending_destroy',
+      intakeOperation,
     });
     if (!job) throw new ConflictException('Range instance has an active operation or its state has changed');
 
@@ -847,7 +849,7 @@ export class RangeInstancesService {
     }
   }
 
-  async triggerRetry(id: string, currentUserOrTriggeredBy?: AuthenticatedUser | string) {
+  async triggerRetry(id: string, currentUserOrTriggeredBy?: AuthenticatedUser | string, intakeOperation?: CreateIdempotentOperationInput) {
     const instance = await this.adminRepository.getRangeInstanceById(id);
 
     if (!instance) {
@@ -907,11 +909,21 @@ export class RangeInstancesService {
     const job = await this.adminRepository.queueRangeInstanceJob({
       rangeInstanceId: instance.id, jobType: 'retry', triggeredBy: actorId, retryCount, topologySnapshot,
       expectedStatus: instance.status, expectedOwnerUserId: instance.ownerUserId, nextStatus: pendingStatus,
+      intakeOperation,
     });
     if (!job) throw new ConflictException('Range instance has an active operation or its state has changed');
 
     this.provisioningWorkerService.dispatch(job.id);
 
+    return job;
+  }
+
+  async getRecordedRecoveryJob(id: string, jobId: string, currentUser: AuthenticatedUser) {
+    const instance = await this.adminRepository.getRangeInstanceById(id);
+    if (!instance) throw new NotFoundException('Range instance not found');
+    this.assertInstanceOwnerOrAdmin(instance, currentUser);
+    const job = await this.adminRepository.getProvisionJobById(jobId);
+    if (!job || job.rangeInstanceId !== id) throw new ConflictException('恢复作业记录无法核验，请继续查询原请求。');
     return job;
   }
 

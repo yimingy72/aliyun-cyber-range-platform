@@ -16,6 +16,7 @@ import { RangeInstanceNodeActionsService } from './range-instance-node-actions.s
 import { RangeInstancesService } from './range-instances.service';
 import { RangeNetworkDiagnosticsQueryDto } from './dto/range-network-diagnostics-query.dto';
 import { OperationControlService, readOperationRequestMetadata } from '../operations/operation-control.service';
+import { redactMcpMetadata } from '../auth/mcp-response.interceptor';
 
 type AuthenticatedAdminRequest = AuthenticatedPlatformRequest;
 
@@ -58,6 +59,19 @@ export class RangesController {
       });
     }
     return result;
+  }
+
+  @Get(':id/recovery/:trigger')
+  async recoveryStatus(@Req() request: AuthenticatedAdminRequest, @Param('id') id: string, @Param('trigger') trigger: string) {
+    if (trigger !== 'retry' && trigger !== 'destroy') throw new BadRequestException('恢复操作类型无效。');
+    await this.rangeInstancesService.getById(id, request.adminUser);
+    const operation = this.operationControlService.prepareRangeRecoveryIntake(request.authContext, readOperationRequestMetadata(request), id, trigger);
+    const recorded = await this.operationControlService.readRangeRecoveryIntake(operation);
+    if (!recorded) return { state: 'unconfirmed' };
+    if (typeof recorded.result?.id !== 'string') return recorded.status === 'failed'
+      ? { state: 'rejected', errorCode: recorded.errorCode } : { state: 'unconfirmed' };
+    const job = await this.rangeInstancesService.getRecordedRecoveryJob(id, recorded.result.id, request.adminUser);
+    return { state: 'accepted', jobId: job.id };
   }
 
   @Patch(':id/draft')
@@ -129,7 +143,7 @@ export class RangesController {
         },
       });
     }
-    return this.rangeInstancesService.triggerDestroy(id, request.adminUser);
+    return this.webRecoveryIntake(request, id, 'destroy');
   }
 
   @Post(':id/retry')
@@ -140,7 +154,16 @@ export class RangesController {
         return { rangeInstanceId: id, jobId: job.id };
       });
     }
-    return this.rangeInstancesService.triggerRetry(id, request.adminUser);
+    return this.webRecoveryIntake(request, id, 'retry');
+  }
+
+  private async webRecoveryIntake(request: AuthenticatedAdminRequest, id: string, trigger: 'retry' | 'destroy') {
+    const metadata = readOperationRequestMetadata(request);
+    await this.rangeInstancesService.getById(id, request.adminUser);
+    const jobId = await this.operationControlService.executeRangeRecoveryIntake({ context: request.authContext, metadata, rangeInstanceId: id, trigger,
+      execute: operation => trigger === 'retry' ? this.rangeInstancesService.triggerRetry(id, request.adminUser, operation)
+        : this.rangeInstancesService.triggerDestroy(id, request.adminUser, operation) });
+    return redactMcpMetadata(await this.rangeInstancesService.getRecordedRecoveryJob(id, jobId, request.adminUser));
   }
 
   @Post(':id/preview')

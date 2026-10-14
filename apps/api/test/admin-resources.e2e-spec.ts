@@ -9,6 +9,7 @@ import { SystemConfigService } from '../src/admin/system-config.service';
 import { AppModule } from '../src/app.module';
 import { configureApp } from '../src/bootstrap/configure-app';
 import { ProvisioningWorkerService } from '../src/provisioning/provisioning-worker.service';
+import { OperationControlService } from '../src/operations/operation-control.service';
 import {
   RANGE_PROVISIONER,
   type RangeProvisioner,
@@ -125,6 +126,8 @@ describe('Admin resources', () => {
       .useValue(createMemoryAdminRepository())
       .overrideProvider(RANGE_PROVISIONER)
       .useValue(provisioner)
+      .overrideProvider(OperationControlService)
+      .useValue({ executeRangeRecoveryIntake: async (input: { execute: (operation: never) => Promise<{ id: string }> }) => (await input.execute(undefined as never)).id })
       .overrideGuard(AdminAuthGuard)
       .useValue({
         canActivate: (context: {
@@ -478,6 +481,7 @@ describe('Admin resources', () => {
       const destroyJob = await request(app.getHttpServer())
         .post(`/admin/ranges/${instance.body.id}/destroy`)
         .set('authorization', 'Bearer dev-admin-token')
+        .set('x-idempotency-key', 'admin-resource-destroy')
         .send({})
         .expect(201);
 
