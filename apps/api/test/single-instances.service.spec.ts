@@ -99,6 +99,65 @@ describe('SingleInstancesService', () => {
     expect(randomInstances.every((instance) => Boolean(instance.runtimeCredentials?.['single-ecs-1']?.password || instance.runtimeCredentials?.['single-ecs-2']?.password))).toBe(true);
   });
 
+  it('prepares cloud/network inputs before committing all members through the transaction repository', async () => {
+    const f = createLaunchFixture();
+    const transaction = f.repository.withSingleInstanceTransaction.bind(f.repository);
+    const writes = ['createSingleInstanceBatch', 'createRangeInstance', 'createProvisionJob', 'updateRangeInstance'] as const;
+    const transactionRepository = { ...f.repository,
+      createSingleInstanceBatch: jest.fn(f.repository.createSingleInstanceBatch.bind(f.repository)),
+      createRangeInstance: jest.fn(f.repository.createRangeInstance.bind(f.repository)),
+      createProvisionJob: jest.fn(f.repository.createProvisionJob.bind(f.repository)),
+      updateRangeInstance: jest.fn(f.repository.updateRangeInstance.bind(f.repository)) };
+    for (const method of writes) {
+      jest.spyOn(f.repository, method).mockImplementation(() => { throw new Error('root repository write outside atomic intake'); });
+    }
+    let inTransaction = false;
+    const ensureNetwork = f.network.ensureDefaultProfile.getMockImplementation()!;
+    f.network.ensureDefaultProfile.mockImplementation(async () => {
+      expect(inTransaction).toBe(false);
+      return ensureNetwork();
+    });
+    f.config.getExecutionAccountContext.mockImplementation(async () => {
+      expect(inTransaction).toBe(false);
+      return { ...f.account };
+    });
+    f.config.getInstanceTypeAvailabilityInContext.mockImplementation(async () => {
+      expect(inTransaction).toBe(false);
+      return f.availability;
+    });
+    jest.spyOn(f.repository, 'withSingleInstanceTransaction').mockImplementation(work => transaction(async () => {
+      expect(f.network.ensureDefaultProfile).toHaveBeenCalledTimes(1);
+      inTransaction = true;
+      try { return await work(transactionRepository); } finally { inTransaction = false; }
+    }));
+
+    const launched = await f.service.launch(f.input, f.actor.id);
+    expect(f.repository.withSingleInstanceTransaction).toHaveBeenCalledTimes(1);
+    expect(transactionRepository.createSingleInstanceBatch).toHaveBeenCalledTimes(1);
+    for (const method of writes.slice(1)) expect(transactionRepository[method]).toHaveBeenCalledTimes(2);
+    for (const instance of launched.instances) {
+      expect(instance.singleInstanceBatchId).toBe(launched.batch.id);
+      expect(instance.status).toBe('pending_create');
+      expect(await f.repository.getProvisionJobById(instance.lastJobId!)).toMatchObject({ rangeInstanceId: instance.id, status: 'pending' });
+    }
+    expect(f.worker.dispatch).not.toHaveBeenCalled();
+  });
+
+  it.each(['createRangeInstance', 'createProvisionJob', 'updateRangeInstance'] as const)
+  ('rolls back the whole intake when a later %s fails without leaving orphans', async method => {
+    const f = createLaunchFixture();
+    await f.service.launch(f.input, f.actor.id);
+    const snapshot = async () => ({ batches: await f.repository.listSingleInstanceBatchesWithInstances(),
+      instances: await f.repository.listRangeInstances(), jobs: await f.repository.listProvisionJobs() });
+    const before = await snapshot();
+    const original = f.repository[method].bind(f.repository);
+    jest.spyOn(f.repository, method).mockImplementationOnce(original as never).mockRejectedValueOnce(new Error('injected later intake failure'));
+
+    await expect(f.service.launch(f.input, f.actor.id)).rejects.toThrow('injected later intake failure');
+    expect(await snapshot()).toEqual(before);
+    expect(f.worker.dispatch).not.toHaveBeenCalled();
+  });
+
   it('shows a targeted original packed artifact safely through the existing instance getter', async () => {
     const fixture = createLaunchFixture();
     const instance = await fixture.repository.createRangeInstance({ name: 'packed-source', cloudProvider: 'tencent_cloud', instanceMode: 'single', ownerUserId: fixture.actor.id,
