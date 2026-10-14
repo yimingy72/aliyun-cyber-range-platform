@@ -1654,7 +1654,11 @@ export function createMemoryAdminRepository(): AdminRepository {
     async deleteSingleInstanceNetworkProfile(id) { const index = singleInstanceNetworkProfiles.findIndex((value) => value.id === id); if (index >= 0) singleInstanceNetworkProfiles.splice(index, 1); },
     async createPackedImageArtifact(input) {
       const record: PackedImageArtifactRecord = { cloudProvider: input.cloudProvider ?? 'alibaba_cloud', sourceSnapshotBaseline: null, ...input, id: input.id ?? nextId(), imageId: null, sourceSnapshotId: null, platformImageAssetId: null, status: 'pending', backingSnapshotIds: [], deletedSnapshotIds: [], cloudImageDeletedAt: null, completedAt: null, lastPolledAt: null, errorMessage: null, createdAt: now(), updatedAt: now() };
-      packedImageArtifacts.push(record); return clone(record);
+      packedImageArtifacts.push(record);
+      if (input.leaseToken && input.leaseExpiresAt) {
+        packedImageClaims.set(record.id, { token: input.leaseToken, expiresAt: input.leaseExpiresAt });
+      }
+      return clone(record);
     },
     async getPackedImageArtifact(id) { return cloneIfDefined(packedImageArtifacts.find(item => item.id === id) ?? null); },
     async claimPackedImageArtifact(id, token, expiresAt) {

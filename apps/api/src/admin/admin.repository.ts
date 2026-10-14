@@ -485,6 +485,7 @@ export type PackedImageArtifactRecord = {
   sourceInstanceId: string;
   sourceDiskIds: string[];
   sourceSnapshotBaseline: Record<string, unknown> | null;
+  assetConfigCiphertext?: string | null;
   imageId: string | null;
   sourceSnapshotId: string | null;
   platformImageAssetId: string | null;
@@ -499,7 +500,10 @@ export type PackedImageArtifactRecord = {
   updatedAt: Date;
 };
 export type CreatePackedImageArtifactInput = Pick<PackedImageArtifactRecord,
-  'cloudAccountContextId' | 'cloudAccountUid' | 'regionId' | 'ownerUserId' | 'sourceRangeInstanceId' | 'sourceHostKey' | 'sourceInstanceId' | 'sourceDiskIds'> & { cloudProvider?: CloudProvider; id?: string; sourceSnapshotBaseline?: Record<string, unknown> };
+  'cloudAccountContextId' | 'cloudAccountUid' | 'regionId' | 'ownerUserId' | 'sourceRangeInstanceId' | 'sourceHostKey' | 'sourceInstanceId' | 'sourceDiskIds'> & {
+    cloudProvider?: CloudProvider; id?: string; sourceSnapshotBaseline?: Record<string, unknown>;
+    leaseToken?: string; leaseExpiresAt?: Date; assetConfigCiphertext?: string;
+  };
 export type UpdatePackedImageArtifactInput = Partial<Pick<PackedImageArtifactRecord,
   'imageId' | 'sourceSnapshotId' | 'platformImageAssetId' | 'status' | 'backingSnapshotIds' | 'deletedSnapshotIds' | 'cloudImageDeletedAt' | 'completedAt' | 'lastPolledAt' | 'errorMessage'>>;
 
