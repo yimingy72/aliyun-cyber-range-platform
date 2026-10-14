@@ -1298,6 +1298,7 @@ export interface AdminRepository {
   deletePlatformImageAsset(id: string): Promise<void>;
   deletePlatformImageAssetsBySnapshotId(snapshotId: string): Promise<void>;
   withSingleInstanceControlLock<T>(work: () => Promise<T>): Promise<T>;
+  withSingleInstanceTransaction<T>(work: (repository: AdminRepository) => Promise<T>): Promise<T>;
   tryWithSingleInstanceBatchProvisionLock<T>(batchId: string, work: (lease: SingleInstanceBatchProvisionLease) => Promise<T>): Promise<{ acquired: boolean; result?: T }>;
   commitSingleInstanceClaim(job: ProvisionJobRecord, instancePatch: UpdateRangeInstanceInput, jobPatch?: UpdateProvisionJobInput): Promise<boolean>;
   listSingleInstanceNetworkProfiles(): Promise<SingleInstanceNetworkProfileRecord[]>;

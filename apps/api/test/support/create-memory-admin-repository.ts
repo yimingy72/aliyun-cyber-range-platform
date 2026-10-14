@@ -1625,6 +1625,21 @@ export function createMemoryAdminRepository(): AdminRepository {
       singleControlQueue = run.then(() => { singleControlPending -= 1; }, () => { singleControlPending -= 1; });
       return run;
     },
+    async withSingleInstanceTransaction(work) {
+      const stores = [singleInstanceBatches, rangeInstances, provisionJobs] as Array<Array<{ id: string; cloudWorkspaceId?: string }>>;
+      const snapshots = stores.map(records => cloneList(records));
+      try {
+        return await work(scopedRepository);
+      } catch (error) {
+        stores.forEach((records, storeIndex) => {
+          for (let index = records.length - 1; index >= 0; index--) {
+            if (visibleInWorkspace(records[index])) records.splice(index, 1);
+          }
+          records.push(...snapshots[storeIndex]);
+        });
+        throw error;
+      }
+    },
     async tryWithSingleInstanceBatchProvisionLock(batchId, work) {
       if (singleBatchProvisionLocks.has(batchId)) return { acquired: false };
       singleBatchProvisionLocks.add(batchId);
@@ -2002,7 +2017,7 @@ export function createMemoryAdminRepository(): AdminRepository {
       return cloneList(billingAnomalies.filter((item) => inDateRange(item.billingDate, filter.startAt, filter.endAt) && (filter.cloudProvider === undefined || (item.cloudProvider ?? 'alibaba_cloud') === filter.cloudProvider) && (filter.cloudAccountUid === undefined || item.cloudAccountUid === filter.cloudAccountUid)));
     },
   };
-  return new Proxy(repository, {
+  const scopedRepository = new Proxy(repository, {
     get(target, property) {
       const value = Reflect.get(target, property);
       if (typeof value !== 'function' || value._isMockFunction) return value;
@@ -2016,4 +2031,5 @@ export function createMemoryAdminRepository(): AdminRepository {
       };
     },
   });
+  return scopedRepository;
 }
