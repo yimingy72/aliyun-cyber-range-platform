@@ -4,6 +4,7 @@ import { ADMIN_REPOSITORY, type AdminRepository, type ProvisionJobRecord, type R
 import { buildAliyunTagParameters, buildBillingTags } from './billing-tagging';
 import { releaseRangeInstanceBillingLedger, syncRangeInstanceBillingLedger } from './billing-ledger-sync';
 import { SystemConfigService, type SystemCloudAccountContext } from './system-config.service';
+import { isAliyunRequestTimeout, sanitizeAliyunErrorCode } from './aliyun-error-code';
 import { describeTencentInstances, describeTencentResourceInventory, readTencentAttachedDiskInventory, assertTencentOwnedInstance, terminateTencentInstances } from './tencent-cloud-resources';
 import { readAttachedDiskInventory, mergeDiskInventory, assertDiskInventorySafe, findExistingInventoryDiskIds, inventoryDiskIds } from './instance-disk-inventory';
 import { readProvenSingleInstanceIds } from './single-instance-resource-origin';
@@ -932,24 +933,32 @@ export class SingleInstanceBatchExecutionService {
       Version: ALICLOUD_ECS_API_VERSION,
       ...(input.parameters ?? {}),
     }, input.accessKeySecret, method);
-    const response = await fetch(method === 'GET' ? `${endpoint}?${signedQuery}` : endpoint, {
-      method,
-      headers: {
-        Accept: 'application/json',
+    let response: Response;
+    try {
+      response = await fetch(method === 'GET' ? `${endpoint}?${signedQuery}` : endpoint, {
+        method,
+        headers: {
+          Accept: 'application/json',
+          ...(method === 'POST'
+            ? {
+              'Content-Type': 'application/x-www-form-urlencoded',
+            }
+            : {}),
+        },
+        signal: AbortSignal.timeout(30_000),
+        redirect: 'error',
         ...(method === 'POST'
           ? {
-            'Content-Type': 'application/x-www-form-urlencoded',
+            body: signedQuery,
           }
           : {}),
-      },
-      ...(method === 'POST'
-        ? {
-          body: signedQuery,
-        }
-        : {}),
-    });
+      });
+    } catch (error) {
+      throw new Error(`Aliyun ${input.action} ${isAliyunRequestTimeout(error) ? 'request timed out' : 'request failed: NETWORK_OR_TIMEOUT'}`);
+    }
+    const sensitiveValues = [input.accessKeyId, input.accessKeySecret];
     if (!response.ok) {
-      const code = await readAliyunErrorCode(response);
+      const code = await readAliyunErrorCode(response, sensitiveValues);
       throw new Error(`Aliyun ${input.action} request failed with status ${response.status}${code ? ` (${code})` : ''}`);
     }
     let payload: ResponsePayload & {
@@ -959,14 +968,17 @@ export class SingleInstanceBatchExecutionService {
       payload = await response.json() as ResponsePayload & {
         Code?: string;
       };
-    } catch {
+    } catch (error) {
+      if (isAliyunRequestTimeout(error)) {
+        throw new Error(`Aliyun ${input.action} request timed out`);
+      }
       // The parse error itself can echo response bytes; never surface it.
       throw new Error(`Aliyun ${input.action} returned an invalid response`);
     }
     if (!payload || typeof payload !== 'object' || Array.isArray(payload))
       throw new Error(`Aliyun ${input.action} returned an invalid response`);
     if (payload.Code !== undefined)
-      throw new Error(`Aliyun ${input.action} rejected: ${sanitizeAliyunErrorCode(payload.Code) ?? 'UNCLASSIFIED'}`);
+      throw new Error(`Aliyun ${input.action} rejected: ${sanitizeAliyunErrorCode(payload.Code, sensitiveValues) ?? 'UNCLASSIFIED'}`);
     return payload;
   }
 }
@@ -974,23 +986,18 @@ export class SingleInstanceBatchExecutionService {
 // Provider error bodies can echo request material; only the machine-readable error code
 // may surface. The status prefix stays intact because destroy verification and automatic
 // retries classify failures from these messages.
-const ALIYUN_ERROR_CODE_PATTERN = /^[A-Za-z0-9._-]{1,128}$/;
-
-function sanitizeAliyunErrorCode(value: unknown) {
-  return typeof value === 'string' && ALIYUN_ERROR_CODE_PATTERN.test(value) ? value : null;
-}
-
-async function readAliyunErrorCode(response: Response) {
+async function readAliyunErrorCode(response: Response, sensitiveValues: readonly string[]) {
   let payload: unknown;
   try {
     payload = JSON.parse(await response.text());
-  } catch {
+  } catch (error) {
+    if (isAliyunRequestTimeout(error)) throw new Error('Aliyun response read timed out');
     return null;
   }
   if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
     return null;
   }
-  return sanitizeAliyunErrorCode((payload as { Code?: unknown }).Code);
+  return sanitizeAliyunErrorCode((payload as { Code?: unknown }).Code, sensitiveValues);
 }
 class LostSingleInstanceClaimError extends Error {
 }

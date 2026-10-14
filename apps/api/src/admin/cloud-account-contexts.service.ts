@@ -588,7 +588,7 @@ export class CloudAccountContextsService {
     let response: Response;
 
     try {
-      response = await fetch(`https://sts.aliyuncs.com/?${query}`);
+      response = await fetch(`https://sts.aliyuncs.com/?${query}`, { signal: AbortSignal.timeout(15_000), redirect: 'error' });
     } catch {
       throw new BadRequestException('阿里云账号身份校验请求失败，请检查网络和访问凭据。');
     }

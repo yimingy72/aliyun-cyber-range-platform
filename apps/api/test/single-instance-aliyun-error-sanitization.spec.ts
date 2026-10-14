@@ -58,6 +58,21 @@ describe('single-instance Aliyun error surfacing', () => {
     expect(gone.message).toBe('Aliyun TerminateInstance request failed with status 404 (InvalidInstanceId.NotFound)');
   });
 
+  it.each([400, 200])('does not surface credentials even when reflected as a valid code (HTTP %i)', async status => {
+    const accessKeyId = 'SyntheticCloudKey0123456789';
+    const accessKeySecret = 'SyntheticCloudSecret0123456789';
+    for (const secret of [accessKeyId, accessKeySecret]) {
+      global.fetch = jest.fn().mockResolvedValue(new Response(JSON.stringify({
+        Code: `Forbidden.${secret}`,
+      }), { status })) as unknown as typeof fetch;
+      const failure = await callRpc(createService(), { accessKeyId, accessKeySecret }).catch(value => value) as Error;
+      expect(failure.message).toBe(status === 200
+        ? 'Aliyun RunInstances rejected: UNCLASSIFIED'
+        : 'Aliyun RunInstances request failed with status 400');
+      expect(failure.message).not.toContain(secret);
+    }
+  });
+
   it('keeps only the status when the body is HTML, empty, or carries an invalid code', async () => {
     for (const body of ['<html><body>gateway failure</body></html>', '', JSON.stringify({ Code: 'bad code with spaces', Message: 'raw' }),
       JSON.stringify({ Code: { nested: 'raw-code' } })]) {

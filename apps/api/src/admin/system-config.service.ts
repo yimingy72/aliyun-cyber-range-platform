@@ -8,6 +8,7 @@ import { resolvePreferredInstanceTypes } from '../provisioning/instance-type-cat
 import { PrismaService } from '../database/prisma.service';
 import { signAliyunRpcQuery } from './image-catalog-rpc-signer';
 import { requestTencentCloud, TencentCloudRequestError } from './tencent-cloud-client';
+import { isAliyunRequestTimeout, sanitizeAliyunErrorCode } from './aliyun-error-code';
 
 export type SystemCloudConfig = {
   provider: 'alibaba_cloud';
@@ -625,38 +626,38 @@ export class SystemConfigService {
       },
       input.accessKeySecret,
     );
-    const response = await fetch(`${endpoint}?${query}`, {
-      method: 'GET',
-      headers: {
-        Accept: 'application/json',
-      },
-    });
+    let response: Response;
+    try {
+      response = await fetch(`${endpoint}?${query}`, {
+        method: 'GET',
+        signal: AbortSignal.timeout(30_000),
+        redirect: 'error',
+        headers: {
+          Accept: 'application/json',
+        },
+      });
+    } catch (error) {
+      throw new Error(`Aliyun ${input.action} ${isAliyunRequestTimeout(error) ? 'request timed out' : 'request failed: NETWORK_OR_TIMEOUT'}`);
+    }
 
     let payload: unknown = null;
 
     try {
       payload = await response.json();
-    } catch {
+    } catch (error) {
+      if (isAliyunRequestTimeout(error)) throw new Error(`Aliyun ${input.action} request timed out`);
       payload = null;
     }
 
     if (!response.ok) {
-      const errorCode =
-        payload &&
-        typeof payload === 'object' &&
-        'Code' in payload &&
-        typeof (payload as { Code?: unknown }).Code === 'string'
-          ? (payload as { Code: string }).Code
-          : `HTTP_${response.status}`;
-      const errorMessage =
-        payload &&
-        typeof payload === 'object' &&
-        'Message' in payload &&
-        typeof (payload as { Message?: unknown }).Message === 'string'
-          ? (payload as { Message: string }).Message
-          : `Aliyun RPC request failed with status ${response.status}`;
+      const code = sanitizeAliyunErrorCode((payload as { Code?: unknown } | null)?.Code, [input.accessKeyId, input.accessKeySecret]);
+      throw new Error(`${input.action} failed: ${code ?? `HTTP_${response.status}`} (status ${response.status})`);
+    }
 
-      throw new Error(`${input.action} failed: ${errorCode} - ${errorMessage}`);
+    if (!payload || typeof payload !== 'object' || Array.isArray(payload)) throw new Error(`Aliyun ${input.action} returned an invalid response`);
+    if ('Code' in payload && (payload as { Code?: unknown }).Code !== 'Success') {
+      const code = sanitizeAliyunErrorCode((payload as { Code?: unknown }).Code, [input.accessKeyId, input.accessKeySecret]);
+      throw new Error(`${input.action} failed: ${code ?? 'UNCLASSIFIED'}`);
     }
 
     return payload as ResponsePayload;

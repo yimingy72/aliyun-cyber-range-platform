@@ -648,7 +648,6 @@ export class BillingService {
 
       if (existing) {
         existing.items.push(item);
-        existing.pretaxAmount = sumPretax(existing.items);
         existing.resourceKeys.add(`${item.cloudResourceType}:${item.cloudResourceId}`);
         existing.billingPeriodStart = existing.billingPeriodStart < billingDate ? existing.billingPeriodStart : billingDate;
         existing.billingPeriodEnd = existing.billingPeriodEnd > billingDate ? existing.billingPeriodEnd : billingDate;
@@ -694,6 +693,7 @@ export class BillingService {
     return [...groups.values()]
       .map(({ resourceKeys, ...group }) => ({
         ...group,
+        pretaxAmount: sumPretax(group.items),
         id: [...groups.values()].filter(candidate => candidate.id === group.id).length > 1 ? `${group.id}:${group.currency}` : group.id,
         resourceCount: resourceKeys.size,
       }))
