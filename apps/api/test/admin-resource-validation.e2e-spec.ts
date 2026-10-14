@@ -18,6 +18,7 @@ describe('Admin resource validation', () => {
   }
   function rangeAction(id: string, action: string) {
     return request(fixture.app.getHttpServer()).post(`/admin/ranges/${id}/${action}`)
+      .set('x-idempotency-key', `${id}-${action}`)
       .set('authorization', `Bearer ${fixture.adminToken}`).send({});
   }
   async function createProvisioningFixture() {

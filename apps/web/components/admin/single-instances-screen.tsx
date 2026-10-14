@@ -532,13 +532,15 @@ export function SingleInstancesScreen({
     session.token,
     'platform-images:platform',
   );
+  const cachedMyImages = screenCache?.read<PlatformImageAssetListPayload>(apiBaseUrl, session.token, 'platform-images:mine');
   const cachedCurrentRows = listMode === 'active' ? cachedActiveRows : cachedHistoryRows;
   const [searchName, setSearchName] = useState('');
   const [instances, setInstances] = useState<RangeInstance[]>(() => cachedCurrentRows?.data.instances ?? []);
   const [batchGroups, setBatchGroups] = useState<SingleInstanceBatchGroup[]>(() => cachedCurrentRows?.data.batchGroups ?? []);
   const [jobs, setJobs] = useState<ProvisionJob[]>(() => cachedCurrentRows?.data.jobs ?? []);
-  const [platformImages, setPlatformImages] = useState<PlatformImageAsset[]>(() => cachedPlatformImages?.data.items ?? []);
-  const [hasLoadedPlatformImages, setHasLoadedPlatformImages] = useState(Boolean(cachedPlatformImages));
+  const [platformImages, setPlatformImages] = useState<PlatformImageAsset[]>(() =>
+    [...new Map([...(cachedPlatformImages?.data.items ?? []), ...(cachedMyImages?.data.items ?? [])].map((item) => [item.id, item])).values()]);
+  const [hasLoadedPlatformImages, setHasLoadedPlatformImages] = useState(Boolean(cachedPlatformImages && cachedMyImages));
   const [isLoading, setIsLoading] = useState(() => !cachedCurrentRows);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [loadedListMode, setLoadedListMode] = useState<ListMode | null>(() => (cachedCurrentRows ? listMode : null));
@@ -729,30 +731,13 @@ export function SingleInstancesScreen({
 
     let isActive = true;
     const token = session.token;
-    const cachedImages = screenCache?.read<PlatformImageAssetListPayload>(
-      apiBaseUrl,
-      token,
-      'platform-images:platform',
-    );
-
-    if (cachedImages?.isFresh) {
-      setPlatformImages(cachedImages.data.items);
-      setHasLoadedPlatformImages(true);
-      setCreateForm((current) =>
-        current.platformImageQuery
-          ? current
-          : buildDefaultDialogState(cachedImages.data.items.filter((item) => item.enabled), workspace?.provider ?? 'alibaba_cloud'),
-      );
-
-      return () => {
-        isActive = false;
-      };
-    }
-
-    const loadPlatformImages = () => fetchPlatformImages(apiBaseUrl, token);
-    const request = screenCache
-      ? screenCache.load(apiBaseUrl, token, 'platform-images:platform', loadPlatformImages)
-      : loadPlatformImages();
+    const loadImages = (view: 'platform' | 'mine') => {
+      const load = () => fetchPlatformImages(apiBaseUrl, token, view);
+      return screenCache ? screenCache.load(apiBaseUrl, token, `platform-images:${view}`, load) : load();
+    };
+    const request = Promise.all([loadImages('platform'), loadImages('mine')]).then(([platform, mine]) => ({
+      items: [...new Map([...platform.items, ...mine.items].map((item) => [item.id, item])).values()],
+    }));
 
     void request
       .then((nextImages) => {
@@ -1198,8 +1183,10 @@ export function SingleInstancesScreen({
           description: packImageDialog.description,
         },
       );
+      if (!isCurrentLaunch()) return;
       screenCache?.invalidate(apiBaseUrl, session.token, 'single-instances:');
       screenCache?.invalidate(apiBaseUrl, session.token, 'platform-images:');
+      screenCache?.invalidate(apiBaseUrl, session.token, 'image-center:');
 
       setPackImageDialog(null);
       setErrorMessage(
@@ -1221,6 +1208,7 @@ export function SingleInstancesScreen({
         }
       }
     } catch (error: unknown) {
+      if (!isCurrentLaunch()) return;
       if (isUnauthorizedError(error)) {
         session.logout();
         router.replace('/admin/login');
@@ -1229,7 +1217,7 @@ export function SingleInstancesScreen({
 
       setErrorMessage('镜像打包失败，请稍后重试。');
     } finally {
-      setPendingActionInstanceId(null);
+      if (isCurrentLaunch()) setPendingActionInstanceId(null);
     }
   }
 

@@ -39,6 +39,7 @@ async function loginAs(_app: INestApplication, username = 'admin', _password = '
 }
 
 describe('Range instance node actions API', () => {
+  const originalCredentialKey = process.env.CLOUD_CREDENTIALS_ENCRYPTION_KEY;
   let app: INestApplication;
   let repository: AdminRepository;
   let instanceId: string;
@@ -48,6 +49,7 @@ describe('Range instance node actions API', () => {
   let adminToken: string;
 
   beforeAll(async () => {
+    process.env.CLOUD_CREDENTIALS_ENCRYPTION_KEY = 'ab'.repeat(32);
     process.env.ADMIN_USERNAME = 'admin';
     process.env.ADMIN_PASSWORD = 'change-me';
     process.env.ADMIN_TOKEN = 'dev-admin-token';
@@ -62,7 +64,7 @@ describe('Range instance node actions API', () => {
       }
 
       if (url.includes('CreateImage')) {
-        return new Response(JSON.stringify({ ImageId: 'm-image-123' }), { status: 200 });
+        return new Response(JSON.stringify({ ImageId: 'm-packed-image-123' }), { status: 200 });
       }
 
       if (url.includes('DescribeImages')) {
@@ -200,6 +202,8 @@ describe('Range instance node actions API', () => {
   });
 
   afterAll(async () => {
+    if (originalCredentialKey === undefined) delete process.env.CLOUD_CREDENTIALS_ENCRYPTION_KEY;
+    else process.env.CLOUD_CREDENTIALS_ENCRYPTION_KEY = originalCredentialKey;
     fetchMock.mockRestore();
     await app.close();
   });
@@ -261,14 +265,14 @@ describe('Range instance node actions API', () => {
       })
       .expect(201);
 
-    expect(response.body.imageId).toBe('m-image-123');
+    expect(response.body.imageId).toBe('m-packed-image-123');
     expect(response.body.defaultHostName).toBe('checker-host');
     expect(response.body.defaultPassword).toBe('DefaultPass123!');
     expect(response.body.description).toBe('snapshot note');
     expect(response.body.imageReady).toBe(false);
     expect(response.body.platformImageAsset).toEqual(
       expect.objectContaining({
-        imageId: 'm-image-123',
+        imageId: 'm-packed-image-123',
         displayName: 'checker-snapshot',
         defaultHostName: 'checker-host',
         defaultPassword: expect.stringMatching(/^enc:v1:/),

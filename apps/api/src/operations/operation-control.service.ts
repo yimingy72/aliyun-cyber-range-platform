@@ -2,7 +2,7 @@ import { BadRequestException, ConflictException, HttpException, Inject, Injectab
 import { createHash, randomUUID } from 'node:crypto';
 
 import type { AuthenticatedPlatformRequest, RequestAuthContext } from '../auth/request-auth-context';
-import { ADMIN_REPOSITORY, type IdempotentOperationRecord, type OperationAuditEventInput } from '../admin/admin.repository';
+import { ADMIN_REPOSITORY, type CreateIdempotentOperationInput, type IdempotentOperationRecord, type OperationAuditEventInput } from '../admin/admin.repository';
 import type { AdminRepository } from '../admin/admin.repository';
 import { requireCurrentCloudWorkspaceId } from '../auth/cloud-workspace-scope';
 import { redactMcpMetadata } from '../auth/mcp-response.interceptor';
@@ -27,6 +27,50 @@ export function readOperationRequestMetadata(request: AuthenticatedPlatformReque
 @Injectable()
 export class OperationControlService {
   constructor(@Inject(ADMIN_REPOSITORY) private readonly repository: AdminRepository) {}
+
+  prepareRangeRecoveryIntake(context: RequestAuthContext, metadata: OperationRequestMetadata, rangeInstanceId: string, trigger: 'retry' | 'destroy'): CreateIdempotentOperationInput {
+    const key = metadata.idempotencyKey;
+    if (!key || key.length > 128) throw new BadRequestException('恢复请求缺少有效的操作标识，请刷新页面后重新提交。');
+    const cloudWorkspaceId = requireCurrentCloudWorkspaceId();
+    return { cloudWorkspaceId, actorUserId: context.user.id, toolName: `web_range_instance_${trigger}`, idempotencyKey: key,
+      operationId: randomUUID(), argumentsHash: hash({ cloudWorkspaceId, arguments: { rangeInstanceId, trigger } }) };
+  }
+
+  async readRangeRecoveryIntake(operation: CreateIdempotentOperationInput) {
+    const previous = await this.repository.getIdempotentOperation(operation.actorUserId, operation.toolName, operation.idempotencyKey);
+    if (previous) this.existing(previous, operation.argumentsHash, operation.cloudWorkspaceId!);
+    return previous;
+  }
+
+  async executeRangeRecoveryIntake(input: { context: RequestAuthContext; metadata: OperationRequestMetadata; rangeInstanceId: string;
+    trigger: 'retry' | 'destroy'; execute: (operation: CreateIdempotentOperationInput) => Promise<{ id: string }> }) {
+    const operation = this.prepareRangeRecoveryIntake(input.context, input.metadata, input.rangeInstanceId, input.trigger);
+    const recordedId = (record: IdempotentOperationRecord) => {
+      if (typeof record.result?.id === 'string') return record.result.id;
+      throw new ConflictException({ code: record.status === 'failed' ? 'OPERATION_REJECTED' : 'OPERATION_IN_PROGRESS',
+        message: record.status === 'failed' ? '原恢复请求未受理，请处理原因后重新发起。' : '恢复结果尚未确认，请继续查询原请求。' });
+    };
+    const previous = await this.readRangeRecoveryIntake(operation);
+    if (previous) return recordedId(previous);
+    const audit = { cloudWorkspaceId: operation.cloudWorkspaceId, operationId: operation.operationId,
+      requestId: input.metadata.requestId, actorUserId: input.context.user.id, source: input.context.source, oauthClientId: input.context.oauthClientId,
+      toolName: operation.toolName, targetType: 'range_instance', targetId: input.rangeInstanceId,
+      sanitizedInput: { rangeInstanceId: input.rangeInstanceId, trigger: input.trigger } };
+    await this.audit({ ...audit, phase: 'requested' });
+    try {
+      const job = await input.execute(operation);
+      const receipt = await this.readRangeRecoveryIntake(operation);
+      await this.audit({ ...audit, operationId: receipt?.operationId ?? operation.operationId, phase: 'dispatched', jobId: job.id });
+      return job.id;
+    } catch (error) {
+      if (error instanceof HttpException && error.getStatus() >= 400 && error.getStatus() < 500) {
+        const terminal = await this.repository.rejectRangeInstanceIntake(operation, `HTTP_${error.getStatus()}`);
+        if (typeof terminal.result?.id === 'string') return recordedId(terminal);
+      }
+      await this.audit({ ...audit, phase: 'failed', errorCode: errorCodeFor(error) });
+      throw error;
+    }
+  }
 
   async executeIdempotent(input: {
     context: RequestAuthContext;

@@ -24,6 +24,7 @@ export function resolveDelegatedScopes(role: SessionUserProfile['role'], tokenSc
 type ScopeRule = { method: string; path: RegExp; all?: string[]; any?: string[] };
 const metadataScopes = (namespace: string) => [...userScopes, ...adminScopes].filter(scope => scope.startsWith(`${namespace}:`));
 const rules: ScopeRule[] = [
+  { method: 'GET', path: /^\/admin\/ranges\/[^/]+\/recovery\/(?:retry|destroy)$/, all: ['ranges:read'] },
   { method: 'GET', path: /^\/admin\/resource-alerts(?:\/patrol|\/[^/]+\/preview)?$/, all: ['settings:read'] },
   { method: 'POST', path: /^\/admin\/resource-alerts\/patrol$/, all: ['settings:write'] },
   { method: 'POST', path: /^\/admin\/resource-alerts\/[^/]+\/reclaim$/, all: ['settings:write', 'ranges:destroy', 'instances:destroy'] },

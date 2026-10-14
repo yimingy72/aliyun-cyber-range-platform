@@ -8,6 +8,7 @@ CI_NETWORK="cyber-range-ci-$RUN_ID"
 CI_DB="cyber-range-ci-postgres-$RUN_ID"
 CI_PACKED_DB="cyber-range-ci-packed-postgres-$RUN_ID"
 CI_TAG_DB="cyber-range-ci-image-tags-postgres-$RUN_ID"
+CI_WORKER_DB="cyber-range-ci-worker-postgres-$RUN_ID"
 CI_TENCENT_IMAGE="cyber-range-tencentcloud-iac:$RUN_ID"
 CI_PROVIDER_MIRROR_ARGS=()
 if [ -n "${OPENTOFU_PROVIDER_MIRROR_HOST_PATH:-}" ]; then
@@ -29,6 +30,7 @@ cleanup() {
   docker rm -f "$CI_DB" >/dev/null 2>&1 || true
   docker rm -f "$CI_PACKED_DB" >/dev/null 2>&1 || true
   docker rm -f "$CI_TAG_DB" >/dev/null 2>&1 || true
+  docker rm -f "$CI_WORKER_DB" >/dev/null 2>&1 || true
   docker network rm "$CI_NETWORK" >/dev/null 2>&1 || true
   docker image rm "$CONTEXT_IMAGE" >/dev/null 2>&1 || true
   docker image rm "$CI_TENCENT_IMAGE" >/dev/null 2>&1 || true
@@ -110,7 +112,12 @@ docker run -d --name "$CI_TAG_DB" --network "$CI_NETWORK" --network-alias image-
   -e POSTGRES_DB=image_tags_test -e POSTGRES_USER=postgres -e POSTGRES_PASSWORD=postgres \
   --health-cmd 'pg_isready -h 127.0.0.1 -U postgres -d image_tags_test' --health-interval 1s --health-retries 30 \
   postgres:16-alpine >/dev/null
-for task_db in "$CI_DB" "$CI_PACKED_DB" "$CI_TAG_DB"; do
+docker run -d --name "$CI_WORKER_DB" --network "$CI_NETWORK" --network-alias worker-transaction-test-postgres \
+  --tmpfs /var/lib/postgresql/data \
+  -e POSTGRES_DB=worker_transaction_test -e POSTGRES_USER=postgres -e POSTGRES_PASSWORD=postgres \
+  --health-cmd 'pg_isready -h 127.0.0.1 -U postgres -d worker_transaction_test' --health-interval 1s --health-retries 30 \
+  postgres:16-alpine >/dev/null
+for task_db in "$CI_DB" "$CI_PACKED_DB" "$CI_TAG_DB" "$CI_WORKER_DB"; do
   for attempt in $(seq 1 40); do
     if [ "$(docker inspect --format '{{.State.Health.Status}}' "$task_db")" = healthy ]; then
       break
@@ -165,6 +172,7 @@ docker run --rm --network "$CI_NETWORK" \
   -e CLOUD_WORKSPACE_MIGRATION_TEST_DATABASE_URL='postgresql://postgres:postgres@postgres:5432/cyber_range_workspace_migration_test?schema=public' \
   -e PACKED_IMAGE_TEST_DATABASE_URL='postgresql://postgres:postgres@packed-image-test-postgres:5432/packed_image_test?schema=public' \
   -e IMAGE_TAG_TEST_DATABASE_URL='postgresql://postgres:postgres@image-tags-test-postgres:5432/image_tags_test?schema=public' \
+  -e WORKER_TRANSACTION_TEST_DATABASE_URL='postgresql://postgres:postgres@worker-transaction-test-postgres:5432/worker_transaction_test?schema=public' \
   -e SINGLE_TOFU_OFFLINE_VALIDATION=1 -e SINGLE_TOFU_PROVIDER_MIRROR_PATH=/app/.local/provider-mirror \
   -e NODE_ENV=test -e ADMIN_USERNAME=admin -e ADMIN_TOKEN=dev-admin-token \
   -e OIDC_ISSUER=https://test-issuer.example/realms/cyber-range \
@@ -185,6 +193,8 @@ docker run --rm --network "$CI_NETWORK" \
     DATABASE_URL="$DNS_STATE_TEST_DATABASE_URL" pnpm --filter @aliyun-cyber-range/database prisma:migrate:deploy
     DATABASE_URL="$PACKED_IMAGE_TEST_DATABASE_URL" pnpm --filter @aliyun-cyber-range/database prisma:migrate:deploy
     DATABASE_URL="$IMAGE_TAG_TEST_DATABASE_URL" pnpm --filter @aliyun-cyber-range/database prisma:migrate:deploy
+    DATABASE_URL="$WORKER_TRANSACTION_TEST_DATABASE_URL" pnpm --filter @aliyun-cyber-range/database prisma:migrate:deploy
+    pnpm --filter @aliyun-cyber-range/api build
     pnpm test
     NODE_ENV=production pnpm build
     ALICLOUD_PROVIDER_ZIP_PATH=/app/.local/provider-mirror/registry.opentofu.org/aliyun/alicloud/terraform-provider-alicloud_1.282.0-range.1_linux_amd64.zip pnpm iac:validate

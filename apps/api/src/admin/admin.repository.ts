@@ -485,6 +485,7 @@ export type PackedImageArtifactRecord = {
   sourceInstanceId: string;
   sourceDiskIds: string[];
   sourceSnapshotBaseline: Record<string, unknown> | null;
+  assetConfigCiphertext?: string | null;
   imageId: string | null;
   sourceSnapshotId: string | null;
   platformImageAssetId: string | null;
@@ -499,7 +500,10 @@ export type PackedImageArtifactRecord = {
   updatedAt: Date;
 };
 export type CreatePackedImageArtifactInput = Pick<PackedImageArtifactRecord,
-  'cloudAccountContextId' | 'cloudAccountUid' | 'regionId' | 'ownerUserId' | 'sourceRangeInstanceId' | 'sourceHostKey' | 'sourceInstanceId' | 'sourceDiskIds'> & { cloudProvider?: CloudProvider; id?: string; sourceSnapshotBaseline?: Record<string, unknown> };
+  'cloudAccountContextId' | 'cloudAccountUid' | 'regionId' | 'ownerUserId' | 'sourceRangeInstanceId' | 'sourceHostKey' | 'sourceInstanceId' | 'sourceDiskIds'> & {
+    cloudProvider?: CloudProvider; id?: string; sourceSnapshotBaseline?: Record<string, unknown>;
+    leaseToken?: string; leaseExpiresAt?: Date; assetConfigCiphertext?: string;
+  };
 export type UpdatePackedImageArtifactInput = Partial<Pick<PackedImageArtifactRecord,
   'imageId' | 'sourceSnapshotId' | 'platformImageAssetId' | 'status' | 'backingSnapshotIds' | 'deletedSnapshotIds' | 'cloudImageDeletedAt' | 'completedAt' | 'lastPolledAt' | 'errorMessage'>>;
 
@@ -1095,6 +1099,7 @@ export type QueueRangeInstanceJobInput = CreateProvisionJobInput & {
   expectedOwnerUserId: string | null;
   nextStatus: 'pending_create' | 'pending_destroy';
   allocatedCidr?: string | null;
+  intakeOperation?: CreateIdempotentOperationInput;
 };
 
 export type SyncRangeInstanceDraftToTemplateInput = {
@@ -1249,6 +1254,7 @@ export interface AdminRepository {
   listPendingProvisionJobs(input?: ListPendingProvisionJobsInput): Promise<ProvisionJobSchedulingRecord[]>;
   createProvisionJob(input: CreateProvisionJobInput): Promise<ProvisionJobRecord>;
   queueRangeInstanceJob(input: QueueRangeInstanceJobInput): Promise<ProvisionJobRecord | null>;
+  rejectRangeInstanceIntake(operation: CreateIdempotentOperationInput, errorCode: string): Promise<IdempotentOperationRecord>;
   queueExpiredSingleInstanceDestroy(input: { rangeInstanceId: string; now: Date }): Promise<ProvisionJobRecord | null>;
   claimRangeProvisionJob(id: string, startedAt: Date): Promise<ProvisionJobRecord | null>;
   heartbeatRangeProvisionJob(id: string, startedAt: Date, heartbeatAt: Date): Promise<boolean>;
@@ -1294,6 +1300,7 @@ export interface AdminRepository {
   deletePlatformImageAsset(id: string): Promise<void>;
   deletePlatformImageAssetsBySnapshotId(snapshotId: string): Promise<void>;
   withSingleInstanceControlLock<T>(work: () => Promise<T>): Promise<T>;
+  withSingleInstanceTransaction<T>(work: (repository: AdminRepository) => Promise<T>): Promise<T>;
   tryWithSingleInstanceBatchProvisionLock<T>(batchId: string, work: (lease: SingleInstanceBatchProvisionLease) => Promise<T>): Promise<{ acquired: boolean; result?: T }>;
   commitSingleInstanceClaim(job: ProvisionJobRecord, instancePatch: UpdateRangeInstanceInput, jobPatch?: UpdateProvisionJobInput): Promise<boolean>;
   listSingleInstanceNetworkProfiles(): Promise<SingleInstanceNetworkProfileRecord[]>;

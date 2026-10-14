@@ -424,7 +424,7 @@ export class ProvisioningWorkerService {
           {status:'succeeded',finishedAt:new Date(),errorSummary:null})) return;
         await this.finalizeDispatchedOperation(job,'succeeded');this.nextResourceReconciliationAt=0;return;
       }
-      const rangeContext = instance.instanceMode === 'range' ? await this.resolveRangeAccountContext(instance, job) : null;
+      const rangeContext = instance.instanceMode === 'range' ? { ...await this.resolveRangeAccountContext(instance, job) } : null;
       const runtimeConfig = rangeContext!;
 
       if (instance.instanceMode === 'single') {
@@ -592,6 +592,7 @@ export class ProvisioningWorkerService {
           knownResourceSummary: (await this.adminRepository.getRangeInstanceById(instance.id))?.resourceSummary ?? undefined,
           preserveWorkspaceState: job.jobType === 'retry' || job.retryCount > 0,
           ...(replayApproval ? { changeApproval: replayApproval } : {}),
+          onExecutionZoneSelected: zoneId => this.freezeRangeExecutionZone(job, accountContext, zoneId, signal),
           onHostCreationPhase: deadlines => this.persistHostCloudReleaseDeadlines(job, deadlines, signal),
           onResourceCreated: event => this.persistRangeCreationReceipt(job, instance, accountContext, event, signal),
           onApplyStart: async () => {
@@ -728,7 +729,7 @@ export class ProvisioningWorkerService {
     const cleanupInput: RangeProvisionDestroyInput = {
       rangeInstanceId: instance.id, templateModulePath: instance.templateModulePathSnapshot ?? '',
       allocatedCidr: instance.allocatedCidr, runtimeConfig: accountContext, reportStep, signal,
-      ...this.rangeRecoveryAssertions(job, instance, signal),
+      ...this.rangeRecoveryAssertions(job, instance, signal, accountContext),
       requirePersistedState: await this.rangeHasApplyEvidence(instance, job),
       billingTags: accountContext.cloudAccountContextId ? { CloudAccountContextId: accountContext.cloudAccountContextId, CloudAccountUid: accountContext.accountUid!, PlatformScope: instance.ownerUserId ? 'user' : 'platform', ...(instance.ownerUserId ? { PlatformUserId: instance.ownerUserId } : {}) } : undefined,
     };
@@ -740,9 +741,9 @@ export class ProvisioningWorkerService {
     if (!(await this.ownsProvisionJobClaim(job))) return;
     await releaseRangeInstanceBillingLedger(this.adminRepository, instance.id, new Date());
     await this.updateRangeForClaim(job, { status: 'destroyed', accessEntry: null,
-      resourceSummary: instance.resourceSummary?.executionContext ? { mode: 'opentofu', creationAttempted: false,
-        cloudReleaseDeadlines: instance.resourceSummary.cloudReleaseDeadlines,
-        executionContext: instance.resourceSummary.executionContext } : null, errorSummary: null });
+      resourceSummary: evidence.resourceSummary?.executionContext ? { mode: 'opentofu', creationAttempted: false,
+        cloudReleaseDeadlines: evidence.resourceSummary.cloudReleaseDeadlines,
+        executionContext: evidence.resourceSummary.executionContext } : null, errorSummary: null });
     if (!(await this.adminRepository.updateRangeProvisionJob(job.id, job.startedAt!, {
       status: 'succeeded', finishedAt: new Date(), errorSummary: null,
     }))) return;
@@ -790,6 +791,7 @@ export class ProvisioningWorkerService {
       templateModulePath: topologySnapshot.templateModulePath,
       allocatedCidr: input.instance.allocatedCidr,
       preserveWorkspaceState: true,
+      onExecutionZoneSelected: zoneId => this.freezeRangeExecutionZone(input.job, input.accountContext, zoneId, input.signal),
       onHostCreationPhase: deadlines => this.persistHostCloudReleaseDeadlines(input.job, deadlines, input.signal),
       onResourceCreated: event => this.persistRangeCreationReceipt(input.job, input.instance, input.accountContext, event, input.signal),
       requirePersistedState: true,
@@ -1024,6 +1026,28 @@ export class ProvisioningWorkerService {
     signal?.throwIfAborted();
   }
 
+  private async freezeRangeExecutionZone(job: ProvisionJobRecord, context: SystemCloudAccountContext,
+    zoneId: string, signal?: AbortSignal, recoveringProvenState = false) {
+    signal?.throwIfAborted();
+    if (typeof zoneId !== 'string' || !zoneId.startsWith(`${context.defaultRegion}-`)
+      || !/^[a-z0-9-]+$/.test(zoneId) || !await this.ownsProvisionJobClaim(job))
+      throw new Error('Range execution zone requires its original region and active claim');
+    const current = await this.adminRepository.getRangeInstanceById(job.rangeInstanceId);
+    const bound = current?.resourceSummary?.executionContext;
+    if (!current || !bound || bound.cloudAccountUid !== context.accountUid
+      || bound.cloudAccountContextId !== context.cloudAccountContextId || bound.regionId !== context.defaultRegion
+      || current.cloudProvider !== context.provider || bound.provider && bound.provider !== context.provider)
+      throw new Error('Range execution zone differs from its frozen cloud identity');
+    if (bound.zoneId !== zoneId) {
+      if (!recoveringProvenState && await this.rangeHasApplyEvidence(current, job))
+        throw new Error('Range execution zone cannot change after cloud apply');
+      await this.updateRangeForClaim(job, { resourceSummary: { ...current.resourceSummary!,
+        executionContext: { ...bound, zoneId } } });
+    }
+    context.defaultZoneId = zoneId;
+    signal?.throwIfAborted();
+  }
+
   private async persistRangeCreationReceipt(job: ProvisionJobRecord, instance: RangeInstanceRecord, context: SystemCloudAccountContext,
     event: RangeResourceCreatedEvent, signal?: AbortSignal) {
     signal?.throwIfAborted();
@@ -1081,12 +1105,14 @@ export class ProvisioningWorkerService {
     input: RangeProvisionDestroyInput, context: ResolvedProvisioningRuntimeConfig & { accountUid: string | null }) {
     input.signal?.throwIfAborted();
     if (!(await this.ownsProvisionJobClaim(job))) throw new Error('Range operation claim is no longer active');
-    const current = await this.adminRepository.getRangeInstanceById(instance.id) ?? instance;
+    let current = await this.adminRepository.getRangeInstanceById(instance.id) ?? instance;
     if (this.rangeProvisioner.mode === 'dry-run') return current;
     if (!this.rangeProvisioner.inspectResources) throw new Error('Range provider cannot inspect persisted resource identities before cleanup');
     const bound = current.resourceSummary?.executionContext;
-    const inspectedInput = { ...input, billingTags: { ...input.billingTags, ...(bound ? { CloudAccountContextId: bound.cloudAccountContextId, CloudAccountUid: bound.cloudAccountUid } : {}) } };
+    const inspectedInput = { ...input, ...this.rangeRecoveryAssertions(job, instance, input.signal, context),
+      billingTags: { ...input.billingTags, ...(bound ? { CloudAccountContextId: bound.cloudAccountContextId, CloudAccountUid: bound.cloudAccountUid } : {}) } };
     const observed = await this.rangeProvisioner.inspectResources(inspectedInput);
+    current = await this.adminRepository.getRangeInstanceById(instance.id) ?? current;
     if (!observed && input.requirePersistedState) throw new Error('Range persisted state is missing; cleanup cannot be proven');
     let summary: RangeResourceSummary = { ...current.resourceSummary, mode: 'opentofu' };
     if (observed) for (const [field, value] of Object.entries(observed)) {
@@ -1125,9 +1151,12 @@ export class ProvisioningWorkerService {
     return persisted;
   }
 
-  private rangeRecoveryAssertions(job: ProvisionJobRecord, instance: RangeInstanceRecord, signal?: AbortSignal):
-    Pick<RangeProvisionDestroyInput, 'assertRecoveryClaim' | 'assertRecoverySourceJob'> {
+  private rangeRecoveryAssertions(job: ProvisionJobRecord, instance: RangeInstanceRecord, signal?: AbortSignal,
+    context?: ResolvedProvisioningRuntimeConfig):
+    Pick<RangeProvisionDestroyInput, 'assertRecoveryClaim' | 'assertRecoverySourceJob' | 'onExecutionZoneRecovered'> {
     return {
+      ...(context?.provider === 'alibaba_cloud' ? { onExecutionZoneRecovered: (zoneId: string) =>
+        this.freezeRangeExecutionZone(job, context as SystemCloudAccountContext, zoneId, signal, true) } : {}),
       assertRecoveryClaim: async () => {
         signal?.throwIfAborted();
         if (!(await this.ownsProvisionJobClaim(job))) throw new Error('Range recovery claim is no longer active');
@@ -1824,10 +1853,15 @@ export class ProvisioningWorkerService {
     intent: { sourceProvisionJobId: string; submittedAt: string; hostKeys: string[]; eipNames: string[] }, signal?: AbortSignal) {
     const summary = instance.resourceSummary;
     const source = await this.adminRepository.getProvisionJobById(intent.sourceProvisionJobId);
+    const submittedAt = Date.parse(intent.submittedAt);
+    const originalApply = Number.isFinite(submittedAt) && source && ((source.retryCount ?? 0) === 0 && source.startedAt && source.startedAt.getTime() <= submittedAt
+      || (await this.adminRepository.listProvisionJobStepLogs(source.id)).some(log =>
+        log.jobId === source.id && log.stepName === 'tofu_apply' && log.startedAt && log.startedAt.getTime() <= submittedAt
+        && !log.message?.startsWith('Dry-run')));
     if (!summary || !this.isFrozenAliyunInventory(summary, account) || !summary.vpcId
       || !instance.cloudWorkspaceId || !source || source.rangeInstanceId !== instance.id || source.cloudWorkspaceId !== instance.cloudWorkspaceId
       || !['create','retry','update'].includes(source.jobType) || !source.startedAt
-      || !Number.isFinite(Date.parse(intent.submittedAt)) || source.startedAt.getTime() > Date.parse(intent.submittedAt)
+      || !Number.isFinite(submittedAt) || !originalApply
       || source.jobType === 'update' && source.topologySnapshot?.operation !== 'update'
       || !intent.hostKeys.length || new Set(intent.hostKeys).size !== intent.hostKeys.length
       || intent.hostKeys.some(key => !summary.hostIds?.[key] || summary.diskInventoryHostIds?.[key] !== summary.hostIds[key] || !summary.systemDiskIds?.[key]))
@@ -2341,8 +2375,13 @@ export class ProvisioningWorkerService {
     cleanupInput: RangeProvisionDestroyInput;
     reportStep: RangeProvisionStepReporter;
   }) {
+    const controller = new AbortController();
+    const heartbeat = this.startProvisionJobHeartbeat([input.job], controller);
     try {
-      const cleanupInput = { ...input.cleanupInput, ...this.rangeRecoveryAssertions(input.job, input.instance, input.cleanupInput.signal) };
+      // Cancellation of the settled apply is not cancellation of an owned compensation.
+      if (!await this.ownsProvisionJobClaim(input.job)) throw new Error('Range cleanup claim is no longer active');
+      const cleanupInput = { ...input.cleanupInput, signal: controller.signal,
+        ...this.rangeRecoveryAssertions(input.job, input.instance, controller.signal, input.cleanupInput.runtimeConfig) };
       const current = await this.adminRepository.getRangeInstanceById(input.instance.id) ?? input.instance;
       const evidence = await this.captureRangeResources(input.job, current, cleanupInput, {
         ...cleanupInput.runtimeConfig!, accountUid: input.cloudContext?.accountUid ?? null,
@@ -2375,6 +2414,9 @@ export class ProvisioningWorkerService {
       return null;
     } catch (error) {
       return error instanceof Error ? error.message : 'Unknown automatic cleanup failure';
+    } finally {
+      clearInterval(heartbeat);
+      controller.abort();
     }
   }
 
@@ -2389,8 +2431,9 @@ export class ProvisioningWorkerService {
     }
 
     const operation = await this.adminRepository.getIdempotentOperationByOperationId(event.operationId);
-    if (operation && operation.status === status) return;
-    if (operation) {
+    const recoveryIntake = operation && ['web_range_instance_retry', 'web_range_instance_destroy'].includes(operation.toolName);
+    if (!recoveryIntake && operation && operation.status === status) return;
+    if (operation && !recoveryIntake) {
       await this.adminRepository.updateIdempotentOperation(operation.id, {
         status,
         errorCode,

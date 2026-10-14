@@ -1,5 +1,5 @@
 import { Inject, Injectable, ConflictException, ForbiddenException, NotFoundException, Optional } from '@nestjs/common';
-import { runInSystemCloudWorkspaceScope } from '../auth/cloud-workspace-scope';
+import { getCurrentCloudWorkspaceId, runInSystemCloudWorkspaceScope } from '../auth/cloud-workspace-scope';
 import { listExecutionCloudWorkspaces, runInExecutionCloudWorkspace } from '../auth/background-cloud-workspace';
 import { SystemConfigService } from './system-config.service';
 import { ADMIN_REPOSITORY, type AdminRepository, type PackedImageArtifactRecord, type UpdatePackedImageArtifactInput } from './admin.repository';
@@ -14,6 +14,7 @@ import { TencentCloudRequestError } from './tencent-cloud-client';
 import { PackedImageCloudError, PackedImageVerificationError, safePackedCloudCode, packedImageDiagnostic, readPackedImageDiagnostic, encodePackedImageDiagnostic, type PackedImagePhase } from './packed-image-diagnostic';
 import { TENCENT_PACK_BASELINE_KIND, readTencentPackBaseline, validTencentPackBaseline } from './tencent-pack-snapshot-baseline';
 import { collectAliyunPackSnapshotBaseline } from './aliyun-snapshot-ecs-evidence';
+import { encryptPackedImageAssetConfig, readPackedImageAssetConfig, type PackedImageAssetConfig } from './packed-image-asset-config';
 
 type Image = { ImageType?: string; ImageSize?: number | null; ImageId: string; ImageName?: string; Status: string; Progress?: string; Tags?: unknown; DiskDeviceMappings?: { DiskDeviceMapping?: Array<{ SnapshotId?: string }> } };
 type Snapshot = { SnapshotId: string; SourceDiskId?: string; SourceSnapshotId?: string; RegionId?: string; CreationTime?: string; Usage?: string; Tags?: unknown };
@@ -27,7 +28,7 @@ export class PackedImagesService {
   constructor(@Inject(ADMIN_REPOSITORY) private readonly repository: AdminRepository, private readonly contexts: CloudAccountContextsService,
     @Optional() private readonly systemConfigService?: SystemConfigService) {}
 
-  async begin(input: { cloudAccountContextId: string; cloudAccountUid: string; regionId: string; ownerUserId: string; sourceRangeInstanceId: string; sourceHostKey: string; sourceInstanceId: string }, context: CloudAccountContextCredentials) {
+  async begin(input: { cloudAccountContextId: string; cloudAccountUid: string; regionId: string; ownerUserId: string; sourceRangeInstanceId: string; sourceHostKey: string; sourceInstanceId: string }, context: CloudAccountContextCredentials, assetConfig?: PackedImageAssetConfig) {
     this.assertContext(input, context);
     const body = context.provider === 'tencent_cloud' ? await this.tencentSourceDisks(input, context) : await imageRpc(context, 'DescribeDisks', { InstanceId: input.sourceInstanceId, PageNumber: '1', PageSize: '100' });
     const disks = cloudItems<{ DiskId?: string }>(body, 'Disks', 'Disk');
@@ -35,19 +36,23 @@ export class PackedImagesService {
     if (!sourceDiskIds.length || sourceDiskIds.some(id => !(context.provider === 'tencent_cloud' ? /^disk-[A-Za-z0-9]+$/ : /^d-/).test(id)) || new Set(sourceDiskIds).size !== sourceDiskIds.length || cloudTotal(body) !== sourceDiskIds.length) {
       throw new ConflictException('无法确认源实例的完整磁盘清单，未提交镜像打包。');
     }
+    const submissionToken = randomUUID();
     const artifact = await this.repository.withSingleInstanceControlLock(async () => {
       const existing = (await this.repository.listPackedImageArtifacts()).find(item => (item.cloudProvider ?? 'alibaba_cloud') === context.provider && ACTIVE.includes(item.status)
         && item.cloudAccountUid === input.cloudAccountUid && item.regionId === input.regionId && item.sourceInstanceId === input.sourceInstanceId);
       if (existing) throw new ConflictException({ message: '该实例已有尚未确认或清理中的打包任务，请先核验原任务，避免重复生成计费快照。', packedImageArtifactId: existing.id });
       const source = await this.repository.getRangeInstanceById(input.sourceRangeInstanceId);
+      const identity = { ...input, id: randomUUID(), cloudProvider: context.provider, cloudWorkspaceId: source?.cloudWorkspaceId ?? getCurrentCloudWorkspaceId() ?? 'legacy-unbound', sourceDiskIds };
+      const assetConfigCiphertext = assetConfig ? encryptPackedImageAssetConfig(identity, assetConfig) : undefined;
+      const createArtifact = (sourceSnapshotBaseline?: Record<string, unknown>) => this.repository.createPackedImageArtifact({ ...identity,
+        ...(sourceSnapshotBaseline ? { sourceSnapshotBaseline } : {}), ...(assetConfigCiphertext ? { assetConfigCiphertext } : {}),
+        leaseToken: submissionToken, leaseExpiresAt: new Date(Date.now() + 300_000) });
       if (context.provider !== 'tencent_cloud') {
-        const identity = { ...input, id: randomUUID(), cloudProvider: 'alibaba_cloud' as const, cloudWorkspaceId: source?.cloudWorkspaceId ?? 'legacy-unbound', sourceDiskIds };
         const sourceSnapshotBaseline = await collectAliyunPackSnapshotBaseline({ ...context, cloudAccountContextId: context.id }, identity);
         // Missing audit permissions or inventory cannot block a pack or trigger another create.
         // Keep the artifact; source-ECS billing remains pending without this historical baseline.
-        return this.repository.createPackedImageArtifact({ ...input, id: identity.id, cloudProvider: context.provider, sourceDiskIds, ...(sourceSnapshotBaseline ? { sourceSnapshotBaseline } : {}) });
+        return createArtifact(sourceSnapshotBaseline ?? undefined);
       }
-      const identity = { ...input, id: randomUUID(), cloudProvider: 'tencent_cloud' as const, cloudWorkspaceId: source?.cloudWorkspaceId ?? 'legacy-unbound', sourceDiskIds };
       const account = { ...context, accountUidResolved: true, cloudAccountContextId: context.id, defaultRegion: context.regionId, defaultZoneId: context.zoneId };
       const sourceDisks = [];
       for (const sourceDiskId of sourceDiskIds) {
@@ -58,10 +63,8 @@ export class PackedImagesService {
       const sourceSnapshotBaseline = { ...identity, kind: TENCENT_PACK_BASELINE_KIND, sourceDisks,
         preCreateSnapshotIds: [...new Set(sourceDisks.flatMap(disk => disk.snapshotIds))], observedAt: new Date().toISOString() };
       if (!validTencentPackBaseline(identity, sourceSnapshotBaseline)) throw new ConflictException('腾讯云提交前快照清单或官方回执不完整，未创建打包任务或镜像。');
-      return this.repository.createPackedImageArtifact({ ...input, id: identity.id, cloudProvider: 'tencent_cloud', sourceDiskIds, sourceSnapshotBaseline });
+      return createArtifact(sourceSnapshotBaseline);
     });
-    const submissionToken = randomUUID();
-    if (!await this.repository.claimPackedImageArtifact(artifact.id, submissionToken, new Date(Date.now() + 300_000))) throw new ConflictException('打包来源记录正在恢复，请稍后重试。');
     return { ...artifact, submissionToken };
   }
 
@@ -144,6 +147,26 @@ export class PackedImagesService {
     return this.repository.withPackedImageArtifactClaim(id, token, repo => repo.updatePackedImageArtifact(id, input));
   }
 
+  async persistAsset(artifact: PackedImageArtifactRecord, snapshotId: string, repo: AdminRepository, available: boolean) {
+    const source = await repo.getImageSnapshotById(snapshotId);
+    if (!source || source.provider !== (artifact.cloudProvider ?? 'alibaba_cloud') || source.accountUid !== artifact.cloudAccountUid
+      || source.regionId !== artifact.regionId || (source.cloudWorkspaceId ?? 'legacy-unbound') !== (artifact.cloudWorkspaceId ?? 'legacy-unbound')
+      || source.scope !== 'custom' || source.imageId !== artifact.imageId || available && !source.isAvailable) throw new ConflictException('打包资产的镜像来源或冻结上下文不匹配。');
+    const config = readPackedImageAssetConfig(artifact, artifact.assetConfigCiphertext);
+    const existing = (await repo.listPlatformImageAssets({ provider: source.provider, accountUid: artifact.cloudAccountUid, regionId: artifact.regionId }))
+      .find(asset => asset.imageId === source.imageId);
+    if (existing && (existing.ownerUserId !== artifact.ownerUserId
+      || (existing.cloudWorkspaceId ?? 'legacy-unbound') !== (artifact.cloudWorkspaceId ?? 'legacy-unbound')
+      || existing.sourceSnapshotId && existing.sourceSnapshotId !== source.id)) throw new ConflictException('打包镜像资产的 owner、工作空间或来源不匹配，拒绝接管。');
+    if (artifact.platformImageAssetId && existing?.id !== artifact.platformImageAssetId) throw new ConflictException('打包资产关联不匹配，拒绝替换原归属。');
+    const legacyIncomplete = !config && !existing?.defaultHostName && !existing?.defaultPassword;
+    const asset = await repo.collectPlatformImageAsset({ preserveExisting: true, snapshotId: source.id,
+      ...(config ?? { displayName: source.sourceImageName || source.imageId }), ownerUserId: artifact.ownerUserId, visibility: 'private' });
+    // Legacy missing defaults remain NULL and disabled until an owner explicitly reviews them.
+    const platformImageAsset = await repo.setPlatformImageAssetEnabled(asset.id, available && (!legacyIncomplete || Boolean(existing?.enabled)));
+    return { platformImageAsset, legacyIncomplete };
+  }
+
   async restoreAsset(id: string, snapshotId: string, displayName: string) {
     return this.withClaim(id, true, token => this.repository.withPackedImageArtifactClaim(id, token, async repo => {
       const artifact = (await repo.getPackedImageArtifact(id))!;
@@ -222,11 +245,15 @@ export class PackedImagesService {
       }
       const status = image.Status === 'Available' ? 'available' : /Failed|UnAvailable/i.test(image.Status) ? 'failed' : 'creating';
       phase = 'persist_catalog';
-      return this.repository.withPackedImageArtifactClaim(id, token, async repo => {
+      return await this.repository.withPackedImageArtifactClaim(id, token, async repo => {
         await repo.upsertImageSnapshots({ provider: context.provider, accountUid: artifact.cloudAccountUid, regionId: artifact.regionId, scope: 'custom', snapshots: [{ imageId: image.ImageId, sourceImageName: image.ImageName || image.ImageId, minimumSystemDiskSize: image.ImageSize, status: image.Progress && image.Status !== 'Available' ? `${image.Status} ${image.Progress}` : image.Status, isAvailable: image.Status === 'Available', lastSyncedAt: new Date() }] });
         const [source] = await repo.listImageSnapshots({ provider: context.provider, accountUid: artifact.cloudAccountUid, regionId: artifact.regionId, scope: 'custom', imageId: image.ImageId });
-        if (artifact.platformImageAssetId && await repo.getPlatformImageAssetById(artifact.platformImageAssetId)) await repo.setPlatformImageAssetEnabled(artifact.platformImageAssetId, image.Status === 'Available');
-        return repo.updatePackedImageArtifact(id, { sourceSnapshotId: source.id, status, errorMessage: status === 'failed' ? `云镜像打包失败：${image.Status}` : null });
+        const { platformImageAsset, legacyIncomplete } = await this.persistAsset(artifact, source.id, repo, status === 'available');
+        const updated = await repo.updatePackedImageArtifact(id, { sourceSnapshotId: source.id, platformImageAssetId: platformImageAsset.id, status,
+          errorMessage: status === 'failed' ? `云镜像打包失败：${image.Status}` : legacyIncomplete ? '旧打包缺少原始资产默认配置；已恢复私有资产，默认密码留空，请核对后启用。' : null });
+        await this.upsertLedger(updated, image.ImageId, 'image', undefined, repo);
+        for (const sid of updated.backingSnapshotIds) await this.upsertLedger(updated, sid, 'snapshot', undefined, repo);
+        return updated;
       });
     } catch (error) {
       // A later failed observation must not erase the original bounded submission rejection receipt.

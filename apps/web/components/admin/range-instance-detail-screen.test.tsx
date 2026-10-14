@@ -157,6 +157,7 @@ const {
   saveRangeInstanceAsTemplateMock,
   runRangeInstanceNodeActionMock,
   triggerRangeActionMock,
+  fetchRangeRecoveryStatusMock,
   writeTextMock,
   pushMock,
   replaceMock,
@@ -180,6 +181,7 @@ const {
     saveRangeInstanceAsTemplateMock: vi.fn(),
     runRangeInstanceNodeActionMock: vi.fn(),
     triggerRangeActionMock: vi.fn(),
+    fetchRangeRecoveryStatusMock: vi.fn(),
     writeTextMock: vi.fn(),
     pushMock,
     replaceMock,
@@ -217,6 +219,7 @@ vi.mock('../../lib/admin-api', () => ({
   saveRangeInstanceAsTemplate: saveRangeInstanceAsTemplateMock,
   runRangeInstanceNodeAction: runRangeInstanceNodeActionMock,
   triggerRangeAction: triggerRangeActionMock,
+  fetchRangeRecoveryStatus: fetchRangeRecoveryStatusMock,
 }));
 
 vi.mock('./use-admin-session', () => ({
@@ -239,8 +242,177 @@ vi.mock('./template-editor/topology-flow-canvas', () => ({
 import { RangeInstanceDetailScreen } from './range-instance-detail-screen';
 import { AdminPageCache } from './admin-page-cache';
 import { AdminScreenCacheProvider } from '../../lib/admin-screen-cache';
+import { beginRangeRecoveryIntent, readRangeRecoveryIntent } from '../../lib/range-recovery-intent';
+import { AdminApiError } from '../../lib/admin-api';
 
 describe('RangeInstanceDetailScreen', () => {
+
+  const recoveryScopeFixture = { apiBaseUrl: 'http://localhost:3001', userId: 'admin', workspaceId: '', rangeId: 'range-1' };
+
+  it('recovery-intake: an accepted receipt wins over a late 4xx from the original POST', async () => {
+    fetchRangeInstanceDetailMock.mockResolvedValue({ id: 'range-1', status: 'create_failed', runtimeTopologyGraph: createValidTopologyGraph() });
+    let rejectWrite!: (error: Error) => void;
+    triggerRangeActionMock.mockReturnValue(new Promise((_resolve, reject) => { rejectWrite = reject; }));
+    fetchRangeRecoveryStatusMock.mockResolvedValue({ state: 'accepted', jobId: 'accepted-job' });
+    fetchProvisionJobDetailMock.mockResolvedValue({ job: { id: 'accepted-job', jobType: 'retry', status: 'running' }, steps: [] });
+    render(<RangeInstanceDetailScreen rangeId="range-1" />);
+    fireEvent.click(await screen.findByRole('button', { name: '重试创建' }));
+    await waitFor(() => expect(fetchProvisionJobDetailMock).toHaveBeenCalledWith('http://localhost:3001', 'dev-admin-token', 'accepted-job'));
+    await act(async () => rejectWrite(new AdminApiError(409)));
+    expect(screen.queryByRole('button', { name: '安全重试原请求' })).toBeNull();
+    expect(screen.getByText('恢复任务已受理，正在跟踪任务。')).toBeTruthy();
+    expect(triggerRangeActionMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('recovery-intake: token renewal resumes reads without changing the stored request key', async () => {
+    fetchRangeInstanceDetailMock.mockResolvedValue({ id: 'range-1', status: 'create_failed', runtimeTopologyGraph: createValidTopologyGraph() });
+    triggerRangeActionMock.mockRejectedValue(new Error('lost response'));
+    const view = render(<RangeInstanceDetailScreen rangeId="range-1" />);
+    fireEvent.click(await screen.findByRole('button', { name: '重试创建' }));
+    await waitFor(() => expect(fetchRangeRecoveryStatusMock).toHaveBeenCalled());
+    const original = readRangeRecoveryIntent(recoveryScopeFixture)!;
+    sessionState.token = 'renewed-token';
+    view.rerender(<RangeInstanceDetailScreen rangeId="range-1" />);
+    await waitFor(() => expect(fetchRangeRecoveryStatusMock).toHaveBeenCalledWith('http://localhost:3001', 'renewed-token', 'range-1', 'retry', original.key));
+    expect(readRangeRecoveryIntent(recoveryScopeFixture)).toEqual(original);
+    expect([...Array(window.sessionStorage.length)].map((_, index) => window.sessionStorage.key(index)).join(' ')).not.toMatch(/dev-admin-token|renewed-token/);
+    expect(triggerRangeActionMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('recovery-intake: explicit replay follows the original failed job and never creates another write automatically', async () => {
+    fetchRangeInstanceDetailMock.mockResolvedValue({ id: 'range-1', status: 'create_failed', runtimeTopologyGraph: createValidTopologyGraph() });
+    triggerRangeActionMock.mockRejectedValueOnce(new Error('lost response')).mockResolvedValue({ id: 'original-failed-job', jobType: 'retry', status: 'failed' });
+    fetchProvisionJobDetailMock.mockResolvedValue({ job: { id: 'original-failed-job', jobType: 'retry', status: 'failed', errorSummary: '原恢复任务失败' }, steps: [] });
+    render(<RangeInstanceDetailScreen rangeId="range-1" />);
+    fireEvent.click(await screen.findByRole('button', { name: '重试创建' }));
+    await screen.findByRole('button', { name: '安全重试原请求' });
+    const key = triggerRangeActionMock.mock.calls[0][4];
+    fireEvent.click(screen.getByRole('button', { name: '安全重试原请求' }));
+    await screen.findByText('原恢复任务失败');
+    expect(triggerRangeActionMock).toHaveBeenCalledTimes(2);
+    expect(triggerRangeActionMock.mock.calls[1][4]).toBe(key);
+    expect(fetchProvisionJobDetailMock).toHaveBeenCalledWith('http://localhost:3001', 'dev-admin-token', 'original-failed-job');
+  });
+
+
+  it('recovery-intake: old failed detail and unconfirmed receipts keep the original intent until accepted', async () => {
+    const original = { id: 'range-1', name: '未知受理', status: 'create_failed', lastJobId: 'old-job', runtimeTopologyGraph: createValidTopologyGraph() };
+    fetchRangeInstanceDetailMock.mockResolvedValue(original);
+    fetchProvisionJobDetailMock.mockImplementation(async (_base, _token, id) => ({ job: { id, jobType: id === 'old-job' ? 'create' : 'retry', status: id === 'old-job' ? 'failed' : 'running' }, steps: [] }));
+    triggerRangeActionMock.mockRejectedValue(new Error('response lost'));
+    fetchRangeRecoveryStatusMock.mockResolvedValue({ state: 'unconfirmed' });
+    render(<RangeInstanceDetailScreen rangeId="range-1" />);
+    fireEvent.click(await screen.findByRole('button', { name: '重试创建' }));
+    await waitFor(() => expect(fetchRangeRecoveryStatusMock).toHaveBeenCalledTimes(1));
+    const intent = readRangeRecoveryIntent(recoveryScopeFixture)!;
+    await waitFor(() => expect(fetchRangeRecoveryStatusMock.mock.calls.length).toBeGreaterThanOrEqual(3), { timeout: 6000 });
+    expect(readRangeRecoveryIntent(recoveryScopeFixture)).toEqual(intent);
+    expect(screen.getByRole('button', { name: '重试创建' })).toHaveProperty('disabled', true);
+    expect(triggerRangeActionMock).toHaveBeenCalledTimes(1);
+    expect(fetchProvisionJobDetailMock.mock.calls.some(call => call[2] !== 'old-job')).toBe(false);
+    fetchRangeRecoveryStatusMock.mockResolvedValue({ state: 'accepted', jobId: 'accepted-job' });
+    fireEvent.click(screen.getByRole('button', { name: '查询恢复状态' }));
+    await waitFor(() => expect(fetchProvisionJobDetailMock).toHaveBeenCalledWith('http://localhost:3001', 'dev-admin-token', 'accepted-job'));
+    expect(triggerRangeActionMock).toHaveBeenCalledTimes(1);
+    expect(fetchRangeRecoveryStatusMock.mock.calls.every(call => call[4] === intent.key)).toBe(true);
+  }, 10000);
+
+  it('recovery-intake: explicitly resends the same key and keeps 4xx unconfirmed without duplicate writes', async () => {
+    fetchRangeInstanceDetailMock.mockResolvedValue({ id: 'range-1', status: 'create_failed', runtimeTopologyGraph: createValidTopologyGraph() });
+    let rejectReplay!: (error: Error) => void;
+    triggerRangeActionMock.mockImplementation(() => new Promise((_resolve, reject) => { rejectReplay = reject; }));
+    // First write fails; only a user click may resend it.
+    triggerRangeActionMock.mockImplementationOnce(async () => { throw new Error('lost response'); });
+    render(<RangeInstanceDetailScreen rangeId="range-1" />);
+    fireEvent.click(await screen.findByRole('button', { name: '重试创建' }));
+    await waitFor(() => expect(fetchRangeRecoveryStatusMock).toHaveBeenCalled());
+    const firstKey = triggerRangeActionMock.mock.calls[0][4];
+    const replay = screen.getByRole('button', { name: '安全重试原请求' });
+    fireEvent.click(replay);
+    fireEvent.click(replay);
+    await waitFor(() => expect(triggerRangeActionMock).toHaveBeenCalledTimes(2));
+    expect(triggerRangeActionMock.mock.calls[1].slice(2)).toEqual(['range-1', 'retry', firstKey]);
+    await act(async () => rejectReplay(new AdminApiError(409)));
+    expect(readRangeRecoveryIntent(recoveryScopeFixture)?.key).toBe(firstKey);
+    expect(screen.getByRole('button', { name: '重试创建' })).toHaveProperty('disabled', true);
+    expect(triggerRangeActionMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('recovery-intake: reload resumes receipt reads with the original key and never writes again', async () => {
+    fetchRangeInstanceDetailMock.mockResolvedValue({ id: 'range-1', status: 'create_failed', runtimeTopologyGraph: createValidTopologyGraph() });
+    triggerRangeActionMock.mockRejectedValue(new Error('lost response'));
+    const view = render(<RangeInstanceDetailScreen rangeId="range-1" />);
+    fireEvent.click(await screen.findByRole('button', { name: '重试创建' }));
+    await waitFor(() => expect(fetchRangeRecoveryStatusMock).toHaveBeenCalled());
+    const key = triggerRangeActionMock.mock.calls[0][4];
+    view.unmount();
+    fetchRangeRecoveryStatusMock.mockClear();
+    render(<RangeInstanceDetailScreen rangeId="range-1" />);
+    await screen.findByRole('button', { name: '安全重试原请求' });
+    await waitFor(() => expect(fetchRangeRecoveryStatusMock).toHaveBeenCalledWith('http://localhost:3001', 'dev-admin-token', 'range-1', 'retry', key));
+    expect(triggerRangeActionMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('recovery-intake: only a rejection barrier permits a fresh key', async () => {
+    fetchRangeInstanceDetailMock.mockResolvedValue({ id: 'range-1', status: 'create_failed', runtimeTopologyGraph: createValidTopologyGraph() });
+    triggerRangeActionMock.mockRejectedValue(new AdminApiError(400));
+    render(<RangeInstanceDetailScreen rangeId="range-1" />);
+    fireEvent.click(await screen.findByRole('button', { name: '重试创建' }));
+    await waitFor(() => expect(fetchRangeRecoveryStatusMock).toHaveBeenCalled());
+    const key = triggerRangeActionMock.mock.calls[0][4];
+    expect(readRangeRecoveryIntent(recoveryScopeFixture)?.key).toBe(key);
+    fetchRangeRecoveryStatusMock.mockResolvedValue({ state: 'rejected', errorCode: 'REJECTED' });
+    fireEvent.click(screen.getByRole('button', { name: '查询恢复状态' }));
+    await screen.findByText(/恢复请求已被服务端明确拒绝/);
+    expect(readRangeRecoveryIntent(recoveryScopeFixture)).toBeNull();
+    fetchRangeRecoveryStatusMock.mockResolvedValue({ state: 'unconfirmed' });
+    fireEvent.click(screen.getByRole('button', { name: '重试创建' }));
+    await waitFor(() => expect(triggerRangeActionMock).toHaveBeenCalledTimes(2));
+    expect(triggerRangeActionMock.mock.calls[1][4]).not.toBe(key);
+  });
+
+  it.each(['workspace', 'user', 'unmount', 'range', 'api'] as const)('recovery-intake: rejects a late old receipt after changing %s', async change => {
+    fetchRangeInstanceDetailMock.mockImplementation(async (_base, _token, id) => ({ id, name: id, status: 'create_failed', runtimeTopologyGraph: createValidTopologyGraph() }));
+    let finishOld!: (value: unknown) => void;
+    fetchRangeRecoveryStatusMock.mockImplementationOnce(() => new Promise(resolve => { finishOld = resolve; }));
+    triggerRangeActionMock.mockRejectedValue(new Error('lost response'));
+    const view = render(<RangeInstanceDetailScreen rangeId="range-1" />);
+    fireEvent.click(await screen.findByRole('button', { name: '重试创建' }));
+    await waitFor(() => expect(fetchRangeRecoveryStatusMock).toHaveBeenCalledTimes(1));
+    const original = readRangeRecoveryIntent(recoveryScopeFixture)!;
+    const nextScope = { ...recoveryScopeFixture };
+    if (change === 'workspace') {
+      workspaceState.workspace = { id: 'space-b', provider: 'alibaba_cloud', isReadOnly: false, capabilities: { provisioning: true, rangeProvisioning: true } };
+      nextScope.workspaceId = 'space-b';
+    }
+    if (change === 'user') { sessionState.profile = { id: 'another', username: 'another', role: 'user' }; nextScope.userId = 'another'; }
+    if (change === 'range') nextScope.rangeId = 'range-other';
+    if (change === 'api') nextScope.apiBaseUrl = 'http://another.invalid';
+    if (change === 'unmount') { view.unmount(); nextScope.userId = 'another'; }
+    const next = beginRangeRecoveryIntent(nextScope, 'destroy');
+    if (change !== 'unmount') view.rerender(<RangeInstanceDetailScreen rangeId={nextScope.rangeId} apiBaseUrl={nextScope.apiBaseUrl} />);
+    await act(async () => finishOld({ state: 'rejected', errorCode: 'OLD_REJECTION' }));
+    expect(readRangeRecoveryIntent(recoveryScopeFixture)).toEqual(original);
+    expect(readRangeRecoveryIntent(nextScope)).toEqual(next);
+    expect(screen.queryByText(/OLD_REJECTION/)).toBeNull();
+    expect(triggerRangeActionMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('recovery-intake: another target remains usable and returning resumes the pending original', async () => {
+    fetchRangeInstanceDetailMock.mockImplementation(async (_base, _token, id) => ({ id, status: 'create_failed', runtimeTopologyGraph: createValidTopologyGraph() }));
+    triggerRangeActionMock.mockRejectedValue(new Error('lost response'));
+    const view = render(<RangeInstanceDetailScreen rangeId="range-1" />);
+    fireEvent.click(await screen.findByRole('button', { name: '重试创建' }));
+    await screen.findByRole('button', { name: '安全重试原请求' });
+    const original = readRangeRecoveryIntent(recoveryScopeFixture)!;
+    view.rerender(<RangeInstanceDetailScreen rangeId="range-other" />);
+    await waitFor(() => expect(screen.getByRole('button', { name: '重试创建' })).toHaveProperty('disabled', false));
+    view.rerender(<RangeInstanceDetailScreen rangeId="range-1" />);
+    await screen.findByRole('button', { name: '安全重试原请求' });
+    expect(readRangeRecoveryIntent(recoveryScopeFixture)).toEqual(original);
+    expect(triggerRangeActionMock).toHaveBeenCalledTimes(1);
+  });
+
   it('shows exact returned DNS proof and preserves cloud Running after a failed single readback', async () => {
     const graph = createValidTopologyGraph('域成员');
     const host = graph.nodes.find((node) => node.kind === 'ecs')! as Record<string, unknown>;
@@ -277,6 +449,9 @@ describe('RangeInstanceDetailScreen', () => {
     expect(screen.getAllByText('运行中').length).toBeGreaterThan(0);
   });
   beforeEach(() => {
+    window.sessionStorage.clear();
+    fetchRangeRecoveryStatusMock.mockReset();
+    fetchRangeRecoveryStatusMock.mockResolvedValue({ state: 'unconfirmed' });
     workspaceState.workspace = undefined;
     applyRangeInstanceDraftMock.mockReset();
     saveRangeInstanceDraftMock.mockReset();
@@ -1548,7 +1723,7 @@ describe('RangeInstanceDetailScreen', () => {
 
     fireEvent.click(screen.getByRole('button', { name: '重试创建' }));
     await waitFor(() =>
-      expect(triggerRangeActionMock).toHaveBeenCalledWith('http://localhost:3001', 'dev-admin-token', 'range-1', 'retry'),
+      expect(triggerRangeActionMock).toHaveBeenCalledWith('http://localhost:3001', 'dev-admin-token', 'range-1', 'retry', expect.any(String)),
     );
     expect(await screen.findByText(/任务已提交|正在执行/)).toBeTruthy();
   });
@@ -1661,6 +1836,135 @@ describe('RangeInstanceDetailScreen', () => {
     expect(screen.queryByRole('button', { name: '重试创建' })).toBeNull();
   });
 
+  it('retries a superseded terminal refresh after the later node refresh fails', async () => {
+    let finishTerminal!: (value: unknown) => void;
+    let detailReads = 0;
+    const original = { id: 'range-1', name: '终态竞态靶场', status: 'running', lastJobId: 'job-update',
+      runtimeTopologyGraph: createValidTopologyGraph('旧主机'), nodeStatuses: { 'host-1': 'Running' } };
+    const terminal = { ...original, runtimeTopologyGraph: createValidTopologyGraph('终态主机') };
+    fetchRangeInstanceDetailMock.mockReset();
+    fetchRangeInstanceDetailMock.mockImplementation(() => {
+      detailReads += 1;
+      if (detailReads === 1) return Promise.resolve(original);
+      if (detailReads === 2) return new Promise((resolve) => { finishTerminal = resolve; });
+      if (detailReads === 3) return Promise.reject(new Error('later node refresh failed'));
+      return Promise.resolve(terminal);
+    });
+    fetchProvisionJobDetailMock.mockResolvedValue({ job: { id: 'job-update', jobType: 'update', status: 'succeeded' }, steps: [] });
+    runRangeInstanceNodeActionMock.mockReset();
+    runRangeInstanceNodeActionMock.mockResolvedValue({ status: 'accepted', action: 'reboot' });
+    render(<RangeInstanceDetailScreen rangeId="range-1" />);
+    await waitFor(() => expect(detailReads).toBe(2));
+    fireEvent.keyDown(await screen.findByRole('button', { name: '更多操作' }), { key: 'Enter', code: 'Enter' });
+    fireEvent.click(await screen.findByRole('menuitem', { name: '重启' }));
+    await waitFor(() => expect(detailReads).toBe(3), { timeout: 4000 });
+    await act(async () => finishTerminal(terminal));
+
+    expect(await screen.findByText('实例配置变更已应用。', undefined, { timeout: 4000 })).toBeTruthy();
+    expect(screen.getByText('终态主机')).toBeTruthy();
+    expect(fetchProvisionJobDetailMock).toHaveBeenCalledTimes(2);
+  }, 10000);
+
+  it.each([
+    ['create_failed', 'retry', '重试创建', 'running'],
+    ['create_failed', 'destroy', '回收资源', 'destroyed'],
+    ['destroy_failed', 'retry', '重试回收', 'destroyed'],
+  ])('tracks a lost %s/%s response without resubmitting', async (status, trigger, label, terminalStatus) => {
+    const original = { id: 'range-1', name: '响应丢失靶场', status, runtimeTopologyGraph: createValidTopologyGraph('host') };
+    const terminal = { ...original, status: terminalStatus, lastJobId: 'job-recovery' };
+    fetchRangeInstanceDetailMock.mockReset();
+    fetchRangeInstanceDetailMock.mockResolvedValueOnce(original).mockResolvedValue(terminal);
+    triggerRangeActionMock.mockRejectedValue(new Error('recovery response lost'));
+    fetchRangeRecoveryStatusMock.mockResolvedValue({ state: 'accepted', jobId: 'job-recovery' });
+    fetchProvisionJobDetailMock.mockResolvedValue({ job: { id: 'job-recovery', jobType: trigger, status: 'succeeded' }, steps: [] });
+    render(<RangeInstanceDetailScreen rangeId="range-1" />);
+    fireEvent.click(await screen.findByRole('button', { name: label }));
+    if (trigger === 'destroy' || status === 'destroy_failed') {
+      fireEvent.click(await screen.findByRole('button', { name: trigger === 'destroy' ? '确认回收' : '确认重试' }));
+    }
+
+    expect(await screen.findByText('任务已完成，实例状态已更新。')).toBeTruthy();
+    expect(fetchProvisionJobDetailMock).toHaveBeenCalledWith('http://localhost:3001', 'dev-admin-token', 'job-recovery');
+    expect(triggerRangeActionMock).toHaveBeenCalledTimes(1);
+    expect(screen.queryByRole('button', { name: label })).toBeNull();
+  });
+
+  it('keeps querying after repeated recovery reads fail and offers a read-only retry', async () => {
+    const original = { id: 'range-1', name: '恢复查询靶场', status: 'create_failed', runtimeTopologyGraph: createValidTopologyGraph('host') };
+    fetchRangeInstanceDetailMock.mockReset();
+    fetchRangeInstanceDetailMock.mockResolvedValueOnce(original).mockRejectedValue(new Error('recovery read failed'));
+    triggerRangeActionMock.mockRejectedValue(new Error('recovery response lost'));
+    fetchRangeRecoveryStatusMock.mockRejectedValue(new Error('receipt read failed'));
+    fetchProvisionJobDetailMock.mockResolvedValue({ job: { id: 'job-recovery', jobType: 'retry', status: 'succeeded' }, steps: [] });
+    render(<RangeInstanceDetailScreen rangeId="range-1" />);
+    fireEvent.click(await screen.findByRole('button', { name: '重试创建' }));
+    await waitFor(() => expect(fetchRangeRecoveryStatusMock.mock.calls.length).toBeGreaterThanOrEqual(3), { timeout: 6000 });
+    expect(screen.getByText('恢复操作结果未确认，状态查询失败，正在重试。')).toBeTruthy();
+    expect((screen.getByRole('button', { name: '重试创建' }) as HTMLButtonElement).disabled).toBe(true);
+    const readCount = fetchRangeRecoveryStatusMock.mock.calls.length;
+    fireEvent.click(screen.getByRole('button', { name: '查询恢复状态' }));
+    await waitFor(() => expect(fetchRangeRecoveryStatusMock.mock.calls.length).toBeGreaterThan(readCount));
+    expect(triggerRangeActionMock).toHaveBeenCalledTimes(1);
+    expect(fetchProvisionJobDetailMock).not.toHaveBeenCalled();
+
+    fetchRangeInstanceDetailMock.mockResolvedValue({ ...original, status: 'running', lastJobId: 'job-recovery' });
+    fetchRangeRecoveryStatusMock.mockResolvedValue({ state: 'accepted', jobId: 'job-recovery' });
+    expect(await screen.findByText('任务已完成，实例状态已更新。', undefined, { timeout: 4000 })).toBeTruthy();
+    expect(triggerRangeActionMock).toHaveBeenCalledTimes(1);
+    expect(screen.queryByRole('button', { name: '查询恢复状态' })).toBeNull();
+  }, 10000);
+
+  it('keeps the unchanged failed instance locked until the server rejects the original intent', async () => {
+    fetchRangeInstanceDetailMock.mockReset();
+    fetchRangeInstanceDetailMock.mockResolvedValue({ id: 'range-1', name: '未受理靶场', status: 'create_failed', runtimeTopologyGraph: createValidTopologyGraph('host') });
+    triggerRangeActionMock.mockRejectedValue(new Error('recovery request result unknown'));
+    render(<RangeInstanceDetailScreen rangeId="range-1" />);
+    fireEvent.click(await screen.findByRole('button', { name: '重试创建' }));
+    await screen.findByRole('button', { name: '查询恢复状态' });
+    expect((screen.getByRole('button', { name: '重试创建' }) as HTMLButtonElement).disabled).toBe(true);
+    fetchRangeRecoveryStatusMock.mockResolvedValue({ state: 'rejected', errorCode: 'RECOVERY_CONFLICT' });
+    fireEvent.click(screen.getByRole('button', { name: '查询恢复状态' }));
+    await screen.findByText(/恢复请求已被服务端明确拒绝/);
+    expect((screen.getByRole('button', { name: '重试创建' }) as HTMLButtonElement).disabled).toBe(false);
+    expect(screen.queryByRole('button', { name: '查询恢复状态' })).toBeNull();
+    expect(triggerRangeActionMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('queries the original instance when an accepted recovery response omits its job ID', async () => {
+    const original = { id: 'range-1', name: '缺少任务 ID 靶场', status: 'create_failed', runtimeTopologyGraph: createValidTopologyGraph('host') };
+    fetchRangeInstanceDetailMock.mockReset();
+    fetchRangeInstanceDetailMock.mockResolvedValueOnce(original).mockResolvedValue({ ...original, status: 'running', lastJobId: 'job-recovery' });
+    triggerRangeActionMock.mockResolvedValue(null);
+    fetchRangeRecoveryStatusMock.mockResolvedValue({ state: 'accepted', jobId: 'job-recovery' });
+    fetchProvisionJobDetailMock.mockResolvedValue({ job: { id: 'job-recovery', jobType: 'retry', status: 'succeeded' }, steps: [] });
+    render(<RangeInstanceDetailScreen rangeId="range-1" />);
+    fireEvent.click(await screen.findByRole('button', { name: '重试创建' }));
+
+    expect(await screen.findByText('任务已完成，实例状态已更新。')).toBeTruthy();
+    expect(triggerRangeActionMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('ignores an old recovery lookup after switching workspaces', async () => {
+    let finishOldLookup!: (value: unknown) => void;
+    fetchRangeInstanceDetailMock.mockReset();
+    fetchRangeInstanceDetailMock.mockResolvedValueOnce({ id: 'range-1', name: '旧空间靶场', status: 'create_failed', runtimeTopologyGraph: createValidTopologyGraph('old-host') })
+      .mockResolvedValue({ id: 'range-1', name: '新空间靶场', status: 'create_failed', runtimeTopologyGraph: createValidTopologyGraph('new-host') });
+    fetchRangeRecoveryStatusMock.mockImplementation(() => new Promise(resolve => { finishOldLookup = resolve; }));
+    triggerRangeActionMock.mockRejectedValue(new Error('recovery response lost'));
+    const { rerender } = render(<RangeInstanceDetailScreen rangeId="range-1" />);
+    fireEvent.click(await screen.findByRole('button', { name: '重试创建' }));
+    await waitFor(() => expect(fetchRangeRecoveryStatusMock).toHaveBeenCalledTimes(1));
+    workspaceState.workspace = { id: 'new-space', provider: 'alibaba_cloud', isReadOnly: false, capabilities: { provisioning: true, rangeProvisioning: true } };
+    rerender(<RangeInstanceDetailScreen rangeId="range-1" />);
+    await screen.findByText('新空间靶场');
+    await act(async () => finishOldLookup({ state: 'accepted', jobId: 'old-job' }));
+
+    expect(screen.queryByText('旧空间终态')).toBeNull();
+    expect(screen.queryByRole('button', { name: '查询恢复状态' })).toBeNull();
+    expect((screen.getByRole('button', { name: '重试创建' }) as HTMLButtonElement).disabled).toBe(false);
+    expect(fetchProvisionJobDetailMock).not.toHaveBeenCalled();
+  });
+
   it('confirms before reclaiming a failed creation and cancels safely', async () => {
     fetchRangeInstanceDetailMock.mockReset();
     fetchRangeInstanceDetailMock.mockResolvedValue({
@@ -1684,7 +1988,7 @@ describe('RangeInstanceDetailScreen', () => {
     fireEvent.click(screen.getByRole('button', { name: '回收资源' }));
     fireEvent.click(await screen.findByRole('button', { name: '确认回收' }));
     await waitFor(() =>
-      expect(triggerRangeActionMock).toHaveBeenCalledWith('http://localhost:3001', 'dev-admin-token', 'range-1', 'destroy'),
+      expect(triggerRangeActionMock).toHaveBeenCalledWith('http://localhost:3001', 'dev-admin-token', 'range-1', 'destroy', expect.any(String)),
     );
   });
 
@@ -1706,7 +2010,7 @@ describe('RangeInstanceDetailScreen', () => {
     expect(triggerRangeActionMock).not.toHaveBeenCalled();
     fireEvent.click(await screen.findByRole('button', { name: '确认重试' }));
     await waitFor(() =>
-      expect(triggerRangeActionMock).toHaveBeenCalledWith('http://localhost:3001', 'dev-admin-token', 'range-1', 'retry'),
+      expect(triggerRangeActionMock).toHaveBeenCalledWith('http://localhost:3001', 'dev-admin-token', 'range-1', 'retry', expect.any(String)),
     );
   });
 

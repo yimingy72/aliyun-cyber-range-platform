@@ -73,4 +73,13 @@ describe('Tencent import frozen sources and safe recovery',()=>{
     expect(f.cos.cleanupIfIdle).toHaveBeenCalled();
     expect((await f.repository.listBillingLedgerResources()).every(row=>row.releasedAt===null)).toBe(true);
   });
+  it.each([false,true])('recovers an overdue NORMAL Tencent image without deleting the image or snapshot (lost ImageId: %s)',async lostImageId=>{
+    const f=fixture();await f.service.createUpload(input,user);await f.service.completeUpload('job-owned',user);
+    f.setImageState('NORMAL');f.getJob().uploadCompletedAt=new Date(Date.now()-25*60*60_000);
+    f.getJob().uploadExpiresAt=new Date(0);if(lostImageId)f.getJob().imageId=null;rpc.mockClear();
+    expect(await f.service.refreshImport('job-owned')).toMatchObject({status:'available',imageId:'img-owned',cloudImageDeletedAt:null,snapshotCleanupCompletedAt:null});
+    expect(rpc.mock.calls.filter(([call])=>call.action.startsWith('Delete'))).toEqual([]);
+    expect(await f.repository.getPlatformImageAssetById(f.getJob().platformImageAssetId)).toMatchObject({enabled:true});
+    expect((await f.repository.listBillingLedgerResources()).every(row=>row.releasedAt===null)).toBe(true);
+  });
 });

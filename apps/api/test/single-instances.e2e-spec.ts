@@ -799,6 +799,8 @@ describe('single instances', () => {
         {
           imageId: 'm-windows-image-1',
           sourceImageName: 'Windows Server 2022',
+          osType: 'windows',
+          platform: 'Windows Server 2022',
           status: 'Available',
           isAvailable: true,
           lastSyncedAt: new Date('2026-07-08T00:00:03.000Z'),
@@ -1392,7 +1394,7 @@ describe('single instances', () => {
     expect(order.filter(entry => entry.startsWith('update:'))).toHaveLength(2);
   });
 
-  it('marks all aborted launch jobs failed without cloud execution when a later member row fails', async () => {
+  it('rolls back aborted batch intake without cloud execution when a later member row fails', async () => {
     const worker = app.get(ProvisioningWorkerService);
     const originalUpdateRangeInstance = repository.updateRangeInstance.bind(repository);
     const dispatchSpy = jest.spyOn(worker, 'dispatch').mockImplementation(() => {});
@@ -1425,10 +1427,9 @@ describe('single instances', () => {
         })
         .expect(500);
       expect(dispatchSpy).not.toHaveBeenCalled();
-      const jobs = await repository.listProvisionJobs();
-      expect(jobs).toHaveLength(2);
-      expect(jobs.every(job => job.status === 'failed')).toBe(true);
-      expect((await repository.listRangeInstances()).every(instance => instance.status === 'create_failed')).toBe(true);
+      expect(await repository.listProvisionJobs()).toEqual([]);
+      expect(await repository.listRangeInstances()).toEqual([]);
+      expect(await repository.listSingleInstanceBatchesWithInstances()).toEqual([]);
       expect(fetchMock.mock.calls.some(([, init]) => String(init?.body).includes('Action=RunInstances'))).toBe(false);
     } finally {
       updateSpy.mockRestore();

@@ -2,7 +2,7 @@ import { existsSync } from 'node:fs';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
-import { APPLY_PENDING_FILE, fileExists, readWorkspaceState, recordApplyPlan, completeApply, hasUnresolvedApply, assertDestroyComplete } from './opentofu-state-evidence';
+import { APPLY_PENDING_FILE, fileExists, readWorkspaceState, recordApplyPlan, completeApply, hasUnresolvedApply, assertDestroyComplete, assertWorkspaceCanApply } from './opentofu-state-evidence';
 import { prepareOpenTofuProviderEnv, migrateAliCloudWorkspaceProvider } from './provider-mirror-publication';
 import { OpenTofuRunner, type OpenTofuInitOptions, type OpenTofuApplyOptions, type OpenTofuDestroyOptions, type OpenTofuCommandResult, type OpenTofuPlanOptions, type OpenTofuValidateOptions, type OpenTofuWorkspaceCommandOptions, type OpenTofuShowPlanOptions, } from '@aliyun-cyber-range/iac-runner';
 import { Injectable } from '@nestjs/common';
@@ -83,7 +83,7 @@ export class SingleInstanceNetworkBootstrapService {
       zoneId: input.zoneId,
       vpcCidr,
       vswitchCidrs,
-      tags: { CloudAccountUid: input.cloudAccountUid, ...buildBillingTags({
+      tags: { CloudAccountUid: input.cloudAccountUid, CloudAccountContextId: input.cloudAccountContextId, ...buildBillingTags({
           billingScope: 'platform',
           platformResourceType: 'single_instance_network',
           platformNetworkProfileKey: `${input.regionId}:${input.zoneId}`,
@@ -196,6 +196,37 @@ export class SingleInstanceNetworkBootstrapService {
     const ids = (type: string) => resources.filter(value => value.type === type).flatMap(value => value.instances.map((entry: any) => String(entry.attributes.id)));
     return { ...input, status: 'destroying', workspaceKey, managedByPlatform: true, vpcId: ids(input.provider === 'tencent_cloud' ? 'tencentcloud_vpc' : 'alicloud_vpc')[0] ?? '', vpcCidr: config?.vpcCidr ?? '', vswitchIds: ids(input.provider === 'tencent_cloud' ? 'tencentcloud_subnet' : 'alicloud_vswitch'), vswitchCidrs: config?.vswitchCidrs ?? [], securityGroupId: ids(input.provider === 'tencent_cloud' ? 'tencentcloud_security_group' : 'alicloud_security_group')[0] ?? '', securityGroupName: 'single-instance-default-open-all' };
   }
+  async recoverDefaultProfile(profile: SingleInstanceNetworkProfileRecord, runtimeConfig: ResolvedProvisioningRuntimeConfig) {
+    const identity = { provider: profile.provider, cloudAccountUid: profile.cloudAccountUid,
+      cloudAccountContextId: profile.cloudAccountContextId, regionId: profile.regionId, zoneId: profile.zoneId };
+    if (!profile.managedByPlatform || !profile.cloudAccountUid || !profile.cloudAccountContextId || !profile.workspaceKey
+      || runtimeConfig.provider !== profile.provider || runtimeConfig.accountUid !== profile.cloudAccountUid
+      || runtimeConfig.cloudAccountContextId !== profile.cloudAccountContextId || runtimeConfig.defaultRegion !== profile.regionId
+      || runtimeConfig.defaultZoneId !== profile.zoneId
+      || profile.workspaceKey !== singleNetworkWorkspaceKey(profile.cloudAccountUid, profile.regionId, profile.zoneId, profile.provider, profile.cloudAccountContextId))
+      throw new Error('Network recovery requires its exact frozen execution identity');
+    const dir = path.join(this.workspacesRootDir, profile.workspaceKey);
+    const recorded = JSON.parse(await fs.readFile(path.join(dir, 'single-network-identity.json'), 'utf8'));
+    if (Object.entries(identity).some(([key, value]) => recorded[key] !== value)
+      || recorded.creationIntentId !== createHash('sha256').update(JSON.stringify(identity)).digest('hex').slice(0, 32))
+      throw new Error('Network recovery workspace differs from its original creation intent');
+    if (!await fileExists(path.join(dir, APPLY_PENDING_FILE)) && !await fileExists(path.join(dir, '.range-apply-complete.json')))
+      throw new Error('Network recovery has no original apply evidence');
+    await assertWorkspaceCanApply(dir, true);
+    const resources = await this.assertOwnedState(dir, profile.cloudAccountUid, profile.provider, profile.cloudAccountContextId);
+    const ids = (type: string) => resources.filter(resource => resource.type === type)
+      .flatMap(resource => resource.instances.map(entry => String(entry.attributes.id)));
+    const vpcIds = ids(profile.provider === 'tencent_cloud' ? 'tencentcloud_vpc' : 'alicloud_vpc');
+    const groupIds = ids(profile.provider === 'tencent_cloud' ? 'tencentcloud_security_group' : 'alicloud_security_group');
+    const vswitchIds = ids(profile.provider === 'tencent_cloud' ? 'tencentcloud_subnet' : 'alicloud_vswitch');
+    const config = await readExistingWorkspaceConfig(dir);
+    if (vpcIds.length !== 1 || groupIds.length !== 1 || vswitchIds.length !== (profile.provider === 'tencent_cloud' ? 1 : 3)
+      || profile.vpcId && profile.vpcId !== vpcIds[0] || profile.securityGroupId && profile.securityGroupId !== groupIds[0]
+      || profile.vswitchIds.some(id => !vswitchIds.includes(id)) || !config || config.vpcCidr !== profile.vpcCidr)
+      throw new Error('Network recovery state conflicts with its persisted profile');
+    return { ...profile, vpcId: vpcIds[0], securityGroupId: groupIds[0], vswitchIds,
+      vswitchCidrs: config.vswitchCidrs };
+  }
   async destroyDefaultProfile(profile: SingleInstanceNetworkProfileRecord, runtimeConfig: ResolvedProvisioningRuntimeConfig, onCleanupVerified?: () => Promise<void>) {
     if (!profile.managedByPlatform || !profile.cloudAccountUid || profile.workspaceKey !== singleNetworkWorkspaceKey(profile.cloudAccountUid, profile.regionId, profile.zoneId, profile.provider, profile.cloudAccountContextId ?? undefined))
       throw new Error('Only a bound, platform-created network profile can be destroyed');
@@ -228,7 +259,9 @@ export class SingleInstanceNetworkBootstrapService {
       if (resource.mode !== 'managed' || resource.module !== 'module.network' || !allowed.has(resource.type))
         throw new Error('Default network state contains resources outside this profile');
       for (const entry of resource.instances)
-        if (!['alicloud_security_group_rule', 'tencentcloud_security_group_rule_set'].includes(resource.type) && (entry.attributes.tags?.CloudAccountUid !== accountUid || entry.attributes.tags?.PlatformManaged !== 'true' || identity && (entry.attributes.tags?.CloudAccountContextId !== contextId || entry.attributes.tags?.CreationIntentId !== identity.creationIntentId)))
+        if (!['alicloud_security_group_rule', 'tencentcloud_security_group_rule_set'].includes(resource.type) && (entry.attributes.tags?.CloudAccountUid !== accountUid || entry.attributes.tags?.PlatformManaged !== 'true'
+          || entry.attributes.tags?.CloudAccountContextId !== undefined && entry.attributes.tags.CloudAccountContextId !== contextId
+          || identity && (entry.attributes.tags?.CloudAccountContextId !== contextId || entry.attributes.tags?.CreationIntentId !== identity.creationIntentId)))
           throw new Error('Default network state ownership could not be verified');
     }
     const groupIds = new Set(state.resources.filter(resource => ['alicloud_security_group', 'tencentcloud_security_group'].includes(resource.type)).flatMap(resource => resource.instances.map(entry => entry.attributes.id)));

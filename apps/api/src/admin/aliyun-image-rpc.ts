@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { BadGatewayException } from '@nestjs/common';
 import { signAliyunRpcQuery } from './image-catalog-rpc-signer';
+import { sanitizeAliyunErrorCode } from './aliyun-error-code';
 
 export type ImageCredentials = { provider?: string; accessKeyId: string; accessKeySecret: string; regionId: string };
 export class AliyunImageRpcError extends BadGatewayException {
@@ -21,7 +22,7 @@ export async function imageRpc<T>(credentials: ImageCredentials, action: string,
   let body: Record<string, unknown>;
   try { body = await response.json() as Record<string, unknown>; } catch { throw new BadGatewayException(`Aliyun ${action} returned invalid JSON`); }
   if (!body || typeof body !== 'object' || Array.isArray(body) || !response.ok || (body.Success !== undefined && body.Success !== true) || (body.Code !== undefined && body.Code !== 'Success')) {
-    throw new AliyunImageRpcError(action, typeof body?.Code === 'string' ? body.Code : null, response.status);
+    throw new AliyunImageRpcError(action, sanitizeAliyunErrorCode(body?.Code, [credentials.accessKeyId, credentials.accessKeySecret]), response.status);
   }
   return body as T;
 }

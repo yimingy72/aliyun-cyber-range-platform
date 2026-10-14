@@ -4,6 +4,7 @@ import { APPLY_PENDING_FILE, assertWorkspaceCanApply, readWorkspaceState, readPe
 import { prepareOpenTofuProviderEnv, migrateAliCloudWorkspaceProvider } from './provider-mirror-publication';
 import { createHash, createHmac, randomUUID } from 'node:crypto';
 import { requestTencentCloud } from '../admin/tencent-cloud-client';
+import { isAliyunRequestTimeout, sanitizeAliyunErrorCode } from '../admin/aliyun-error-code';
 import { assertApprovedRangeUpdatePlan, assertRangeStateOwnership, assertRangeStateMatchesInventory, preserveDeployedRangeHostFacts } from './range-update-plan-safety';
 import { createHostCloudReleaseDeadline, assertCloudReleaseDeadlineCanCreate, verifyCloudReleaseDeadlines, assertPlatformExpirationSupportsCloudDeadline } from './cloud-release-deadlines';
 import { createRangeResourceReceiptObserver } from './range-resource-creation-receipts';
@@ -967,6 +968,23 @@ export class OpenTofuRangeProvisioner implements RangeProvisioner {
       if (['alicloud_instance','tencentcloud_instance'].includes(instance.type) && typeof instance.attributes.system_disk_id === 'string' && instance.attributes.system_disk_id)
         addResourceId(summary.systemDiskIds ??= Object.create(null), instance.address, instance.attributes.system_disk_id);
     }
+    if (input.runtimeConfig?.provider === 'alibaba_cloud' && input.onExecutionZoneRecovered) {
+      const variables = JSON.parse(await fs.readFile(path.join(dir, 'range.auto.tfvars.json'), 'utf8'));
+      if (variables.zone_id !== input.runtimeConfig.defaultZoneId) {
+        if (!state.instances.some(resource => resource.type === 'alicloud_instance')
+          || !input.assertRecoveryClaim || !input.assertRecoverySourceJob)
+          throw new Error('Execution zone recovery requires original native host state and its active claim');
+        assertRangeStateOwnership(state, variables, input.runtimeConfig, input.rangeInstanceId, input.billingTags);
+        const pending = await readPendingApplyEvidence(dir);
+        assertPendingApplyAncestor(state, pending);
+        const sourceJobId = variables.tags?.PlatformCreateJobId;
+        if (typeof sourceJobId !== 'string' || !sourceJobId || pending && pending.sourceProvisionJobId !== sourceJobId)
+          throw new Error('Execution zone recovery has no matching original apply source');
+        await input.assertRecoverySourceJob(sourceJobId);
+        await input.assertRecoveryClaim();
+        await input.onExecutionZoneRecovered(variables.zone_id);
+      }
+    }
     return summary;
   }
 
@@ -1051,6 +1069,9 @@ export class OpenTofuRangeProvisioner implements RangeProvisioner {
     if (priorState && priorVariables) {
       variables = preserveDeployedRangeUserData(input, priorState, priorVariables, variables);
       variables = preserveDeployedRangeHostFacts(priorState, priorVariables, variables, input.runtimeConfig!);
+    }
+    if ('onExecutionZoneSelected' in input && input.onExecutionZoneSelected) {
+      await input.onExecutionZoneSelected(variables.zone_id);
     }
     await fs.writeFile(varsFilePath, `${JSON.stringify(variables, null, 2)}\n`, 'utf8');
 
@@ -2131,32 +2152,38 @@ async function performAliyunRpcRequest(input: {
     input.accessKeySecret,
   );
 
-  const response = await fetch(`${endpoint}?${query}`, {
-    method: 'GET',
-    headers: {
-      Accept: 'application/json',
-    },
-  });
+  let response: Response;
+  try {
+    response = await fetch(`${endpoint}?${query}`, {
+      method: 'GET',
+      signal: AbortSignal.timeout(30_000),
+      redirect: 'error',
+      headers: {
+        Accept: 'application/json',
+      },
+    });
+  } catch (error) {
+    throw new Error(`Aliyun ${input.action} ${isAliyunRequestTimeout(error) ? 'request timed out' : 'request failed: NETWORK_OR_TIMEOUT'}`);
+  }
 
   let payload: unknown = null;
 
   try {
     payload = await response.json();
-  } catch {
+  } catch (error) {
+    if (isAliyunRequestTimeout(error)) throw new Error(`Aliyun ${input.action} request timed out`);
     payload = null;
   }
 
   if (!response.ok) {
-    const errorCode =
-      payload && typeof payload === 'object' && 'Code' in payload && typeof (payload as { Code?: unknown }).Code === 'string'
-        ? (payload as { Code: string }).Code
-        : `HTTP_${response.status}`;
-    const errorMessage =
-      payload && typeof payload === 'object' && 'Message' in payload && typeof (payload as { Message?: unknown }).Message === 'string'
-        ? (payload as { Message: string }).Message
-        : `Aliyun RPC request failed with status ${response.status}`;
+    const code = sanitizeAliyunErrorCode((payload as { Code?: unknown } | null)?.Code, [input.accessKeyId, input.accessKeySecret]);
+    throw new Error(`${input.action} failed: ${code ?? `HTTP_${response.status}`} (status ${response.status})`);
+  }
 
-    throw new Error(`${input.action} failed: ${errorCode} - ${errorMessage}`);
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) throw new Error(`Aliyun ${input.action} returned an invalid response`);
+  if ('Code' in payload && (payload as { Code?: unknown }).Code !== 'Success') {
+    const code = sanitizeAliyunErrorCode((payload as { Code?: unknown }).Code, [input.accessKeyId, input.accessKeySecret]);
+    throw new Error(`${input.action} failed: ${code ?? 'UNCLASSIFIED'}`);
   }
 
   return payload;

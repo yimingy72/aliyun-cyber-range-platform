@@ -15,6 +15,7 @@ import { generateAliyunEcsPassword } from './ecs-password-generator';
 import {
   ADMIN_REPOSITORY,
   type AdminRepository,
+  type CreateRangeInstanceInput,
   type RangeInstanceRecord,
   type PlatformImageAssetRecord,
 } from './admin.repository';
@@ -264,119 +265,103 @@ export class SingleInstancesService {
       if (systemDiskSize < metadata[image.imageId].minimumSystemDiskSize) throw new ConflictException('腾讯云镜像系统盘要求已变化，请重新提交。');
     }
     const sourceSnapshot = image.sourceSnapshotId ? await this.adminRepository.getImageSnapshotById(image.sourceSnapshotId) : null;
-    const runtimeUsername = `${sourceSnapshot?.osType ?? ''} ${sourceSnapshot?.platform ?? image.displayName}`.toLowerCase().includes('windows') ? 'Administrator' : 'root';
+    const runtimeUsername = `${sourceSnapshot?.osType ?? ''} ${sourceSnapshot?.platform ?? ''}`.toLowerCase().includes('windows') ? 'Administrator' : 'root';
     const sharedPassword = input.password?.trim() || null;
     const quantity = input.quantity;
     const activeCount = (await this.adminRepository.listRangeInstances()).filter(
       (instance) => instance.instanceMode === 'single' && !isSingleInstanceHistoryStatus(instance.status),
     ).length;
-    const created = [];
-    const jobIds: string[] = [];
-    const batch = await this.adminRepository.createSingleInstanceBatch({
-      name: input.name,
-      platformImageAssetId: image.id,
-      imageId: image.imageId,
-      imageDisplayName: image.displayName,
-      cpu: input.cpu,
-      memory: input.memory,
-      systemDiskSize,
-      quantity,
-      remark: input.remark?.trim() || null,
-      createdBy: currentUserId,
-      ownerUserId: currentUserId,
-      expiresAt: new Date(input.expiresAt),
-    });
+    const preparedMembers: CreateRangeInstanceInput[] = [];
+    for (let index = 0; index < quantity; index += 1) {
+      const quantityIndex = index + 1;
+      const password = sharedPassword ?? generateAliyunEcsPassword();
+      const network = this.singleInstanceNetworkService.allocateVswitch(profile, activeCount + index);
+      const name = this.resolveIndexedValue(input.name, quantityIndex, quantity);
+      const requestedHostBaseName =
+        normalizeOptionalValue(input.hostName) ?? normalizeOptionalValue(image.defaultHostName) ?? null;
+      const hostName = requestedHostBaseName
+        ? this.resolveIndexedValue(requestedHostBaseName, quantityIndex, quantity)
+        : null;
+      const hostKey = `single-ecs-${quantityIndex}`;
+      const blueprint = buildSingleInstanceBlueprint({
+        resolvedInstanceType: availability.matches[0].instanceTypeId,
+        name,
+        hostKey,
+        hostName: hostName ?? name,
+        privateIp: network.privateIp,
+        password,
+        cpu: input.cpu,
+        memory: input.memory,
+        image,
+        regionId: profile.regionId,
+        zoneId: profile.zoneId,
+        vpcCidr: profile.vpcCidr,
+        zoneKey: network.zoneKey,
+        zoneCidr: network.vswitchCidr,
+      });
 
-    try {
-      for (let index = 0; index < quantity; index += 1) {
-        const quantityIndex = index + 1;
-        const password = sharedPassword ?? generateAliyunEcsPassword();
-        const network = this.singleInstanceNetworkService.allocateVswitch(profile, activeCount + index);
-        const name = this.resolveIndexedValue(input.name, quantityIndex, quantity);
-        const requestedHostBaseName =
-          normalizeOptionalValue(input.hostName) ?? normalizeOptionalValue(image.defaultHostName) ?? null;
-        const hostName = requestedHostBaseName
-          ? this.resolveIndexedValue(requestedHostBaseName, quantityIndex, quantity)
-          : null;
-        const hostKey = `single-ecs-${quantityIndex}`;
-        const blueprint = buildSingleInstanceBlueprint({
-          resolvedInstanceType: availability.matches[0].instanceTypeId,
-          name,
+      preparedMembers.push({
+        name,
+        createdBy: currentUserId,
+        ownerUserId: currentUserId,
+        cloudProvider: accountContext.provider,
+        instanceMode: 'single',
+        status: 'pending_create',
+        expiresAt: input.expiresAt,
+        runtimeTopologyGraph: blueprint.runtimeTopologyGraph,
+        runtimeScenarioTemplateSpec: blueprint.runtimeScenarioTemplateSpec as Record<string, unknown>,
+        runtimeCompiledProvisionSpec: blueprint.runtimeCompiledProvisionSpec as Record<string, unknown>,
+        runtimeCredentials: {
+          [hostKey]: {
+            username: runtimeUsername,
+            password,
+          },
+        },
+        singleInstanceConfig: {
+          executionBackend: 'opentofu',
+          cloudAccountContextId: accountContext.cloudAccountContextId,
+          cloudAccountUid: accountContext.accountUid, regionId: profile.regionId, zoneId: profile.zoneId,
+          networkProfileId: profile.id, resolvedInstanceType: availability.matches[0].instanceTypeId,
+          autoReleaseTime: null,
+          baseName: input.name,
+          quantityIndex,
           hostKey,
-          hostName: hostName ?? name,
-          privateIp: network.privateIp,
-          password,
+          hostName,
+          platformImageAssetId: image.id,
+          imageId: image.imageId,
+          imageDisplayName: image.displayName,
           cpu: input.cpu,
           memory: input.memory,
-          image,
-          regionId: profile.regionId,
-          zoneId: profile.zoneId,
-          vpcCidr: profile.vpcCidr,
-          zoneKey: network.zoneKey,
-          zoneCidr: network.vswitchCidr,
-        });
-
-        const instance = await this.adminRepository.createRangeInstance({
-          name,
-          createdBy: currentUserId,
-          ownerUserId: currentUserId,
-          cloudProvider: accountContext.provider,
-          instanceMode: 'single',
-          singleInstanceBatchId: batch.id,
-          status: 'pending_create',
-          expiresAt: input.expiresAt,
-          runtimeTopologyGraph: blueprint.runtimeTopologyGraph,
-          runtimeScenarioTemplateSpec: blueprint.runtimeScenarioTemplateSpec as Record<string, unknown>,
-          runtimeCompiledProvisionSpec: blueprint.runtimeCompiledProvisionSpec as Record<string, unknown>,
-          runtimeCredentials: {
-            [hostKey]: {
-              username: runtimeUsername,
-              password,
-            },
-          },
-          singleInstanceConfig: {
-            executionBackend: 'opentofu',
-            cloudAccountContextId: accountContext.cloudAccountContextId,
-            cloudAccountUid: accountContext.accountUid, regionId: profile.regionId, zoneId: profile.zoneId,
-            networkProfileId: profile.id, resolvedInstanceType: availability.matches[0].instanceTypeId,
-            autoReleaseTime: null,
-            baseName: input.name,
-            quantityIndex,
-            hostKey,
-            hostName,
-            platformImageAssetId: image.id,
-            imageId: image.imageId,
-            imageDisplayName: image.displayName,
-            cpu: input.cpu,
-            memory: input.memory,
-            systemDiskSize,
-            remark: input.remark?.trim() || null,
-            assignedVswitchId: network.vswitchId,
-          },
-        });
-        const job = await this.adminRepository.createProvisionJob({
-          rangeInstanceId: instance.id,
-          jobType: 'create',
-          triggeredBy: currentUserId,
-        });
-        jobIds.push(job.id);
-        const updated = await this.adminRepository.updateRangeInstance(instance.id, {
-          lastJobId: job.id,
-        });
-
-        created.push(updated);
-      }
-    } catch(error) {
-      // Intake holds the native control lock: workers cannot enter cloud execution until it commits.
-      const members=(await this.adminRepository.listRangeInstances()).filter(instance=>instance.singleInstanceBatchId===batch.id);
-      const jobs=(await this.adminRepository.listProvisionJobs()).filter(job=>jobIds.includes(job.id));
-      for(const member of members) {
-        const job=jobs.find(value=>value.rangeInstanceId===member.id);
-        if(job) await this.adminRepository.updateProvisionJob(job.id,{status:'failed',finishedAt:new Date(),errorSummary:'Batch intake aborted before cloud execution'});
-        await this.adminRepository.updateRangeInstance(member.id,{status:'create_failed',lastJobId:job?.id??null,errorSummary:'Batch intake aborted before cloud execution'});
-      }
-      throw error;
+          systemDiskSize,
+          remark: input.remark?.trim() || null,
+          assignedVswitchId: network.vswitchId,
+        },
+      });
     }
+
+    const { batch, created } = await this.adminRepository.withSingleInstanceTransaction(async repository => {
+      const batch = await repository.createSingleInstanceBatch({
+        name: input.name,
+        platformImageAssetId: image.id,
+        imageId: image.imageId,
+        imageDisplayName: image.displayName,
+        cpu: input.cpu,
+        memory: input.memory,
+        systemDiskSize,
+        quantity,
+        remark: input.remark?.trim() || null,
+        createdBy: currentUserId,
+        ownerUserId: currentUserId,
+        expiresAt: new Date(input.expiresAt),
+      });
+      const created: RangeInstanceRecord[] = [];
+      for (const member of preparedMembers) {
+        const instance = await repository.createRangeInstance({ ...member, singleInstanceBatchId: batch.id });
+        const job = await repository.createProvisionJob({ rangeInstanceId: instance.id, jobType: 'create', triggeredBy: currentUserId });
+        created.push(await repository.updateRangeInstance(instance.id, { lastJobId: job.id }));
+      }
+      return { batch, created };
+    });
 
     const [normalizedBatch] = await attachCreatedByUsernames(this.adminRepository, [batch]);
 
@@ -527,7 +512,7 @@ export class SingleInstancesService {
       return;
     }
     const snapshot = image.sourceSnapshotId ? await this.adminRepository.getImageSnapshotById(image.sourceSnapshotId) : null;
-    const windows = `${snapshot?.osType ?? ''} ${snapshot?.platform ?? image.displayName}`.toLowerCase().includes('windows');
+    const windows = `${snapshot?.osType ?? ''} ${snapshot?.platform ?? ''}`.toLowerCase().includes('windows');
     const validation = validateAliyunEcsPassword(normalized, { windows });
     if (!validation.valid && validation.code) {
       throw new BadRequestException(`密码不符合阿里云 ECS 要求：${describeAliyunEcsPasswordFailure(validation.code)}。`);

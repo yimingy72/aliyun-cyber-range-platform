@@ -23,8 +23,21 @@ dbDescribe('owned COS bucket saga in isolated PostgreSQL', () => {
     await prisma.imageImportJob.deleteMany({ where: { cloudWorkspaceId: scope.cloudWorkspaceId } });
     await prisma.billingLedgerResource.deleteMany({ where: { cloudWorkspaceId: scope.cloudWorkspaceId } });
     await prisma.cloudImageImportBucket.deleteMany({ where: { cloudWorkspaceId: scope.cloudWorkspaceId } });
+    await prisma.cloudAccountContext.deleteMany({ where: { cloudWorkspaceId: scope.cloudWorkspaceId } });
+    await prisma.platformUser.deleteMany({ where: { cloudWorkspaceId: scope.cloudWorkspaceId } });
     await prisma.cloudWorkspace.deleteMany({ where: { id: scope.cloudWorkspaceId } });
   }); }
+  async function ownedObject(bucket: Awaited<ReturnType<typeof service.ensureImportBucket>>, objectKey: string) {
+    await prisma.platformUser.upsert({ where: { id: scope.actorUserId }, create: { id: scope.actorUserId, username: scope.actorUserId, loginUsername: scope.actorUserId, passwordHash: 'synthetic' }, update: {} });
+    await prisma.cloudAccountContext.upsert({ where: { id: input.cloudAccountContextId }, create: { id: input.cloudAccountContextId, cloudWorkspaceId: scope.cloudWorkspaceId, displayName: 'synthetic COS context', provider: scope.provider,
+      accountUid: scope.accountUid, regionId: bucket.regionId, zoneId: 'ap-shanghai-1', accessKeyId: 'fixture-key', accessKeySecret: 'fixture-secret', imageImportBucket: '' }, update: {} });
+    const job = await prisma.imageImportJob.create({ data: { managedBucketId: bucket.id, cloudProvider: scope.provider, cloudAccountContextId: input.cloudAccountContextId,
+      cloudAccountUid: scope.accountUid, regionId: bucket.regionId, imageImportBucket: bucket.bucketName, ownerUserId: scope.actorUserId, displayName: 'synthetic object', osType: 'linux',
+      architecture: 'x86_64', bootMode: 'BIOS', imageFormat: 'qcow2', systemDiskSize: 40, sourceFileName: 'fixture.qcow2', sourceContentType: 'application/octet-stream',
+      sourceSizeBytes: '4096', objectKey, uploadExpiresAt: new Date(Date.now() + 30 * 60_000), sourceObjectProof: { etag: '"fixture-etag"' } } });
+    cloud.buckets.get(bucket.bucketName)!.objects.set(objectKey, { owner: job.ownerUserId, context: job.cloudAccountContextId, job: job.id, size: 4096, etag: '"fixture-etag"' });
+    return job;
+  }
   beforeAll(async () => { await prisma.$connect(); });
   beforeEach(async () => { await cleanup(); await prisma.cloudWorkspace.create({ data: { id: scope.cloudWorkspaceId, provider: scope.provider, accountUid: scope.accountUid, displayName: 'COS fixture' } }); cloud = fakeCos(); });
   afterEach(async () => { cloud.restore(); await cleanup(); });
@@ -123,6 +136,81 @@ dbDescribe('owned COS bucket saga in isolated PostgreSQL', () => {
       await runInSystemCloudWorkspaceScope(() => service.refreshPendingBuckets());
       expect((await prisma.cloudImageImportBucket.findUnique({ where: { id: bucket.id } }))!.status).toBe('deleted');
       expect(cloud.creates).toBe(1); expect(cloud.deletes).toBe(1);
+    });
+  });
+  it('preserves and restores bucket proof when another owned job deletes an object between List and HEAD', async () => {
+    await runInCloudWorkspace(scope, async () => {
+      const bucket = await service.ensureImportBucket(input);
+      const disappearing = await ownedObject(bucket, 'image-imports/deleting.qcow2');
+      await ownedObject(bucket, 'image-imports/remaining.qcow2');
+      const originalProof = (await prisma.cloudImageImportBucket.findUnique({ where: { id: bucket.id } }))!.ownershipProof;
+      const remote = cloud.buckets.get(bucket.bucketName)!;
+      const original = cloud.fetch.getMockImplementation()!;
+      let arrived!: () => void, resume!: () => void, paused = false;
+      const atHead = new Promise<void>(resolve => { arrived = resolve; });
+      const gate = new Promise<void>(resolve => { resume = resolve; });
+      cloud.fetch.mockImplementation(async (url, init) => {
+        const uri = new URL(String(url));
+        if (decodeURIComponent(uri.pathname.slice(1)) === disappearing.objectKey) {
+          if (init?.method === 'HEAD' && !paused) { paused = true; arrived(); await gate; }
+          if (init?.method === 'DELETE') { remote.objects.delete(disappearing.objectKey); return new Response(null, { status: 204, headers: { 'x-cos-request-id': 'concurrent-object-delete' } }); }
+        }
+        return original(url, init);
+      });
+      const target = { bucketId: bucket.id, cloudAccountContextId: input.cloudAccountContextId, cloudAccountUid: scope.accountUid, regionId: bucket.regionId };
+      const verifying = expect(service.getOwnedBucket(target)).rejects.toThrow('OBJECT_NOT_FOUND');
+      await atHead;
+      try {
+        const object = { contextCredentials: { id: input.cloudAccountContextId, provider: scope.provider, accountUid: scope.accountUid, regionId: bucket.regionId, accessKeyId: 'fixture-key', accessKeySecret: 'fixture-secret' },
+          bucketName: bucket.bucketName, objectKey: disappearing.objectKey };
+        expect((await service.requestObject({ ...object, method: 'DELETE' })).status).toBe(204);
+        expect((await service.requestObject({ ...object, method: 'HEAD' })).status).toBe(404);
+        await prisma.imageImportJob.update({ where: { id: disappearing.id }, data: { temporaryObjectDeletedAt: new Date() } });
+      } finally { resume(); }
+      await verifying;
+      const pending = (await prisma.cloudImageImportBucket.findUnique({ where: { id: bucket.id } }))!;
+      expect(pending.ownershipProof).toEqual({ ...originalProof as Record<string, unknown>, verificationPending: true });
+      expect(ownedCosBucketProof(pending)).toBeNull();
+      expect((await prisma.billingLedgerResource.findFirst())!.releasedAt).toBeNull();
+      await runInSystemCloudWorkspaceScope(() => service.refreshPendingBuckets());
+      const restored = (await prisma.cloudImageImportBucket.findUnique({ where: { id: bucket.id } }))!;
+      expect(ownedCosBucketProof(restored)).not.toBeNull();
+      expect(restored.ownershipProof).toMatchObject({ exclusiveUsage: true, verificationPending: false, creationNonce: pending.creationNonce });
+      expect(await service.getOwnedBucket(target)).toEqual(bucket);
+      expect(remote.objects.has('image-imports/remaining.qcow2')).toBe(true);
+      expect(cloud.creates).toBe(1); expect(cloud.deletes).toBe(0);
+    });
+  });
+  it.each(['unregistered object', 'unregistered disappeared', 'owner', 'job', 'context', 'size', 'etag', 'bucket owner', 'nonce'])('permanently rejects real COS source conflicts: %s', async conflict => {
+    await runInCloudWorkspace(scope, async () => {
+      const bucket = await service.ensureImportBucket(input);
+      const job = await ownedObject(bucket, 'image-imports/owned.qcow2');
+      const remote = cloud.buckets.get(bucket.bucketName)!;
+      const object = remote.objects.get(job.objectKey)!;
+      if (conflict.startsWith('unregistered')) {
+        remote.objects.set('external.qcow2', { ...object, owner: 'foreign', job: 'foreign' });
+        if (conflict === 'unregistered disappeared') {
+          const original = cloud.fetch.getMockImplementation()!;
+          cloud.fetch.mockImplementation(async (url, init) => {
+            const result = await original(url, init), uri = new URL(String(url));
+            if (uri.hostname.startsWith(bucket.bucketName + '.cos.') && uri.pathname === '/' && !uri.search && init?.method === 'GET') remote.objects.delete('external.qcow2');
+            return result;
+          });
+        }
+      } else if (conflict === 'size') object.size++;
+      else if (conflict === 'etag') object.etag = '"foreign-etag"';
+      else if (conflict === 'bucket owner') remote.publicAcl = true;
+      else if (conflict === 'nonce') remote.tags.PlatformCreationNonce = 'foreign';
+      else object[conflict as 'owner' | 'job' | 'context'] = 'foreign';
+      const target = { bucketId: bucket.id, cloudAccountContextId: input.cloudAccountContextId, cloudAccountUid: scope.accountUid, regionId: bucket.regionId };
+      await expect(service.getOwnedBucket(target)).rejects.toThrow();
+      const row = (await prisma.cloudImageImportBucket.findUnique({ where: { id: bucket.id } }))!;
+      expect(row.ownershipProof).toMatchObject({ exclusiveUsage: false, verificationPending: false });
+      expect(ownedCosBucketProof(row)).toBeNull();
+      remote.objects.clear(); remote.publicAcl = false;
+      await expect(service.getOwnedBucket(target)).rejects.toThrow('持久来源证明');
+      expect((await prisma.billingLedgerResource.findFirst())!.releasedAt).toBeNull();
+      expect(cloud.creates).toBe(1); expect(cloud.deletes).toBe(0);
     });
   });
 

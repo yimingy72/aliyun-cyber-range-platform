@@ -250,6 +250,8 @@ export class TencentCosManagedBucketService {
           && job.cloudAccountContextId === bucket.cloudAccountContextId && job.cloudAccountUid === bucket.cloudAccountUid && job.regionId === bucket.regionId && job.imageImportBucket === bucket.bucketName);
         if (!job) conflict('COS 桶中存在未归属平台导入任务的对象，不能将整桶费用归平台。');
         const head = await requestCosObject({ contextCredentials: credentials, bucketName: bucket.bucketName, objectKey: key, method: 'HEAD' });
+        // Another import cleanup may delete an owned object after List; retry the inventory.
+        if (head.status === 404) throw new TencentCosRequestError('OBJECT_NOT_FOUND', 404);
         const proof = job.sourceObjectProof && typeof job.sourceObjectProof === 'object' ? job.sourceObjectProof as Record<string,unknown> : null;
         if (!head.ok || head.headers.get('x-cos-meta-platform-image-job') !== job.id || head.headers.get('x-cos-meta-platform-image-owner') !== job.ownerUserId
           || head.headers.get('x-cos-meta-platform-cloud-context') !== job.cloudAccountContextId || Number(head.headers.get('content-length')) !== Number(job.sourceSizeBytes)

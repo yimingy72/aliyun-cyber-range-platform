@@ -31,7 +31,8 @@ type AdminRouteActivityContextValue = {
 const AdminRouteActivityContext = createContext<AdminRouteActivityContextValue | null>(null);
 
 function isRetainedAdminRoute(pathname: string) {
-  return RETAINED_ADMIN_ROUTES.has(pathname) || RETAINED_ADMIN_DYNAMIC_ROUTE_PATTERNS.some((pattern) => pattern.test(pathname));
+  return pathname !== '/admin/scenarios/new' &&
+    (RETAINED_ADMIN_ROUTES.has(pathname) || RETAINED_ADMIN_DYNAMIC_ROUTE_PATTERNS.some((pattern) => pattern.test(pathname)));
 }
 
 function createRetainedAdminPage(pathname: string) {

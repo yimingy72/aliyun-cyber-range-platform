@@ -65,7 +65,7 @@ describe('Owned packed-image lifecycle', () => {
     for (const [sid, disk] of [['s-system', 'd-system'], ['s-data', 'd-data']]) snapshots.set(sid, { SnapshotId: sid, SourceDiskId: disk, RegionId: context.regionId, CreationTime: artifact.createdAt.toISOString(), Usage: 'image', Tags: { Tag: [] } });
     await repository.upsertImageSnapshots({ provider: context.provider, accountUid: context.accountUid, regionId: context.regionId, scope: 'custom', snapshots: [{ imageId: image.ImageId, sourceImageName: image.ImageName, status: 'Creating', isAvailable: false, lastSyncedAt: new Date() }] });
     sourceId = (await repository.listImageSnapshots({ imageId: image.ImageId }))[0].id;
-    assetId = (await repository.collectPlatformImageAsset({ snapshotId: sourceId, displayName: 'packed', ownerUserId: owner.id, visibility: 'private' })).id;
+    assetId = (await repository.collectPlatformImageAsset({ snapshotId: sourceId, displayName: 'packed', defaultHostName: 'original-packed-host', ownerUserId: owner.id, visibility: 'private' })).id;
     await repository.setPlatformImageAssetEnabled(assetId, false);
     await service.updateClaimed(artifact.id, artifact.submissionToken, { imageId: image.ImageId, sourceSnapshotId: sourceId, platformImageAssetId: assetId, status: 'creating' });
     await service.endSubmission(artifact.id, artifact.submissionToken);

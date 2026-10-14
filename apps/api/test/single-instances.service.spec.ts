@@ -70,6 +70,19 @@ describe('SingleInstancesService', () => {
     expect(f.network.ensureDefaultProfile).not.toHaveBeenCalled();
   });
 
+  it('accepts a Linux slash password when platform is null and the display name contains Windows', async () => {
+    const f = createLaunchFixture();
+    f.image.displayName = 'Windows training Ubuntu';
+    (f.repository.getImageSnapshotById as jest.Mock).mockResolvedValue({ id: 'source-1', isAvailable: true, osType: 'linux', platform: null });
+
+    await expect(f.service.launch({ ...f.input, password: '/Abcd1234' }, f.actor.id)).resolves.toMatchObject({ batch: { quantity: 2 } });
+    expect(f.config.getInstanceTypeAvailabilityInContext).toHaveBeenCalled();
+    expect(await f.repository.listProvisionJobs()).toHaveLength(2);
+    for (const instance of await f.repository.listRangeInstances()) {
+      expect(Object.values(instance.runtimeCredentials!)).toEqual([expect.objectContaining({ username: 'root' })]);
+    }
+  });
+
   it('accepts compliant passwords and keeps generating random passwords when blank', async () => {
     const f = createLaunchFixture();
     const launched = await f.service.launch({ ...f.input, password: 'Valid1234!' }, f.actor.id);
@@ -84,6 +97,65 @@ describe('SingleInstancesService', () => {
     const randomInstances = (await blank.repository.listRangeInstances()).filter((instance) => instance.singleInstanceBatchId === randomLaunched.batch.id);
     expect(randomInstances).toHaveLength(2);
     expect(randomInstances.every((instance) => Boolean(instance.runtimeCredentials?.['single-ecs-1']?.password || instance.runtimeCredentials?.['single-ecs-2']?.password))).toBe(true);
+  });
+
+  it('prepares cloud/network inputs before committing all members through the transaction repository', async () => {
+    const f = createLaunchFixture();
+    const transaction = f.repository.withSingleInstanceTransaction.bind(f.repository);
+    const writes = ['createSingleInstanceBatch', 'createRangeInstance', 'createProvisionJob', 'updateRangeInstance'] as const;
+    const transactionRepository = { ...f.repository,
+      createSingleInstanceBatch: jest.fn(f.repository.createSingleInstanceBatch.bind(f.repository)),
+      createRangeInstance: jest.fn(f.repository.createRangeInstance.bind(f.repository)),
+      createProvisionJob: jest.fn(f.repository.createProvisionJob.bind(f.repository)),
+      updateRangeInstance: jest.fn(f.repository.updateRangeInstance.bind(f.repository)) };
+    for (const method of writes) {
+      jest.spyOn(f.repository, method).mockImplementation(() => { throw new Error('root repository write outside atomic intake'); });
+    }
+    let inTransaction = false;
+    const ensureNetwork = f.network.ensureDefaultProfile.getMockImplementation()!;
+    f.network.ensureDefaultProfile.mockImplementation(async () => {
+      expect(inTransaction).toBe(false);
+      return ensureNetwork();
+    });
+    f.config.getExecutionAccountContext.mockImplementation(async () => {
+      expect(inTransaction).toBe(false);
+      return { ...f.account };
+    });
+    f.config.getInstanceTypeAvailabilityInContext.mockImplementation(async () => {
+      expect(inTransaction).toBe(false);
+      return f.availability;
+    });
+    jest.spyOn(f.repository, 'withSingleInstanceTransaction').mockImplementation(work => transaction(async () => {
+      expect(f.network.ensureDefaultProfile).toHaveBeenCalledTimes(1);
+      inTransaction = true;
+      try { return await work(transactionRepository); } finally { inTransaction = false; }
+    }));
+
+    const launched = await f.service.launch(f.input, f.actor.id);
+    expect(f.repository.withSingleInstanceTransaction).toHaveBeenCalledTimes(1);
+    expect(transactionRepository.createSingleInstanceBatch).toHaveBeenCalledTimes(1);
+    for (const method of writes.slice(1)) expect(transactionRepository[method]).toHaveBeenCalledTimes(2);
+    for (const instance of launched.instances) {
+      expect(instance.singleInstanceBatchId).toBe(launched.batch.id);
+      expect(instance.status).toBe('pending_create');
+      expect(await f.repository.getProvisionJobById(instance.lastJobId!)).toMatchObject({ rangeInstanceId: instance.id, status: 'pending' });
+    }
+    expect(f.worker.dispatch).not.toHaveBeenCalled();
+  });
+
+  it.each(['createRangeInstance', 'createProvisionJob', 'updateRangeInstance'] as const)
+  ('rolls back the whole intake when a later %s fails without leaving orphans', async method => {
+    const f = createLaunchFixture();
+    await f.service.launch(f.input, f.actor.id);
+    const snapshot = async () => ({ batches: await f.repository.listSingleInstanceBatchesWithInstances(),
+      instances: await f.repository.listRangeInstances(), jobs: await f.repository.listProvisionJobs() });
+    const before = await snapshot();
+    const original = f.repository[method].bind(f.repository);
+    jest.spyOn(f.repository, method).mockImplementationOnce(original as never).mockRejectedValueOnce(new Error('injected later intake failure'));
+
+    await expect(f.service.launch(f.input, f.actor.id)).rejects.toThrow('injected later intake failure');
+    expect(await snapshot()).toEqual(before);
+    expect(f.worker.dispatch).not.toHaveBeenCalled();
   });
 
   it('shows a targeted original packed artifact safely through the existing instance getter', async () => {

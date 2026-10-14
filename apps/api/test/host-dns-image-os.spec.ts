@@ -35,7 +35,7 @@ it.each([
 });
 it.each([null, {}, { TotalCount: 0, Images: { Image: [] } }, { ...windows, TotalCount: 2 }, { TotalCount: 1, Images: { Image: windows.Images.Image.concat(windows.Images.Image) } }])('rejects incomplete Alibaba DescribeImages metadata: %j', payload => {
   jest.spyOn(global,'fetch').mockResolvedValue({ ok: true, json: async () => payload } as Response);
-  return expect(resolveAliyunWindowsDnsHostImages(input)).rejects.toThrow('officially identified Windows');
+  return expect(resolveAliyunWindowsDnsHostImages(input)).rejects.toThrow(payload === null ? 'returned an invalid response' : 'officially identified Windows');
 });
 it.each([
   ['Windows Server 2012 R2 Datacenter',true,true],

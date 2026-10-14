@@ -1104,6 +1104,16 @@ export function createMemoryAdminRepository(): AdminRepository {
       return clone(createJobRecord(input));
     },
     async queueRangeInstanceJob(input: QueueRangeInstanceJobInput) {
+      const operation = input.intakeOperation;
+      if (operation) {
+        const previous = idempotentOperations.find(row => row.actorUserId === operation.actorUserId
+          && row.toolName === operation.toolName && row.idempotencyKey === operation.idempotencyKey);
+        if (previous) {
+          if (previous.argumentsHash !== operation.argumentsHash || previous.cloudWorkspaceId !== operation.cloudWorkspaceId) throw new Error('Operation key is bound to another request');
+          return typeof previous.result?.id === 'string'
+            ? cloneIfDefined(provisionJobs.find(job => job.id === previous.result!.id) ?? null) : null;
+        }
+      }
       const instance = rangeInstances.find(record => record.id === input.rangeInstanceId && record.instanceMode === 'range'
         && record.status === input.expectedStatus && record.ownerUserId === input.expectedOwnerUserId);
       if (!instance || provisionJobs.some(job => job.rangeInstanceId === input.rangeInstanceId && ['pending', 'running'].includes(job.status))) return null;
@@ -1111,7 +1121,21 @@ export function createMemoryAdminRepository(): AdminRepository {
       Object.assign(instance, { status: input.nextStatus, lastJobId: job.id, errorSummary: null, updatedAt: now(),
         ...(input.allocatedCidr !== undefined ? { allocatedCidr: input.allocatedCidr } : {}),
       });
+      if (operation) idempotentOperations.unshift({ ...clone(operation), id: nextId(), status: 'succeeded', result: { id: job.id },
+        errorCode: null, createdAt: now(), updatedAt: now() });
       return clone(job);
+    },
+    async rejectRangeInstanceIntake(operation, errorCode) {
+      const previous = idempotentOperations.find(row => row.actorUserId === operation.actorUserId
+        && row.toolName === operation.toolName && row.idempotencyKey === operation.idempotencyKey);
+      if (previous) {
+        if (previous.argumentsHash !== operation.argumentsHash || previous.cloudWorkspaceId !== operation.cloudWorkspaceId) throw new Error('Operation key is bound to another request');
+        return clone(previous);
+      }
+      const rejected: IdempotentOperationRecord = { ...clone(operation), id: nextId(), status: 'failed', result: null,
+        errorCode, createdAt: now(), updatedAt: now() };
+      idempotentOperations.unshift(rejected);
+      return clone(rejected);
     },
     async queueExpiredSingleInstanceDestroy(input) {
       if (singleControlPending) return null;
@@ -1625,6 +1649,21 @@ export function createMemoryAdminRepository(): AdminRepository {
       singleControlQueue = run.then(() => { singleControlPending -= 1; }, () => { singleControlPending -= 1; });
       return run;
     },
+    async withSingleInstanceTransaction(work) {
+      const stores = [singleInstanceBatches, rangeInstances, provisionJobs] as Array<Array<{ id: string; cloudWorkspaceId?: string }>>;
+      const snapshots = stores.map(records => cloneList(records));
+      try {
+        return await work(scopedRepository);
+      } catch (error) {
+        stores.forEach((records, storeIndex) => {
+          for (let index = records.length - 1; index >= 0; index--) {
+            if (visibleInWorkspace(records[index])) records.splice(index, 1);
+          }
+          records.push(...snapshots[storeIndex]);
+        });
+        throw error;
+      }
+    },
     async tryWithSingleInstanceBatchProvisionLock(batchId, work) {
       if (singleBatchProvisionLocks.has(batchId)) return { acquired: false };
       singleBatchProvisionLocks.add(batchId);
@@ -1654,7 +1693,11 @@ export function createMemoryAdminRepository(): AdminRepository {
     async deleteSingleInstanceNetworkProfile(id) { const index = singleInstanceNetworkProfiles.findIndex((value) => value.id === id); if (index >= 0) singleInstanceNetworkProfiles.splice(index, 1); },
     async createPackedImageArtifact(input) {
       const record: PackedImageArtifactRecord = { cloudProvider: input.cloudProvider ?? 'alibaba_cloud', sourceSnapshotBaseline: null, ...input, id: input.id ?? nextId(), imageId: null, sourceSnapshotId: null, platformImageAssetId: null, status: 'pending', backingSnapshotIds: [], deletedSnapshotIds: [], cloudImageDeletedAt: null, completedAt: null, lastPolledAt: null, errorMessage: null, createdAt: now(), updatedAt: now() };
-      packedImageArtifacts.push(record); return clone(record);
+      packedImageArtifacts.push(record);
+      if (input.leaseToken && input.leaseExpiresAt) {
+        packedImageClaims.set(record.id, { token: input.leaseToken, expiresAt: input.leaseExpiresAt });
+      }
+      return clone(record);
     },
     async getPackedImageArtifact(id) { return cloneIfDefined(packedImageArtifacts.find(item => item.id === id) ?? null); },
     async claimPackedImageArtifact(id, token, expiresAt) {
@@ -1998,7 +2041,7 @@ export function createMemoryAdminRepository(): AdminRepository {
       return cloneList(billingAnomalies.filter((item) => inDateRange(item.billingDate, filter.startAt, filter.endAt) && (filter.cloudProvider === undefined || (item.cloudProvider ?? 'alibaba_cloud') === filter.cloudProvider) && (filter.cloudAccountUid === undefined || item.cloudAccountUid === filter.cloudAccountUid)));
     },
   };
-  return new Proxy(repository, {
+  const scopedRepository = new Proxy(repository, {
     get(target, property) {
       const value = Reflect.get(target, property);
       if (typeof value !== 'function' || value._isMockFunction) return value;
@@ -2012,4 +2055,5 @@ export function createMemoryAdminRepository(): AdminRepository {
       };
     },
   });
+  return scopedRepository;
 }

@@ -4,6 +4,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { AdminApiError } from '../../lib/admin-api';
 import { ADMIN_PAGE_SIZE_STORAGE_KEY } from './admin-pagination';
+import { AdminScreenCacheProvider } from '../../lib/admin-screen-cache';
+import { AdminPageCache } from './admin-page-cache';
 import type {
   ImageCatalogItem,
   ImageCatalogScopePayload,
@@ -2069,5 +2071,124 @@ describe('ImageCenterScreen', () => {
 
     const otherRow = screen.getByText('Other Shared Ubuntu').closest('tr') as HTMLElement;
     expect(within(otherRow).queryByRole('button', { name: '回退为私有 Other Shared Ubuntu' })).toBeNull();
+  });
+});
+
+
+describe('image user-flow regressions', () => {
+  it('audit-ui: a custom deletion wins over a read started while deletion was pending', async () => {
+    let resolveDelete!: () => void;
+    let resolveList!: (value: ImageCatalogScopePayload) => void;
+    let reads = 0;
+    deleteCustomImageSnapshotMock.mockReturnValue(new Promise<void>(resolve => { resolveDelete = resolve; }));
+    fetchCustomImageCatalogScopeMock.mockImplementation(async () => {
+      reads += 1;
+      return reads === 2 ? new Promise(resolve => { resolveList = resolve; }) : customScopePayload;
+    });
+    function Page({ pathname }: { pathname: string }) {
+      return <AdminScreenCacheProvider><AdminPageCache pathname={pathname} createPage={() => null}>
+        {pathname === '/admin/image-center' ? <ImageCenterScreen /> : <p>list</p>}
+      </AdminPageCache></AdminScreenCacheProvider>;
+    }
+    const view = render(<Page pathname="/admin/image-center" />);
+    fireEvent.mouseDown(await screen.findByRole('tab', { name: '云上镜像来源' }));
+    const table = await screen.findByRole('table', { name: '阿里云自定义镜像' });
+    await within(table).findByText(customSnapshot.sourceImageName);
+    fireEvent.click(within(table).getByRole('button', { name: `删除 ${customSnapshot.sourceImageName}` }));
+    fireEvent.click(screen.getByRole('button', { name: '确认删除' }));
+    await waitFor(() => expect(deleteCustomImageSnapshotMock).toHaveBeenCalledTimes(1));
+    view.rerender(<Page pathname="/admin/scenarios" />);
+    view.rerender(<Page pathname="/admin/image-center" />);
+    await waitFor(() => expect(reads).toBe(2));
+    await act(async () => resolveList(customScopePayload));
+    await act(async () => resolveDelete());
+    expect(within(screen.getByRole('table', { name: '阿里云自定义镜像' })).queryByText(customSnapshot.sourceImageName)).toBeNull();
+    expect(screen.getByRole('table', { name: '阿里云自定义镜像' }).getAttribute('aria-busy')).toBeNull();
+  });
+  it.each([['disable', false], ['rename', false], ['remove', false], ['disable', true]] as const)('audit-ui: discards an old platform list after %s (failed read: %s) and finishes refreshing', async (action, failedRead) => {
+    const asset = createPlatformImageAsset({ id: 'platform-image-1', imageId: 'm-custom-001', displayName: 'Original asset', visibility: 'platform' });
+    let resolveOldList!: (value: PlatformImageAssetListPayload) => void;
+    let rejectOldList!: (error: Error) => void;
+    let reads = 0;
+    fetchPlatformImagesMock.mockImplementation(async (_url, _token, view) => {
+      if (view === 'mine') return { items: [] };
+      reads += 1;
+      if (reads === 2) return new Promise((resolve, reject) => { resolveOldList = resolve; rejectOldList = reject; });
+      return { items: [asset] };
+    });
+    disablePlatformImageMock.mockResolvedValue({ ...asset, enabled: false });
+    renamePlatformImageMock.mockResolvedValue({ ...asset, displayName: 'Renamed asset' });
+    removePlatformImageMock.mockResolvedValue(undefined);
+    const now = Date.now();
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(now);
+    function Page({ pathname }: { pathname: string }) {
+      return <AdminScreenCacheProvider><AdminPageCache pathname={pathname} createPage={() => null}>
+        {pathname === '/admin/image-center' ? <ImageCenterScreen /> : <p>list</p>}
+      </AdminPageCache></AdminScreenCacheProvider>;
+    }
+    try {
+      const view = render(<Page pathname="/admin/image-center" />);
+      await screen.findByText('Original asset');
+      view.rerender(<Page pathname="/admin/scenarios" />);
+      clock.mockReturnValue(now + 21_000);
+      view.rerender(<Page pathname="/admin/image-center" />);
+      await waitFor(() => expect(reads).toBe(2));
+      const row = screen.getByRole('row', { name: /Original asset/ });
+      fireEvent.keyDown(within(row).getByRole('button', { name: '更多操作' }), { key: 'ArrowDown' });
+      fireEvent.click(screen.getByRole('menuitem', { name: action === 'disable' ? '禁用' : action === 'rename' ? '重命名' : '删除' }));
+      if (action === 'rename') {
+        const dialog = screen.getByRole('dialog', { name: '编辑镜像名称' });
+        fireEvent.change(within(dialog).getByLabelText('镜像名'), { target: { value: 'Renamed asset' } });
+        fireEvent.click(within(dialog).getByRole('button', { name: '保存信息' }));
+        await screen.findByText('Renamed asset');
+      } else if (action === 'remove') {
+        fireEvent.click(screen.getByRole('button', { name: '确认删除' }));
+        await waitFor(() => expect(screen.queryByText('Original asset')).toBeNull());
+      } else {
+        await waitFor(() => expect(screen.queryByRole('button', { name: '创建实例 Original asset' })).toBeNull());
+      }
+      await act(async () => {
+        if (failedRead) rejectOldList(new Error('old list failure'));
+        else resolveOldList({ items: [asset] });
+      });
+      expect(screen.queryByText(/old list failure/)).toBeNull();
+      if (action === 'rename') {
+        expect(screen.getByText('Renamed asset')).toBeTruthy();
+        expect(screen.queryByText('Original asset')).toBeNull();
+      } else if (action === 'remove') {
+        expect(screen.queryByText('Original asset')).toBeNull();
+      } else {
+        expect(screen.queryByRole('button', { name: '创建实例 Original asset' })).toBeNull();
+      }
+      await waitFor(() => expect(screen.getByRole('table', { name: '平台镜像' }).getAttribute('aria-busy')).toBeNull());
+    } finally { clock.mockRestore(); }
+  });
+
+  it.each(['Available', 'Failed'] as const)('audit-ui: polls a packed Creating image without import jobs until %s', async terminalStatus => {
+    const creating = createPlatformImageAsset({ id: 'packed-image', imageId: 'm-packed', displayName: 'Packed image',
+      ownerUserId: 'admin-user', visibility: 'private', enabled: false, sourceSnapshotAvailable: false, sourceSnapshotStatus: 'Creating 0%' });
+    let reads = 0;
+    fetchPlatformImagesMock.mockImplementation(async (_url, _token, view) => {
+      if (view !== 'mine') return { items: [] };
+      reads += 1;
+      return { items: [reads < 3 ? creating : { ...creating, sourceSnapshotStatus: terminalStatus,
+        sourceSnapshotAvailable: terminalStatus === 'Available', enabled: terminalStatus === 'Available' }] };
+    });
+    fetchImageImportJobsMock.mockResolvedValue({ items: [] });
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
+    try {
+      render(<AdminScreenCacheProvider><ImageCenterScreen /></AdminScreenCacheProvider>);
+      fireEvent.mouseDown(await screen.findByRole('tab', { name: '我的镜像' }));
+      await screen.findByText('Packed image');
+      await waitFor(() => expect(reads).toBe(2));
+      expect(screen.queryByRole('button', { name: '创建实例 Packed image' })).toBeNull();
+      await act(async () => { await vi.advanceTimersByTimeAsync(5_000); });
+      await waitFor(() => expect(reads).toBe(3));
+      if (terminalStatus === 'Available') expect(screen.getByRole('button', { name: '创建实例 Packed image' })).toBeTruthy();
+      else expect(screen.queryByRole('button', { name: '创建实例 Packed image' })).toBeNull();
+      await act(async () => { await vi.advanceTimersByTimeAsync(10_000); });
+      expect(reads).toBe(3);
+      expect(screen.getByRole('table', { name: '我的镜像' }).getAttribute('aria-busy')).toBeNull();
+    } finally { vi.useRealTimers(); }
   });
 });

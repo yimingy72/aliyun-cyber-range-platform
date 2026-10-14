@@ -10,6 +10,8 @@ import { ProvisioningWorkerService } from '../../src/provisioning/provisioning-w
 import { RANGE_PROVISIONER, type RangeProvisioner } from '../../src/provisioning/provisioning.types';
 import { createMemoryAdminRepository } from './create-memory-admin-repository';
 import { loginAsRepositoryUser, overrideTestOidc } from './test-oidc';
+import { OperationControlService } from '../../src/operations/operation-control.service';
+import { runInCloudWorkspace } from '../../src/auth/cloud-workspace-scope';
 
 export async function createRangeApiFixture(provisioner: RangeProvisioner = new DryRunRangeProvisioner()) {
   process.env.NODE_ENV = 'test';
@@ -34,6 +36,10 @@ export async function createRangeApiFixture(provisioner: RangeProvisioner = new 
   const app = moduleRef.createNestApplication();
   configureApp(app);
   await app.init();
+  const operations = app.get(OperationControlService);
+  const executeRecovery = operations.executeRangeRecoveryIntake.bind(operations);
+  jest.spyOn(operations, 'executeRangeRecoveryIntake').mockImplementation(input =>
+    runInCloudWorkspace({ cloudWorkspaceId: 'legacy-unbound', provider: 'alibaba_cloud', accountUid: null }, () => executeRecovery(input)));
   return {
     app,
     repository,
