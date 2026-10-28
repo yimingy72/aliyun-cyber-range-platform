@@ -49,6 +49,22 @@ import type { ResourceAlert, ResourceAlertStatus, ResourcePatrol, ResourceReclai
 export async function fetchResourcePatrol(apiBaseUrl: string, token: string) {
   return readJson<ResourcePatrol>(await fetch(`${apiBaseUrl}/admin/resource-alerts/patrol`, { headers: createAdminHeaders(token) }));
 }
+
+export type MogongImageCatalog = {
+  capturedAt: string;
+  total: number;
+  items: Array<{ id: number; name: string; type: string; imageId: string | null; active: boolean; status: string }>;
+};
+
+export async function fetchMogongImageCatalog(apiBaseUrl: string, token: string) {
+  return readJson<MogongImageCatalog>(await fetch(`${apiBaseUrl}/admin/image-catalog/mogong`, { headers: createAdminHeaders(token) }));
+}
+
+export async function collectMogongImage(apiBaseUrl: string, token: string, id: number) {
+  return readJson<PlatformImageAsset>(await fetch(`${apiBaseUrl}/admin/image-catalog/mogong/${id}/collect`, {
+    method: 'POST', headers: createAdminHeaders(token),
+  }));
+}
 export async function setResourcePatrolManager(apiBaseUrl: string, token: string, managerUserId: string) {
   return readJson<ResourcePatrol>(await fetch(`${apiBaseUrl}/admin/resource-alerts/patrol`,
     { method: 'POST', headers: createAdminHeaders(token), body: JSON.stringify({ managerUserId }) }));

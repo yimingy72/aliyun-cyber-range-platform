@@ -78,6 +78,7 @@ import { AdminListToolbar } from './shared/admin-list-toolbar';
 import { AdminDialog, AdminConfirmationDialog, type AdminDialogSize } from './shared/admin-dialog';
 import { AdminPaginatedList } from './shared/admin-paginated-list';
 import { TableLoadingState } from './shared/table-loading-state';
+import { MogongImageCatalogView } from './mogong-image-catalog';
 import { useAdminSession } from './use-admin-session';
 import { useCloudWorkspace } from './cloud-workspace-provider';
 import { cloudProviderLabel } from './cloud-workspace-provider';
@@ -587,6 +588,7 @@ function CloudImageCenterScreen({
   }
 
   const [activeTab, setActiveTab] = useState<ActiveTab>('platform');
+  const [showMogong, setShowMogong] = useState(false);
   const screenCache = useAdminScreenCache();
   const cachedPlatformAssets = screenCache?.read<PlatformImageAssetListPayload>(
     apiBaseUrl,
@@ -2002,11 +2004,16 @@ function CloudImageCenterScreen({
 
         <div className="mt-4 flex min-h-0 flex-1 flex-col">
           <AdminListToolbar
-            activeView={activeMainView}
+            activeView={showMogong ? 'mogong' : activeMainView}
             compactViewAction
             onSearchChange={setSearchName}
             onViewChange={(view) => {
+              if (view === 'mogong' && session.isAdmin && provider === 'alibaba_cloud') {
+                setShowMogong(true);
+                return;
+              }
               if (view === 'platform' || view === 'mine' || view === 'cloud') {
+                setShowMogong(false);
                 setActiveMainView(view);
               }
             }}
@@ -2016,10 +2023,11 @@ function CloudImageCenterScreen({
             views={[
               { label: '平台镜像', value: 'platform' },
               { label: '我的镜像', value: 'mine' },
+              ...(session.isAdmin && provider === 'alibaba_cloud' ? [{ label: '墨攻镜像中心', value: 'mogong' }] : []),
               ...(session.isAdmin ? [{ label: '云上镜像来源', value: 'cloud' }] : []),
             ]}
             searchControls={
-              activeTab === 'platform' ? (
+              !showMogong && activeTab === 'platform' ? (
                 <div className="grid w-full gap-2 sm:w-auto sm:grid-cols-[11rem_11rem]">
                   <AdminSelectField
                     ariaLabel="按创建人筛选"
@@ -2044,7 +2052,7 @@ function CloudImageCenterScreen({
                     value={platformTagFilter}
                   />
                 </div>
-              ) : activeTab === 'mine' ? (
+              ) : !showMogong && activeTab === 'mine' ? (
                 <AdminSelectField
                   ariaLabel="按标签筛选"
                   className="w-full sm:w-44"
@@ -2059,7 +2067,7 @@ function CloudImageCenterScreen({
               ) : undefined
             }
             action={
-              <div className="flex flex-wrap items-center gap-2">
+              !showMogong ? <div className="flex flex-wrap items-center gap-2">
                 {session.isAdmin ? <Button disabled={workspace?.isReadOnly || pendingActionKeys.length > 0} onClick={() => { setTagManagerError(''); setTagManagerOpen(true); }} size="sm" type="button" variant="outline">管理标签</Button> : null}
               {activeTab === 'platform' || activeTab === 'mine' ? (
                 <Button
@@ -2095,10 +2103,26 @@ function CloudImageCenterScreen({
                   同步公共镜像
                 </Button>
               ) : undefined}
-              </div>
+              </div> : undefined
             }
           >
-            <AdminPaginatedList
+            {showMogong ? (
+              <MogongImageCatalogView
+                apiBaseUrl={apiBaseUrl}
+                token={session.token}
+                search={searchName}
+                readOnly={Boolean(workspace?.isReadOnly)}
+                logout={session.logout}
+                onCollected={syncAssetAcrossViews}
+                onCloudSynced={(scope) => {
+                  customScopeRequestVersionRef.current += 1;
+                  screenCache?.invalidate(apiBaseUrl, session.token, 'image-center:custom');
+                  setCustomScope(scope);
+                  markTabLoaded('custom');
+                  markTableContentUpdated('custom');
+                }}
+              />
+            ) : <AdminPaginatedList
               className="mt-4"
               footer={
                 !isActiveTabLoading && !activeTabError && activeItemsCount ? (
@@ -2251,7 +2275,7 @@ function CloudImageCenterScreen({
 
                 </div>
               </CloudSourceTabs>
-            </AdminPaginatedList>
+            </AdminPaginatedList>}
           </AdminListToolbar>
         </div>
 

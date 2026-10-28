@@ -149,6 +149,14 @@ MCP_PUBLIC_URL=https://203.0.113.10/mcp
 
 腾讯云导入使用平台新建的私有专属 COS Bucket，按冻结账号、APPID、地域及创建来源核验，不复用现有混用桶。临时对象与空闲桶逐项确认消失后释放台账；打包镜像及其依赖快照保留期间仍可能计费。详细边界见 [腾讯云镜像生命周期](docs/operations/tencent-image-lifecycle.md)。
 
+### 墨攻镜像中心
+
+管理员可在阿里云工作空间的镜像中心查看墨攻目录快照，按名称或 ID 搜索。目录仅显示与当前工作空间和地域中已同步的阿里云自定义镜像精确匹配的记录；先同步云镜像，再收录可用的虚拟机。停用、名称标注废弃或弃用、未完成处理及容器镜像不会从该入口收录。
+
+目录是独立的私有快照，并非实时同步。更新时在已登录墨攻的 OpenCLI 浏览器会话中设置 `OPENCLI_PROFILE`，执行 `scripts/dev/snapshot-mogong-images.sh`；默认写入 `.local/mogong/image-catalog.json`，也可用 `MOGONG_IMAGE_CATALOG_OUTPUT` 指定路径。Compose 将该目录只读挂载到 API，替换快照后无需重建镜像；部署到其他主机时须将快照安全传到该主机的挂载目录，或用 `MOGONG_CATALOG_HOST_PATH` 指定目录。快照不提交到公开仓库，只保存目录 ID、名称、类型、状态和阿里云镜像 ID，不保存墨攻凭据、密码或备注。
+
+收录后平台资产直接关联当前工作空间的阿里云镜像记录，删除墨攻目录快照或入口不会删除平台资产。阿里云原镜像仍须存在且可用；如果墨攻操作同时删除了阿里云镜像，该平台资产也会受到影响。
+
 ## MCP 连接
 
 MCP 服务使用 Streamable HTTP：`POST /mcp`，健康检查为 `GET /healthz`。生产接入使用 OIDC Bearer access token；Gateway 会验证 token，并为下游平台 API 执行 token exchange。静态 Bearer Token 只应用于受控的本地 stub / smoke 场景。

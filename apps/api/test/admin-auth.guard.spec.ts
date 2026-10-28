@@ -28,6 +28,13 @@ describe('AdminAuthGuard', () => {
         'GET',
       ),
     ).toBe(false);
+
+    expect(
+      (guard as unknown as { isAuthenticatedUserRoute: (pathname: string, method: string) => boolean }).isAuthenticatedUserRoute(
+        '/admin/image-catalog/mogong',
+        'GET',
+      ),
+    ).toBe(false);
   });
 
   it('rejects legacy non-jwt bearer tokens', async () => {
