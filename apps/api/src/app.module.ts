@@ -7,6 +7,8 @@ import path from 'node:path';
 import { ADMIN_REPOSITORY } from './admin/admin.repository';
 import { AdminAuthGuard } from './admin/admin-auth.guard';
 import { ImageCatalogController } from './admin/image-catalog.controller';
+import { PlatformContainerImagesController } from './admin/platform-container-images.controller';
+import { PlatformContainerImagesService } from './admin/platform-container-images.service';
 import { ImageCatalogService } from './admin/image-catalog.service';
 import { TencentCloudCatalogController } from './admin/tencent-cloud-catalog.controller';
 import { TencentCloudCatalogService } from './admin/tencent-cloud-catalog.service';
@@ -103,6 +105,7 @@ function resolveProjectRootDir() {
     CloudWorkspacesController,
     PlatformSessionController,
     ImageCatalogController,
+    PlatformContainerImagesController,
     TencentCloudCatalogController,
     ImageImportsController,
     BillingController,
@@ -116,6 +119,7 @@ function resolveProjectRootDir() {
     AdminAuthGuard,
     BillingBssClient,
     ImageCatalogService,
+    PlatformContainerImagesService,
     TencentCloudCatalogService,
     CloudAccountContextsService,
     CloudWorkspacesService,

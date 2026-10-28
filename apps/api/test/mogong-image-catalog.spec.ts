@@ -14,6 +14,9 @@ const catalog = {
 
 import { ImageCatalogController } from '../src/admin/image-catalog.controller';
 import { ImageCatalogService } from '../src/admin/image-catalog.service';
+import { runInCloudWorkspace } from '../src/auth/cloud-workspace-scope';
+import { OperationControlService } from '../src/operations/operation-control.service';
+import { createMemoryAdminRepository } from './support/create-memory-admin-repository';
 
 const admin = { id: 'admin', username: 'admin', role: 'admin' as const };
 const request = { adminUser: admin } as never;
@@ -42,7 +45,8 @@ function setup() {
   };
   const config = { getSelectedAccountContext: jest.fn().mockResolvedValue({ provider: 'alibaba_cloud', accountUid: '123', defaultRegion: 'cn-test' }) };
   const service = new ImageCatalogService(repo as never, config as never);
-  return { controller: new ImageCatalogController(service, {} as never), service, repo };
+  const containers = { collectOne: jest.fn().mockRejectedValue(new ConflictException('目录未绑定')) };
+  return { controller: new ImageCatalogController(service, {} as never, containers as never), service, repo };
 }
 
 describe('墨攻镜像收录', () => {
@@ -64,6 +68,21 @@ describe('墨攻镜像收录', () => {
     expect(result.items[0].creator).toBe('张三');
     expect(result.total).toBe(1);
     await expect(controller.collectMogong(request, '4')).rejects.toBeInstanceOf(ConflictException);
+  });
+
+  it('shows all source records only in the bound workspace without exposing container references', async () => {
+    const { controller } = setup();
+    const previous = process.env.MOGONG_CATALOG_WORKSPACE_ID;
+    process.env.MOGONG_CATALOG_WORKSPACE_ID = 'bound-space';
+    jest.mocked(readFile).mockResolvedValueOnce(JSON.stringify({ ...catalog, version: 2, items: catalog.items.map(item => ({ ...item, containerReference: item.type === 'docker' ? 'registry.example/team/private:1' : null })) }) as never);
+    try {
+      const result = await runInCloudWorkspace({ cloudWorkspaceId: 'bound-space', provider: 'alibaba_cloud', accountUid: '123' }, () => controller.listMogong());
+      expect(result.total).toBe(catalog.items.length);
+      expect(result.containersCollectable).toBe(true);
+      expect(JSON.stringify(result)).not.toContain('registry.example');
+    } finally {
+      if (previous === undefined) delete process.env.MOGONG_CATALOG_WORKSPACE_ID; else process.env.MOGONG_CATALOG_WORKSPACE_ID = previous;
+    }
   });
 
   it('accepts an older snapshot without creator information', async () => {
@@ -102,5 +121,34 @@ describe('墨攻镜像收录', () => {
     } finally {
       catalog.items.push(...items);
     }
+  });
+
+  it('requires a matching MCP confirmation and executes a bulk collection only once', async () => {
+    const workspace = { cloudWorkspaceId: 'confirmation-space', provider: 'alibaba_cloud' as const, accountUid: '123' };
+    const digest = 'a'.repeat(64);
+    const containers = { preview: jest.fn().mockResolvedValue({ digest, eligible: 2, toCollect: 2 }),
+      collectAll: jest.fn().mockResolvedValue({ added: 2, alreadyCollected: 0, eligible: 2 }) };
+    const controller = new ImageCatalogController({} as never, new OperationControlService(createMemoryAdminRepository()), containers as never);
+    const req = { headers: { 'x-idempotency-key': 'bulk-1' }, adminUser: admin,
+      authContext: { user: admin, source: 'mcp' as const, oauthClientId: 'mcp-gateway' } };
+    await runInCloudWorkspace(workspace, async () => {
+      let confirmationId = '';
+      try {
+        await controller.collectMogongContainers(req as never, { catalogDigest: digest });
+        throw new Error('Expected confirmation');
+      } catch (error) {
+        expect(error).toBeInstanceOf(ConflictException);
+        const response = (error as ConflictException).getResponse() as { code: string; confirmationId: string; summary: { toCollect: number } };
+        expect(response.code).toBe('CONFIRMATION_REQUIRED');
+        expect(response.summary.toCollect).toBe(2);
+        confirmationId = response.confirmationId;
+      }
+      expect(containers.collectAll).not.toHaveBeenCalled();
+      const confirmed = { ...req, headers: { ...req.headers, 'x-confirmation-id': confirmationId } };
+      await expect(controller.collectMogongContainers(confirmed as never, { catalogDigest: 'b'.repeat(64) })).rejects.toThrow('does not match');
+      await expect(controller.collectMogongContainers(confirmed as never, { catalogDigest: digest })).resolves.toMatchObject({ result: { added: 2 } });
+      await controller.collectMogongContainers(confirmed as never, { catalogDigest: digest });
+      expect(containers.collectAll).toHaveBeenCalledTimes(1);
+    });
   });
 });

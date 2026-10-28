@@ -42,6 +42,9 @@ import type {
   PlatformApiClientLike,
   PlatformApiClientOptions,
   PlatformImageAsset,
+  PlatformContainerImage,
+  MogongContainerPreview,
+  MogongContainerCollectResult,
   PlatformImageTag,
   PlatformImageView,
   ProvisionJob,
@@ -73,6 +76,17 @@ export class PlatformApiError extends Error {
 }
 
 export class PlatformApiClient implements PlatformApiClientLike {
+  async listPlatformContainerImages() {
+    return (await this.request<{ items: PlatformContainerImage[] }>('/admin/platform-container-images')).items;
+  }
+  previewMogongContainers() {
+    return this.request<MogongContainerPreview>('/admin/image-catalog/mogong/containers/preview');
+  }
+  collectMogongContainers(catalogDigest: string, operation?: OperationRequest) {
+    return this.request<MogongContainerCollectResult>('/admin/image-catalog/mogong/containers/collect-all', {
+      method: 'POST', body: JSON.stringify({ catalogDigest }), operation,
+    });
+  }
   getResourcePatrol() { return this.request<ResourcePatrol>('/admin/resource-alerts/patrol'); }
   setResourcePatrolManager(managerUserId?: string) {
     return this.request<ResourcePatrol>('/admin/resource-alerts/patrol', { method: 'POST', body: JSON.stringify({ managerUserId }) });

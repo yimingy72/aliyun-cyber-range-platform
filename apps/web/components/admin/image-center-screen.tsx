@@ -35,10 +35,12 @@ import {
   fetchCloudAccountContexts,
   fetchImageImportJobs,
   fetchPlatformImageTags,
+  fetchPlatformContainerImages,
   fetchPlatformImages,
   fetchPublicImageCatalogScope,
   publishPlatformImage,
   removePlatformImage,
+  removePlatformContainerImage,
   renamePlatformImage,
   retryImageImport,
   setPlatformImageTags,
@@ -54,6 +56,7 @@ import type {
   CloudAccountContext,
   ImageImportJob,
   PlatformImageAsset,
+  PlatformContainerImage,
   PlatformImageAssetListPayload,
   PlatformImageTag,
 } from '../../lib/admin-types';
@@ -102,6 +105,7 @@ type ImageCenterMetadata = {
 };
 type ImageCenterConfirmState =
   | { type: 'remove-platform'; asset: PlatformImageAsset }
+  | { type: 'remove-container'; asset: PlatformContainerImage }
   | { type: 'delete-custom'; snapshot: ImageSnapshot; deleteOwnedSnapshots: boolean }
   | null;
 type ImageImportDialogDraft = {
@@ -121,6 +125,7 @@ type ImageImportDialogDraft = {
 
 const ASSET_COLUMNS: readonly AdminDataColumn[] = [
   { id: 'name', label: '镜像名', priority: 'primary' },
+  { id: 'type', label: '镜像类型', priority: 'primary' },
   { id: 'imageId', label: '镜像 ID', priority: 'secondary' },
   { id: 'createdBy', label: '创建人', priority: 'tertiary' },
   { id: 'tags', label: '标签', priority: 'tertiary' },
@@ -590,6 +595,7 @@ function CloudImageCenterScreen({
   const [activeTab, setActiveTab] = useState<ActiveTab>('platform');
   const [showMogong, setShowMogong] = useState(false);
   const [mogongActionHost, setMogongActionHost] = useState<HTMLDivElement | null>(null);
+  const [mogongRefreshRevision, setMogongRefreshRevision] = useState(0);
   const screenCache = useAdminScreenCache();
   const cachedPlatformAssets = screenCache?.read<PlatformImageAssetListPayload>(
     apiBaseUrl,
@@ -610,6 +616,8 @@ function CloudImageCenterScreen({
           : cachedPublicScope;
   const [searchName, setSearchName] = useState('');
   const [platformAssets, setPlatformAssets] = useState<PlatformImageAsset[]>(() => cachedPlatformAssets?.data.items ?? []);
+  const [platformContainers, setPlatformContainers] = useState<PlatformContainerImage[]>([]);
+  const [containersLoaded, setContainersLoaded] = useState(false);
   const [myAssets, setMyAssets] = useState<PlatformImageAsset[]>(() => cachedMineAssets?.data.assets ?? []);
   const [platformImageTags, setAvailablePlatformImageTags] = useState<PlatformImageTag[]>(
     () => cachedMetadata?.data.platformImageTags ?? [],
@@ -673,6 +681,7 @@ function CloudImageCenterScreen({
   function beginAction(actionKey: string) {
     screenCache?.invalidate(apiBaseUrl, session.token, 'image-center:');
     screenCache?.invalidate(apiBaseUrl, session.token, 'platform-images:');
+    screenCache?.invalidate(apiBaseUrl, session.token, 'platform-container-images:');
     setPendingActionKeys((previous) => (previous.includes(actionKey) ? previous : [...previous, actionKey]));
   }
 
@@ -1000,6 +1009,21 @@ function CloudImageCenterScreen({
   const hasCreatingImages = myAssets.some((asset) => /^Creating\b/i.test(asset.sourceSnapshotStatus?.trim() ?? ''));
 
   useEffect(() => {
+    if (!isPageActive || !session.token || activeTab !== 'platform' || showMogong) return;
+    let active = true;
+    const load = () => fetchPlatformContainerImages(apiBaseUrl, session.token!);
+    const request = screenCache ? screenCache.load(apiBaseUrl, session.token, 'platform-container-images:platform', load) : load();
+    request.then((payload) => {
+      if (active) { setPlatformContainers(payload.items); setContainersLoaded(true); }
+    }).catch((error) => {
+      if (!active) return;
+      if (isUnauthorizedAdminError(error)) session.logout();
+      else { setContainersLoaded(true); setActionErrorMessage(error instanceof Error ? error.message : '容器镜像加载失败'); }
+    });
+    return () => { active = false; };
+  }, [activeTab, apiBaseUrl, isPageActive, screenCache, session.token, showMogong]);
+
+  useEffect(() => {
     if (!isPageActive || !session.token || (!hasImportingJobs && !hasCreatingImages)) {
       return;
     }
@@ -1033,6 +1057,8 @@ function CloudImageCenterScreen({
 
     if (!session.token) {
       setPlatformAssets([]);
+      setPlatformContainers([]);
+      setContainersLoaded(false);
       setMyAssets([]);
       setAvailablePlatformImageTags([]);
       setPlatformCreatedByFilter('');
@@ -1640,6 +1666,23 @@ function CloudImageCenterScreen({
     }
   }
 
+  async function handleRemoveContainerAsset(asset: PlatformContainerImage) {
+    if (!session.token) return;
+    const actionKey = `remove:container:${asset.id}`;
+    try {
+      setActionErrorMessage('');
+      beginAction(actionKey);
+      await removePlatformContainerImage(apiBaseUrl, session.token, asset.id);
+      if (mountedRef.current) setPlatformContainers((current) => current.filter((item) => item.id !== asset.id));
+      closeConfirmDialog();
+    } catch (error) {
+      if (isUnauthorizedAdminError(error)) session.logout();
+      else setActionErrorMessage(error instanceof Error ? error.message : '容器镜像删除失败');
+    } finally {
+      endAction(actionKey);
+    }
+  }
+
   async function handleDeleteCustomSnapshot(snapshot: ImageSnapshot, deleteOwnedSnapshots: boolean) {
     if (!session.token) {
       return;
@@ -1673,7 +1716,7 @@ function CloudImageCenterScreen({
     }
   }
 
-  const platformCreators = [...new Set(platformAssets.map(getPlatformAssetCreator))].sort((left, right) =>
+  const platformCreators = [...new Set([...platformAssets.map(getPlatformAssetCreator), ...platformContainers.map((asset) => asset.creator?.trim() || '—')])].sort((left, right) =>
     left.localeCompare(right, 'zh-CN'),
   );
   const filteredPlatformAssets = platformAssets.filter(
@@ -1681,6 +1724,10 @@ function CloudImageCenterScreen({
       matchesPlatformAssetSearch(asset, searchName) &&
       (!platformCreatedByFilter || getPlatformAssetCreator(asset) === platformCreatedByFilter) &&
       (!platformTagFilter || asset.tags.some((tag) => tag.id === platformTagFilter)),
+  );
+  const filteredPlatformContainers = platformContainers.filter((asset) =>
+    (!normalizeKeyword(searchName) || asset.displayName.toLowerCase().includes(normalizeKeyword(searchName))) &&
+    (!platformCreatedByFilter || (asset.creator?.trim() || '—') === platformCreatedByFilter) && !platformTagFilter,
   );
   const filteredMyAssets = myAssets.filter(
     (asset) => matchesPlatformAssetSearch(asset, searchName) && (!myTagFilter || asset.tags.some((tag) => tag.id === myTagFilter)),
@@ -1690,7 +1737,7 @@ function CloudImageCenterScreen({
 
   const activeItemsCount =
     activeTab === 'platform'
-      ? filteredPlatformAssets.length
+      ? filteredPlatformAssets.length + filteredPlatformContainers.length
       : activeTab === 'mine'
         ? filteredMyAssets.length
       : activeTab === 'custom'
@@ -1738,6 +1785,10 @@ function CloudImageCenterScreen({
   }
 
   const pagedPlatformAssets = filteredPlatformAssets.slice(activePagination.startIndex, activePagination.endIndex);
+  const pagedPlatformContainers = filteredPlatformContainers.slice(
+    Math.max(0, activePagination.startIndex - filteredPlatformAssets.length),
+    Math.max(0, activePagination.endIndex - filteredPlatformAssets.length),
+  );
   const pagedMyAssets = filteredMyAssets.slice(activePagination.startIndex, activePagination.endIndex);
   const pagedCustomSnapshots = filteredCustomSnapshots.slice(activePagination.startIndex, activePagination.endIndex);
   const pagedPublicSnapshots = filteredPublicSnapshots.slice(activePagination.startIndex, activePagination.endIndex);
@@ -1760,7 +1811,7 @@ function CloudImageCenterScreen({
     },
   ) {
     return items.map((asset) => {
-      const [nameColumn, imageIdColumn, createdByColumn, tagsColumn, statusColumn, actionsColumn] = columns;
+      const [nameColumn, typeColumn, imageIdColumn, createdByColumn, tagsColumn, statusColumn, actionsColumn] = columns;
       const renameActionKey = `rename:platform:${asset.id}`;
       const toggleActionKey = `${asset.enabled ? 'disable' : 'enable'}:platform:${asset.id}`;
       const visibilityActionKey = `${asset.visibility === 'platform' ? 'unpublish' : 'publish'}:platform:${asset.id}`;
@@ -1793,6 +1844,7 @@ function CloudImageCenterScreen({
               </span>
             </div>
           </AdminDataTableCell>
+          <AdminDataTableCell column={typeColumn!}>虚拟机</AdminDataTableCell>
           <AdminDataTableCell className="font-mono text-xs text-muted-foreground" column={imageIdColumn!}>
             {asset.imageId}
           </AdminDataTableCell>
@@ -1865,6 +1917,28 @@ function CloudImageCenterScreen({
         </TableRow>
       );
     });
+  }
+
+  function renderContainerRows(items: PlatformContainerImage[], columns: readonly AdminDataColumn[]) {
+    const [nameColumn, typeColumn, imageIdColumn, createdByColumn, tagsColumn, statusColumn, actionsColumn] = columns;
+    return items.map((asset) => (
+      <TableRow key={`container:${asset.id}`}>
+        <AdminDataTableCell className="font-medium" column={nameColumn!}><AdminDataTableText>{asset.displayName}</AdminDataTableText></AdminDataTableCell>
+        <AdminDataTableCell column={typeColumn!}>容器</AdminDataTableCell>
+        <AdminDataTableCell column={imageIdColumn!}>—</AdminDataTableCell>
+        <AdminDataTableCell column={createdByColumn!}>{asset.creator || '—'}</AdminDataTableCell>
+        <AdminDataTableCell column={tagsColumn!}>—</AdminDataTableCell>
+        <AdminDataTableCell column={statusColumn!}><Badge variant="secondary">{asset.referenceStatus === 'needs_review' ? '引用待核验' : '待支持实例'}</Badge></AdminDataTableCell>
+        <AdminDataTableCell column={actionsColumn!}>
+          {session.isAdmin && !workspace?.isReadOnly ? (
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild><Button aria-label={`更多操作 ${asset.displayName}`} disabled={pendingActionKeys.includes(`remove:container:${asset.id}`)} size="icon-sm" type="button" variant="ghost"><MoreHorizontal aria-hidden="true" /></Button></DropdownMenuTrigger>
+              <DropdownMenuContent align="end"><DropdownMenuItem variant="destructive" onSelect={() => setConfirmState({ type: 'remove-container', asset })}>删除</DropdownMenuItem></DropdownMenuContent>
+            </DropdownMenu>
+          ) : null}
+        </AdminDataTableCell>
+      </TableRow>
+    ));
   }
 
   function renderScopeRows(scope: 'custom' | 'public', snapshots: ImageSnapshot[], columns: readonly AdminDataColumn[]) {
@@ -1949,7 +2023,7 @@ function CloudImageCenterScreen({
   const activeColumns = activeTab === 'platform' || activeTab === 'mine' ? ASSET_COLUMNS : CLOUD_IMAGE_COLUMNS;
   const activeTabError = tabErrors[activeTab] ?? '';
   const activeRevalidationError = revalidationErrors[activeTab] ?? '';
-  const isActiveTabLoading = !loadedTabs[activeTab] && !activeTabError;
+  const isActiveTabLoading = (!loadedTabs[activeTab] || activeTab === 'platform' && !containersLoaded) && !activeTabError;
   const isRefreshing = refreshingTabs[activeTab] || (isLoading && loadedTabs[activeTab]);
   const hasActiveFilters = !!searchName || (activeTab === 'platform' && (!!platformCreatedByFilter || !!platformTagFilter)) || (activeTab === 'mine' && !!myTagFilter);
   const emptyState = hasActiveFilters
@@ -2116,14 +2190,23 @@ function CloudImageCenterScreen({
                 token={session.token}
                 search={searchName}
                 readOnly={Boolean(workspace?.isReadOnly)}
+                refreshRevision={mogongRefreshRevision}
                 logout={session.logout}
-                onCollected={syncAssetAcrossViews}
+                onCollected={(asset) => { syncAssetAcrossViews(asset); setMogongRefreshRevision((value) => value + 1); }}
+                onContainerCollected={(asset) => {
+                  screenCache?.invalidate(apiBaseUrl, session.token, 'platform-container-images:');
+                  screenCache?.invalidate(apiBaseUrl, session.token, 'image-center:mogong');
+                  setPlatformContainers((current) => current.some((item) => item.id === asset.id) ? current : [asset, ...current]);
+                  setMogongRefreshRevision((value) => value + 1);
+                }}
                 onCloudSynced={(scope) => {
                   customScopeRequestVersionRef.current += 1;
                   screenCache?.invalidate(apiBaseUrl, session.token, 'image-center:custom');
+                  screenCache?.invalidate(apiBaseUrl, session.token, 'image-center:mogong');
                   setCustomScope(scope);
                   markTabLoaded('custom');
                   markTableContentUpdated('custom');
+                  setMogongRefreshRevision((value) => value + 1);
                 }}
               />
             ) : <AdminPaginatedList
@@ -2247,6 +2330,7 @@ function CloudImageCenterScreen({
                                 allowVisibilityToggle: (asset) =>
                                   asset.canChangeVisibility ?? (session.isAdmin && Boolean(asset.ownerUserId)),
                               })}
+                              {renderContainerRows(pagedPlatformContainers, columns)}
                             </>
                           );
                         }
@@ -2501,6 +2585,18 @@ function CloudImageCenterScreen({
               pending={pendingActionKeys.includes(`remove:platform:${confirmState.asset.id}`)}
               title="确认删除镜像"
               onConfirm={() => void handleRemovePlatformAsset(confirmState.asset)}
+              onOpenChange={(open) => !open && closeConfirmDialog()}
+            />
+          ) : null}
+
+          {confirmState?.type === 'remove-container' ? (
+            <AdminConfirmationDialog
+              confirmLabel="确认删除"
+              description={`删除“${confirmState.asset.displayName}”后会将其移出平台收录目录，不会删除仓库中的原始镜像。`}
+              open
+              pending={pendingActionKeys.includes(`remove:container:${confirmState.asset.id}`)}
+              title="确认删除容器镜像"
+              onConfirm={() => void handleRemoveContainerAsset(confirmState.asset)}
               onOpenChange={(open) => !open && closeConfirmDialog()}
             />
           ) : null}

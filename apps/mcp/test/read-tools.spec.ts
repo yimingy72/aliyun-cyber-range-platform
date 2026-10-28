@@ -202,6 +202,9 @@ function createClientStub(): ClientStub {
     returnRangeTemplateToPrivate: vi.fn().mockResolvedValue({ id: 'tpl-1' }),
     removeRangeTemplate: vi.fn().mockResolvedValue(undefined),
     listPlatformImages: vi.fn().mockResolvedValue([{ id: 'img-1' }]),
+    listPlatformContainerImages: vi.fn().mockResolvedValue([]),
+    previewMogongContainers: vi.fn().mockResolvedValue({ digest: 'a'.repeat(64), eligible: 1, alreadyCollected: 0, toCollect: 1, needsReview: 0, capturedAt: '2026-10-28T00:00:00Z' }),
+    collectMogongContainers: vi.fn().mockResolvedValue({ added: 1, alreadyCollected: 0, eligible: 1 }),
     listPlatformImageTags: vi.fn().mockResolvedValue([{ id: 'tag-1', name: 'Web' }]),
     createPlatformImageTag: vi.fn().mockResolvedValue({ id: 'tag-2', name: 'Service' }),
     deletePlatformImageTag: vi.fn().mockResolvedValue({ removed: true, platformImageTagId: 'tag-1' }),
@@ -1510,6 +1513,16 @@ describe('tool registry', () => {
       },
       content: [{ type: 'text', text: expect.stringContaining('"result"') }],
     });
+  });
+
+  it('restricts container collection to admins and forwards the confirmed digest and idempotency key', async () => {
+    const client = createClientStub();
+    const registry = createToolRegistry(client);
+    const digest = 'a'.repeat(64);
+    await expect(registry.callTool('mogong_container_collect_preview', ['images:read'], {}, 'admin')).resolves.toMatchObject({ structuredContent: { result: { digest, toCollect: 1 } } });
+    await expect(registry.callTool('mogong_container_collect_all', ['images:write'], { catalogDigest: digest, confirmationId: 'confirm', idempotencyKey: 'once' }, 'admin')).resolves.toMatchObject({ structuredContent: { result: { added: 1 } } });
+    expect(client.collectMogongContainers).toHaveBeenCalledWith(digest, { confirmationId: 'confirm', idempotencyKey: 'once' });
+    await expect(registry.callTool('mogong_container_collect_all', ['images:write'], { catalogDigest: digest }, 'user')).rejects.toThrow('Forbidden tool');
   });
 
   it('rejects caller-supplied derived fields during a template update', async () => {

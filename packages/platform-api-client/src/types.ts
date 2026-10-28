@@ -430,6 +430,9 @@ export type PlatformApiClientLike = {
   returnRangeTemplateToPrivate(id: string, expectedRevision: number, operation?: OperationRequest): Promise<RangeTemplate>;
   removeRangeTemplate(id: string, operation?: OperationRequest): Promise<void>;
   listPlatformImages(view?: PlatformImageView): Promise<PlatformImageAsset[]>;
+  listPlatformContainerImages(): Promise<PlatformContainerImage[]>;
+  previewMogongContainers(): Promise<MogongContainerPreview>;
+  collectMogongContainers(catalogDigest: string, operation?: OperationRequest): Promise<MogongContainerCollectResult>;
   listPlatformImageTags(): Promise<PlatformImageTag[]>;
   createPlatformImageTag(name: string, operation?: OperationRequest): Promise<PlatformImageTag>;
   deletePlatformImageTag(id: string, operation?: OperationRequest): Promise<{ removed: boolean; platformImageTagId: string }>;
@@ -527,3 +530,7 @@ export type PlatformApiClientLike = {
   openSingleInstanceVnc(id: string, payload?: SingleInstanceActionPayload): Promise<Record<string, unknown>>;
   packSingleInstanceImage(id: string, payload?: SingleInstanceActionPayload, operation?: OperationRequest): Promise<Record<string, unknown>>;
 };
+
+export type PlatformContainerImage = { id: string; sourceId: number; displayName: string; creator: string | null; referenceStatus: string; createdAt: string };
+export type MogongContainerPreview = { digest: string; eligible: number; alreadyCollected: number; toCollect: number; needsReview: number; capturedAt: string };
+export type MogongContainerCollectResult = { added: number; alreadyCollected: number; eligible: number };

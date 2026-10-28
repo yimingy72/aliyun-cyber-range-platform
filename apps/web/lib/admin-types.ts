@@ -594,6 +594,15 @@ export type PlatformImageAssetListPayload = {
   items: PlatformImageAsset[];
 };
 
+export type PlatformContainerImage = {
+  id: string;
+  sourceId: number;
+  displayName: string;
+  creator: string | null;
+  referenceStatus: 'recorded' | 'needs_review';
+  createdAt: string;
+};
+
 export type PlatformImageTagListPayload = {
   items: PlatformImageTag[];
 };

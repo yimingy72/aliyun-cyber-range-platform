@@ -1,4 +1,5 @@
 import type { ToolDefinition } from './tool-context';
+import * as z from 'zod/v4';
 import {
   imageCatalogCustomDeleteInputSchema,
   imageCatalogListInputSchema,
@@ -13,6 +14,8 @@ import {
   imageTagDeleteInputSchema,
   imageTagsSetInputSchema,
   imageRenameInputSchema,
+  mogongContainerPreviewInputSchema,
+  mogongContainerCollectInputSchema,
 } from './input-schemas';
 import {
   imageCatalogOutputSchema,
@@ -33,6 +36,32 @@ const operation = (args: { idempotencyKey?: string; confirmationId?: string }) =
 });
 
 export const imageTools: ToolDefinition[] = [
+  {
+    name: 'platform_container_image_list', title: '查询平台容器镜像',
+    description: '查询当前工作空间已收录的容器镜像资产；暂不支持创建容器实例，也不返回仓库凭据或镜像引用。',
+    requiredScopes: ['images:read'], readOnlyHint: true,
+    inputSchema: mogongContainerPreviewInputSchema, outputSchema: resourceListOutputSchema,
+    call(context) { return context.client.listPlatformContainerImages(); },
+  },
+  {
+    name: 'mogong_container_collect_preview', title: '预览墨攻容器镜像收录',
+    description: '仅管理员预览当前绑定工作空间内可收录的启用容器镜像数量及目录摘要；不创建云资源。',
+    requiredScopes: ['images:read'], adminOnly: true, readOnlyHint: true,
+    inputSchema: mogongContainerPreviewInputSchema,
+    outputSchema: resultOutputSchema(z.object({ digest: z.string(), eligible: z.number(), alreadyCollected: z.number(), toCollect: z.number(), needsReview: z.number(), capturedAt: z.string() })),
+    call(context) { return context.client.previewMogongContainers(); },
+  },
+  {
+    name: 'mogong_container_collect_all', title: '批量收录墨攻容器镜像',
+    description: '仅管理员收录预览中启用、成功且未废弃的容器镜像目录记录；保留仓库引用，不复制镜像、不创建云资源。按服务端确认和幂等要求执行。',
+    requiredScopes: ['images:write'], adminOnly: true, annotations: { destructiveHint: false, idempotentHint: true },
+    inputSchema: mogongContainerCollectInputSchema,
+    outputSchema: resultOutputSchema(z.object({ added: z.number(), alreadyCollected: z.number(), eligible: z.number() })),
+    call(context, args) {
+      const input = args as { catalogDigest: string; idempotencyKey?: string; confirmationId?: string };
+      return context.client.collectMogongContainers(input.catalogDigest, operation(input));
+    },
+  },
   {
     name: 'platform_image_tag_list', title: '查询镜像标签字典',
     description: '查询当前工作空间的镜像标签定义（id、name），用于选择资产关联标签或由管理员删除定义。',

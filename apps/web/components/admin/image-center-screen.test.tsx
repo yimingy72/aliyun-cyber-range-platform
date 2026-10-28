@@ -26,6 +26,8 @@ const {
   fetchPublicImageCatalogScopeMock,
   fetchCustomImageCatalogScopeMock,
   fetchMogongImageCatalogMock,
+  fetchPlatformContainerImagesMock,
+  removePlatformContainerImageMock,
   fetchPlatformImagesMock,
   fetchPlatformImageTagsMock,
   fetchCloudAccountContextsMock,
@@ -53,6 +55,8 @@ const {
   fetchPublicImageCatalogScopeMock: vi.fn(),
   fetchCustomImageCatalogScopeMock: vi.fn(),
   fetchMogongImageCatalogMock: vi.fn(),
+  fetchPlatformContainerImagesMock: vi.fn(),
+  removePlatformContainerImageMock: vi.fn(),
   fetchPlatformImagesMock: vi.fn(),
   fetchPlatformImageTagsMock: vi.fn(),
   fetchCloudAccountContextsMock: vi.fn(),
@@ -92,6 +96,8 @@ vi.mock('../../lib/admin-api', async () => {
     fetchPublicImageCatalogScope: fetchPublicImageCatalogScopeMock,
     fetchCustomImageCatalogScope: fetchCustomImageCatalogScopeMock,
     fetchMogongImageCatalog: fetchMogongImageCatalogMock,
+    fetchPlatformContainerImages: fetchPlatformContainerImagesMock,
+    removePlatformContainerImage: removePlatformContainerImageMock,
     fetchPlatformImages: fetchPlatformImagesMock,
     fetchPlatformImageTags: fetchPlatformImageTagsMock,
     fetchCloudAccountContexts: fetchCloudAccountContextsMock,
@@ -271,6 +277,8 @@ beforeEach(() => {
   fetchPublicImageCatalogScopeMock.mockReset();
   fetchCustomImageCatalogScopeMock.mockReset();
   fetchMogongImageCatalogMock.mockReset();
+  fetchPlatformContainerImagesMock.mockReset();
+  removePlatformContainerImageMock.mockReset();
   fetchPlatformImagesMock.mockReset();
   fetchPlatformImageTagsMock.mockReset();
   fetchCloudAccountContextsMock.mockReset();
@@ -303,6 +311,8 @@ beforeEach(() => {
   fetchPublicImageCatalogScopeMock.mockResolvedValue(publicScopePayload);
   fetchCustomImageCatalogScopeMock.mockResolvedValue(customScopePayload);
   fetchMogongImageCatalogMock.mockResolvedValue({ capturedAt: '2026-10-28T00:00:00Z', total: 0, items: [] });
+  fetchPlatformContainerImagesMock.mockResolvedValue({ items: [] });
+  removePlatformContainerImageMock.mockResolvedValue({ removed: true, id: 'container-1' });
   fetchPlatformImagesMock.mockImplementation(async (_apiBaseUrl: string, _token: string, view: 'platform' | 'mine' = 'platform') =>
     view === 'mine' ? myImagesPayload : platformImagesPayload,
   );
@@ -416,6 +426,19 @@ afterEach(() => {
 });
 
 describe('ImageCenterScreen', () => {
+  it('shows collected containers separately and does not offer virtual-machine creation', async () => {
+    fetchPlatformContainerImagesMock.mockResolvedValue({ items: [{ id: 'container-1', sourceId: 7, displayName: '容器靶机', creator: '张三', referenceStatus: 'recorded', createdAt: '2026-10-28T00:00:00Z' }] });
+    render(<ImageCenterScreen />);
+    const row = (await screen.findByText('容器靶机')).closest('tr')!;
+    expect(within(row).getByText('容器')).toBeTruthy();
+    expect(within(row).getByText('待支持实例')).toBeTruthy();
+    expect(within(row).queryByRole('button', { name: /创建实例/ })).toBeNull();
+    fireEvent.keyDown(within(row).getByRole('button', { name: '更多操作 容器靶机' }), { key: 'ArrowDown' });
+    fireEvent.click(screen.getByRole('menuitem', { name: '删除' }));
+    fireEvent.click(await screen.findByRole('button', { name: '确认删除' }));
+    await waitFor(() => expect(removePlatformContainerImageMock).toHaveBeenCalledWith(expect.any(String), 'dev-admin-token', 'container-1'));
+    expect(screen.queryByText('容器靶机')).toBeNull();
+  });
   it('opens the administrator-only 墨攻镜像中心', async () => {
     render(<ImageCenterScreen />);
     const actionSlot = screen.getByTestId('admin-list-toolbar-view-action');
@@ -1289,7 +1312,7 @@ describe('ImageCenterScreen', () => {
       expect(within(table).getByText('My Ubuntu 22.04')).toBeTruthy();
       expect(within(table).getByText('镜像轮询刷新失败')).toBeTruthy();
       expect(within(table).getByRole('button', { name: '重试加载我的镜像' })).toBeTruthy();
-      expect((within(table).getByRole('cell', { name: /镜像轮询刷新失败/ }) as HTMLTableCellElement).colSpan).toBe(6);
+      expect((within(table).getByRole('cell', { name: /镜像轮询刷新失败/ }) as HTMLTableCellElement).colSpan).toBe(within(table).getAllByRole('columnheader').length);
       expect(table.getAttribute('aria-busy')).toBeNull();
     });
 

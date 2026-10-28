@@ -161,6 +161,7 @@ model CloudWorkspace {
   packedImageArtifactRows PackedImageArtifact[]
   imageCatalogItemRows ImageCatalogItem[]
   platformImageAssetRows PlatformImageAsset[]
+  platformContainerImageRows PlatformContainerImage[]
   platformImageTagRows PlatformImageTag[]
   platformImageAssetTagRows PlatformImageAssetTag[]
   rangeTemplateRows RangeTemplate[]
@@ -500,6 +501,22 @@ model PlatformImageAsset {
   @@index([cloudWorkspaceId])
   cloudWorkspace CloudWorkspace @relation(fields: [cloudWorkspaceId], references: [id], onDelete: Restrict)
 
+}
+
+model PlatformContainerImage {
+  id               String         @id @default(cuid())
+  cloudWorkspaceId String
+  sourceId         Int
+  displayName      String
+  creator          String?
+  imageReference   String?        @db.Text
+  referenceStatus  String
+  createdAt        DateTime       @default(now())
+  updatedAt        DateTime       @updatedAt
+  cloudWorkspace   CloudWorkspace @relation(fields: [cloudWorkspaceId], references: [id], onDelete: Restrict)
+
+  @@unique([cloudWorkspaceId, sourceId])
+  @@index([cloudWorkspaceId, createdAt])
 }
 
 model PlatformImageTag {
