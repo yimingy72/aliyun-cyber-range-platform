@@ -5,7 +5,7 @@ jest.mock('node:fs/promises', () => ({ readFile: jest.fn() }));
 
 const catalog = {
   capturedAt: '2026-10-28T00:00:00Z', total: 4, items: [
-    { id: 1, name: '演练镜像', type: 'vm', imageId: 'm-fixture', active: true, status: 'successful' },
+    { id: 1, name: '演练镜像', type: 'vm', imageId: 'm-fixture', active: true, status: 'successful', creator: '张三' },
     { id: 2, name: '已停用镜像', type: 'vm', imageId: 'm-disabled', active: false, status: 'successful' },
     { id: 3, name: '镜像-废弃', type: 'vm', imageId: 'm-retired', active: true, status: 'successful' },
     { id: 4, name: '容器镜像', type: 'docker', imageId: null, active: true, status: 'successful' },
@@ -61,8 +61,15 @@ describe('墨攻镜像收录', () => {
     const { controller } = setup();
     const result = await controller.listMogong();
     expect(result.items.map((item) => item.id)).toEqual([1]);
+    expect(result.items[0].creator).toBe('张三');
     expect(result.total).toBe(1);
     await expect(controller.collectMogong(request, '4')).rejects.toBeInstanceOf(ConflictException);
+  });
+
+  it('accepts an older snapshot without creator information', async () => {
+    const { controller } = setup();
+    jest.mocked(readFile).mockResolvedValueOnce(JSON.stringify({ ...catalog, items: catalog.items.map(({ creator: _creator, ...item }) => item) }) as never);
+    expect((await controller.listMogong()).items[0].creator).toBeNull();
   });
 
   it('fails closed when the private source snapshot is missing or incomplete', async () => {

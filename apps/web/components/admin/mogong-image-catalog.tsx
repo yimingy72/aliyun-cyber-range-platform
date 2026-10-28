@@ -16,9 +16,9 @@ import { TableLoadingState } from './shared/table-loading-state';
 
 const columns: readonly AdminDataColumn[] = [
   { id: 'name', label: '镜像名', priority: 'primary' },
-  { id: 'mogongId', label: '墨攻 ID', priority: 'secondary' },
   { id: 'imageId', label: '阿里云镜像 ID', priority: 'secondary' },
   { id: 'status', label: '状态', priority: 'primary' },
+  { id: 'creator', label: '创建人', priority: 'primary' },
   { id: 'actions', label: '操作', priority: 'primary', width: '11rem' },
 ];
 
@@ -119,7 +119,7 @@ export function MogongImageCatalogView({ apiBaseUrl, token, search, readOnly, lo
 
   const normalizedSearch = search.trim().toLowerCase();
   const items = (catalog?.items ?? []).filter((item) =>
-    !normalizedSearch || [item.name, String(item.id), item.imageId ?? ''].some((value) => value.toLowerCase().includes(normalizedSearch)),
+    !normalizedSearch || [item.name, item.imageId ?? ''].some((value) => value.toLowerCase().includes(normalizedSearch)),
   );
   const pagination = getPagination(items.length, page, pageSize);
   const snapshots = new Map((cloud?.snapshots ?? []).filter((snapshot) => snapshot.provider === 'alibaba_cloud').map((snapshot) => [snapshot.imageId, snapshot]));
@@ -160,13 +160,13 @@ export function MogongImageCatalogView({ apiBaseUrl, token, search, readOnly, lo
           return items.slice(pagination.startIndex, pagination.endIndex).map((item) => {
             const snapshot = item.imageId ? snapshots.get(item.imageId) : undefined;
             const status = imageStatus(item, snapshot, Boolean(item.imageId && collectedIds.has(item.imageId)), Boolean(item.imageId && privateIds.has(item.imageId)));
-            const [nameColumn, sourceIdColumn, imageIdColumn, statusColumn, actionColumn] = visibleColumns;
+            const [nameColumn, imageIdColumn, statusColumn, creatorColumn, actionColumn] = visibleColumns;
             return (
               <TableRow key={item.id}>
                 <AdminDataTableCell column={nameColumn!}><AdminDataTableText>{item.name}</AdminDataTableText><span className="block text-xs text-muted-foreground">类型：{item.type}</span></AdminDataTableCell>
-                <AdminDataTableCell column={sourceIdColumn!}>{item.id}</AdminDataTableCell>
                 <AdminDataTableCell className="font-mono text-xs text-muted-foreground" column={imageIdColumn!}>{item.imageId || '—'}</AdminDataTableCell>
                 <AdminDataTableCell column={statusColumn!}><Badge variant={status === '可收录' || status === '已收录' ? 'default' : 'secondary'}>{status}</Badge></AdminDataTableCell>
+                <AdminDataTableCell column={creatorColumn!}>{item.creator || '—'}</AdminDataTableCell>
                 <AdminDataTableCell column={actionColumn!}>
                   <Button aria-label={`${status === '已收录' ? '已收录' : '收录到平台'} ${item.name}`} disabled={readOnly || pending !== null || status !== '可收录'} onClick={() => void handleCollect(item)} size="sm" type="button" variant="outline">
                     {status === '已收录' ? '已收录' : '收录到平台'}

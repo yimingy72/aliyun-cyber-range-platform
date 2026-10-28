@@ -2027,83 +2027,85 @@ function CloudImageCenterScreen({
               ...(session.isAdmin ? [{ label: '云上镜像来源', value: 'cloud' }] : []),
             ]}
             searchControls={
-              !showMogong && activeTab === 'platform' ? (
-                <div className="grid w-full gap-2 sm:w-auto sm:grid-cols-[11rem_11rem]">
-                  <AdminSelectField
-                    ariaLabel="按创建人筛选"
-                    className="w-full"
-                    emptyOptionLabel="全部创建人"
-                    onValueChange={(value) => {
-                      setPlatformCreatedByFilter(value);
-                      setPage('platform', 1);
-                    }}
-                    options={platformCreators.map((creator) => ({ label: creator, value: creator }))}
-                    value={platformCreatedByFilter}
-                  />
+              <div className={session.isAdmin ? `${showMogong || (activeTab !== 'platform' && activeTab !== 'mine') ? 'hidden sm:block ' : ''}w-full sm:w-[22.5rem]` : 'w-full sm:w-auto'}>
+                {!showMogong && activeTab === 'platform' ? (
+                  <div className="grid w-full gap-2 sm:w-auto sm:grid-cols-[11rem_11rem]">
+                    <AdminSelectField
+                      ariaLabel="按创建人筛选"
+                      className="w-full"
+                      emptyOptionLabel="全部创建人"
+                      onValueChange={(value) => {
+                        setPlatformCreatedByFilter(value);
+                        setPage('platform', 1);
+                      }}
+                      options={platformCreators.map((creator) => ({ label: creator, value: creator }))}
+                      value={platformCreatedByFilter}
+                    />
+                    <AdminSelectField
+                      ariaLabel="按标签筛选"
+                      className="w-full"
+                      emptyOptionLabel="全部标签"
+                      onValueChange={(value) => {
+                        setPlatformTagFilter(value);
+                        setPage('platform', 1);
+                      }}
+                      options={platformImageTags.map((tag) => ({ label: tag.name, value: tag.id }))}
+                      value={platformTagFilter}
+                    />
+                  </div>
+                ) : !showMogong && activeTab === 'mine' ? (
                   <AdminSelectField
                     ariaLabel="按标签筛选"
-                    className="w-full"
+                    className="w-full sm:w-44"
                     emptyOptionLabel="全部标签"
                     onValueChange={(value) => {
-                      setPlatformTagFilter(value);
-                      setPage('platform', 1);
+                      setMyTagFilter(value);
+                      setPage('mine', 1);
                     }}
                     options={platformImageTags.map((tag) => ({ label: tag.name, value: tag.id }))}
-                    value={platformTagFilter}
+                    value={myTagFilter}
                   />
-                </div>
-              ) : !showMogong && activeTab === 'mine' ? (
-                <AdminSelectField
-                  ariaLabel="按标签筛选"
-                  className="w-full sm:w-44"
-                  emptyOptionLabel="全部标签"
-                  onValueChange={(value) => {
-                    setMyTagFilter(value);
-                    setPage('mine', 1);
-                  }}
-                  options={platformImageTags.map((tag) => ({ label: tag.name, value: tag.id }))}
-                  value={myTagFilter}
-                />
-              ) : undefined
+                ) : undefined}
+              </div>
             }
             action={
-              !showMogong ? <div className="flex flex-wrap items-center gap-2">
-                {session.isAdmin ? <Button disabled={workspace?.isReadOnly || pendingActionKeys.length > 0} onClick={() => { setTagManagerError(''); setTagManagerOpen(true); }} size="sm" type="button" variant="outline">管理标签</Button> : null}
-              {activeTab === 'platform' || activeTab === 'mine' ? (
-                <Button
-                  disabled={!canImportImages || pendingActionKeys.includes('create:image-import')}
-                  title={imageImportUnavailableMessage ?? undefined}
-                  onClick={openImageImportDialog}
-                  size="sm"
-                  type="button"
-                >
-                  <Upload aria-hidden="true" />
-                  上传镜像
-                </Button>
-              ) : activeTab === 'custom' && session.isAdmin ? (
-                <Button
-                  disabled={workspace?.isReadOnly || pendingActionKeys.includes('sync:custom')}
-                  onClick={() => void handleSyncCustomImages()}
-                  size="sm"
-                  type="button"
-                  variant="outline"
-                >
-                  <RefreshCw aria-hidden="true" />
-                  同步镜像
-                </Button>
-              ) : activeTab === 'public' && session.isAdmin ? (
-                <Button
-                  disabled={workspace?.isReadOnly || pendingActionKeys.includes('sync:public')}
-                  onClick={() => void handleSyncPublicImages()}
-                  size="sm"
-                  type="button"
-                  variant="outline"
-                >
-                  <RefreshCw aria-hidden="true" />
-                  同步公共镜像
-                </Button>
-              ) : undefined}
-              </div> : undefined
+              <div className={session.isAdmin ? 'flex w-56 flex-wrap items-center gap-2' : 'flex flex-wrap items-center gap-2'}>
+                {!showMogong && session.isAdmin ? <Button disabled={workspace?.isReadOnly || pendingActionKeys.length > 0} onClick={() => { setTagManagerError(''); setTagManagerOpen(true); }} size="sm" type="button" variant="outline">管理标签</Button> : null}
+                {!showMogong && (activeTab === 'platform' || activeTab === 'mine') ? (
+                  <Button
+                    disabled={!canImportImages || pendingActionKeys.includes('create:image-import')}
+                    title={imageImportUnavailableMessage ?? undefined}
+                    onClick={openImageImportDialog}
+                    size="sm"
+                    type="button"
+                  >
+                    <Upload aria-hidden="true" />
+                    上传镜像
+                  </Button>
+                ) : !showMogong && activeTab === 'custom' && session.isAdmin ? (
+                  <Button
+                    disabled={workspace?.isReadOnly || pendingActionKeys.includes('sync:custom')}
+                    onClick={() => void handleSyncCustomImages()}
+                    size="sm"
+                    type="button"
+                    variant="outline"
+                  >
+                    <RefreshCw aria-hidden="true" />
+                    同步镜像
+                  </Button>
+                ) : !showMogong && activeTab === 'public' && session.isAdmin ? (
+                  <Button
+                    disabled={workspace?.isReadOnly || pendingActionKeys.includes('sync:public')}
+                    onClick={() => void handleSyncPublicImages()}
+                    size="sm"
+                    type="button"
+                    variant="outline"
+                  >
+                    <RefreshCw aria-hidden="true" />
+                    同步公共镜像
+                  </Button>
+                ) : undefined}
+              </div>
             }
           >
             {showMogong ? (
