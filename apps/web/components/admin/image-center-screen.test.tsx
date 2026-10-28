@@ -25,6 +25,7 @@ Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', {
 const {
   fetchPublicImageCatalogScopeMock,
   fetchCustomImageCatalogScopeMock,
+  fetchMogongImageCatalogMock,
   fetchPlatformImagesMock,
   fetchPlatformImageTagsMock,
   fetchCloudAccountContextsMock,
@@ -51,6 +52,7 @@ const {
 } = vi.hoisted(() => ({
   fetchPublicImageCatalogScopeMock: vi.fn(),
   fetchCustomImageCatalogScopeMock: vi.fn(),
+  fetchMogongImageCatalogMock: vi.fn(),
   fetchPlatformImagesMock: vi.fn(),
   fetchPlatformImageTagsMock: vi.fn(),
   fetchCloudAccountContextsMock: vi.fn(),
@@ -89,6 +91,7 @@ vi.mock('../../lib/admin-api', async () => {
     ...actual,
     fetchPublicImageCatalogScope: fetchPublicImageCatalogScopeMock,
     fetchCustomImageCatalogScope: fetchCustomImageCatalogScopeMock,
+    fetchMogongImageCatalog: fetchMogongImageCatalogMock,
     fetchPlatformImages: fetchPlatformImagesMock,
     fetchPlatformImageTags: fetchPlatformImageTagsMock,
     fetchCloudAccountContexts: fetchCloudAccountContextsMock,
@@ -267,6 +270,7 @@ beforeEach(() => {
   window.localStorage.removeItem(ADMIN_PAGE_SIZE_STORAGE_KEY);
   fetchPublicImageCatalogScopeMock.mockReset();
   fetchCustomImageCatalogScopeMock.mockReset();
+  fetchMogongImageCatalogMock.mockReset();
   fetchPlatformImagesMock.mockReset();
   fetchPlatformImageTagsMock.mockReset();
   fetchCloudAccountContextsMock.mockReset();
@@ -298,6 +302,7 @@ beforeEach(() => {
 
   fetchPublicImageCatalogScopeMock.mockResolvedValue(publicScopePayload);
   fetchCustomImageCatalogScopeMock.mockResolvedValue(customScopePayload);
+  fetchMogongImageCatalogMock.mockResolvedValue({ capturedAt: '2026-10-28T00:00:00Z', total: 0, items: [] });
   fetchPlatformImagesMock.mockImplementation(async (_apiBaseUrl: string, _token: string, view: 'platform' | 'mine' = 'platform') =>
     view === 'mine' ? myImagesPayload : platformImagesPayload,
   );
@@ -411,6 +416,13 @@ afterEach(() => {
 });
 
 describe('ImageCenterScreen', () => {
+  it('opens the administrator-only 墨攻镜像中心', async () => {
+    render(<ImageCenterScreen />);
+    fireEvent.mouseDown(screen.getByRole('tab', { name: '墨攻镜像中心' }));
+    expect(await screen.findByText('没有匹配的墨攻镜像')).toBeTruthy();
+    expect(fetchMogongImageCatalogMock).toHaveBeenCalledTimes(1);
+  });
+
   it('rejects a foreign Tencent asset response before caching or showing its label', async () => {
     workspaceState.value = { workspace: { id: 'tencent-workspace', provider: 'tencent_cloud', accountUid: '100001', isReadOnly: false,
       activeCloudAccountContextId: 'tencent-context', contexts: [], capabilities: { provisioning: false, imageImport: false, billingSync: true } } };
