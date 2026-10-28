@@ -1,5 +1,5 @@
 import React from 'react';
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const api = vi.hoisted(() => ({
@@ -16,11 +16,11 @@ const snapshots = [
   { id: 'cloud-3', provider: 'alibaba_cloud', imageId: 'm-retired', isAvailable: true },
 ];
 const catalog = { capturedAt: '2026-10-28T00:00:00Z', total: 5, items: [
-  { id: 1, name: '可用靶机', type: 'vm', imageId: 'm-ready', active: true, status: 'successful' },
-  { id: 2, name: '停用靶机', type: 'vm', imageId: 'm-disabled', active: false, status: 'successful' },
-  { id: 3, name: '靶机-废弃', type: 'vm', imageId: 'm-retired', active: true, status: 'successful' },
-  { id: 4, name: '容器靶机', type: 'docker', imageId: null, active: true, status: 'successful' },
-  { id: 5, name: '未匹配靶机', type: 'vm', imageId: 'm-missing', active: true, status: 'successful' },
+  { id: 1, name: '可用靶机', type: 'vm', imageId: 'm-ready', active: true, status: 'successful', creator: '张三' },
+  { id: 2, name: '停用靶机', type: 'vm', imageId: 'm-disabled', active: false, status: 'successful', creator: null },
+  { id: 3, name: '靶机-废弃', type: 'vm', imageId: 'm-retired', active: true, status: 'successful', creator: null },
+  { id: 4, name: '容器靶机', type: 'docker', imageId: null, active: true, status: 'successful', creator: null },
+  { id: 5, name: '未匹配靶机', type: 'vm', imageId: 'm-missing', active: true, status: 'successful', creator: null },
 ] };
 const props = { apiBaseUrl: 'http://api', token: 'token', search: '', readOnly: false, logout: vi.fn(), onCollected: vi.fn(), onCloudSynced: vi.fn() };
 
@@ -38,6 +38,10 @@ describe('墨攻镜像中心', () => {
   it('collects only eligible cloud-matched entries and updates the platform view', async () => {
     render(<MogongImageCatalogView {...props} />);
     await screen.findByText('可用靶机');
+    const table = screen.getByRole('table', { name: '墨攻镜像中心' });
+    const headers = within(table).getAllByRole('columnheader').map((header) => header.textContent);
+    expect(headers).toEqual(['镜像名', '阿里云镜像 ID', '状态', '创建人', '操作']);
+    expect(within(screen.getByText('可用靶机').closest('tr')!).getByText('张三')).toBeTruthy();
     expect((screen.getByRole('button', { name: '收录到平台 停用靶机' }) as HTMLButtonElement).disabled).toBe(true);
     expect((screen.getByRole('button', { name: '收录到平台 靶机-废弃' }) as HTMLButtonElement).disabled).toBe(true);
     expect((screen.getByRole('button', { name: '收录到平台 容器靶机' }) as HTMLButtonElement).disabled).toBe(true);

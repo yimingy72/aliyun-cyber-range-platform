@@ -418,9 +418,18 @@ afterEach(() => {
 describe('ImageCenterScreen', () => {
   it('opens the administrator-only 墨攻镜像中心', async () => {
     render(<ImageCenterScreen />);
+    const actionSlot = screen.getByTestId('admin-list-toolbar-view-action');
+    const actionGroup = actionSlot.firstElementChild;
+    const filterGroup = screen.getByTestId('admin-list-toolbar-search-controls').children.item(1);
+    expect(actionGroup?.className).toContain('w-56');
+    expect(filterGroup?.className).toContain('sm:w-[22.5rem]');
     fireEvent.mouseDown(screen.getByRole('tab', { name: '墨攻镜像中心' }));
     expect(await screen.findByText('没有匹配的墨攻镜像')).toBeTruthy();
     expect(fetchMogongImageCatalogMock).toHaveBeenCalledTimes(1);
+    expect(actionSlot.firstElementChild).toBe(actionGroup);
+    expect(actionGroup?.className).toContain('w-56');
+    expect(screen.getByTestId('admin-list-toolbar-search-controls').children.item(1)).toBe(filterGroup);
+    expect(filterGroup?.className).toContain('sm:w-[22.5rem]');
   });
 
   it('rejects a foreign Tencent asset response before caching or showing its label', async () => {

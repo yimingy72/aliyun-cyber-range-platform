@@ -7,7 +7,7 @@ import { ImageCatalogService } from './image-catalog.service';
 import type { AuthenticatedPlatformRequest } from '../auth/request-auth-context';
 import { OperationControlService, readOperationRequestMetadata } from '../operations/operation-control.service';
 
-type MogongImage = { id: number; name: string; type: string; imageId: string | null; active: boolean; status: string };
+type MogongImage = { id: number; name: string; type: string; imageId: string | null; active: boolean; status: string; creator: string | null };
 
 async function readMogongImageCatalog(): Promise<{ capturedAt: string; items: MogongImage[] }> {
   try {
@@ -18,8 +18,9 @@ async function readMogongImageCatalog(): Promise<{ capturedAt: string; items: Mo
     const items = catalog.items.map((item: Partial<MogongImage>) => {
       if (!item || !Number.isSafeInteger(item.id) || typeof item.name !== 'string' || !item.name.trim() ||
           typeof item.type !== 'string' || typeof item.status !== 'string' || typeof item.active !== 'boolean' ||
+          !(item.creator === undefined || item.creator === null || typeof item.creator === 'string') ||
           !(item.imageId === null || typeof item.imageId === 'string' && /^m-[a-z0-9]+$/i.test(item.imageId))) throw new Error('Invalid image');
-      return { id: item.id!, name: item.name, type: item.type, imageId: item.imageId, active: item.active, status: item.status };
+      return { id: item.id!, name: item.name, type: item.type, imageId: item.imageId, active: item.active, status: item.status, creator: item.creator?.trim() || null };
     });
     if (new Set(items.map((item) => item.id)).size !== items.length) throw new Error('Duplicate image');
     return { capturedAt: catalog.capturedAt, items };

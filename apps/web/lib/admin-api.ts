@@ -53,7 +53,7 @@ export async function fetchResourcePatrol(apiBaseUrl: string, token: string) {
 export type MogongImageCatalog = {
   capturedAt: string;
   total: number;
-  items: Array<{ id: number; name: string; type: string; imageId: string | null; active: boolean; status: string }>;
+  items: Array<{ id: number; name: string; type: string; imageId: string | null; active: boolean; status: string; creator: string | null }>;
 };
 
 export async function fetchMogongImageCatalog(apiBaseUrl: string, token: string) {
