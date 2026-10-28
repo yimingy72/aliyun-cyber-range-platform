@@ -6,7 +6,7 @@ const api = vi.hoisted(() => ({
   fetchMogongImageCatalog: vi.fn(), fetchCustomImageCatalogScope: vi.fn(), fetchPlatformImages: vi.fn(),
   syncCustomImages: vi.fn(), collectMogongImage: vi.fn(),
 }));
-vi.mock('../../lib/admin-api', () => api);
+vi.mock('../../lib/admin-api', async () => ({ ...await vi.importActual<typeof import('../../lib/admin-api')>('../../lib/admin-api'), ...api }));
 
 import { MogongImageCatalogView } from './mogong-image-catalog';
 
@@ -23,8 +23,11 @@ const catalog = { capturedAt: '2026-10-28T00:00:00Z', total: 5, items: [
   { id: 5, name: '未匹配靶机', type: 'vm', imageId: 'm-missing', active: true, status: 'successful', creator: null },
 ] };
 const props = { apiBaseUrl: 'http://api', token: 'token', search: '', readOnly: false, logout: vi.fn(), onCollected: vi.fn(), onCloudSynced: vi.fn() };
+let actionHost: HTMLDivElement;
 
 beforeEach(() => {
+  actionHost = document.createElement('div');
+  document.body.appendChild(actionHost);
   vi.clearAllMocks();
   api.fetchMogongImageCatalog.mockResolvedValue(catalog);
   api.fetchCustomImageCatalogScope.mockResolvedValue({ snapshots, catalogItems: [] });
@@ -32,11 +35,11 @@ beforeEach(() => {
   api.syncCustomImages.mockResolvedValue({ snapshots: [...snapshots, { id: 'cloud-5', provider: 'alibaba_cloud', imageId: 'm-missing', isAvailable: true }], catalogItems: [] });
   api.collectMogongImage.mockResolvedValue({ id: 'asset-1', imageId: 'm-ready' });
 });
-afterEach(cleanup);
+afterEach(() => { cleanup(); actionHost.remove(); });
 
 describe('墨攻镜像中心', () => {
   it('collects only eligible cloud-matched entries and updates the platform view', async () => {
-    render(<MogongImageCatalogView {...props} />);
+    render(<MogongImageCatalogView {...props} actionHost={actionHost} />);
     await screen.findByText('可用靶机');
     const table = screen.getByRole('table', { name: '墨攻镜像中心' });
     const headers = within(table).getAllByRole('columnheader').map((header) => header.textContent);
@@ -53,22 +56,33 @@ describe('墨攻镜像中心', () => {
   });
 
   it('matches newly synced cloud images and searches by source or cloud ID', async () => {
-    const { rerender } = render(<MogongImageCatalogView {...props} />);
+    const { rerender } = render(<MogongImageCatalogView {...props} actionHost={actionHost} />);
     await screen.findByText('未匹配靶机');
     fireEvent.click(screen.getByRole('button', { name: '同步云镜像' }));
     await waitFor(() => expect((screen.getByRole('button', { name: '收录到平台 未匹配靶机' }) as HTMLButtonElement).disabled).toBe(false));
     expect(props.onCloudSynced).toHaveBeenCalled();
-    rerender(<MogongImageCatalogView {...props} search="m-missing" />);
+    rerender(<MogongImageCatalogView {...props} actionHost={actionHost} search="m-missing" />);
     expect(screen.getByText('未匹配靶机')).toBeTruthy();
     expect(screen.queryByText('可用靶机')).toBeNull();
   });
 
   it('does not report a reused private asset as a published platform image', async () => {
     api.collectMogongImage.mockResolvedValue({ id: 'private-1', imageId: 'm-ready', visibility: 'private' });
-    render(<MogongImageCatalogView {...props} />);
+    render(<MogongImageCatalogView {...props} actionHost={actionHost} />);
     fireEvent.click(await screen.findByRole('button', { name: '收录到平台 可用靶机' }));
     expect(await screen.findByText('该镜像已存在为私有资产，请由管理员将其发布到平台。')).toBeTruthy();
     expect(screen.getByText('私有镜像待发布')).toBeTruthy();
     expect(screen.queryByRole('button', { name: '已收录 可用靶机' })).toBeNull();
+  });
+
+  it('shows sync failures and re-enables the toolbar action', async () => {
+    api.syncCustomImages.mockRejectedValueOnce(new Error('同步失败'));
+    render(<MogongImageCatalogView {...props} actionHost={actionHost} />);
+    await screen.findByText('可用靶机');
+    const syncButton = within(actionHost).getByRole('button', { name: '同步云镜像' }) as HTMLButtonElement;
+    fireEvent.click(syncButton);
+    expect((await screen.findByRole('alert')).textContent).toContain('同步失败');
+    await waitFor(() => expect(syncButton.disabled).toBe(false));
+    expect(screen.queryByText(/墨攻目录快照/)).toBeNull();
   });
 });
