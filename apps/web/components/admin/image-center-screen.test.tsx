@@ -430,6 +430,10 @@ describe('ImageCenterScreen', () => {
     expect(actionGroup?.className).toContain('w-56');
     expect(screen.getByTestId('admin-list-toolbar-search-controls').children.item(1)).toBe(filterGroup);
     expect(filterGroup?.className).toContain('sm:w-[22.5rem]');
+    expect(within(actionSlot).getByRole('button', { name: '管理标签' })).toBeTruthy();
+    fireEvent.click(within(actionSlot).getByRole('button', { name: '同步云镜像' }));
+    await waitFor(() => expect(syncCustomImagesMock).toHaveBeenCalledTimes(1));
+    expect(screen.queryByText(/墨攻目录快照/)).toBeNull();
   });
 
   it('rejects a foreign Tencent asset response before caching or showing its label', async () => {

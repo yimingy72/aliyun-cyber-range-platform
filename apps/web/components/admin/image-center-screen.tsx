@@ -589,6 +589,7 @@ function CloudImageCenterScreen({
 
   const [activeTab, setActiveTab] = useState<ActiveTab>('platform');
   const [showMogong, setShowMogong] = useState(false);
+  const [mogongActionHost, setMogongActionHost] = useState<HTMLDivElement | null>(null);
   const screenCache = useAdminScreenCache();
   const cachedPlatformAssets = screenCache?.read<PlatformImageAssetListPayload>(
     apiBaseUrl,
@@ -2070,8 +2071,8 @@ function CloudImageCenterScreen({
             }
             action={
               <div className={session.isAdmin ? 'flex w-56 flex-wrap items-center gap-2' : 'flex flex-wrap items-center gap-2'}>
-                {!showMogong && session.isAdmin ? <Button disabled={workspace?.isReadOnly || pendingActionKeys.length > 0} onClick={() => { setTagManagerError(''); setTagManagerOpen(true); }} size="sm" type="button" variant="outline">管理标签</Button> : null}
-                {!showMogong && (activeTab === 'platform' || activeTab === 'mine') ? (
+                {session.isAdmin ? <Button disabled={workspace?.isReadOnly || pendingActionKeys.length > 0} onClick={() => { setTagManagerError(''); setTagManagerOpen(true); }} size="sm" type="button" variant="outline">管理标签</Button> : null}
+                {showMogong ? <div ref={setMogongActionHost} /> : activeTab === 'platform' || activeTab === 'mine' ? (
                   <Button
                     disabled={!canImportImages || pendingActionKeys.includes('create:image-import')}
                     title={imageImportUnavailableMessage ?? undefined}
@@ -2082,7 +2083,7 @@ function CloudImageCenterScreen({
                     <Upload aria-hidden="true" />
                     上传镜像
                   </Button>
-                ) : !showMogong && activeTab === 'custom' && session.isAdmin ? (
+                ) : activeTab === 'custom' && session.isAdmin ? (
                   <Button
                     disabled={workspace?.isReadOnly || pendingActionKeys.includes('sync:custom')}
                     onClick={() => void handleSyncCustomImages()}
@@ -2093,7 +2094,7 @@ function CloudImageCenterScreen({
                     <RefreshCw aria-hidden="true" />
                     同步镜像
                   </Button>
-                ) : !showMogong && activeTab === 'public' && session.isAdmin ? (
+                ) : activeTab === 'public' && session.isAdmin ? (
                   <Button
                     disabled={workspace?.isReadOnly || pendingActionKeys.includes('sync:public')}
                     onClick={() => void handleSyncPublicImages()}
@@ -2111,6 +2112,7 @@ function CloudImageCenterScreen({
             {showMogong ? (
               <MogongImageCatalogView
                 apiBaseUrl={apiBaseUrl}
+                actionHost={mogongActionHost}
                 token={session.token}
                 search={searchName}
                 readOnly={Boolean(workspace?.isReadOnly)}

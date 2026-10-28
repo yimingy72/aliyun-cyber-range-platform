@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { RefreshCw } from 'lucide-react';
 
 import { Badge } from '@/components/ui/badge';
@@ -35,8 +36,9 @@ function imageStatus(image: MogongImage, snapshot: ImageSnapshot | undefined, co
   return collected ? '已收录' : privateAsset ? '私有镜像待发布' : '可收录';
 }
 
-export function MogongImageCatalogView({ apiBaseUrl, token, search, readOnly, logout, onCollected, onCloudSynced }: {
+export function MogongImageCatalogView({ apiBaseUrl, actionHost, token, search, readOnly, logout, onCollected, onCloudSynced }: {
   apiBaseUrl: string;
+  actionHost: HTMLElement | null;
   token: string;
   search: string;
   readOnly: boolean;
@@ -145,12 +147,12 @@ export function MogongImageCatalogView({ apiBaseUrl, token, search, readOnly, lo
         />
       ) : undefined}
     >
-      <div className="mb-3 flex flex-wrap items-center justify-between gap-2 text-sm text-muted-foreground">
-        <span>墨攻目录快照：{catalog ? new Date(catalog.capturedAt).toLocaleString('zh-CN') : '加载中'}。仅显示与当前账号和地域的云镜像匹配的记录。</span>
+      {actionHost ? createPortal(
         <Button disabled={readOnly || pending !== null || loading} onClick={() => void handleSyncCloud()} size="sm" type="button" variant="outline">
           <RefreshCw aria-hidden="true" />同步云镜像
-        </Button>
-      </div>
+        </Button>,
+        actionHost,
+      ) : null}
       {error && catalog ? <p className="mb-3 text-sm text-destructive" role="alert">{error}</p> : null}
       <AdminDataTable columns={columns} label="墨攻镜像中心">
         {(visibleColumns) => {
