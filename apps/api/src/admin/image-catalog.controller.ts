@@ -1,43 +1,21 @@
-import { BadRequestException, Body, ConflictException, Controller, Delete, Get, HttpCode, NotFoundException, Param, Post, Query, Req, ServiceUnavailableException, UseGuards } from '@nestjs/common';
-import { readFile } from 'node:fs/promises';
+import { BadRequestException, Body, ConflictException, Controller, Delete, Get, HttpCode, NotFoundException, Param, Post, Query, Req, UseGuards } from '@nestjs/common';
 
 import { AdminAuthGuard } from './admin-auth.guard';
 import { CollectImageCatalogDto, DeleteCustomImageDto } from './dto/image-catalog.dto';
 import { ImageCatalogService } from './image-catalog.service';
 import type { AuthenticatedPlatformRequest } from '../auth/request-auth-context';
 import { OperationControlService, readOperationRequestMetadata } from '../operations/operation-control.service';
+import { CollectMogongContainersDto } from './dto/mogong-container.dto';
+import { containerReferenceStatus, isBoundMogongWorkspace, isCollectableMogongImage, readMogongImageCatalog } from './mogong-image-catalog';
+import { PlatformContainerImagesService } from './platform-container-images.service';
 
-type MogongImage = { id: number; name: string; type: string; imageId: string | null; active: boolean; status: string; creator: string | null };
-
-async function readMogongImageCatalog(): Promise<{ capturedAt: string; items: MogongImage[] }> {
-  try {
-    const path = process.env.MOGONG_IMAGE_CATALOG_PATH?.trim() || '/var/lib/cyber-range/mogong/image-catalog.json';
-    const catalog = JSON.parse(await readFile(path, 'utf8')) as { capturedAt: unknown; total: unknown; items: unknown };
-    if (typeof catalog.capturedAt !== 'string' || !Number.isFinite(Date.parse(catalog.capturedAt)) ||
-        !Array.isArray(catalog.items) || catalog.total !== catalog.items.length) throw new Error('Invalid catalog');
-    const items = catalog.items.map((item: Partial<MogongImage>) => {
-      if (!item || !Number.isSafeInteger(item.id) || typeof item.name !== 'string' || !item.name.trim() ||
-          typeof item.type !== 'string' || typeof item.status !== 'string' || typeof item.active !== 'boolean' ||
-          !(item.creator === undefined || item.creator === null || typeof item.creator === 'string') ||
-          !(item.imageId === null || typeof item.imageId === 'string' && /^m-[a-z0-9]+$/i.test(item.imageId))) throw new Error('Invalid image');
-      return { id: item.id!, name: item.name, type: item.type, imageId: item.imageId, active: item.active, status: item.status, creator: item.creator?.trim() || null };
-    });
-    if (new Set(items.map((item) => item.id)).size !== items.length) throw new Error('Duplicate image');
-    return { capturedAt: catalog.capturedAt, items };
-  } catch {
-    throw new ServiceUnavailableException('墨攻镜像目录快照不可用，请联系管理员更新快照。');
-  }
-}
-
-export function isCollectableMogongImage(image: { name: string; type: string; imageId: string | null; active: boolean; status: string }) {
-  return image.active && image.status === 'successful' && image.type === 'vm' && Boolean(image.imageId)
-    && !/废弃|弃用|已淘汰|已废止/i.test(image.name);
-}
+export { isCollectableMogongImage } from './mogong-image-catalog';
 
 @Controller('admin/image-catalog')
 @UseGuards(AdminAuthGuard)
 export class ImageCatalogController {
-  constructor(private readonly imageCatalogService: ImageCatalogService, private readonly operationControl: OperationControlService) {}
+  constructor(private readonly imageCatalogService: ImageCatalogService, private readonly operationControl: OperationControlService,
+    private readonly containerImages: PlatformContainerImagesService) {}
 
   @Get('public')
   listPublic() {
@@ -54,8 +32,30 @@ export class ImageCatalogController {
     const catalog = await readMogongImageCatalog();
     const { snapshots } = await this.imageCatalogService.listCustom();
     const imageIds = new Set(snapshots.filter((item) => item.provider === 'alibaba_cloud').map((item) => item.imageId));
-    const items = catalog.items.filter((item) => item.imageId && imageIds.has(item.imageId));
-    return { capturedAt: catalog.capturedAt, total: items.length, items };
+    const bound = isBoundMogongWorkspace();
+    const items = catalog.items.filter((item) => bound || item.imageId && imageIds.has(item.imageId)).map(({ containerReference, ...item }) => ({
+      ...item, containerReferenceStatus: item.type === 'docker' ? containerReferenceStatus(containerReference) : null,
+    }));
+    return { capturedAt: catalog.capturedAt, total: items.length, containersCollectable: bound && catalog.version === 2, items };
+  }
+
+  @Get('mogong/containers/preview')
+  previewMogongContainers() { return this.containerImages.preview(); }
+
+  @Post('mogong/containers/collect-all')
+  collectMogongContainers(@Req() request: AuthenticatedPlatformRequest, @Body() body: CollectMogongContainersDto) {
+    const execute = () => this.containerImages.collectAll(body.catalogDigest, request.adminUser);
+    if (request.authContext.source !== 'mcp') return execute();
+    return this.operationControl.executeConfirmed({
+      context: request.authContext, metadata: readOperationRequestMetadata(request),
+      toolName: 'mogong_container_collect_all', arguments: { catalogDigest: body.catalogDigest }, targetType: 'container_catalog',
+      resolveConfirmation: async () => {
+        const preview = await this.containerImages.preview();
+        if (preview.digest !== body.catalogDigest) throw new ConflictException('墨攻目录已变化，请重新预览。');
+        return { targetId: null, targetSnapshot: { digest: preview.digest }, summary: preview };
+      },
+      execute: async () => ({ result: await execute() }),
+    });
   }
 
   @Post('mogong/:id/collect')
@@ -63,6 +63,7 @@ export class ImageCatalogController {
     const catalog = await readMogongImageCatalog();
     const image = catalog.items.find((item) => String(item.id) === id);
     if (!image) throw new NotFoundException('墨攻镜像不存在');
+    if (image.type === 'docker') return this.containerImages.collectOne(image.id, request.adminUser);
     const { snapshots } = await this.imageCatalogService.listCustom();
     const snapshot = snapshots.find((item) => item.provider === 'alibaba_cloud' && item.imageId === image.imageId);
     if (!snapshot) throw new ConflictException('当前账号和地域的云镜像目录未匹配，请先同步云镜像');

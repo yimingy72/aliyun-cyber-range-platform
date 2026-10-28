@@ -22,6 +22,10 @@ const singleInstanceActionFields = {
 export const imageListInputSchema = z.strictObject({
   view: z.enum(['platform', 'mine']).optional().describe('platform 查询平台可用镜像；mine 查询当前用户可管理的镜像。'),
 });
+export const mogongContainerPreviewInputSchema = z.strictObject({});
+export const mogongContainerCollectInputSchema = operationSchema.extend({
+  catalogDigest: z.string().regex(/^[a-f0-9]{64}$/).describe('预览返回的目录摘要，目录变化时需重新预览。'),
+}).strict();
 export const imageTagListInputSchema = z.strictObject({});
 export const imageTagCreateInputSchema = operationSchema.extend({
   name: z.string().trim().min(1).max(32).describe('当前工作空间镜像标签名称，最多32字符；仅管理员可创建。'),

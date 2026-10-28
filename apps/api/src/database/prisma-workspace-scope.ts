@@ -10,6 +10,7 @@ const compoundKeys: Record<string, string[]> = {
   CloudImageSnapshot: ['provider_accountScopeKey_regionId_scope_imageId'],
   ImageCatalogItem: ['provider_accountScopeKey_regionId_scope_imageId'],
   PlatformImageAsset: ['provider_accountScopeKey_regionId_imageId'],
+  PlatformContainerImage: ['sourceId'],
   PlatformImageTag: ['normalizedName'],
   ImageImportJob: ['imageId', 'objectKey'],
   PackedImageArtifact: ['imageId'],

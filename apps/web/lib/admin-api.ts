@@ -14,6 +14,7 @@ import type {
   ImageCatalogScopePayload,
   InstanceTypeAvailabilitySnapshot,
   PlatformImageAsset,
+  PlatformContainerImage,
   PlatformImageAssetListPayload,
   PlatformImageTag,
   PlatformImageTagListPayload,
@@ -53,7 +54,8 @@ export async function fetchResourcePatrol(apiBaseUrl: string, token: string) {
 export type MogongImageCatalog = {
   capturedAt: string;
   total: number;
-  items: Array<{ id: number; name: string; type: string; imageId: string | null; active: boolean; status: string; creator: string | null }>;
+  containersCollectable: boolean;
+  items: Array<{ id: number; name: string; type: string; imageId: string | null; active: boolean; status: string; creator: string | null; containerReferenceStatus: 'recorded' | 'needs_review' | null }>;
 };
 
 export async function fetchMogongImageCatalog(apiBaseUrl: string, token: string) {
@@ -61,8 +63,18 @@ export async function fetchMogongImageCatalog(apiBaseUrl: string, token: string)
 }
 
 export async function collectMogongImage(apiBaseUrl: string, token: string, id: number) {
-  return readJson<PlatformImageAsset>(await fetch(`${apiBaseUrl}/admin/image-catalog/mogong/${id}/collect`, {
+  return readJson<PlatformImageAsset | PlatformContainerImage>(await fetch(`${apiBaseUrl}/admin/image-catalog/mogong/${id}/collect`, {
     method: 'POST', headers: createAdminHeaders(token),
+  }));
+}
+
+export async function fetchPlatformContainerImages(apiBaseUrl: string, token: string) {
+  return readJson<{ items: PlatformContainerImage[] }>(await fetch(`${apiBaseUrl}/admin/platform-container-images`, { headers: createAdminHeaders(token) }));
+}
+
+export async function removePlatformContainerImage(apiBaseUrl: string, token: string, id: string) {
+  return readJson<{ removed: boolean; id: string }>(await fetch(`${apiBaseUrl}/admin/platform-container-images/${encodeURIComponent(id)}`, {
+    method: 'DELETE', headers: createAdminHeaders(token),
   }));
 }
 export async function setResourcePatrolManager(apiBaseUrl: string, token: string, managerUserId: string) {

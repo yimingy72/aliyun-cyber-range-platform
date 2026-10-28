@@ -9,6 +9,9 @@
 | 操作 | MCP 工具 | 必填参数 | 可选参数 | Scope |
 |---|---|---|---|---|
 | 查询平台镜像 | `platform_image_list` | — | `view: platform\|mine`，默认 `platform` | `images:read` |
+| 查询平台容器镜像 | `platform_container_image_list` | — | — | `images:read` |
+| 预览墨攻容器收录 | `mogong_container_collect_preview` | — | — | `images:read`，仅管理员 |
+| 批量收录墨攻容器 | `mogong_container_collect_all` | `catalogDigest` | 操作元数据 | `images:write`，仅管理员 |
 | 查询标签字典 | `platform_image_tag_list` | — | — | `images:read`，已认证用户 |
 | 创建标签定义 | `platform_image_tag_create` | `name`（1–32字符） | 操作元数据 | `images:write`，仅管理员 |
 | 删除标签定义 | `platform_image_tag_delete` | `platformImageTagId` | 操作元数据 | `images:write`，仅管理员 |
@@ -30,6 +33,7 @@
 ## 意图与规则
 
 - “可用镜像、我的镜像、选镜像”使用 `platform_image_list`。默认 `view: platform` 只包含平台可见资产，使用自有私有镜像时显式 `view: mine`；两个视图按资产 ID 去重，名称重复时不能猜选。独立实例使用资产 `id`（`platformImageAssetId`）；模板转换必须同时写入资产 `id`（`platformImageAssetId`）和其云镜像 `imageId`。
+- 容器镜像单独使用 `platform_container_image_list`，不属于 ECS 镜像，当前不能创建容器实例。批量收录先运行 `mogong_container_collect_preview`，再用其 `digest` 调用 `mogong_container_collect_all`，确认摘要与用户授权一致后完成服务端确认；同一请求保持幂等键。该操作只保存来源仓库引用，不复制镜像或创建云资源；停用、废弃和未成功的来源不会收录。引用待核验的资产不得用于未来实例创建，仓库镜像被删除后引用也可能失效。
 - 业务镜像名必须精确匹配一个当前可见、已启用的资产。无匹配、重名或停用时停止；转换后将资产的 `displayName` 写入 ECS `image`/`imageName`，将资产 `id` 写入 `platformImageAssetId`，将云镜像 ID 写入 `imageId` 与 `imageStrategy.imageId`。
 - “收录快照”先用 `image_catalog_list({ scope: 'custom' })` 或 `image_catalog_sync` 确认 `snapshotId`，由管理员再经确认调用 `platform_image_collect`。
 - 收录只建立平台目录，不代表该云镜像或快照由平台创建，不写入平台创建标签、不接管其费用。平台打包/导入已有的费用账本保留原来源、owner 和回收时间，重新收录只更新目录关联。
