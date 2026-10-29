@@ -633,7 +633,7 @@ export type CloudWorkspaceView = {
   isReadOnly: boolean;
   activeCloudAccountContextId: string | null;
   contexts: CloudAccountContext[];
-  capabilities: { provisioning: boolean; rangeProvisioning?: boolean; imageImport: boolean; billingSync: boolean };
+  capabilities: { provisioning: boolean; rangeProvisioning?: boolean; imageImport: boolean; billingSync: boolean; ossBillingBinding?: boolean; mogongCatalog?: boolean };
 };
 
 export type SaveCloudAccountInput = {
@@ -718,7 +718,7 @@ export type CreateImageImportInput = {
   osVersion?: string;
   architecture: 'x86_64' | 'arm64';
   bootMode: 'BIOS' | 'UEFI';
-  imageFormat: 'qcow2' | 'raw' | 'vhd';
+  imageFormat: 'qcow2' | 'raw' | 'vhd' | 'vmdk';
   systemDiskSize: number;
   sourceFileName: string;
   sourceContentType?: string;

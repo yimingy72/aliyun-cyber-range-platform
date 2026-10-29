@@ -9,6 +9,7 @@ import {
   defaultSwitchCidr as readDefaultSwitchCidr,
   type TemplateAuthoringMetadata,
   validateAliyunEcsPassword,
+  validateTencentCvmPassword,
 } from '@aliyun-cyber-range/scenario-runtime';
 
 import { Badge } from '@/components/ui/badge';
@@ -778,7 +779,7 @@ function buildScenarioTemplateMetadata(template: RangeTemplate, provider: 'aliba
     version: 'v1',
     cloudProvider: template.cloudProvider ?? template.scenarioTemplateSpec?.metadata.cloudProvider ?? provider,
     iacType: template.iacType ?? 'opentofu',
-    modulePathOrRef: (template.cloudProvider ?? provider) === 'tencent_cloud' ? 'infra/opentofu/modules/tencentcloud-enterprise-range' : TEMPLATE_MODULE_PATH,
+    modulePathOrRef: templateProvider(template, provider) === 'tencent_cloud' ? 'infra/opentofu/modules/tencentcloud-enterprise-range' : TEMPLATE_MODULE_PATH,
   };
 }
 
@@ -887,13 +888,13 @@ function readNodeWindowsImageHint(node: EcsTemplateNode, platformImageAssets: Pl
     .some((value) => typeof value === 'string' && value.toLowerCase().includes('windows'));
 }
 
-function readInvalidCustomPasswordMessage(nodes: TemplateNode[], platformImageAssets: PlatformImageAsset[]) {
+function readInvalidCustomPasswordMessage(nodes: TemplateNode[], platformImageAssets: PlatformImageAsset[], provider: 'alibaba_cloud' | 'tencent_cloud') {
   for (const node of nodes) {
     if (node.kind !== 'ecs' || typeof node.customPassword !== 'string' || node.customPassword.length === 0) {
       continue;
     }
 
-    const validationResult = validateAliyunEcsPassword(node.customPassword, {
+    const validationResult = (provider === 'tencent_cloud' ? validateTencentCvmPassword : validateAliyunEcsPassword)(node.customPassword, {
       windows: readNodeWindowsImageHint(node, platformImageAssets),
     });
 
@@ -1287,7 +1288,7 @@ export function TemplateEditorScreen({
       const imageOs = platformImageAssets.find((asset) => asset.id === hostNode.platformImageAssetId)?.osType?.toLowerCase();
       if (hostNode.dns && imageOs && imageOs !== 'windows') validationErrors.push(`${hostNode.label} 自定义 DNS 需要 Windows 镜像`);
       if (typeof hostNode.customPassword === 'string' && hostNode.customPassword.length > 0) {
-        const passwordValidationResult = validateAliyunEcsPassword(hostNode.customPassword, {
+        const passwordValidationResult = (currentProvider() === 'tencent_cloud' ? validateTencentCvmPassword : validateAliyunEcsPassword)(hostNode.customPassword, {
           windows: readNodeWindowsImageHint(hostNode, platformImageAssets),
         });
 
@@ -1864,7 +1865,7 @@ export function TemplateEditorScreen({
       return;
     }
 
-    const invalidCustomPasswordMessage = readInvalidCustomPasswordMessage(nodes, platformImageAssets);
+    const invalidCustomPasswordMessage = readInvalidCustomPasswordMessage(nodes, platformImageAssets, currentProvider());
 
     if (invalidCustomPasswordMessage) {
       setStatusMessage(invalidCustomPasswordMessage);
@@ -1947,7 +1948,7 @@ export function TemplateEditorScreen({
       return;
     }
 
-    const invalidCustomPasswordMessage = readInvalidCustomPasswordMessage(nodes, platformImageAssets);
+    const invalidCustomPasswordMessage = readInvalidCustomPasswordMessage(nodes, platformImageAssets, currentProvider());
 
     if (invalidCustomPasswordMessage) {
       setStatusMessage(invalidCustomPasswordMessage);
@@ -2085,6 +2086,7 @@ export function TemplateEditorScreen({
         />
         {selectedNode && isPropertyPanelOpen ? (
           <TemplatePropertyPanel
+            cloudProvider={currentProvider()}
             readOnly={!canEdit}
             selectedNode={selectedNode}
             allNodes={nodes}

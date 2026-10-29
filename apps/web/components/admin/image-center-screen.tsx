@@ -119,7 +119,7 @@ type ImageImportDialogDraft = {
   osVersion: string;
   architecture: 'x86_64' | 'arm64';
   bootMode: 'BIOS' | 'UEFI';
-  imageFormat: 'qcow2' | 'raw' | 'vhd';
+  imageFormat: 'qcow2' | 'raw' | 'vhd' | 'vmdk';
   systemDiskSize: string;
 };
 
@@ -157,10 +157,10 @@ function createImageImportDraft(provider: 'alibaba_cloud' | 'tencent_cloud' = 'a
   };
 }
 
-function inferImageFormat(fileName: string): ImageImportDialogDraft['imageFormat'] | null {
+function inferImageFormat(fileName: string, provider: 'alibaba_cloud' | 'tencent_cloud'): ImageImportDialogDraft['imageFormat'] | null {
   const extension = fileName.trim().split('.').pop()?.toLowerCase();
 
-  if (extension === 'qcow2' || extension === 'raw' || extension === 'vhd') {
+  if (extension === 'qcow2' || extension === 'raw' || extension === 'vhd' || provider === 'tencent_cloud' && extension === 'vmdk') {
     return extension;
   }
 
@@ -593,7 +593,9 @@ function CloudImageCenterScreen({
   }
 
   const [activeTab, setActiveTab] = useState<ActiveTab>('platform');
-  const [showMogong, setShowMogong] = useState(false);
+  const [mogongSelected, setShowMogong] = useState(false);
+  const canUseMogong = session.isAdmin && provider === 'alibaba_cloud' && workspace?.capabilities.mogongCatalog !== false;
+  const showMogong = mogongSelected && canUseMogong;
   const [mogongActionHost, setMogongActionHost] = useState<HTMLDivElement | null>(null);
   const [mogongRefreshRevision, setMogongRefreshRevision] = useState(0);
   const screenCache = useAdminScreenCache();
@@ -625,6 +627,7 @@ function CloudImageCenterScreen({
   const [tagManagerOpen, setTagManagerOpen] = useState(false);
   const [deletingTag, setDeletingTag] = useState<PlatformImageTag | null>(null);
   const [tagManagerError, setTagManagerError] = useState('');
+  const imageImportSubmittingRef = useRef(false);
   const mountedRef = useRef(true);
   useEffect(() => { mountedRef.current = true; return () => { mountedRef.current = false; }; }, []);
   const [platformCreatedByFilter, setPlatformCreatedByFilter] = useState('');
@@ -1289,21 +1292,22 @@ function CloudImageCenterScreen({
   }
 
   async function handleSubmitImageImport() {
+    if (imageImportSubmittingRef.current) return;
     if (!session.token || !imageImportDraft || !activeCloudContext || !canImportImages) {
       setImageImportErrorMessage(imageImportUnavailableMessage ?? '当前镜像导入不可用。');
       return;
     }
 
     const file = imageImportDraft.file;
-    const imageFormat = file ? inferImageFormat(file.name) : null;
+    const imageFormat = file ? inferImageFormat(file.name, provider) : null;
     const systemDiskSize = Number.parseInt(imageImportDraft.systemDiskSize, 10);
 
     if (!file) {
-      setImageImportErrorMessage('请选择 QCOW2、RAW 或 VHD 格式的系统盘镜像文件。');
+      setImageImportErrorMessage(provider === 'tencent_cloud' ? '请选择 QCOW2、RAW、VHD 或 VMDK 格式的系统盘镜像文件。' : '请选择 QCOW2、RAW 或 VHD 格式的系统盘镜像文件。');
       return;
     }
     if (!imageFormat) {
-      setImageImportErrorMessage('当前仅支持 .qcow2、.raw 和 .vhd 镜像文件。');
+      setImageImportErrorMessage(provider === 'tencent_cloud' ? '当前仅支持 .qcow2、.raw、.vhd 和 .vmdk 镜像文件。' : '当前仅支持 .qcow2、.raw 和 .vhd 镜像文件。');
       return;
     }
     if (imageImportDraft.imageFormat !== imageFormat) {
@@ -1325,6 +1329,7 @@ function CloudImageCenterScreen({
     }
 
     const actionKey = 'create:image-import';
+    imageImportSubmittingRef.current = true;
 
     try {
       beginAction(actionKey);
@@ -1383,6 +1388,7 @@ function CloudImageCenterScreen({
       setImageImportProgress(null);
       setImageImportErrorMessage(error instanceof Error ? error.message : '镜像上传或导入请求失败。');
     } finally {
+      imageImportSubmittingRef.current = false;
       endAction(actionKey);
     }
   }
@@ -2083,7 +2089,7 @@ function CloudImageCenterScreen({
             compactViewAction
             onSearchChange={setSearchName}
             onViewChange={(view) => {
-              if (view === 'mogong' && session.isAdmin && provider === 'alibaba_cloud') {
+              if (view === 'mogong' && canUseMogong) {
                 setShowMogong(true);
                 return;
               }
@@ -2098,7 +2104,7 @@ function CloudImageCenterScreen({
             views={[
               { label: '平台镜像', value: 'platform' },
               { label: '我的镜像', value: 'mine' },
-              ...(session.isAdmin && provider === 'alibaba_cloud' ? [{ label: '墨攻镜像中心', value: 'mogong' }] : []),
+              ...(canUseMogong ? [{ label: '墨攻镜像中心', value: 'mogong' }] : []),
               ...(session.isAdmin ? [{ label: '云上镜像来源', value: 'cloud' }] : []),
             ]}
             searchControls={
@@ -2430,10 +2436,10 @@ function CloudImageCenterScreen({
                       className="h-auto py-2"
                       id="image-import-file"
                       type="file"
-                      accept=".qcow2,.raw,.vhd"
+                      accept={provider === 'tencent_cloud' ? '.qcow2,.raw,.vhd,.vmdk' : '.qcow2,.raw,.vhd'}
                       onChange={(event) => {
                         const file = event.target.files?.[0] ?? null;
-                        const format = file ? inferImageFormat(file.name) : null;
+                        const format = file ? inferImageFormat(file.name, provider) : null;
                         updateImageImportDraft({
                           file,
                           ...(format ? { imageFormat: format } : {}),
@@ -2444,7 +2450,7 @@ function CloudImageCenterScreen({
                       }}
                       required
                     />
-                    <small>仅支持 QCOW2、RAW、VHD；首期只导入系统盘。</small>
+                    <small>仅支持 {provider === 'tencent_cloud' ? 'QCOW2、RAW、VHD、VMDK' : 'QCOW2、RAW、VHD'}；当前只导入系统盘。</small>
                   </div>
                   <div className="grid gap-1.5">
                     <Label htmlFor="image-import-name">镜像名</Label>
@@ -2532,6 +2538,7 @@ function CloudImageCenterScreen({
                         { label: 'QCOW2', value: 'qcow2' },
                         { label: 'RAW', value: 'raw' },
                         { label: 'VHD', value: 'vhd' },
+                        ...(provider === 'tencent_cloud' ? [{ label: 'VMDK', value: 'vmdk' }] : []),
                       ]}
                       value={imageImportDraft.imageFormat}
                     />

@@ -55,6 +55,28 @@ describe('TencentCloudOpenTofuRenderer', () => {
     expect(() => renderer.render(request)).toThrow();
   });
 
+
+  it('supports the documented 60-character Linux hostname and keeps the Windows 15-character limit', () => {
+    const request = input();
+    request.members[0].hostName = 'a'.repeat(60);
+    expect(renderer.render(request).members['member-1'].host_name).toHaveLength(60);
+    request.members[0].hostName = 'a'.repeat(61);
+    expect(() => renderer.render(request)).toThrow('host name');
+    request.members[0].windows = true;
+    request.members[0].hostName = 'a'.repeat(15);
+    expect(renderer.render(request).members['member-1'].host_name).toHaveLength(15);
+    request.members[0].hostName = 'a'.repeat(16);
+    expect(() => renderer.render(request)).toThrow('host name');
+  });
+
+  it('uses Tencent creation password rules instead of Alibaba complexity', () => {
+    const request = input();
+    request.members[0].password = 'abcdefgh1';
+    expect(renderer.render(request).member_passwords['member-1']).toBe('abcdefgh1');
+    request.members[0].windows = true;
+    expect(() => renderer.render(request)).toThrow('password');
+  });
+
   it('supports a complete empty definition for destroying batch members', () => {
     const request = input();
     request.members = [];

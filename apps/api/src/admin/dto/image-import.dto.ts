@@ -1,7 +1,7 @@
 import { Transform } from 'class-transformer';
 import { IsIn, IsInt, IsNotEmpty, IsNumber, IsOptional, IsString, Max, MaxLength, Min } from 'class-validator';
 
-const IMAGE_FORMATS = ['qcow2', 'raw', 'vhd'] as const;
+const IMAGE_FORMATS = ['qcow2', 'raw', 'vhd', 'vmdk'] as const;
 const OS_TYPES = ['linux', 'windows'] as const;
 const ARCHITECTURES = ['x86_64', 'arm64'] as const;
 const BOOT_MODES = ['BIOS', 'UEFI'] as const;

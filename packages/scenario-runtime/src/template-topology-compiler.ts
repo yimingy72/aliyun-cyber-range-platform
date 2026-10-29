@@ -14,7 +14,7 @@ import type {
   TemplateNode,
 } from './scenario-graph';
 import type { ScenarioTemplateMetadata } from './scenario-template-spec';
-import { validateAliyunEcsPassword } from './password-policy';
+import { validateAliyunEcsPassword, validateTencentCvmPassword } from './password-policy';
 import { validateHostDnsConfig } from './host-dns';
 
 export type TemplateAuthoringMetadata = ScenarioTemplateMetadata & {
@@ -531,7 +531,8 @@ function validateGraph(graph: ScenarioGraphDraft, metadata: TemplateAuthoringMet
             .join(' ')
             .toLowerCase()
             .includes('windows');
-        const passwordValidation = validateAliyunEcsPassword(node.customPassword, { windows: windowsHint });
+        const validatePassword = metadata.cloudProvider === 'tencent_cloud' ? validateTencentCvmPassword : validateAliyunEcsPassword;
+        const passwordValidation = validatePassword(node.customPassword, { windows: windowsHint });
         if (!passwordValidation.valid) {
           throw new Error(`ECS 自定义密码不合法：${node.id}${passwordValidation.message ? `（${passwordValidation.message}）` : ''}`);
         }

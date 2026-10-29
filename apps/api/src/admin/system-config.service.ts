@@ -118,7 +118,7 @@ export class SystemConfigService {
   async getSnapshot(): Promise<SystemCloudConfig> {
     const selected = await this.readSelectedContext();
     if (selected) {
-      if (selected.provider !== 'alibaba_cloud') throw new BadRequestException('该云厂商的资源执行尚未开放。');
+      if (selected.provider !== 'alibaba_cloud') throw new BadRequestException('此旧版全局配置接口仅适用于阿里云；腾讯云资源执行请使用所选云账号工作空间。');
       return { ...selected, provider: 'alibaba_cloud' };
     }
     const activeContext = await this.prisma.cloudAccountContext.findFirst({
@@ -168,7 +168,7 @@ export class SystemConfigService {
 
   async updateSnapshot(payload: Partial<Omit<SystemCloudConfig, 'provider'>> & { provider?: SystemCloudAccountContext['provider'] }): Promise<SystemCloudConfig> {
     if (payload.provider !== undefined && payload.provider !== 'alibaba_cloud') {
-      throw new BadRequestException('当前版本仅支持阿里云全局配置；腾讯云账号请通过独立云账号入口保存，暂不能启用为全局账号。');
+      throw new BadRequestException('当前版本仅支持阿里云全局配置；腾讯云账号请通过云账号绑定入口保存并在工作空间中选择，暂不能启用为全局账号。');
     }
     const scope = getCurrentCloudWorkspaceScope();
     if (scope && !('system' in scope)) {
@@ -208,7 +208,7 @@ export class SystemConfigService {
   async getAccountContext(): Promise<SystemCloudAccountContext & { provider: 'alibaba_cloud' }> {
     const selected = await this.readSelectedContext();
     if (selected) {
-      if (selected.provider !== 'alibaba_cloud') throw new BadRequestException('该云厂商的资源执行尚未开放。');
+      if (selected.provider !== 'alibaba_cloud') throw new BadRequestException('此旧版全局配置接口仅适用于阿里云；腾讯云资源执行请使用所选云账号工作空间。');
       return { ...selected, provider: 'alibaba_cloud' };
     }
     const activeContext = await this.prisma.cloudAccountContext.findFirst({
@@ -249,7 +249,13 @@ export class SystemConfigService {
     memory: number;
   }): Promise<InstanceTypeAvailabilitySnapshot> {
     const accountContext = await this.getSelectedAccountContext();
-    return this.getInstanceTypeAvailabilityInContext(input, accountContext);
+    const availability = await this.getInstanceTypeAvailabilityInContext(input, accountContext);
+    if (accountContext.provider !== 'tencent_cloud') return availability;
+    // The catalog can describe ARM, but the current instance executor accepts only proven x86 types.
+    const matches = availability.matches.filter(item => item.architecture === 'X86_64');
+    return { ...availability, matches, exactAvailable: matches.length > 0,
+      warning: matches.length ? availability.warning
+        : `当前腾讯云可用区 ${accountContext.defaultZoneId} 没有平台可用的 ${input.cpu}C${input.memory}G x86_64 按量付费规格；平台暂不支持 ARM 或未知架构。` };
   }
 
   async getInstanceTypeAvailabilityInContext(input: { cpu: number; memory: number }, accountContext: SystemCloudAccountContext): Promise<InstanceTypeAvailabilitySnapshot> {
@@ -442,7 +448,7 @@ export class SystemConfigService {
     imageImportBucket?: string;
   }): SystemCloudConfig {
     if (config.provider !== 'alibaba_cloud') {
-      throw new BadRequestException('当前版本尚未开放腾讯云全局活跃配置，请保留阿里云全局账号并通过独立入口验证腾讯云。');
+      throw new BadRequestException('当前版本尚未开放腾讯云全局活跃配置；腾讯云账号请在云账号工作空间中选择，不写入阿里云全局凭据。');
     }
     return {
       provider: 'alibaba_cloud',

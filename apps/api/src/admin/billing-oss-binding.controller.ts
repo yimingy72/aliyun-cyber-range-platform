@@ -7,6 +7,7 @@ import { AliyunOssManagedBucketService } from './aliyun-oss-managed-bucket.servi
 import { requireCurrentCloudWorkspaceId } from '../auth/cloud-workspace-scope';
 import { BillingOssBindingService } from './billing-oss-binding.service';
 import { BindBillingOssBucketDto, CreateBillingOssBucketDto } from './dto/billing-oss-binding.dto';
+import { assertAlibabaCloudFeature } from '../auth/cloud-provider-policy';
 
 @Controller('admin/billing/oss-binding')
 @UseGuards(AdminAuthGuard)
@@ -15,7 +16,7 @@ export class BillingOssBindingController {
     private readonly managedBuckets?: AliyunOssManagedBucketService) {}
 
   @Get()
-  list() { return this.bindings.list(); }
+  list() { assertAlibabaCloudFeature('ossBillingBinding'); return this.bindings.list(); }
 
   @Post()
   bind(@Req() request: AuthenticatedPlatformRequest, @Body() payload: BindBillingOssBucketDto) {
@@ -38,6 +39,7 @@ export class BillingOssBindingController {
   private async mutate(request: AuthenticatedPlatformRequest, toolName: string, args: Record<string, unknown>, targetId: string,
     resolveConfirmation: () => Promise<{ targetId: string | null; targetSnapshot: Record<string, unknown>; summary: Record<string, unknown> }>,
     execute: () => Promise<Record<string, unknown>>) {
+    assertAlibabaCloudFeature('ossBillingBinding');
     if (!request.adminUser.isPlatformManager) throw new ForbiddenException('仅平台超管可声明或终止专用桶费用归属。');
     const metadata = readOperationRequestMetadata(request);
     if (request.authContext.source === 'mcp') return this.operations.executeConfirmed({

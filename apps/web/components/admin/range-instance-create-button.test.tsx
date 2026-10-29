@@ -1,7 +1,7 @@
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-const state = vi.hoisted(() => ({ templates: vi.fn(), launch: vi.fn(), push: vi.fn(), replace: vi.fn(), workspace: null as null | { workspace: { id: string; provider: 'alibaba_cloud' | 'tencent_cloud'; isReadOnly: boolean; capabilities: { provisioning: boolean } } } }));
+const state = vi.hoisted(() => ({ templates: vi.fn(), launch: vi.fn(), push: vi.fn(), replace: vi.fn(), workspace: null as null | { workspace: { id: string; provider: 'alibaba_cloud' | 'tencent_cloud'; isReadOnly: boolean; activeCloudAccountContextId?: string; capabilities: { provisioning: boolean; rangeProvisioning?: boolean } } } }));
 vi.mock('next/navigation', () => ({ useRouter: () => ({ push: state.push, replace: state.replace }) }));
 vi.mock('./use-admin-session', () => ({ useAdminSession: () => ({ token: 'fixture-token', profile: { id: 'user-1' }, logout: vi.fn() }) }));
 vi.mock('./cloud-workspace-provider', () => ({ useCloudWorkspace: () => state.workspace }));
@@ -27,6 +27,61 @@ async function fill() {
 }
 
 describe('range list creation entry', () => {
+  it.each([undefined, false])('hides Tencent creation when rangeProvisioning is %s', (rangeProvisioning) => {
+    state.workspace = { workspace: { id: 'tencent', provider: 'tencent_cloud', isReadOnly: false, capabilities: { provisioning: true, rangeProvisioning } } };
+    render(<RangeInstanceCreateButton apiBaseUrl="http://localhost:3001" />);
+    expect(screen.queryByRole('button', { name: '创建实例' })).toBeNull();
+    expect(state.templates).not.toHaveBeenCalled();
+    expect(state.launch).not.toHaveBeenCalled();
+  });
+
+  it('preserves explicitly enabled Tencent launches', async () => {
+    state.workspace = { workspace: { id: 'tencent', provider: 'tencent_cloud', isReadOnly: false, capabilities: { provisioning: true, rangeProvisioning: true } } };
+    render(<RangeInstanceCreateButton apiBaseUrl="http://localhost:3001" />);
+    await fill();
+    fireEvent.click(screen.getByRole('button', { name: '确认创建' }));
+    await waitFor(() => expect(state.push).toHaveBeenCalledWith('/admin/ranges/range-1'));
+  });
+
+  it('drops stale templates and dialogs when switching accounts during a delayed list response', async () => {
+    let resolve!: (value: Array<{ id: string; name: string }>) => void;
+    state.workspace = { workspace: { id: 'ali', provider: 'alibaba_cloud', isReadOnly: false, capabilities: { provisioning: true } } };
+    state.templates.mockImplementationOnce(() => new Promise(done => { resolve = done; }));
+    const { rerender } = render(<RangeInstanceCreateButton apiBaseUrl="http://localhost:3001" />);
+    fireEvent.click(screen.getByRole('button', { name: '创建实例' }));
+    state.workspace = { workspace: { id: 'tencent', provider: 'tencent_cloud', isReadOnly: false, capabilities: { provisioning: true, rangeProvisioning: false } } };
+    rerender(<RangeInstanceCreateButton apiBaseUrl="http://localhost:3001" />);
+    await act(async () => resolve([{ id: 'ali-only', name: '旧阿里模板' }]));
+    expect(screen.queryByRole('dialog')).toBeNull();
+    expect(screen.queryByText('旧阿里模板')).toBeNull();
+    expect(state.launch).not.toHaveBeenCalled();
+    state.workspace = { workspace: { id: 'ali', provider: 'alibaba_cloud', isReadOnly: false, capabilities: { provisioning: true } } };
+    rerender(<RangeInstanceCreateButton apiBaseUrl="http://localhost:3001" />);
+    await fill();
+    expect(screen.queryByText('旧阿里模板')).toBeNull();
+  });
+
+  it('does not navigate from an old launch after switching away and back to the same account', async () => {
+    let resolve!: (value: { id: string }) => void;
+    state.workspace = { workspace: { id: 'ali', provider: 'alibaba_cloud', isReadOnly: false, capabilities: { provisioning: true } } };
+    state.launch.mockImplementationOnce(() => new Promise(done => { resolve = done; }));
+    const { rerender } = render(<RangeInstanceCreateButton apiBaseUrl="http://localhost:3001" />);
+    await fill();
+    fireEvent.click(screen.getByRole('button', { name: '确认创建' }));
+    fireEvent.submit(document.querySelector('[role=dialog] form')!);
+    expect(state.launch).toHaveBeenCalledTimes(1);
+    state.workspace = { workspace: { id: 'tencent', provider: 'tencent_cloud', isReadOnly: false, capabilities: { provisioning: true, rangeProvisioning: false } } };
+    rerender(<RangeInstanceCreateButton apiBaseUrl="http://localhost:3001" />);
+    state.workspace = { workspace: { id: 'ali', provider: 'alibaba_cloud', isReadOnly: false, capabilities: { provisioning: true } } };
+    rerender(<RangeInstanceCreateButton apiBaseUrl="http://localhost:3001" />);
+    await act(async () => resolve({ id: 'old-range' }));
+    expect(state.push).not.toHaveBeenCalled();
+    await fill();
+    fireEvent.click(screen.getByRole('button', { name: '确认创建' }));
+    await waitFor(() => expect(state.push).toHaveBeenCalledWith('/admin/ranges/range-1'));
+    expect(state.launch).toHaveBeenCalledTimes(2);
+  });
+
   it('selects a visible template and opens the created instance', async () => {
     render(<RangeInstanceCreateButton apiBaseUrl="http://localhost:3001" />);
     await fill();

@@ -97,6 +97,18 @@ describe('Image import resource ownership and recovery', () => {
   async function submitted() { const result = await service.completeUpload(job.id, USER); expect(result).toMatchObject({ status: 'importing', imageId: 'm-imported' }); return result; }
   async function failAndClean() { image.Status = 'UnAvailable'; job.uploadExpiresAt = new Date(0); return service.refreshImport(job.id); }
 
+  it('rejects Tencent-only VMDK on an Alibaba account before creating a job or upload grant', async () => {
+    await expect(service.createUpload({ cloudContextId: CONTEXT.id, displayName: 'VMDK', osType: 'linux', platform: 'Ubuntu',
+      architecture: 'x86_64', bootMode: 'BIOS', imageFormat: 'vmdk', systemDiskSize: 40, sourceFileName: 'fixture.vmdk', sourceSizeBytes: 4096 }, USER)).rejects.toThrow('当前云账号仅支持 .qcow2、.raw、.vhd');
+    expect(imageImportJob.create).not.toHaveBeenCalled(); expect(calls).toEqual([]);
+  });
+  it.each(['qcow2', 'raw', 'vhd'] as const)('keeps the existing Alibaba %s upload adapter', async imageFormat => {
+    const result = await service.createUpload({ cloudContextId: CONTEXT.id, displayName: 'fixture', osType: 'linux', platform: 'Ubuntu',
+      architecture: 'x86_64', bootMode: 'BIOS', imageFormat, systemDiskSize: 40, sourceFileName: `fixture.${imageFormat}`, sourceSizeBytes: 4096 }, USER);
+    expect(result.job.imageFormat).toBe(imageFormat);
+    expect(new URL(result.upload.url).hostname).toBe(`${CONTEXT.imageImportBucket}.oss-${CONTEXT.regionId}.aliyuncs.com`);
+  });
+
   it('keeps completed imports pollable until their reusable upload grant and drain window expire', async () => {
     await submitted(); image.Status = 'Available';
     await service.refreshImport(job.id);

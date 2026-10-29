@@ -256,13 +256,13 @@ describe('SingleInstancesScreen', () => {
     vi.unstubAllGlobals();
   });
 
-  it('keeps undeveloped provider launches disabled even when that workspace has a usable image', async () => {
+  it('keeps launches disabled for an unready account even when that workspace has a usable image', async () => {
     workspaceState.value = { workspace: { provider: 'tencent_cloud', isReadOnly: false, capabilities: { provisioning: false } } };
     fetchSingleInstancesMock.mockResolvedValue([]); fetchProvisionJobsMock.mockResolvedValue([]);
     fetchPlatformImagesMock.mockResolvedValue({ items: [{ id: 'workspace-image', imageId: 'img-fixture', displayName: '可用腾讯镜像', enabled: true, sourceSnapshotAvailable: true }] });
     render(<SingleInstancesScreen />);
     await waitFor(() => expect(fetchPlatformImagesMock).toHaveBeenCalled());
-    expect(screen.getByText('腾讯云实例创建仍在开发。')).toBeTruthy();
+    expect(screen.getByText('当前腾讯云账号未就绪，请先检查基础配置。')).toBeTruthy();
     expect((screen.getByRole('button', { name: '创建实例' }) as HTMLButtonElement).disabled).toBe(true);
     fireEvent.click(screen.getByRole('button', { name: '创建实例' }));
     expect(launchSingleInstancesMock).not.toHaveBeenCalled();
@@ -291,6 +291,29 @@ describe('SingleInstancesScreen', () => {
     fireEvent.change(screen.getByLabelText('到期时间'), { target: { value: localText(new Date(Date.now() + 60 * 60_000)) } });
     fireEvent.submit(document.getElementById('single-instance-create-form')!);
     await waitFor(() => expect(launchSingleInstancesMock).toHaveBeenCalledWith(expect.anything(), expect.anything(), expect.objectContaining({ platformImageAssetId: 'tencent-image', systemDiskSize: 80 }), expect.any(String)));
+  });
+
+  it.each([
+    ['linux', 'abcdefgh', 'abcd1234'],
+    ['windows', 'Abcd1234', 'Abcd12345678'],
+  ])('validates Tencent %s passwords before launch without imposing Aliyun policy', async (osType, invalidPassword, validPassword) => {
+    workspaceState.value = { workspace: { provider: 'tencent_cloud', isReadOnly: false, capabilities: { provisioning: true } } };
+    fetchSingleInstancesMock.mockResolvedValue([]); fetchProvisionJobsMock.mockResolvedValue([]);
+    fetchPlatformImagesMock.mockResolvedValue({ items: [{ id: 'tencent-image', provider: 'tencent_cloud', imageId: 'img-tencent', displayName: 'Tencent image', enabled: true, tags: [], osType, architecture: 'x86_64', minimumSystemDiskSize: 80 }] });
+    fetchInstanceTypeAvailabilityMock.mockResolvedValue({ cpu: 2, memory: 2, exactAvailable: true, matches: [{ instanceTypeId: 'S5.MEDIUM2', cpu: 2, memoryGiB: 2, architecture: 'x86_64' }] });
+    launchSingleInstancesMock.mockResolvedValue({ batch: { id: 'password-batch' }, instances: [] });
+    render(<SingleInstancesScreen />);
+    await openCreateDialog();
+    fireEvent.change(screen.getByLabelText('实例名'), { target: { value: 'Tencent password test' } });
+    fireEvent.change(screen.getByLabelText('到期时间'), { target: { value: '2100-01-01T12:00' } });
+    fireEvent.change(screen.getByLabelText('密码'), { target: { value: invalidPassword } });
+    await waitFor(() => expect(fetchInstanceTypeAvailabilityMock).toHaveBeenCalled());
+    fireEvent.submit(document.getElementById('single-instance-create-form')!);
+    expect(await screen.findByText(/密码不符合腾讯云 CVM 要求/)).toBeTruthy();
+    expect(launchSingleInstancesMock).not.toHaveBeenCalled();
+    fireEvent.change(screen.getByLabelText('密码'), { target: { value: validPassword } });
+    fireEvent.submit(document.getElementById('single-instance-create-form')!);
+    await waitFor(() => expect(launchSingleInstancesMock).toHaveBeenCalledWith(expect.anything(), expect.anything(), expect.objectContaining({ password: validPassword }), expect.any(String)));
   });
 
   it('queries the original Tencent batch after two minutes without renewing its expiration or key', async () => {

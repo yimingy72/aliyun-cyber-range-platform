@@ -261,7 +261,8 @@ export type CloudWorkspaceView = {
   isReadOnly: boolean;
   activeCloudAccountContextId: string | null;
   contexts: CloudAccountContext[];
-  capabilities: { provisioning: boolean; rangeProvisioning?: boolean; imageImport: boolean; billingSync: boolean };
+  capabilities: { provisioning: boolean; rangeProvisioning?: boolean; imageImport: boolean; billingSync: boolean;
+    ossBillingBinding?: boolean; mogongCatalog?: boolean };
 };
 export type CloudAccountRemovalResult = {
   id: string;

@@ -8,6 +8,7 @@ import {
 } from './system-config.service';
 import { UpdateSystemCloudConfigDto } from './dto/system-cloud-config.dto';
 import { OperationControlService, readOperationRequestMetadata } from '../operations/operation-control.service';
+import { assertAlibabaCloudFeature } from '../auth/cloud-provider-policy';
 
 @Controller('admin/system-config')
 @UseGuards(AdminAuthGuard)
@@ -39,6 +40,7 @@ export class SystemConfigController {
 
   @Patch()
   async updateSnapshot(@Req() request: AuthenticatedPlatformRequest, @Body() payload: UpdateSystemCloudConfigDto) {
+    assertAlibabaCloudFeature('legacyCloudConfig');
     if (!request.adminUser.isPlatformManager) throw new ForbiddenException('仅平台超管可更新云账号配置。');
     if (!payload || Array.isArray(payload)
       || (payload.defaultRegion === undefined && payload.defaultZoneId === undefined

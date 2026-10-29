@@ -3565,6 +3565,7 @@ describe('TemplateEditorScreen', () => {
     });
     fireEvent.click(await screen.findByRole('option', { name: 'Ubuntu 24.04 LTS' }));
     fireEvent.change(screen.getByLabelText('主机名'), { target: { value: 'new-edge-host' } });
+    fireEvent.change(screen.getByLabelText('自定义密码'), { target: { value: provider === 'tencent_cloud' ? 'abcd1234' : 'Valid123!' } });
     selectAdminOption('交换机标识 1', '交换机 1');
     fireEvent.change(screen.getByLabelText('私网 IP 1'), { target: { value: '10.0.0.13' } });
     addDnatEntry();

@@ -1,5 +1,10 @@
 import type { CloudWorkspaceView, PlatformImageAsset } from './admin-types';
 
+// Older API responses omit this flag; only Aliyun has a safe legacy default.
+export function supportsRangeProvisioning(workspace?: Pick<CloudWorkspaceView, 'provider' | 'capabilities'> | null) {
+  return !workspace || (workspace.capabilities.rangeProvisioning ?? workspace.provider === 'alibaba_cloud');
+}
+
 export function minimumSystemDiskSize(provider: CloudWorkspaceView['provider'], image?: Pick<PlatformImageAsset, 'minimumSystemDiskSize'> | null) {
   return Math.max(provider === 'tencent_cloud' ? 50 : 20, Math.ceil(image?.minimumSystemDiskSize ?? 0));
 }

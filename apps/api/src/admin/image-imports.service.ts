@@ -14,6 +14,7 @@ import { encryptPlatformImageDefaultPassword } from './platform-image-password';
 import { imageRpc, cloudItems, cloudPage, cloudTags, AliyunImageRpcError } from './aliyun-image-rpc';
 import { PrismaService } from '../database/prisma.service';
 import { requestTencentCloud, TencentCloudRequestError } from './tencent-cloud-client';
+import { COS_MAX_SIGNATURE_TTL_SECONDS, COS_SINGLE_PUT_MAX_BYTES } from './tencent-cos-client';
 import { describeTencentImages, describeTencentSnapshot, tagTencentImageResources, deleteTencentImage, deleteTencentSnapshot, tencentImageRequest, type TencentSnapshot } from './tencent-image-rpc';
 type ManagedCosBucket = { id: string; bucketName: string; cloudWorkspaceId: string; cloudAccountContextId: string; cloudAccountUid: string; appId: string; regionId: string; cloudProvider: 'tencent_cloud' };
 type CosObjectInput = { contextCredentials: CloudAccountContextCredentials; bucketName: string; objectKey: string; method: 'PUT' | 'GET' | 'HEAD' | 'DELETE'; headers?: Record<string,string>; expiresAt?: Date };
@@ -100,6 +101,8 @@ export class ImageImportsService {
     }
 
     const initial = await this.cloudAccountContextsService.getCredentials(input.cloudContextId, { requireReady: true, requireActive: true });
+    this.assertImportFormat(initial.provider, input.imageFormat);
+    if (initial.provider === 'tencent_cloud') this.assertTencentImportLimits(sourceSizeBytes);
     const now = new Date(), uploadExpiresAt = new Date(now.getTime() + IMAGE_IMPORT_UPLOAD_TTL_MS);
     const sourceFileName = this.normalizeSourceFileName(input.sourceFileName);
     this.assertSourceFileMatchesFormat(sourceFileName, input.imageFormat);
@@ -145,10 +148,11 @@ export class ImageImportsService {
     }
 
     const context = await this.boundContext(job);
+    if (context.provider === 'tencent_cloud') this.assertTencentImportLimits(Number(job.sourceSizeBytes));
     const uploadedObject = await this.headOssObject(context, job.objectKey, job);
 
     if (!uploadedObject) {
-      throw new BadRequestException('OSS 中未找到已上传的镜像文件，请完成上传后再导入。');
+      throw new BadRequestException('对象存储中未找到已上传的镜像文件，请完成上传后再导入。');
     }
 
     const expectedSizeBytes = Number(job.sourceSizeBytes);
@@ -169,12 +173,15 @@ export class ImageImportsService {
       imageId = response.ImageId?.trim() ?? '';
 
       if (!imageId) {
-        throw new Error('阿里云 ImportImage 未返回 ImageId。');
+        throw new Error('云端 ImportImage 未返回 ImageId。');
       }
       taskId = response.TaskId?.trim() || null;
     } catch (error) {
       const message = error instanceof Error ? error.message : '镜像导入请求失败。';
-      const rejected = error instanceof TencentCloudRequestError ? /^(UnauthorizedOperation|AuthFailure|InvalidParameter|MissingParameter|InvalidImageName|InvalidImageOsType|InvalidImageOsVersion|ImageQuotaLimitExceeded)(?:[.]|$)/.test(error.code) : error instanceof AliyunImageRpcError && /^(Forbidden(?:\.|$)|InvalidParameter(?:\.|$)|MissingParameter(?:\.|$)|InvalidAccessKeyId(?:\.|$)|SignatureDoesNotMatch(?:\.|$)|Throttling(?:\.|$))/.test(error.cloudCode ?? '');
+      // Only explicit pre-submission rejections with an official receipt allow a new request.
+      // Internal errors, malformed responses and timeouts remain unknown and must be reconciled.
+      // https://cloud.tencent.com/document/api/213/15717
+      const rejected = error instanceof TencentCloudRequestError ? Boolean(error.requestId) && /^(UnauthorizedOperation|AuthFailure|InvalidParameter|InvalidParameterValue|MissingParameter|UnknownParameter|InvalidImageName|InvalidImageOsType|InvalidImageOsVersion|ImageQuotaLimitExceeded|RequestLimitExceeded|OperationDenied|RegionAbilityLimit\.UnsupportedToImportImage)(?:[.]|$)/.test(error.code) : error instanceof AliyunImageRpcError && /^(Forbidden(?:\.|$)|InvalidParameter(?:\.|$)|MissingParameter(?:\.|$)|InvalidAccessKeyId(?:\.|$)|SignatureDoesNotMatch(?:\.|$)|Throttling(?:\.|$))/.test(error.cloudCode ?? '');
       const retryable = await this.updateJob(job, rejected
         ? { status: 'failed', submissionRejected: true, errorMessage: message }
         : { errorMessage: `导入提交结果未确认，正在按来源标记恢复；禁止重复提交。${message}` });
@@ -200,7 +207,7 @@ export class ImageImportsService {
     await this.getAccessibleJob(id, currentUser);
     return this.withClaim(id, async job => {
       if (job.status === 'awaiting_upload') return this.completeUploadClaimed(job);
-      if (job.status !== 'failed' || job.imageId) throw new BadRequestException('仅可核验尚未获得阿里云 ImageId 的失败导入任务。');
+      if (job.status !== 'failed' || job.imageId) throw new BadRequestException('仅可核验尚未获得云端 ImageId 的失败导入任务。');
       if (job.submissionRejected) {
         if (job.uploadExpiresAt <= new Date()) throw new BadRequestException('上传地址已过期，请重新上传镜像文件。');
         return this.completeUploadClaimed(await this.updateJob(job, { status: 'awaiting_upload' }));
@@ -283,7 +290,7 @@ export class ImageImportsService {
           context,
           importJob,
           isAvailable ? 'available' : 'failed',
-          failed ? `阿里云镜像导入失败：${status}` : null,
+          failed ? `云镜像导入失败：${status}` : null,
         ),
       );
     } catch (error) {
@@ -379,7 +386,7 @@ export class ImageImportsService {
 
   private async ensureImportArtifacts(context: ImportContext, job: ImageImportJobRow) {
     if (!job.imageId) {
-      throw new Error('镜像导入任务缺少阿里云 ImageId。');
+      throw new Error('镜像导入任务缺少云端 ImageId。');
     }
 
     const [sourceSnapshot, linkedPlatformImageAsset] = await Promise.all([
@@ -519,6 +526,7 @@ export class ImageImportsService {
   }
 
   private async importImage(context: ImportContext, job: ImageImportJobRow) {
+    this.assertImportFormat(context.provider, job.imageFormat);
     if (context.provider === 'tencent_cloud') {
       this.assertTencentObjectProof(job);
       if (!job.platform || !job.osVersion || !job.sourceObjectProof) throw new ConflictException('腾讯云导入缺少明确 OS 版本或已上传对象来源证明。');
@@ -606,7 +614,7 @@ export class ImageImportsService {
 
   private async recoverSubmission(context: ImportContext, job: ImageImportJobRow) {
     const images = await this.describeImages(context, { 'Tag.1.Key': 'PlatformImageImportJobId', 'Tag.1.Value': job.id });
-    if (images.length === 0) return this.updateJob(job, { errorMessage: '导入提交结果仍未确认，保留 OSS 和恢复记录；不会重复创建。' });
+    if (images.length === 0) return this.updateJob(job, { errorMessage: '导入提交结果仍未确认，保留对象存储和恢复记录；不会重复创建。' });
     if (images.length !== 1) throw new ConflictException('原导入来源匹配多个镜像，需核验后处理。');
     this.assertImageOwnership(job, images[0]);
     return this.updateJob(job, { imageId: images[0].ImageId!, errorMessage: null });
@@ -618,7 +626,7 @@ export class ImageImportsService {
     platformImageAssetId: string,
   ) {
     if (!job.imageId) {
-      throw new Error('镜像导入任务缺少阿里云 ImageId。');
+      throw new Error('镜像导入任务缺少云端 ImageId。');
     }
 
     const imageTags = buildBillingTags({
@@ -692,7 +700,7 @@ export class ImageImportsService {
     const response = await this.ossRequest({ context, objectKey, method: 'HEAD' });
 
     if (response.status === 404) return null;
-    if (!response.ok) throw new Error(`OSS 文件核验失败（HTTP ${response.status}）。`);
+    if (!response.ok) throw new Error(`对象存储文件核验失败（HTTP ${response.status}）。`);
 
     const contentLength = Number(response.headers.get('content-length'));
     if (context.provider === 'tencent_cloud') {
@@ -773,6 +781,19 @@ export class ImageImportsService {
     return normalized.slice(0, 180);
   }
 
+  private assertTencentImportLimits(sourceSizeBytes: number) {
+    if (sourceSizeBytes > COS_SINGLE_PUT_MAX_BYTES) throw new BadRequestException('腾讯云当前上传方式仅支持不超过 5 GiB 的单个镜像文件。');
+    if (this.readMaxImportDurationMs() > COS_MAX_SIGNATURE_TTL_SECONDS * 1000)
+      throw new ConflictException('腾讯云导入等待时长超过平台 COS 下载授权的 24 小时上限，请调整 IMAGE_IMPORT_MAX_DURATION_MS 后重试。');
+  }
+
+  private assertImportFormat(provider: CloudAccountContextCredentials['provider'], imageFormat: string) {
+    // Tencent imports VMDK directly; do not send that format through the Alibaba OSS import adapter.
+    // https://cloud.tencent.com/document/api/213/15717
+    const formats = provider === 'tencent_cloud' ? ['qcow2', 'raw', 'vhd', 'vmdk'] : ['qcow2', 'raw', 'vhd'];
+    if (!formats.includes(imageFormat)) throw new BadRequestException(`当前云账号仅支持 ${formats.map(format => `.${format}`).join('、')} 镜像文件。`);
+  }
+
   private assertSourceFileMatchesFormat(sourceFileName: string, imageFormat: ImageImportJobRow['imageFormat']) {
     const extension = sourceFileName.split('.').pop()?.toLowerCase();
 
@@ -796,7 +817,7 @@ export class ImageImportsService {
       const context = await this.boundContext(job);
       return this.cleanupTemporaryObject(context, job);
     } catch (error) {
-      const message = error instanceof Error ? error.message : '临时 OSS 文件清理失败。';
+      const message = error instanceof Error ? error.message : '临时对象存储文件清理失败。';
       return this.updateJob(job, { errorMessage: this.withCleanupError(job.errorMessage, message) });
     }
   }
@@ -895,7 +916,7 @@ export class ImageImportsService {
     const deleted = await this.deleteOssObject(context, job.objectKey);
 
     if (!deleted) {
-      throw new Error('删除 OSS 临时镜像文件失败。');
+      throw new Error('删除对象存储临时镜像文件失败。');
     }
 
     const completed = await this.updateJob(job, { temporaryObjectDeletedAt: new Date(), ...(job.status === 'available' ? { errorMessage: null } : {}), ...(job.status === 'failed' ? { errorMessage: this.withoutCleanupError(job.errorMessage) } : {}) });
@@ -937,14 +958,14 @@ export class ImageImportsService {
   }
 
   private withCleanupError(existingMessage: string | null, cleanupMessage: string) {
-    return [this.withoutCleanupError(existingMessage), `临时 OSS 文件清理失败：${cleanupMessage}`].filter(Boolean).join('\n');
+    return [this.withoutCleanupError(existingMessage), `临时对象存储文件清理失败：${cleanupMessage}`].filter(Boolean).join('\n');
   }
 
   private withoutCleanupError(message: string | null) {
     return (
       message
         ?.split('\n')
-        .filter((line) => !line.startsWith('临时 OSS 文件清理失败：'))
+        .filter((line) => !/^临时(?: OSS |对象存储)文件清理失败：/.test(line))
         .join('\n')
         .trim() || null
     );
@@ -962,7 +983,7 @@ export class ImageImportsService {
         ?.split('\n')
         .filter(
           (line) =>
-            !line.startsWith('临时 OSS 文件清理失败：') &&
+            !/^临时(?: OSS |对象存储)文件清理失败：/.test(line) &&
             !line.startsWith('镜像导入终态资源清理失败：'),
         )
         .join('\n')

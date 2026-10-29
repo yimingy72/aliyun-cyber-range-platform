@@ -9,6 +9,7 @@ export class TencentCosRequestError extends Error {
   constructor(readonly code: string, readonly status?: number) { super(`腾讯云 COS 请求未完成（${code}）。`); }
 }
 export const COS_SINGLE_PUT_MAX_BYTES = 5 * 1024 ** 3;
+export const COS_MAX_SIGNATURE_TTL_SECONDS = 86400;
 function fail(): never { throw new TencentCosRequestError('INVALID_REQUEST'); }
 export const cosEncode = (value: string) => encodeURIComponent(value).replace(/[!'()*]/g, char => `%${char.charCodeAt(0).toString(16).toUpperCase()}`);
 
@@ -44,7 +45,7 @@ export function signCosRequest(input: { contextCredentials: CosContextCredential
   assertCosContext(input.contextCredentials);
   const start = Math.floor((input.startsAt?.getTime() ?? Date.now()) / 1000);
   const end = Math.floor(input.expiresAt.getTime() / 1000);
-  if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end) || end <= start || end - start > 86400
+  if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end) || end <= start || end - start > COS_MAX_SIGNATURE_TTL_SECONDS
     || !['GET', 'HEAD', 'PUT', 'DELETE'].includes(input.method) || !input.path.startsWith('/')
     || /[\r\n\x00]/.test(input.path) || !/^[a-z0-9.-]+\.myqcloud\.com$/.test(input.host)) fail();
   if (input.host !== 'service.cos.myqcloud.com') {

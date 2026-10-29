@@ -539,16 +539,24 @@ describe('RangeInstanceDetailScreen', () => {
     expect((screen.getByLabelText('CPU') as HTMLInputElement).matches(':disabled')).toBe(true);
   });
 
+  it('hides gated Tencent retry-create while retaining failed resource cleanup', async () => {
+    workspaceState.workspace = { id: 'tencent-space', provider: 'tencent_cloud', isReadOnly: false, capabilities: { provisioning: true, rangeProvisioning: false } };
+    fetchRangeInstanceDetailMock.mockResolvedValue({ id: 'range-1', status: 'create_failed', runtimeTopologyGraph: createValidTopologyGraph() });
+    render(<RangeInstanceDetailScreen rangeId="range-1" apiBaseUrl="http://localhost:3001" />);
+    expect(await screen.findByRole('button', { name: '回收资源' })).toHaveProperty('disabled', false);
+    expect(screen.queryByRole('button', { name: '重试创建' })).toBeNull();
+    expect(triggerRangeActionMock).not.toHaveBeenCalled();
+  });
+
   it('keeps draft editing available while the workspace blocks resource apply', async () => {
     workspaceState.workspace = { id: 'tencent-space', provider: 'tencent_cloud', isReadOnly: false, capabilities: { provisioning: true, rangeProvisioning: false } };
     fetchRangeInstanceDetailMock.mockResolvedValue({ id: 'range-1', status: 'running', runtimeTopologyGraph: createValidTopologyGraph() });
     applyRangeInstanceDraftMock.mockClear();
     render(<RangeInstanceDetailScreen rangeId="range-1" apiBaseUrl="http://localhost:3001" />);
     fireEvent.mouseDown(await screen.findByRole('tab', { name: '拓扑结构' }));
-    const applyButton = await screen.findByRole('button', { name: '预览变更' });
-    expect((applyButton as HTMLButtonElement).disabled).toBe(true);
+    await screen.findByRole('button', { name: '保存草稿' });
+    expect(screen.queryByRole('button', { name: '预览变更' })).toBeNull();
     expect((screen.getByRole('button', { name: '保存草稿' }) as HTMLButtonElement).disabled).toBe(false);
-    fireEvent.click(applyButton);
     expect(applyRangeInstanceDraftMock).not.toHaveBeenCalled();
   });
 

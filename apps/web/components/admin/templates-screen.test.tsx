@@ -1127,6 +1127,17 @@ describe('TemplatesScreen', () => {
     expect(launchRangeInstanceMock.mock.calls[2][3]).not.toEqual(firstRequest[3]);
   });
 
+  it('hides gated Tencent launch actions without hiding template authoring', async () => {
+    workspaceState.value = { workspace: { id: 'tencent', provider: 'tencent_cloud', isReadOnly: false, capabilities: { provisioning: true, rangeProvisioning: false } } };
+    fetchRangeTemplatesMock.mockResolvedValue(bootstrapPayload.rangeTemplates);
+    render(<TemplatesScreen apiBaseUrl="http://localhost:3001" />);
+    await screen.findByText('办公网横向移动靶场');
+    openTemplateActionMenu(screen.getByRole('row', { name: /办公网横向移动靶场/ }));
+    expect(screen.queryByRole('menuitem', { name: '生成实例' })).toBeNull();
+    expect(screen.getByRole('menuitem', { name: '编辑信息' })).toBeTruthy();
+    expect(launchRangeInstanceMock).not.toHaveBeenCalled();
+  });
+
   it('queries the original Tencent launch after its expiry crosses the new-request minimum', async () => {
     const now = vi.spyOn(Date, 'now').mockReturnValue(new Date('2026-10-11T08:00:00Z').getTime());
     try {

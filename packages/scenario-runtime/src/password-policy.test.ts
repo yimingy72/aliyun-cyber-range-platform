@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { describeAliyunEcsPasswordFailure, validateAliyunEcsPassword } from './password-policy';
+import { describeAliyunEcsPasswordFailure, validateAliyunEcsPassword, validateTencentCvmPassword, describeTencentCvmPasswordFailure } from './password-policy';
 
 describe('validateAliyunEcsPassword', () => {
   it('accepts passwords with at least three character classes and valid length', () => {
@@ -66,6 +66,51 @@ describe('validateAliyunEcsPassword', () => {
       message: 'Windows instance passwords must not start with a forward slash.',
     });
     expect(validateAliyunEcsPassword('/Abcd1234')).toEqual({ valid: true, code: null, message: null });
+  });
+});
+
+describe('Tencent CVM creation password policy', () => {
+  it('accepts the documented two-class Linux password without relaxing Aliyun', () => {
+    expect(validateTencentCvmPassword('abcdefgh1').valid).toBe(true);
+    expect(validateAliyunEcsPassword('abcdefgh1').code).toBe('character-classes');
+    expect(validateTencentCvmPassword('abcdefgh').code).toBe('character-classes');
+    expect(validateTencentCvmPassword('A1!abcde'.padEnd(30, 'x')).valid).toBe(true);
+    expect(validateTencentCvmPassword('A1!abcde'.padEnd(31, 'x')).code).toBe('length');
+  });
+
+  it('enforces Windows length, complexity and username restrictions', () => {
+    expect(validateTencentCvmPassword('Abcd1234', { windows: true }).code).toBe('length');
+    expect(validateTencentCvmPassword('abcdefgh1234', { windows: true }).code).toBe('character-classes');
+    expect(validateTencentCvmPassword('Abcdefgh1234', { windows: true }).valid).toBe(true);
+    expect(validateTencentCvmPassword('aDministraTor123!', { windows: true }).code).toBe('windows-username');
+    expect(validateAliyunEcsPassword('Abcd1234', { windows: true }).valid).toBe(true);
+  });
+
+  it.each([false, true])('rejects unsupported characters and leading slash (Windows=%s)', windows => {
+    for (const value of ['Abcd1234!中abc', 'Abcd1234!"abc', 'Abcd1234!\\abc']) {
+      expect(validateTencentCvmPassword(value, { windows }).code).toBe('unsupported-characters');
+    }
+    expect(validateTencentCvmPassword('Abcd1234 abc!', { windows }).code).toBe('whitespace');
+    expect(validateTencentCvmPassword('/Abcd1234abc', { windows }).code).toBe('leading-slash');
+  });
+
+  it.each([false, true])('uses the creation API special alphabet independently of Alibaba (Windows=%s)', windows => {
+    for (const symbol of ['_', '<', '>']) {
+      const value = `Abcdefgh1234${symbol}`;
+      expect(validateTencentCvmPassword(value, { windows }).code).toBe('unsupported-characters');
+      expect(validateAliyunEcsPassword(value, { windows }).valid).toBe(true);
+    }
+    for (const symbol of "()~`!@#$%^&*-+=|{}[]:;',.?/") {
+      expect(validateTencentCvmPassword(`Abcdefgh1234${symbol}`, { windows }).valid).toBe(true);
+    }
+  });
+
+  it('provides provider-specific guidance', () => {
+    expect(describeTencentCvmPasswordFailure('length', { windows: true })).toContain('12-30');
+    expect(describeTencentCvmPasswordFailure('character-classes')).toContain('2 类');
+    expect(describeTencentCvmPasswordFailure('leading-slash')).toContain('腾讯云');
+    expect(describeTencentCvmPasswordFailure('windows-username')).toContain('Administrator');
+    expect(describeTencentCvmPasswordFailure('unsupported-characters')).toContain('不支持下划线、尖括号');
   });
 });
 

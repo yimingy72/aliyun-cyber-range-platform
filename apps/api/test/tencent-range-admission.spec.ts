@@ -1,3 +1,4 @@
+import { runInCloudWorkspace } from '../src/auth/cloud-workspace-scope';
 import { RangeInstancesService } from '../src/admin/range-instances.service';
 
 const actor = { id:'owner-a', role:'user' } as any;
@@ -38,4 +39,32 @@ it('permits controlled Tencent admission when the explicit flag is on', () => {
 it('preserves Alibaba admission while the Tencent NAT flag is off', () => {
   process.env.TENCENTCLOUD_RANGE_NAT_EXECUTION_ENABLED='0';
   const test=fixture(); expect(()=> (test.service as any).assertRangeProvisioningEnabled('alibaba_cloud')).not.toThrow();
+});
+
+function legacyCreateFixture(provider: 'alibaba_cloud' | 'tencent_cloud') {
+  const template = { id: 'template-a', cloudProvider: provider, name: 'template', slug: 'template' };
+  const repository = { getRangeTemplateById: jest.fn().mockResolvedValue(template),
+    createRangeInstance: jest.fn(async value => ({ id: 'range-new', ...value })), getPlatformUserById: jest.fn().mockResolvedValue(null) };
+  const templates = { resolveTemplateConsumptionVersion: jest.fn().mockResolvedValue({ id: 'version-a', version: '1', modulePathOrRef: `infra/opentofu/modules/${provider === 'tencent_cloud' ? 'tencentcloud' : 'alicloud'}-enterprise-range` }) };
+  const service = new RangeInstancesService(repository as any, templates as any, {} as any, {} as any, { dispatch: jest.fn() } as any);
+  return { service, repository, templates };
+}
+it('blocks the legacy Tencent range-create endpoint before it persists an Alibaba-defaulted record', async () => {
+  process.env.TENCENTCLOUD_RANGE_NAT_EXECUTION_ENABLED = '0';
+  const test = legacyCreateFixture('tencent_cloud');
+  await expect(test.service.create({ templateId: 'template-a', name: 'legacy-create' }, actor)).rejects.toThrow('受控验证');
+  expect(test.repository.createRangeInstance).not.toHaveBeenCalled();
+});
+it.each(['alibaba_cloud', 'tencent_cloud'] as const)('binds legacy range-create records to their %s template instead of client/default provider', async provider => {
+  process.env.TENCENTCLOUD_RANGE_NAT_EXECUTION_ENABLED = '1';
+  const test = legacyCreateFixture(provider);
+  await expect(test.service.create({ templateId: 'template-a', name: 'legacy-create', cloudProvider: provider === 'tencent_cloud' ? 'alibaba_cloud' : 'tencent_cloud' }, actor)).resolves.toMatchObject({ cloudProvider: provider });
+  expect(test.repository.createRangeInstance).toHaveBeenCalledWith(expect.objectContaining({ cloudProvider: provider, sourceTemplateVersionId: 'version-a' }));
+});
+it('rejects a mismatched workspace template before legacy range-create persistence', async () => {
+  process.env.TENCENTCLOUD_RANGE_NAT_EXECUTION_ENABLED = '1';
+  const test = legacyCreateFixture('alibaba_cloud');
+  await expect(runInCloudWorkspace({ cloudWorkspaceId: 'workspace-tencent', provider: 'tencent_cloud', accountUid: '100001', isReadOnly: false },
+    () => test.service.create({ templateId: 'template-a', name: 'stale-selection' }, actor))).rejects.toThrow('工作空间');
+  expect(test.repository.createRangeInstance).not.toHaveBeenCalled();
 });

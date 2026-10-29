@@ -346,7 +346,7 @@ export class CloudAccountContextsService {
       throw new NotFoundException('Cloud account context not found');
     }
     if (context.provider !== 'alibaba_cloud') {
-      throw new BadRequestException('当前版本仅支持将阿里云账号设为全局活跃账号；腾讯云账号可保存并进行只读验证。');
+      throw new BadRequestException('旧版全局入口仅支持将阿里云账号设为活跃账号；腾讯云账号请在云账号工作空间中选择并使用。');
     }
     if (context.status !== 'ready') {
       throw new BadRequestException('当前阿里云账号不可用，无法切换。');

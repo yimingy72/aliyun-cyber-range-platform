@@ -25,7 +25,7 @@ import {
   fetchRangeRecoveryStatus,
 } from '../../lib/admin-api';
 import { useAdminScreenCache } from '../../lib/admin-screen-cache';
-import { tencentImageError, verifiedTencentInstanceTypes } from '@/lib/cloud-execution-policy';
+import { supportsRangeProvisioning, tencentImageError, verifiedTencentInstanceTypes } from '@/lib/cloud-execution-policy';
 import { readCloudWorkspaceSelection } from '@/lib/cloud-workspace-selection';
 import { readAdminSession } from '@/lib/admin-auth-storage';
 import { beginRangeRecoveryIntent, clearRangeRecoveryIntent, readRangeRecoveryIntent, type RangeRecoveryIntent } from '@/lib/range-recovery-intent';
@@ -1288,7 +1288,8 @@ export function RangeInstanceDetailScreen({
   const recoveryInFlight = Boolean(trackedUpdateJobId && recoveryTriggeredJobsRef.current.has(trackedUpdateJobId));
   const canOperateInstance = !workspace?.isReadOnly && (!workspace || workspace.capabilities.provisioning) && detail?.status === 'running'
     && !isRecoverySubmitting && !pendingRecoveryLookup && !recoveryInFlight;
-  const canApplyInstance = canOperateInstance && workspace?.capabilities.rangeProvisioning !== false;
+  const rangeProvisioning = supportsRangeProvisioning(workspace);
+  const canApplyInstance = canOperateInstance && rangeProvisioning;
   const canEditTopology = canOperateInstance && !isSavingDraft && !isCopyingTemplate && !trackedUpdateJobId;
   const recoveryActionsDisabled = Boolean(workspace?.isReadOnly) || !session.profile?.id || isRecoverySubmitting || Boolean(pendingRecoveryLookup) || recoveryInFlight;
   const canRetryRecovery = detail?.recoverySummary?.canRetry !== false;
@@ -1576,7 +1577,7 @@ export function RangeInstanceDetailScreen({
 
   async function performRecoveryAction(trigger: 'retry' | 'destroy', replayOriginal = false) {
     if (!session.token || !detail || workspace?.isReadOnly || recoverySubmittingRef.current ||
-      (!replayOriginal && recoveryActionsDisabled)) return;
+      (!replayOriginal && (recoveryActionsDisabled || trigger === 'retry' && detail.status === 'create_failed' && !rangeProvisioning))) return;
     let intent: RangeRecoveryIntent;
     try {
       const existing = readRangeRecoveryIntent(recoveryScope);
@@ -2251,12 +2252,12 @@ export function RangeInstanceDetailScreen({
                         ))}
                       </ul>
                     ) : null}
-                    {detail.status === 'create_failed' && !canRetryRecovery ? (
+                    {detail.status === 'create_failed' && rangeProvisioning && !canRetryRecovery ? (
                       <p className="mt-1 text-xs text-destructive">该失败通常需要先按上述建议处理根因；确认已处理后可直接重试创建。</p>
                     ) : null}
                   </div>
                   <div className="flex shrink-0 flex-wrap gap-2">
-                    {detail.status === 'create_failed' ? (
+                    {detail.status === 'create_failed' && rangeProvisioning ? (
                       <Button
                         disabled={recoveryActionsDisabled}
                         onClick={() => void performRecoveryAction('retry')}
@@ -2308,16 +2309,15 @@ export function RangeInstanceDetailScreen({
                   >
                       {isSavingDraft ? '处理中...' : '保存草稿'}
                   </Button>
-                  <Button
+                  {rangeProvisioning ? <Button
                     disabled={!canApplyInstance || isSavingDraft || isCopyingTemplate || Boolean(trackedUpdateJobId)}
-                    title={!canApplyInstance ? '当前云账号尚未开放编排资源变更。' : undefined}
                     onClick={() => void handleApplyDraft()}
                     size="sm"
                     type="button"
                     variant="outline"
                   >
                       {isSavingDraft ? '处理中...' : '预览变更'}
-                  </Button>
+                  </Button> : null}
                   <Button
                     disabled={isSavingDraft || isCopyingTemplate}
                     onClick={() => { setTemplateCopyName(templateCopyName || `${detail.name ?? '编排'}-副本`); setIsTemplateCopyDialogOpen(true); }}
@@ -2356,6 +2356,7 @@ export function RangeInstanceDetailScreen({
                 </div>
               ) : (
                 <RangeInstanceTopologyWorkspace
+                  cloudProvider={detail.cloudProvider ?? workspace?.provider}
                   editable={canEditTopology}
                   deployedNodeIds={deployedNodeIds}
                   nodes={topologyNodes}

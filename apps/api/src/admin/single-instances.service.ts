@@ -6,12 +6,12 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
-import { describeAliyunEcsPasswordFailure, validateAliyunEcsPassword } from '@aliyun-cyber-range/scenario-runtime/compiled';
+import { describeAliyunEcsPasswordFailure, validateAliyunEcsPassword, validateTencentCvmPassword } from '@aliyun-cyber-range/scenario-runtime/compiled';
 import { createHash } from 'node:crypto';
 
 import type { SessionUserProfile } from './admin-user-auth';
 import { attachCreatedByUsernames } from './creator-display';
-import { generateAliyunEcsPassword } from './ecs-password-generator';
+import { generateCloudInstancePassword } from './ecs-password-generator';
 import {
   ADMIN_REPOSITORY,
   type AdminRepository,
@@ -22,6 +22,7 @@ import {
 import { RangeInstanceNodeActionsService } from './range-instance-node-actions.service';
 import { SingleInstanceBatchExecutionService } from './single-instance-batch-execution.service';
 import { SingleInstanceNetworkService } from './single-instance-network.service';
+import { assertTencentInstanceLogin } from '../provisioning/renderers/tencent-cloud-opentofu-renderer';
 import { assertTencentImagesAvailable } from '../provisioning/tencent-cloud-zone-instance-scheduler';
 import { assertPlatformExpirationSupportsCloudDeadline } from '../provisioning/cloud-release-deadlines';
 import { SystemConfigService, type InstanceTypeAvailabilitySnapshot, type SystemCloudAccountContext } from './system-config.service';
@@ -251,11 +252,22 @@ export class SingleInstancesService {
 
     if (accountContextFingerprint(accountContext) !== accountContextFingerprint(await this.systemConfigService.getExecutionAccountContext()))
       throw new ConflictException('云账号配置在规格检查期间发生变化，请重新提交。');
-    await this.requireEnabledPlatformImage(input.platformImageAssetId, currentUserId, accountContext);
+    const selectedImage = await this.requireEnabledPlatformImage(input.platformImageAssetId, currentUserId, accountContext);
+    const sourceSnapshot = selectedImage.sourceSnapshotId ? await this.adminRepository.getImageSnapshotById(selectedImage.sourceSnapshotId) : null;
+    let windows = `${sourceSnapshot?.osType ?? ''} ${sourceSnapshot?.platform ?? ''}`.toLowerCase().includes('windows');
     if (accountContext.provider === 'tencent_cloud') {
-      const selectedImage = await this.requireEnabledPlatformImage(input.platformImageAssetId,currentUserId,accountContext);
       const metadata = await assertTencentImagesAvailable(accountContext,[selectedImage.imageId]);
+      if (!Number.isInteger(systemDiskSize) || systemDiskSize > 1024) throw new BadRequestException('腾讯云系统盘大小必须为不超过 1024 GiB 的整数。');
       if (systemDiskSize < metadata[selectedImage.imageId].minimumSystemDiskSize) throw new ConflictException(`腾讯云镜像至少需要 ${metadata[selectedImage.imageId].minimumSystemDiskSize} GiB 系统盘。`);
+      windows = metadata[selectedImage.imageId].isWindows ?? windows;
+      // Reject provider-specific inputs before ensureDefaultProfile can create a shared cloud network.
+      const hostBaseName = normalizeOptionalValue(input.hostName) ?? normalizeOptionalValue(selectedImage.defaultHostName);
+      const password = input.password?.trim() || generateCloudInstancePassword(accountContext.provider);
+      try {
+        for (let index = 1; index <= input.quantity; index += 1) {
+          assertTencentInstanceLogin(password, hostBaseName ? this.resolveIndexedValue(hostBaseName, index, input.quantity) : '', windows);
+        }
+      } catch (error) { throw new BadRequestException(error instanceof Error ? error.message : '腾讯云登录配置无效。'); }
     }
     const profile = await this.singleInstanceNetworkService.ensureDefaultProfile(accountContext,currentUserId);
     this.assertFutureInstanceExpiration(input.expiresAt);
@@ -263,9 +275,13 @@ export class SingleInstancesService {
     if (accountContext.provider === 'tencent_cloud') {
       const metadata = await assertTencentImagesAvailable(accountContext,[image.imageId]);
       if (systemDiskSize < metadata[image.imageId].minimumSystemDiskSize) throw new ConflictException('腾讯云镜像系统盘要求已变化，请重新提交。');
+      if (metadata[image.imageId].isWindows !== undefined && metadata[image.imageId].isWindows !== windows) throw new ConflictException('腾讯云镜像操作系统信息已变化，请重新提交。');
     }
-    const sourceSnapshot = image.sourceSnapshotId ? await this.adminRepository.getImageSnapshotById(image.sourceSnapshotId) : null;
-    const runtimeUsername = `${sourceSnapshot?.osType ?? ''} ${sourceSnapshot?.platform ?? ''}`.toLowerCase().includes('windows') ? 'Administrator' : 'root';
+    if (accountContext.provider !== 'tencent_cloud') {
+      const latestSnapshot = image.sourceSnapshotId ? await this.adminRepository.getImageSnapshotById(image.sourceSnapshotId) : null;
+      windows = `${latestSnapshot?.osType ?? ''} ${latestSnapshot?.platform ?? ''}`.toLowerCase().includes('windows');
+    }
+    const runtimeUsername = windows ? 'Administrator' : 'root';
     const sharedPassword = input.password?.trim() || null;
     const quantity = input.quantity;
     const activeCount = (await this.adminRepository.listRangeInstances()).filter(
@@ -274,7 +290,7 @@ export class SingleInstancesService {
     const preparedMembers: CreateRangeInstanceInput[] = [];
     for (let index = 0; index < quantity; index += 1) {
       const quantityIndex = index + 1;
-      const password = sharedPassword ?? generateAliyunEcsPassword();
+      const password = sharedPassword ?? generateCloudInstancePassword(accountContext.provider);
       const network = this.singleInstanceNetworkService.allocateVswitch(profile, activeCount + index);
       const name = this.resolveIndexedValue(input.name, quantityIndex, quantity);
       const requestedHostBaseName =
@@ -282,6 +298,10 @@ export class SingleInstancesService {
       const hostName = requestedHostBaseName
         ? this.resolveIndexedValue(requestedHostBaseName, quantityIndex, quantity)
         : null;
+      if (accountContext.provider === 'tencent_cloud') {
+        try { assertTencentInstanceLogin(password, hostName ?? '', windows); }
+        catch (error) { throw new BadRequestException(error instanceof Error ? error.message : '腾讯云登录配置无效。'); }
+      }
       const hostKey = `single-ecs-${quantityIndex}`;
       const blueprint = buildSingleInstanceBlueprint({
         resolvedInstanceType: availability.matches[0].instanceTypeId,
@@ -508,11 +528,17 @@ export class SingleInstancesService {
     provider: SystemCloudAccountContext['provider'],
   ) {
     const normalized = password?.trim();
-    if (!normalized || provider !== 'alibaba_cloud') {
+    if (!normalized) {
       return;
     }
     const snapshot = image.sourceSnapshotId ? await this.adminRepository.getImageSnapshotById(image.sourceSnapshotId) : null;
     const windows = `${snapshot?.osType ?? ''} ${snapshot?.platform ?? ''}`.toLowerCase().includes('windows');
+    if (provider === 'tencent_cloud') {
+      // Live Tencent image metadata performs the OS-specific check before network creation.
+      const validation = validateTencentCvmPassword(normalized);
+      if (!validation.valid) throw new BadRequestException(`密码不符合腾讯云 CVM 要求：${validation.message ?? '密码无效'}。`);
+      return;
+    }
     const validation = validateAliyunEcsPassword(normalized, { windows });
     if (!validation.valid && validation.code) {
       throw new BadRequestException(`密码不符合阿里云 ECS 要求：${describeAliyunEcsPasswordFailure(validation.code)}。`);

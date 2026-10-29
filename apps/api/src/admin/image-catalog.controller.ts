@@ -8,6 +8,7 @@ import { OperationControlService, readOperationRequestMetadata } from '../operat
 import { CollectMogongContainersDto } from './dto/mogong-container.dto';
 import { containerReferenceStatus, isBoundMogongWorkspace, isCollectableMogongImage, readMogongImageCatalog } from './mogong-image-catalog';
 import { PlatformContainerImagesService } from './platform-container-images.service';
+import { assertAlibabaCloudFeature } from '../auth/cloud-provider-policy';
 
 export { isCollectableMogongImage } from './mogong-image-catalog';
 
@@ -29,6 +30,7 @@ export class ImageCatalogController {
 
   @Get('mogong')
   async listMogong() {
+    assertAlibabaCloudFeature('mogongCatalog');
     const catalog = await readMogongImageCatalog();
     const { snapshots } = await this.imageCatalogService.listCustom();
     const imageIds = new Set(snapshots.filter((item) => item.provider === 'alibaba_cloud').map((item) => item.imageId));
@@ -40,10 +42,11 @@ export class ImageCatalogController {
   }
 
   @Get('mogong/containers/preview')
-  previewMogongContainers() { return this.containerImages.preview(); }
+  previewMogongContainers() { assertAlibabaCloudFeature('mogongCatalog'); return this.containerImages.preview(); }
 
   @Post('mogong/containers/collect-all')
   collectMogongContainers(@Req() request: AuthenticatedPlatformRequest, @Body() body: CollectMogongContainersDto) {
+    assertAlibabaCloudFeature('mogongCatalog');
     const execute = () => this.containerImages.collectAll(body.catalogDigest, request.adminUser);
     if (request.authContext.source !== 'mcp') return execute();
     return this.operationControl.executeConfirmed({
@@ -60,6 +63,7 @@ export class ImageCatalogController {
 
   @Post('mogong/:id/collect')
   async collectMogong(@Req() request: AuthenticatedPlatformRequest, @Param('id') id: string) {
+    assertAlibabaCloudFeature('mogongCatalog');
     const catalog = await readMogongImageCatalog();
     const image = catalog.items.find((item) => String(item.id) === id);
     if (!image) throw new NotFoundException('墨攻镜像不存在');

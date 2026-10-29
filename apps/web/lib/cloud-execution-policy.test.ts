@@ -1,9 +1,18 @@
 import { describe, expect, it } from 'vitest';
-import { cloudExpiryError, minimumSystemDiskSize, tencentImageError, verifiedTencentInstanceTypes } from './cloud-execution-policy';
+import { cloudExpiryError, minimumSystemDiskSize, supportsRangeProvisioning, tencentImageError, verifiedTencentInstanceTypes } from './cloud-execution-policy';
 import type { InstanceTypeAvailabilitySnapshot, PlatformImageAsset } from './admin-types';
 const image = { provider: 'tencent_cloud', architecture: 'x86_64', minimumSystemDiskSize: 80 } as PlatformImageAsset;
 
 describe('Tencent execution form policy', () => {
+  it('fails closed for Tencent ranges without enabling or hiding supported single-instance features', () => {
+    const capabilities = { provisioning: true, imageImport: true, billingSync: true };
+    expect(supportsRangeProvisioning({ provider: 'tencent_cloud', capabilities })).toBe(false);
+    expect(supportsRangeProvisioning({ provider: 'tencent_cloud', capabilities: { ...capabilities, rangeProvisioning: false } })).toBe(false);
+    expect(supportsRangeProvisioning({ provider: 'tencent_cloud', capabilities: { ...capabilities, rangeProvisioning: true } })).toBe(true);
+    expect(supportsRangeProvisioning({ provider: 'alibaba_cloud', capabilities })).toBe(true);
+    expect(supportsRangeProvisioning({ provider: 'alibaba_cloud', capabilities: { ...capabilities, rangeProvisioning: false } })).toBe(false);
+    expect(supportsRangeProvisioning()).toBe(true);
+  });
   it('requires a minimum ten-minute expiry and the larger of platform minimum and verified image size', () => {
     const now = new Date('2026-10-10T00:00:00Z').getTime();
     expect(cloudExpiryError('2026-10-10T00:09:59Z', 'tencent_cloud', now)).toContain('10 分钟');

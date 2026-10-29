@@ -29,6 +29,28 @@ describe('Tencent Cloud context catalog and global configuration boundary', () =
       headers: expect.objectContaining({ 'X-TC-Action': 'DescribeZoneInstanceConfigInfos', 'X-TC-Region': context.defaultRegion }),
     }));
   });
+  it.each([false, true])('reports only launchable x86 specs in the public availability response (x86 present: %s)', async x86Available => {
+    const service = new SystemConfigService({} as never, {} as never);
+    jest.spyOn(service, 'getSelectedAccountContext').mockResolvedValue(context);
+    jest.spyOn(globalThis, 'fetch').mockResolvedValue(json({ InstanceTypeQuotaSet: [
+      ...(x86Available ? [item] : []),
+      { ...item, InstanceType: 'SR1.MEDIUM4', CpuType: 'Ampere Altra' },
+      { ...item, InstanceType: 'U1.MEDIUM4', CpuType: undefined },
+    ] }));
+    const available = await service.getInstanceTypeAvailability({ cpu: 2, memory: 4 });
+    expect(available.exactAvailable).toBe(x86Available);
+    expect(available.matches.map(match => match.instanceTypeId)).toEqual(x86Available ? ['S5.MEDIUM4'] : []);
+    expect(available.warning).toContain(x86Available ? '创建前会再次校验' : '平台暂不支持 ARM 或未知架构');
+  });
+  it('preserves the Alibaba availability response unchanged', async () => {
+    const service = new SystemConfigService({} as never, {} as never);
+    const alibaba = { ...context, provider: 'alibaba_cloud' as const, defaultRegion: 'cn-hangzhou', defaultZoneId: 'cn-hangzhou-h' };
+    const availability = { cpu: 2, memory: 4, regionId: alibaba.defaultRegion, zoneId: alibaba.defaultZoneId, exactAvailable: true,
+      matches: [{ instanceTypeId: 'ecs.c7.large', cpu: 2, memoryGiB: 4, family: 'ecs.c7', generation: '7', architecture: 'X86' }], warning: null };
+    jest.spyOn(service, 'getSelectedAccountContext').mockResolvedValue(alibaba);
+    jest.spyOn(service, 'getInstanceTypeAvailabilityInContext').mockResolvedValue(availability);
+    expect(await service.getInstanceTypeAvailability({ cpu: 2, memory: 4 })).toBe(availability);
+  });
   it('returns unavailable rather than an invented type when the exact shape is absent', async () => {
     const service = new SystemConfigService({} as never, {} as never);
     jest.spyOn(globalThis, 'fetch').mockResolvedValue(json({ InstanceTypeQuotaSet: [item] }));

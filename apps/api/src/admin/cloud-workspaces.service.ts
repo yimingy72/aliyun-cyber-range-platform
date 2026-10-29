@@ -157,7 +157,9 @@ export class CloudWorkspacesService {
           && (space.provider === 'alibaba_cloud' || process.env.TENCENTCLOUD_RANGE_NAT_EXECUTION_ENABLED === '1'),
         imageImport: !space.isReadOnly && Boolean(active) && (space.provider === 'tencent_cloud'
           || Boolean(active?.imageImportBucket && active.bucketStatus === 'ready')),
-        billingSync: !space.isReadOnly && Boolean(active) },
+        billingSync: !space.isReadOnly && Boolean(active),
+        ossBillingBinding: space.provider === 'alibaba_cloud' && !space.isReadOnly && Boolean(active),
+        mogongCatalog: space.provider === 'alibaba_cloud' },
     };
   }
 }

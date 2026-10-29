@@ -6,6 +6,19 @@ const account = { cloudWorkspaceId: 'space-a', id: 'context-a', provider: 'aliba
 const space = { id: 'space-a', provider: 'alibaba_cloud', accountUid: '111', displayName: '训练账号', isReadOnly: false, activeCloudAccountContextId: account.id, contexts: [account], capabilities: { provisioning: true, imageImport: false, billingSync: true } };
 const payload = { provider: 'alibaba_cloud', cloudWorkspaceId: 'space-a', regionId: account.regionId, zoneId: account.zoneId, accessKeyId: 'fixture-key', accessKeySecret: 'fixture-secret' };
 describe('cloud workspace MCP contract', () => {
+  it('preserves Tencent capability restrictions instead of dropping the provider-specific flags', async () => {
+    const tencent = { ...space, provider: 'tencent_cloud', contexts: [{ ...account, provider: 'tencent_cloud' }],
+      capabilities: { provisioning: true, rangeProvisioning: false, imageImport: true, billingSync: true,
+        ossBillingBinding: false, mogongCatalog: false, unknownPrivateFlag: 'omit' } };
+    const registry = createToolRegistry({ listCloudWorkspaces: async () => [tencent], switchCloudWorkspace: async () => tencent } as never);
+    for (const result of [await registry.callTool('cloud_workspace_list', ['settings:read'], {}),
+      await registry.callTool('cloud_workspace_switch', ['settings:write'], { cloudWorkspaceId: space.id })]) {
+      const serialized = JSON.stringify(result);
+      expect(serialized).toContain('"ossBillingBinding":false');
+      expect(serialized).toContain('"mogongCatalog":false');
+      expect(serialized).not.toContain('unknownPrivateFlag');
+    }
+  });
   it('separates read, selection, and manager binding scopes and marks selection as an idempotent write', async () => {
     const registry = createToolRegistry({} as never);
     const read = registry.listTools(['settings:read', 'settings:write'], 'user');

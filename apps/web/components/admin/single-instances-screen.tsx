@@ -23,7 +23,7 @@ import {
   launchSingleInstances,
   triggerSingleInstanceAction,
 } from '../../lib/admin-api';
-import { describeAliyunEcsPasswordFailure, validateAliyunEcsPassword } from '@aliyun-cyber-range/scenario-runtime';
+import { describeAliyunEcsPasswordFailure, validateAliyunEcsPassword, describeTencentCvmPasswordFailure, validateTencentCvmPassword } from '@aliyun-cyber-range/scenario-runtime';
 import { useAdminScreenCache } from '../../lib/admin-screen-cache';
 import { cloudExpiryError, minimumSystemDiskSize, tencentImageError, verifiedTencentInstanceTypes } from '@/lib/cloud-execution-policy';
 import { cloudProviderLabel, useCloudWorkspace } from './cloud-workspace-provider';
@@ -1063,14 +1063,22 @@ export function SingleInstancesScreen({
       }
 
       const providedPassword = createForm.password.trim();
-      if (providedPassword && (workspace?.provider ?? 'alibaba_cloud') === 'alibaba_cloud') {
+      if (providedPassword) {
         // The chosen asset is known: only its OS metadata may gate the Windows rule.
         const imageOsHint = `${selectedPlatformImage.osType ?? ''} ${selectedPlatformImage.platform ?? ''}`.trim().toLowerCase();
         const windowsPassword = imageOsHint.includes('windows');
-        const passwordValidation = validateAliyunEcsPassword(providedPassword, { windows: windowsPassword });
-        if (!passwordValidation.valid && passwordValidation.code) {
-          setCreateFormError(`密码不符合阿里云 ECS 要求：${describeAliyunEcsPasswordFailure(passwordValidation.code)}。`);
-          return;
+        if (workspace?.provider === 'tencent_cloud') {
+          const validation = validateTencentCvmPassword(providedPassword, { windows: windowsPassword });
+          if (!validation.valid && validation.code) {
+            setCreateFormError(`密码不符合腾讯云 CVM 要求：${describeTencentCvmPasswordFailure(validation.code, { windows: windowsPassword })}。`);
+            return;
+          }
+        } else {
+          const validation = validateAliyunEcsPassword(providedPassword, { windows: windowsPassword });
+          if (!validation.valid && validation.code) {
+            setCreateFormError(`密码不符合阿里云 ECS 要求：${describeAliyunEcsPasswordFailure(validation.code)}。`);
+            return;
+          }
         }
       }
 
@@ -1624,7 +1632,7 @@ export function SingleInstancesScreen({
 
       <section className="admin-workbench-surface admin-pagination-surface">
         <AdminPageHeader description="创建并管理训练实例、批次与生命周期。" title="实例管理" action={session.profile?.isPlatformManager ? <Button asChild variant="outline"><Link href="/admin/resource-alerts">资源告警</Link></Button> : undefined} />
-        {!canProvision && workspace ? <p className="mt-4 text-sm text-muted-foreground">{workspace.isReadOnly ? "当前账号工作空间为只读历史。" : `${cloudProviderLabel(workspace.provider)}实例创建仍在开发。`}</p> : null}
+        {!canProvision && workspace ? <p className="mt-4 text-sm text-muted-foreground">{workspace.isReadOnly ? "当前账号工作空间为只读历史。" : `当前${cloudProviderLabel(workspace.provider)}账号未就绪，请先检查基础配置。`}</p> : null}
 
         <div className="mt-4 flex min-h-0 flex-1 flex-col gap-4">
           {hasLoadedPlatformImages && !enabledPlatformImages.length ? (

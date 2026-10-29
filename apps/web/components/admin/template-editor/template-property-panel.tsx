@@ -9,8 +9,8 @@ import { Button } from '@/components/ui/button';
 
 import React, { type ReactNode, createContext, useContext, useEffect, useId, useRef, useState } from 'react';
 import { PanelRightClose } from 'lucide-react';
-import { nextAvailableGraphId, validateAliyunEcsPassword } from '@aliyun-cyber-range/scenario-runtime';
-import type { InstanceTypeAvailabilitySnapshot, PlatformImageAsset } from '../../../lib/admin-types';
+import { nextAvailableGraphId, validateAliyunEcsPassword, validateTencentCvmPassword } from '@aliyun-cyber-range/scenario-runtime';
+import type { CloudWorkspaceView, InstanceTypeAvailabilitySnapshot, PlatformImageAsset } from '../../../lib/admin-types';
 import type {
   DnatExternalPortConflict,
   EcsTemplateNode,
@@ -32,6 +32,7 @@ export type {
 } from '../../../lib/scenario-graph';
 
 type TemplatePropertyPanelProps = {
+  cloudProvider?: CloudWorkspaceView['provider'];
   selectedNode: TemplateNode | null;
   allNodes: TemplateNode[];
   platformImageAssets?: PlatformImageAsset[];
@@ -263,14 +264,18 @@ function TemplateImageCombobox({ selectedImageAsset, imageOptions, onSelectImage
 }
 
 type EcsCustomPasswordFieldProps = {
+  cloudProvider: CloudWorkspaceView['provider'];
+  windows: boolean;
   value: string | undefined;
   onChange: (nextValue: string) => void;
 };
 
-function EcsCustomPasswordField({ value, onChange }: EcsCustomPasswordFieldProps) {
+function EcsCustomPasswordField({ value, onChange, cloudProvider, windows }: EcsCustomPasswordFieldProps) {
   const customPassword = value ?? '';
   const validationResult =
-    customPassword.length > 0 ? validateAliyunEcsPassword(customPassword) : { valid: true, code: null, message: null };
+    customPassword.length > 0
+      ? (cloudProvider === 'tencent_cloud' ? validateTencentCvmPassword : validateAliyunEcsPassword)(customPassword, { windows })
+      : { valid: true, code: null, message: null };
   const hint =
     customPassword.length === 0
       ? '留空时，生成实例会为当前 ECS 自动生成随机密码'
@@ -281,6 +286,7 @@ function EcsCustomPasswordField({ value, onChange }: EcsCustomPasswordFieldProps
       <div>
         <Input
           aria-label="自定义密码"
+          aria-invalid={!validationResult.valid}
           autoComplete="new-password"
           type="text"
           value={customPassword}
@@ -299,6 +305,7 @@ function renderHostFields(
   linkedSwitchIdsByHostId: Record<string, string[]>,
   onUpdateNode: (nodeId: string, nextNode: TemplateNode) => void,
   options?: {
+    cloudProvider?: CloudWorkspaceView['provider'];
     runtimeNodeStatus?: string | null;
     runtimeExistingNode?: boolean;
   },
@@ -477,6 +484,8 @@ function renderHostFields(
           />
         </PropertyField>
         <EcsCustomPasswordField
+          cloudProvider={options?.cloudProvider ?? 'alibaba_cloud'}
+          windows={`${selectedPlatformImageAsset?.osType ?? ''} ${selectedPlatformImageAsset?.platform ?? ''}`.toLowerCase().includes('windows')}
           value={selectedNode.customPassword}
           onChange={(nextValue) =>
             onUpdateNode(selectedNode.id, {
@@ -828,6 +837,7 @@ function renderSwitchFields(
   allNodes: TemplateNode[],
   onUpdateNode: (nodeId: string, nextNode: TemplateNode) => void,
   runtimeExistingNode = false,
+  cloudProvider: CloudWorkspaceView['provider'] = 'alibaba_cloud',
 ) {
   const aclRules = selectedNode.aclRules ?? [];
   const dnatMappings = selectedNode.nat?.dnatMappings ?? [];
@@ -1170,6 +1180,7 @@ function renderSwitchFields(
           />
           <span>允许访问互联网（SNAT）</span>
         </label>
+        {cloudProvider === 'tencent_cloud' && dnatMappings.length > 0 && !selectedNode.nat?.snatEnabled ? <p className="text-xs text-destructive" role="alert">腾讯云 DNAT 所属交换机必须同时启用 SNAT；仅添加公网映射不能通过检测。</p> : null}
         {dnatMappings.length === 0 ? <p className="template-property-empty-note">暂无 DNAT 规则</p> : null}
         {dnatMappings.map((mapping, index) => (
           <div key={mapping.key} className="template-property-card">
@@ -1344,6 +1355,7 @@ function renderNodeGroups(
   linkedSwitchIdsByHostId: Record<string, string[]>,
   onUpdateNode: (nodeId: string, nextNode: TemplateNode) => void,
   options?: {
+    cloudProvider?: CloudWorkspaceView['provider'];
     instanceDetailMode?: boolean;
     runtimeNodeStatus?: string | null;
     runtimeExistingNode?: boolean;
@@ -1361,7 +1373,7 @@ function renderNodeGroups(
         options,
       );
     case 'switch':
-      return renderSwitchFields(selectedNode, allNodes, onUpdateNode, options?.runtimeExistingNode);
+      return renderSwitchFields(selectedNode, allNodes, onUpdateNode, options?.runtimeExistingNode, options?.cloudProvider);
     case 'router':
       return renderRouterFields(selectedNode, onUpdateNode, options?.runtimeExistingNode);
     default:
@@ -1370,6 +1382,7 @@ function renderNodeGroups(
 }
 
 export function TemplatePropertyPanel({
+  cloudProvider = 'alibaba_cloud',
   selectedNode,
   allNodes,
   platformImageAssets = [],
@@ -1433,6 +1446,7 @@ export function TemplatePropertyPanel({
               linkedSwitchIdsByHostId,
               updateEditableNode,
               {
+                cloudProvider,
                 runtimeNodeStatus,
                 runtimeExistingNode,
               },

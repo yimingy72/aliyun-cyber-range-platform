@@ -28,7 +28,7 @@ import {
 } from '../../lib/admin-api';
 import { useAdminScreenCache } from '../../lib/admin-screen-cache';
 import { workspaceStorageKey } from '../../lib/cloud-workspace-selection';
-import { cloudExpiryError } from '@/lib/cloud-execution-policy';
+import { cloudExpiryError, supportsRangeProvisioning } from '@/lib/cloud-execution-policy';
 import { useCloudWorkspace } from './cloud-workspace-provider';
 import { isUnauthorizedAdminError } from '../../lib/admin-screen';
 import type {
@@ -193,7 +193,8 @@ export function TemplatesScreen({
   const session = useAdminSession();
   const workspace = useCloudWorkspace()?.workspace;
   const canProvision = !workspace || (!workspace.isReadOnly && workspace.capabilities.provisioning);
-  const canLaunchRange = canProvision && (!workspace || (workspace.capabilities.rangeProvisioning ?? workspace.provider === 'alibaba_cloud'));
+  const rangeProvisioning = supportsRangeProvisioning(workspace);
+  const canLaunchRange = canProvision && rangeProvisioning;
   const isPageActive = useAdminRouteIsActive('/admin/scenarios');
   const [selectedView, setActiveView] = useState<RangeTemplateView>(() => readTemplateView(searchParams.get('view')));
   const activeView = selectedView === 'all' && !session.isAdmin ? 'mine' : selectedView;
@@ -728,6 +729,7 @@ export function TemplatesScreen({
   }
 
   async function handleOpenGenerateInstance(template: Scenario) {
+    if (!canLaunchRange) return;
     if (!session.token) {
       throw new Error('admin session missing');
     }
@@ -821,7 +823,7 @@ export function TemplatesScreen({
 
       <section className="admin-workbench-surface admin-pagination-surface">
         <AdminPageHeader description="管理可复用的演练蓝图" title="靶场编排" />
-        {!canProvision ? <p className="mt-4 text-sm text-muted-foreground">{workspace?.isReadOnly ? "当前账号工作空间为只读历史。" : "当前云厂商的拓扑编排与实例创建仍在开发。"}</p> : null}
+        {!canProvision ? <p className="mt-4 text-sm text-muted-foreground">{workspace?.isReadOnly ? "当前账号工作空间为只读历史。" : "当前云账号未就绪，请先检查基础配置。"}</p> : null}
         {canProvision && !canLaunchRange ? <p className="mt-4 text-sm text-muted-foreground">腾讯云编排开启待受控回收验证；可继续编辑模板和创建单实例。</p> : null}
         <div className="mt-4 flex min-h-0 flex-1 flex-col">
           <AdminListToolbar
@@ -1008,9 +1010,9 @@ export function TemplatesScreen({
                                       )}
                                     </>
                                   ) : null}
-                                  <DropdownMenuItem disabled={!canLaunchRange} onSelect={() => void handleOpenGenerateInstance(template)}>
+                                  {rangeProvisioning ? <DropdownMenuItem disabled={!canLaunchRange} onSelect={() => void handleOpenGenerateInstance(template)}>
                                     生成实例
-                                  </DropdownMenuItem>
+                                  </DropdownMenuItem> : null}
                                   {canManageCurrentTemplate ? (
                                     <DropdownMenuItem
                                       variant="destructive"

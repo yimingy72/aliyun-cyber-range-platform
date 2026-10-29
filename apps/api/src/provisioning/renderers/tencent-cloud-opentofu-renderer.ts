@@ -1,3 +1,5 @@
+import { validateTencentCvmPassword } from '@aliyun-cyber-range/scenario-runtime/compiled';
+
 export const TENCENTCLOUD_PROVIDER_VERSION = '1.83.34-range.1';
 export const TENCENTCLOUD_PROVIDER_LINUX_AMD64_SHA256 =
   'd6537266986c80b5c936cf84be3d8bbca31b1e1249277ced332399a3c65f4535';
@@ -67,9 +69,9 @@ function requireCloudId(value: string, prefix: string, field: string): void {
 }
 
 export function assertTencentInstanceLogin(password: string, hostName: string, windows = false) {
-  const groups = [/[a-z]/,/[A-Z]/,/[0-9]/,/[^A-Za-z0-9]/].filter(pattern => pattern.test(password)).length;
-  if (password.length < (windows ? 12 : 8) || password.length > 30 || password.startsWith('/') || /[^A-Za-z0-9()\x60~!@#$%^&*\-_+=|{}\[\]:;',.<>?\/]/.test(password) || groups < (windows ? 3 : 2)) throw new Error('Tencent instance password does not meet operating-system constraints');
-  const maxName = windows ? 15 : 30;
+  const validation = validateTencentCvmPassword(password, { windows });
+  if (!validation.valid) throw new Error(`Tencent instance password does not meet operating-system constraints${validation.message ? `: ${validation.message}` : ''}`);
+  const maxName = windows ? 15 : 60;
   if (hostName && (windows && hostName.includes('.') || hostName.length < 2 || hostName.length > maxName || !/^[A-Za-z0-9][A-Za-z0-9.-]*[A-Za-z0-9]$/.test(hostName) || /[.-]{2}/.test(hostName) || windows && /^\d+$/.test(hostName))) throw new Error('Tencent host name does not meet operating-system constraints');
 }
 

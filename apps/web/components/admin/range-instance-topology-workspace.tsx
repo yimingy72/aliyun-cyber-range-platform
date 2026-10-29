@@ -7,7 +7,7 @@ import type { TopologyResourceKind } from './template-editor/topology-flow-resou
 import type { TemplateEdge } from './template-editor/template-editor-screen';
 import { TemplatePropertyPanel } from './template-editor/template-property-panel';
 import type { TopologySelection, TopologyViewport } from './template-editor/topology-flow-types';
-import type { InstanceTypeAvailabilitySnapshot, PlatformImageAsset } from '../../lib/admin-types';
+import type { CloudWorkspaceView, InstanceTypeAvailabilitySnapshot, PlatformImageAsset } from '../../lib/admin-types';
 import type { TemplateNode } from '../../lib/scenario-graph';
 
 type NodePositionCommit = {
@@ -16,6 +16,7 @@ type NodePositionCommit = {
 };
 
 type RangeInstanceTopologyWorkspaceProps = {
+  cloudProvider?: CloudWorkspaceView['provider'];
   nodes: TemplateNode[];
   edges: TemplateEdge[];
   viewport?: TopologyViewport | null;
@@ -54,6 +55,7 @@ const emptySelection: TopologySelection = {
 };
 
 export function RangeInstanceTopologyWorkspace({
+  cloudProvider = 'alibaba_cloud',
   nodes,
   edges,
   viewport = null,
@@ -127,6 +129,7 @@ export function RangeInstanceTopologyWorkspace({
       />
 
       <TemplatePropertyPanel
+        cloudProvider={cloudProvider}
         allNodes={nodes}
         instanceTypeAvailability={instanceTypeAvailability}
         linkedSwitchIdsByHostId={linkedSwitchIdsByHostId}

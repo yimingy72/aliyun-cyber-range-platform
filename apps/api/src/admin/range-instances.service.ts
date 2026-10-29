@@ -33,7 +33,7 @@ import { attachCreatedByUsernames } from './creator-display';
 import { SaveRangeInstanceDraftDto } from './dto/range-instance-draft.dto';
 import { ApplyRangeInstanceDraftDto, PreviewRangeInstanceDraftDto, LaunchRangeInstanceDto } from './dto/range-instance.dto';
 import { SyncRangeInstanceTemplateDto } from './dto/range-instance-template-sync.dto';
-import { generateAliyunEcsPassword } from './ecs-password-generator';
+import { generateCloudInstancePassword } from './ecs-password-generator';
 import { signAliyunRpcQuery } from './image-catalog-rpc-signer';
 import { RangeTemplatesService } from './range-templates.service';
 import { validateRangeInstanceDraftPayload } from './range-instance-draft.validation';
@@ -217,6 +217,12 @@ export class RangeInstancesService {
       throw new NotFoundException('Range template not found');
     }
 
+    this.assertRangeProvisioningEnabled(template.cloudProvider);
+    const workspace = getCurrentCloudWorkspaceScope();
+    if (workspace && !('system' in workspace) && workspace.provider !== template.cloudProvider) {
+      throw new ConflictException('模板云厂商与当前工作空间不一致。');
+    }
+
     const sourceTemplateVersion = await this.rangeTemplatesService.resolveTemplateConsumptionVersion(template, currentUser);
 
     if (!sourceTemplateVersion) {
@@ -225,6 +231,7 @@ export class RangeInstancesService {
 
     const instance = await this.adminRepository.createRangeInstance({
       ...input,
+      cloudProvider: template.cloudProvider,
       createdBy: currentUser?.id ?? input.createdBy,
       ownerUserId: currentUser?.id ?? input.ownerUserId,
       sourceTemplateVersionId: sourceTemplateVersion.id,
@@ -296,7 +303,7 @@ export class RangeInstancesService {
       },
       currentUser,
     );
-    const runtimeCredentials = await this.resolveRuntimeCredentials(runtimeScenarioTemplateSpec);
+    const runtimeCredentials = await this.resolveRuntimeCredentials(runtimeScenarioTemplateSpec, template.cloudProvider);
     const actorId = currentUser?.id ?? 'admin';
 
     const instance = await this.adminRepository.createRangeInstance({
@@ -515,7 +522,7 @@ export class RangeInstancesService {
     const imageUser = typeof currentUserOrTriggeredBy === 'object' ? currentUserOrTriggeredBy
       : instance.ownerUserId ? await this.adminRepository.getPlatformUserById(instance.ownerUserId) : undefined;
     await this.assertNewDraftHostImages(instance, compiled.topologyGraph, imageUser ?? undefined);
-    const runtimeCredentials = await this.resolveRuntimeCredentials(compiled.scenarioTemplateSpec, instance.runtimeCredentials);
+    const runtimeCredentials = await this.resolveRuntimeCredentials(compiled.scenarioTemplateSpec, instance.cloudProvider, instance.runtimeCredentials);
     const viewport = this.readDraftViewport(draftTopologyGraph);
     const templateModulePath = await this.resolveApplyTemplateModulePath(instance);
     const topologySnapshot: ProvisionJobTopologySnapshot = {
@@ -945,7 +952,7 @@ export class RangeInstancesService {
       scenarioTemplateSpec: this.normalizeJsonRecord(scenarioTemplateSpec),
       compiledProvisionSpec: this.normalizeJsonRecord(instance.runtimeCompiledProvisionSpec ?? version?.compiledProvisionSpec ?? template.compiledProvisionSpec ?? {}),
       compiledSpec: this.normalizeJsonRecord(version?.compiledSpec ?? template.compiledSpec ?? {}),
-      runtimeCredentials: await this.resolveRuntimeCredentials(scenarioTemplateSpec, instance.runtimeCredentials),
+      runtimeCredentials: await this.resolveRuntimeCredentials(scenarioTemplateSpec, instance.cloudProvider, instance.runtimeCredentials),
     };
   }
 
@@ -1139,7 +1146,7 @@ export class RangeInstancesService {
     return (await response.json()) as ResponsePayload;
   }
 
-  private async resolveRuntimeCredentials(runtimeScenarioTemplateSpec: Record<string, unknown> | null, previous?: RangeRuntimeCredentials | null) {
+  private async resolveRuntimeCredentials(runtimeScenarioTemplateSpec: Record<string, unknown> | null, provider: RangeInstanceRecord['cloudProvider'], previous?: RangeRuntimeCredentials | null) {
     const hosts = Array.isArray(runtimeScenarioTemplateSpec?.hosts) ? runtimeScenarioTemplateSpec.hosts : [];
 
     if (hosts.length === 0) {
@@ -1163,23 +1170,11 @@ export class RangeInstancesService {
       const snapshot = asset?.sourceSnapshotId ? await this.adminRepository.getImageSnapshotById(asset.sourceSnapshotId) : null;
       const windows = `${snapshot?.osType ?? ''} ${snapshot?.platform ?? ''} ${record.imageId ?? ''}`.toLowerCase().includes('windows');
       const password = typeof host.accountPreset?.password === 'string' && host.accountPreset.password.trim()
-        ? host.accountPreset.password.trim() : previous?.[host.key]?.password ?? this.resolveHostPassword(undefined);
+        ? host.accountPreset.password.trim() : generateCloudInstancePassword(provider);
       runtimeCredentials[host.key] = { username: windows ? 'Administrator' : 'root', password };
     }
 
     return Object.keys(runtimeCredentials).length > 0 ? runtimeCredentials : null;
-  }
-
-  private resolveHostPassword(accountPreset: { password?: unknown } | undefined) {
-    if (typeof accountPreset?.password === 'string') {
-      const normalizedPassword = accountPreset.password.trim();
-
-      if (normalizedPassword.length > 0) {
-        return normalizedPassword;
-      }
-    }
-
-    return generateAliyunEcsPassword();
   }
 
   private isRuntimeScenarioHost(

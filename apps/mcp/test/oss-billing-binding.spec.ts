@@ -8,6 +8,17 @@ const value = { ledgerId: 'ledger-owned', bucketName: 'platform-owned-bucket', c
   bucketCreatedAt: '2026-09-01T00:00:00.000Z', verifiedAt: '2026-10-12T12:00:00.000Z', officialRequestId: 'request-owned', status: 'active' };
 const input = { bucketName: value.bucketName, effectiveStartAt: value.effectiveStartAt, dedicated: true };
 describe('dedicated Alibaba OSS billing tool contract', () => {
+  it('preserves unsupported-provider API errors on repeated Tencent calls without treating them as confirmation challenges', async () => {
+    const error = { code: 'CLOUD_PROVIDER_UNSUPPORTED', provider: 'tencent_cloud', feature: 'ossBillingBinding', message: 'Use Tencent COS import instead.' };
+    const fetch = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) => Response.json(error, { status: 400 }));
+    const registry = createToolRegistry(new PlatformApiClient({ baseUrl: 'https://fixture.invalid', token: 'fixture-token', cloudWorkspaceId: 'tencent-space', fetch }));
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      expect(await registry.callTool('billing_oss_bucket_create', scopes, { dedicated: true, idempotencyKey: 'same-key' }, 'admin'))
+        .toMatchObject({ isError: true, structuredContent: { result: { error } } });
+    }
+    expect(fetch).toHaveBeenCalledTimes(2);
+    expect(fetch.mock.calls[0]?.[1]).toMatchObject({ headers: expect.objectContaining({ 'x-cloud-workspace-id': 'tencent-space' }) });
+  });
   it('requires admin role and both settings write and billing sync for fee-scope writes', async () => {
     const registry = createToolRegistry({} as never);
     for (const name of ['billing_oss_bucket_bind', 'billing_oss_bucket_create', 'billing_oss_bucket_binding_end']) {

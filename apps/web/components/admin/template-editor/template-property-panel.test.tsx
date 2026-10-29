@@ -44,6 +44,32 @@ function createEcsNodeWithPlatformDefaults(): TemplateNode {
 }
 
 describe('TemplatePropertyPanel', () => {
+  it('explains the Tencent DNAT/SNAT constraint without silently enabling outbound traffic', () => {
+    const node: TemplateNode = { id: 'switch-1', kind: 'switch', label: 'Switch', zoneKey: 'core', cidr: '10.0.0.0/24', purpose: 'business-zone', aclRules: [],
+      nat: { snatEnabled: false, dnatMappings: [{ key: 'dnat-1', targetHostId: 'ecs-1', externalPort: 80, internalPort: 80, protocol: 'tcp' }] } };
+    const update = vi.fn();
+    const { rerender } = render(<TemplatePropertyPanel selectedNode={node} allNodes={[node]} cloudProvider="tencent_cloud" onUpdateNode={update} />);
+    expect(screen.getByRole('alert').textContent).toContain('必须同时启用 SNAT');
+    expect(update).not.toHaveBeenCalled();
+    rerender(<TemplatePropertyPanel selectedNode={node} allNodes={[node]} cloudProvider="alibaba_cloud" onUpdateNode={update} />);
+    expect(screen.queryByText(/必须同时启用 SNAT/)).toBeNull();
+  });
+
+  it('uses the provider and actual image OS for password validation instead of applying Aliyun rules to Tencent', () => {
+    const node = { ...createEcsNodeWithPlatformDefaults(), platformImageAssetId: 'image-os', customPassword: 'abcd1234' } as Extract<TemplateNode, { kind: 'ecs' }>;
+    const asset = { id: 'image-os', provider: 'tencent_cloud' as const, accountScopeKey: 'scope', regionId: 'ap-shanghai', sourceScope: 'public', imageId: 'img-test', displayName: 'Windows-looking Linux', enabled: true, tags: [], osType: 'linux' };
+    const props = { selectedNode: node, allNodes: [node], platformImageAssets: [asset], onUpdateNode: vi.fn() };
+    const { rerender } = render(<TemplatePropertyPanel {...props} cloudProvider="tencent_cloud" />);
+    expect(screen.getByLabelText('自定义密码').getAttribute('aria-invalid')).toBe('false');
+    rerender(<TemplatePropertyPanel {...props} cloudProvider="alibaba_cloud" />);
+    expect(screen.getByLabelText('自定义密码').getAttribute('aria-invalid')).toBe('true');
+    rerender(<TemplatePropertyPanel {...props} cloudProvider="tencent_cloud" platformImageAssets={[{ ...asset, osType: 'windows' }]} />);
+    expect(screen.getByText('Password must be 12-30 characters long.')).toBeTruthy();
+    const windowsNode = { ...node, customPassword: 'Abcd12345678' };
+    rerender(<TemplatePropertyPanel {...props} selectedNode={windowsNode} cloudProvider="tencent_cloud" platformImageAssets={[{ ...asset, osType: 'windows' }]} />);
+    expect(screen.getByLabelText('自定义密码').getAttribute('aria-invalid')).toBe('false');
+  });
+
   it('disables custom DNS on a known non-Windows image without guessing from its name', () => {
     const node = { ...createEcsNodeWithPlatformDefaults(), platformImageAssetId: 'image-os' } as Extract<TemplateNode, { kind: 'ecs' }>;
     const asset = { id: 'image-os', provider: 'alibaba_cloud' as const, accountScopeKey: 'scope', regionId: 'cn-hangzhou', sourceScope: 'public', imageId: node.imageId!, displayName: 'Windows-looking image', enabled: true, tags: [], osType: 'linux' };

@@ -468,7 +468,7 @@ describe('ImageCenterScreen', () => {
     expect(screen.queryByText('外国账号镜像')).toBeNull();
   });
 
-  it('requires separate real distribution/version fields for Tencent import and forwards them without guessing', async () => {
+  it.each(['qcow2', 'vmdk'])('accepts Tencent %s imports with real distribution/version fields and keeps unrelated features available', async (format) => {
     workspaceState.value = { workspace: { id: 'tencent-workspace', provider: 'tencent_cloud', accountUid: '100001', isReadOnly: false,
       activeCloudAccountContextId: 'tencent-context', contexts: [{ id: 'tencent-context', provider: 'tencent_cloud', cloudWorkspaceId: 'tencent-workspace', status: 'ready', imageImportBucket: 'fixture-cos-1250000000', bucketStatus: 'ready' }],
       capabilities: { provisioning: true, imageImport: true, billingSync: true } } };
@@ -477,16 +477,23 @@ describe('ImageCenterScreen', () => {
     render(<ImageCenterScreen />);
     await waitFor(() => expect(fetchPlatformImagesMock).toHaveBeenCalled());
     fireEvent.mouseDown(screen.getByRole('tab', { name: '我的镜像' }));
+    expect(screen.queryByRole('tab', { name: '墨攻镜像中心' })).toBeNull();
+    expect(screen.getByRole('tab', { name: '云上镜像来源' })).toBeTruthy();
     fireEvent.click(await screen.findByRole('button', { name: '上传镜像' }));
+    expect((screen.getByLabelText('系统盘镜像文件') as HTMLInputElement).accept).toContain('.vmdk');
     const version = await screen.findByLabelText('上传镜像操作系统版本') as HTMLInputElement;
     expect(version.required).toBe(true); expect(version.value).toBe('');
-    fireEvent.change(screen.getByLabelText('系统盘镜像文件'), { target: { files: [new File(['fixture'], 'fixture.qcow2', { type: 'application/octet-stream' })] } });
+    fireEvent.change(screen.getByLabelText('系统盘镜像文件'), { target: { files: [new File(['fixture'], `fixture.${format}`, { type: 'application/octet-stream' })] } });
     fireEvent.change(screen.getByLabelText('上传镜像名'), { target: { value: 'Tencent import' } });
     fireEvent.change(screen.getByLabelText('上传镜像系统版本'), { target: { value: 'Ubuntu' } });
     fireEvent.change(version, { target: { value: '22.04' } });
     fireEvent.submit(document.getElementById('image-import-form')!);
-    await waitFor(() => expect(createImageImportMock).toHaveBeenCalledWith(expect.anything(), expect.anything(), expect.objectContaining({ platform: 'Ubuntu', osVersion: '22.04', osType: 'linux', systemDiskSize: 50 })));
+    fireEvent.submit(document.getElementById('image-import-form')!);
+    await waitFor(() => expect(createImageImportMock).toHaveBeenCalledWith(expect.anything(), expect.anything(), expect.objectContaining({ platform: 'Ubuntu', osVersion: '22.04', osType: 'linux', systemDiskSize: 50, imageFormat: format })));
     expect(await screen.findByText('synthetic backend validation stopped upload')).toBeTruthy();
+    expect(createImageImportMock).toHaveBeenCalledTimes(1);
+    fireEvent.submit(document.getElementById('image-import-form')!);
+    await waitFor(() => expect(createImageImportMock).toHaveBeenCalledTimes(2));
   });
 
   it('uses the complete generic Tencent image center while respecting creation/import capabilities', async () => {
@@ -1087,6 +1094,19 @@ describe('ImageCenterScreen', () => {
     } finally {
       vi.unstubAllGlobals();
     }
+  });
+
+  it('does not offer or submit Tencent-only VMDK files for an Aliyun account', async () => {
+    render(<ImageCenterScreen apiBaseUrl="http://localhost:3001" />);
+    fireEvent.click(await screen.findByRole('button', { name: '上传镜像' }));
+    expect((screen.getByLabelText('系统盘镜像文件') as HTMLInputElement).accept).not.toContain('.vmdk');
+    fireEvent.change(screen.getByLabelText('系统盘镜像文件'), { target: { files: [new File(['disk'], 'fixture.vmdk')] } });
+    fireEvent.click(screen.getByRole('combobox', { name: '上传镜像格式' }));
+    expect(screen.queryByRole('option', { name: 'VMDK' })).toBeNull();
+    fireEvent.keyDown(screen.getByRole('combobox', { name: '上传镜像格式' }), { key: 'Escape' });
+    fireEvent.submit(document.getElementById('image-import-form')!);
+    expect(await screen.findByText('当前仅支持 .qcow2、.raw 和 .vhd 镜像文件。')).toBeTruthy();
+    expect(createImageImportMock).not.toHaveBeenCalled();
   });
 
   it('rejects a selected import format that does not match the file before creating an upload job', async () => {

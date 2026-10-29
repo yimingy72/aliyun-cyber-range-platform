@@ -12,7 +12,7 @@ import {
 import { ADMIN_REPOSITORY, AdminRepository, RangeInstanceRecord } from './admin.repository';
 import { buildAliyunTagParameters, buildBillingTags } from './billing-tagging';
 import type { SessionUserProfile } from './admin-user-auth';
-import { generateAliyunEcsPassword } from './ecs-password-generator';
+import { generateCloudInstancePassword } from './ecs-password-generator';
 import { PackedImagesService } from './packed-images.service';
 import { imageRpc } from './aliyun-image-rpc';
 import { describeTencentInstances, assertTencentOwnedInstance } from './tencent-cloud-resources';
@@ -181,7 +181,7 @@ export class RangeInstanceNodeActionsService {
       }, { name: displayName, description: payload.description?.trim() || null });
     }
     const defaultHostName = payload.defaultHostName?.trim() || readHostName(hostNode, nodeId);
-    const defaultPassword = payload.defaultPassword?.trim() || generateAliyunEcsPassword();
+    const defaultPassword = payload.defaultPassword?.trim() || generateCloudInstancePassword(accountContext.provider);
     const description = payload.description?.trim() || null;
     const ownerUserId = instance.ownerUserId ?? instance.createdBy;
     if (!ownerUserId || !accountContext.accountUid || !accountContext.cloudAccountContextId) throw new ConflictException('打包需要明确 owner 和已验证云账号。');
