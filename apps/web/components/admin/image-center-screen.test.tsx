@@ -1103,7 +1103,7 @@ describe('ImageCenterScreen', () => {
     fireEvent.change(screen.getByLabelText('系统盘镜像文件'), { target: { files: [new File(['disk'], 'fixture.vmdk')] } });
     fireEvent.click(screen.getByRole('combobox', { name: '上传镜像格式' }));
     expect(screen.queryByRole('option', { name: 'VMDK' })).toBeNull();
-    fireEvent.keyDown(screen.getByRole('combobox', { name: '上传镜像格式' }), { key: 'Escape' });
+    fireEvent.click(screen.getByRole('option', { name: 'QCOW2' }));
     fireEvent.submit(document.getElementById('image-import-form')!);
     expect(await screen.findByText('当前仅支持 .qcow2、.raw 和 .vhd 镜像文件。')).toBeTruthy();
     expect(createImageImportMock).not.toHaveBeenCalled();
