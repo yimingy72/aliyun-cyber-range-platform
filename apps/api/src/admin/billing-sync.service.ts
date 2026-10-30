@@ -309,7 +309,7 @@ export class BillingSyncService implements OnModuleInit, OnModuleDestroy {
           const candidates = input.proof.ledgers.filter(ledger => isPlatformCreatedLedger(ledger, input.proof)
             && ledger.cloudProvider === 'tencent_cloud' && ledger.cloudAccountUid === accountUid
             && ledger.cloudResourceId === item.cloudResourceId && ledger.cloudResourceType === classification.cloudResourceType
-            && ledger.regionId === region && day >= billingDayText(ledger.billingStartAt) && tencentCosBillLifetimeMatches(ledger, item.rawPayload, day));
+            && ledger.regionId === region && day >= billingDayText(ledger.billingStartAt) && tencentCosBillLifetimeMatches(ledger, item.rawPayload, input.proof));
           const ledger = classification.kind === 'direct' && candidates.length === 1 ? candidates[0] : null;
           const evidence = ledger ? null : pendingTencentBillingEvidence({ line: item.rawPayload, cloudAccountUid: accountUid, billingDate: day, proof: input.proof });
           // External resources and account/region aggregate rows have no exact platform creation proof.

@@ -9,6 +9,7 @@ afterEach(() => jest.restoreAllMocks());
 
 async function storage() {
   const repository = createMemoryAdminRepository(); const bucket = ownedCosFixture();
+  bucket.ownershipProof = { ...bucket.ownershipProof as Record<string, unknown>, verifiedAt: '2026-10-01T00:00:01.000Z', billingObservedThrough: '2026-10-01T00:00:00.000Z' };
   jest.spyOn(repository, 'listBillingManagedCosBuckets').mockImplementation(async () => [bucket]);
   const ledger = await repository.createBillingLedgerResource({ cloudProvider: 'tencent_cloud', cloudAccountUid: '100001', regionId: 'ap-shanghai', cloudResourceId: bucket.bucketName,
     cloudResourceType: 'oss_bucket', billingScope: 'platform', billingStartAt: start, tagsSnapshot: { PlatformManagedImportBucketId: bucket.id } });
@@ -18,7 +19,7 @@ describe('Tencent platform storage creation proof', () => {
   it('imports only complete official bucket IDs on a proven private dedicated bucket, without summing account aggregates', async () => {
     const { repository, bucket } = await storage();
     const fetch = jest.spyOn(global, 'fetch').mockImplementation(async () => signedTencentBillingResponse([
-      tencentBill({ Id: 'owned-cos', BusinessCode: 'p_cos', ResourceId: bucket.bucketName, ComponentSet: [{ RealCost: '0.400000001', CashPayAmount: '999' }] }),
+      tencentBill({ Id: 'owned-cos', BusinessCode: 'p_cos', ResourceId: bucket.bucketName, FeeBeginTime: '2026-09-30 00:00:00', FeeEndTime: '2026-09-30 23:59:59', ComponentSet: [{ RealCost: '0.400000001', CashPayAmount: '999' }] }),
       tencentBill({ Id: 'other-bucket', BusinessCode: 'p_cos', ResourceId: 'external-bucket-1250000000', ComponentSet: [{ RealCost: '999' }] }),
       tencentBill({ Id: 'aggregate', BusinessCode: 'p_cos', ResourceId: '100001;ap-shanghai;STANDARD', ComponentSet: [{ RealCost: '777' }] }),
     ]));
@@ -36,6 +37,7 @@ describe('Tencent platform storage creation proof', () => {
   });
   it('keeps a reused deleted bucket name out of costs unless official usage time belongs to its proven lifetime', async () => {
     const { repository, bucket, ledger } = await storage(); bucket.status = 'deleted'; bucket.deletedAt = new Date('2026-09-20T00:00:00Z');
+    bucket.ownershipProof = { ...bucket.ownershipProof as Record<string, unknown>, deletionRequestedAt: bucket.deletedAt.toISOString(), deletionOutcome: 'accepted' };
     await repository.updateBillingLedgerResource(ledger.id, { releasedAt: bucket.deletedAt });
     const fetch = jest.spyOn(global, 'fetch').mockImplementation(async () => signedTencentBillingResponse([tencentBill({ BusinessCode: 'p_cos', ResourceId: bucket.bucketName })]));
     await tencentBillingSync(repository).syncRange(WINDOW);

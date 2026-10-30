@@ -145,6 +145,8 @@ export class TencentCosManagedBucketService {
     }
   }
   private async verifyRemote(bucket: CloudImageImportBucket, context: Awaited<ReturnType<TencentCosManagedBucketService['credentials']>>) {
+    // Publish only after the complete identity/exclusive-use check succeeds.
+    const billingObservedThrough = new Date().toISOString();
     this.assertIdentity(bucket, context.credentials);
     const head = await requestCos({ contextCredentials: context.credentials, bucketName: bucket.bucketName, method: 'HEAD' });
     if (head.status === 404) throw new TencentCosRequestError('BUCKET_NOT_FOUND', 404);
@@ -181,14 +183,14 @@ export class TencentCosManagedBucketService {
     const proof = { ...preflight, kind: COS_BUCKET_PROOF_KIND, bucketId: bucket.id, cloudWorkspaceId: bucket.cloudWorkspaceId, cloudProvider: 'tencent_cloud', cloudAccountContextId: bucket.cloudAccountContextId,
       cloudAccountUid: bucket.cloudAccountUid, appId: bucket.appId, regionId: bucket.regionId, bucketName: bucket.bucketName, creationNonce: bucket.creationNonce,
       creatorUserId: bucket.creatorUserId, ownershipMarkerKey: bucket.ownershipMarkerKey, preflightAbsentAt: bucket.preflightAbsentAt.toISOString(), creationStartedAt: bucket.creationStartedAt.toISOString(),
-      cloudCreationAt: creationDate, ownerId: owner, aclPrivate: true, policyAbsent: true, exclusiveUsage: true, verificationPending: false, atomicTags: tags, verifiedAt: new Date().toISOString(),
+      cloudCreationAt: creationDate, ownerId: owner, aclPrivate: true, policyAbsent: true, exclusiveUsage: true, verificationPending: false, atomicTags: tags, verifiedAt: new Date().toISOString(), billingObservedThrough,
       iamRequestId: context.iamRequestId, headRequestId: requestId(head), aclRequestId: requestId(aclResponse), tagRequestId: requestId(tagResponse), serviceRequestId };
     if (!ownedCosBucketProof({ ...bucket, status: 'available', ownershipProof: proof })) conflict('COS 创建证明的时间或身份范围不完整。');
     return proof;
   }
   private async acceptVerification(bucket: CloudImageImportBucket, token: string, proof: Record<string,unknown>) {
     const changed = await this.prisma.cloudImageImportBucket.updateMany({ where: { id: bucket.id, leaseToken: token, leaseExpiresAt: { gt: new Date() }, status: bucket.status,
-      ownershipProof: { equals: json(bucket.ownershipProof) } }, data: { status: bucket.status === 'deleting' ? 'deleting' : 'available', ownershipProof: json(proof), errorMessage: null } });
+      ownershipProof: { equals: json(bucket.ownershipProof) } }, data: { status: bucket.status === 'deleting' ? 'deleting' : 'available', ownershipProof: json({ ...bucket.ownershipProof as Record<string, unknown>, ...proof }), errorMessage: null } });
     if (changed.count !== 1) conflict('COS 来源证明或租约在核验期间已变化。');
     return (await this.prisma.cloudImageImportBucket.findUnique({ where: { id: bucket.id } }))!;
   }
@@ -210,12 +212,14 @@ export class TencentCosManagedBucketService {
     const bucket = await this.prisma.cloudImageImportBucket.findUnique({ where: { id: input.bucketId } });
     if (!bucket || !['available', 'deleting'].includes(bucket.status) || !this.originProof(bucket)
       || bucket.cloudAccountContextId !== input.cloudAccountContextId || bucket.cloudAccountUid !== input.cloudAccountUid || bucket.regionId !== input.regionId) conflict('COS 持久来源证明或冻结身份不一致。');
+    const previous = bucket.ownershipProof as Record<string, unknown>;
+    if (previous.deletionRequestedAt && previous.deletionOutcome !== 'rejected') conflict('COS 桶删除结果尚待核对，不能续证或继续导入。');
     const context = await this.credentials(input.cloudAccountContextId);
     const proof = await this.verify(bucket, context);
-    if ((bucket.ownershipProof as Record<string,unknown>).verificationPending === true) {
-      const restored = await this.prisma.cloudImageImportBucket.updateMany({ where: { id: bucket.id, status: bucket.status, ownershipProof: { equals: json(bucket.ownershipProof) } }, data: { ownershipProof: json(proof), errorMessage: null } });
-      if (restored.count !== 1) conflict('COS 来源证明在核验期间已变化，请重新读取。');
-    }
+    // Preserve deletion metadata and refuse a concurrent identity/deletion change.
+    const restored = await this.prisma.cloudImageImportBucket.updateMany({ where: { id: bucket.id, status: bucket.status, ownershipProof: { equals: json(bucket.ownershipProof) } },
+      data: { ownershipProof: json({ ...previous, ...proof }), errorMessage: null } });
+    if (restored.count !== 1) conflict('COS 来源证明在核验期间已变化，请重新读取。');
     const current = await this.prisma.cloudImageImportBucket.findUnique({ where: { id: bucket.id } });
     if (!current || !ownedCosBucketProof(current)) conflict('COS 来源证明在核验期间已变化，请重新读取。');
     return this.view(current);
@@ -322,13 +326,13 @@ export class TencentCosManagedBucketService {
       const proof = ownedCosBucketProof(current)!;
       // A timed-out DELETE may have reached COS; subsequent ticks only check absence, never issue it again.
       if (proof.deletionRequestedAt && proof.deletionOutcome !== 'rejected') return { status: 'deleting' };
-      await this.verify(current, context);
+      current = await this.acceptVerification(current, token, await this.verify(current, context));
       if (await this.activeJobs(current)) return { status: 'active_jobs' };
       for (const kind of ['objects', 'versions', 'uploads'] as const) {
         if (!await this.emptyInventory(current, context.credentials, kind)) return { status: `nonempty_${kind}` };
       }
       if (await this.activeJobs(current)) return { status: 'active_jobs' };
-      current = await this.update(current, token, { status: 'deleting', ownershipProof: json({ ...proof, deletionRequestedAt: new Date().toISOString(), deletionOutcome: 'pending' }) });
+      current = await this.update(current, token, { status: 'deleting', ownershipProof: json({ ...current.ownershipProof as Record<string, unknown>, deletionRequestedAt: new Date().toISOString(), deletionOutcome: 'pending' }) });
       try {
         const result = await requestCos({ contextCredentials: context.credentials, bucketName: current.bucketName, method: 'DELETE' });
         current = await this.update(current, token, { ownershipProof: json({ ...current.ownershipProof as Record<string,unknown>, deletionRequestId: requestId(result), deletionOutcome: 'accepted' }) });

@@ -1,3 +1,4 @@
+import type { Prisma } from '@aliyun-cyber-range/database/generated/client';
 import { PrismaService } from '../src/database/prisma.service';
 import type { SystemConfigService } from '../src/admin/system-config.service';
 import { TencentCosManagedBucketService } from '../src/admin/tencent-cos-managed-bucket.service';
@@ -118,9 +119,60 @@ dbDescribe('owned COS bucket saga in isolated PostgreSQL', () => {
       expect(cloud.creates).toBe(1); expect(cloud.deletes).toBe(0);
     });
   });
+  it('persists full verification for active imports but does not renew on an active-job cleanup skip', async () => {
+    await runInCloudWorkspace(scope, async () => {
+      const bucket = await service.ensureImportBucket(input); await ownedObject(bucket, 'image-imports/active.qcow2');
+      const target = { bucketId: bucket.id, cloudAccountContextId: input.cloudAccountContextId, cloudAccountUid: scope.accountUid, regionId: bucket.regionId };
+      const row = (await prisma.cloudImageImportBucket.findUnique({ where: { id: bucket.id } }))!;
+      const { billingObservedThrough: _removed, ...legacy } = row.ownershipProof as Record<string, unknown>;
+      await prisma.cloudImageImportBucket.update({ where: { id: bucket.id }, data: { ownershipProof: legacy as Prisma.InputJsonValue } });
+      expect(await service.cleanupIfIdle(target)).toEqual({ status: 'active_jobs' });
+      expect((await prisma.cloudImageImportBucket.findUnique({ where: { id: bucket.id } }))!.ownershipProof).toEqual(legacy);
+      const before = Date.now(); let headAt = Infinity; const original = cloud.fetch.getMockImplementation()!;
+      cloud.fetch.mockImplementation(async (url, init) => { if (new URL(String(url)).hostname.startsWith(bucket.bucketName + '.cos.') && init?.method === 'HEAD') headAt = Math.min(headAt, Date.now()); return original(url, init); });
+      expect(await service.getOwnedBucket(target)).toEqual(bucket);
+      const proof = (await prisma.cloudImageImportBucket.findUnique({ where: { id: bucket.id } }))!.ownershipProof as Record<string, unknown>;
+      expect(Date.parse(String(proof.billingObservedThrough))).toBeGreaterThanOrEqual(before);
+      expect(Date.parse(String(proof.billingObservedThrough))).toBeLessThanOrEqual(headAt);
+      expect(Date.parse(String(proof.billingObservedThrough))).toBeLessThanOrEqual(Date.parse(String(proof.verifiedAt)));
+      expect(proof.cloudCreationAt).toBe(legacy.cloudCreationAt); expect(cloud.creates).toBe(1); expect(cloud.deletes).toBe(0);
+    });
+  });
+  it('does not publish a renewal when its proof CAS loses', async () => {
+    await runInCloudWorkspace(scope, async () => {
+      const bucket = await service.ensureImportBucket(input), before = (await prisma.cloudImageImportBucket.findUnique({ where: { id: bucket.id } }))!.ownershipProof;
+      const write = jest.spyOn(prisma.cloudImageImportBucket, 'updateMany').mockResolvedValueOnce({ count: 0 });
+      try { await expect(service.getOwnedBucket({ bucketId: bucket.id, cloudAccountContextId: input.cloudAccountContextId, cloudAccountUid: scope.accountUid, regionId: bucket.regionId })).rejects.toThrow('来源证明在核验期间已变化'); }
+      finally { write.mockRestore(); }
+      expect((await prisma.cloudImageImportBucket.findUnique({ where: { id: bucket.id } }))!.ownershipProof).toEqual(before); expect(cloud.deletes).toBe(0);
+    });
+  });
+  it('rejects a same-name new creation without advancing the old observation', async () => {
+    await runInCloudWorkspace(scope, async () => {
+      const bucket = await service.ensureImportBucket(input), before = (await prisma.cloudImageImportBucket.findUnique({ where: { id: bucket.id } }))!.ownershipProof as Record<string, unknown>;
+      const remote = cloud.buckets.get(bucket.bucketName)!; remote.createdAt = new Date(Date.parse(remote.createdAt) + 60_000).toISOString();
+      await expect(service.getOwnedBucket({ bucketId: bucket.id, cloudAccountContextId: input.cloudAccountContextId, cloudAccountUid: scope.accountUid, regionId: bucket.regionId })).rejects.toThrow('创建时间已变化');
+      const after = (await prisma.cloudImageImportBucket.findUnique({ where: { id: bucket.id } }))!;
+      expect((after.ownershipProof as Record<string, unknown>).billingObservedThrough).toBe(before.billingObservedThrough); expect(ownedCosBucketProof(after)).toBeNull(); expect(cloud.deletes).toBe(0);
+    });
+  });
+  it('never renews an unknown DELETE and preserves a rejected intent on successful verification', async () => {
+    await runInCloudWorkspace(scope, async () => {
+      const bucket = await service.ensureImportBucket(input), before = (await prisma.cloudImageImportBucket.findUnique({ where: { id: bucket.id } }))!.ownershipProof as Record<string, unknown>;
+      const requestedAt = new Date().toISOString(), proof = { ...before, deletionRequestedAt: requestedAt, deletionOutcome: 'unknown' };
+      await prisma.cloudImageImportBucket.update({ where: { id: bucket.id }, data: { status: 'deleting', ownershipProof: proof as Prisma.InputJsonValue } });
+      const target = { bucketId: bucket.id, cloudAccountContextId: input.cloudAccountContextId, cloudAccountUid: scope.accountUid, regionId: bucket.regionId }, calls = cloud.fetch.mock.calls.length;
+      await expect(service.getOwnedBucket(target)).rejects.toThrow('删除结果尚待核对'); expect(cloud.fetch.mock.calls).toHaveLength(calls);
+      expect((await prisma.cloudImageImportBucket.findUnique({ where: { id: bucket.id } }))!.ownershipProof).toEqual(proof);
+      await prisma.cloudImageImportBucket.update({ where: { id: bucket.id }, data: { ownershipProof: { ...proof, deletionOutcome: 'rejected' } as Prisma.InputJsonValue } });
+      await service.getOwnedBucket(target);
+      expect((await prisma.cloudImageImportBucket.findUnique({ where: { id: bucket.id } }))!.ownershipProof).toMatchObject({ deletionRequestedAt: requestedAt, deletionOutcome: 'rejected', billingObservedThrough: expect.any(String) }); expect(cloud.deletes).toBe(0);
+    });
+  });
   it('keeps a transient remote verification failure pending and restores the same creation proof on the next getter', async () => {
     await runInCloudWorkspace(scope, async () => {
       const bucket = await service.ensureImportBucket(input);
+      const previousObservation = ((await prisma.cloudImageImportBucket.findUnique({ where: { id: bucket.id } }))!.ownershipProof as Record<string, unknown>).billingObservedThrough;
       const original = cloud.fetch.getMockImplementation()!;
       cloud.fetch.mockImplementationOnce(original).mockImplementationOnce(original).mockRejectedValueOnce(new Error('transient verification fixture'));
       const target = { bucketId: bucket.id, cloudAccountContextId: input.cloudAccountContextId, cloudAccountUid: '100001', regionId: 'ap-shanghai' };
@@ -128,6 +180,7 @@ dbDescribe('owned COS bucket saga in isolated PostgreSQL', () => {
       const pending = (await prisma.cloudImageImportBucket.findUnique({ where: { id: bucket.id } }))!;
       expect(ownedCosBucketProof(pending)).toBeNull();
       expect((pending.ownershipProof as Record<string,unknown>).verificationPending).toBe(true);
+      expect((pending.ownershipProof as Record<string,unknown>).billingObservedThrough).toBe(previousObservation);
       expect(await service.getOwnedBucket(target)).toEqual(bucket);
       expect(ownedCosBucketProof((await prisma.cloudImageImportBucket.findUnique({ where: { id: bucket.id } }))!)).not.toBeNull();
       expect(cloud.creates).toBe(1);

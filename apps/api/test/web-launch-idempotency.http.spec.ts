@@ -1,3 +1,4 @@
+import { RangeInstanceModeGuard } from '../src/admin/range-instance-mode.guard';
 import { Test } from '@nestjs/testing';
 import request from 'supertest';
 import { AdminAuthGuard } from '../src/admin/admin-auth.guard';
@@ -27,7 +28,7 @@ describe.each(['ranges', 'instances'])('Web %s launch durable intake', kind => {
       { provide: RangeInstancesService, useValue: { launch } }, { provide: SingleInstancesService, useValue: { launch } },
       { provide: RangeInstanceNodeActionsService, useValue: {} }, { provide: SingleInstanceNetworkService, useValue: {} },
       { provide: OperationControlService, useValue: new OperationControlService(repository) },
-    ] }).overrideGuard(AdminAuthGuard).useValue({ canActivate(context: any) {
+    ] }).overrideGuard(RangeInstanceModeGuard).useValue({ canActivate: () => true }).overrideGuard(AdminAuthGuard).useValue({ canActivate(context: any) {
       const req = context.switchToHttp().getRequest();
       req.adminUser = { id: req.headers['x-test-user'] ?? 'alice', role: 'user' };
       req.authContext = { user: req.adminUser, source: 'web', oauthClientId: 'platform-web' };

@@ -1,6 +1,6 @@
 import { Prisma } from '@aliyun-cyber-range/database/generated/client';
 
-import { Inject, Injectable } from '@nestjs/common';
+import { BadGatewayException, Inject, Injectable } from '@nestjs/common';
 import { BillingDecimal } from './billing-amount';
 
 import {
@@ -65,7 +65,14 @@ function toIsoDate(value: Date) {
 }
 
 function sumPretax(items: Array<{ pretaxAmount: number }>) {
-  return items.reduce((total, item) => total.plus(item.pretaxAmount), new BillingDecimal(0)).toNumber();
+  const total = items.reduce((amount, item) => amount.plus(item.pretaxAmount), new BillingDecimal(0));
+  const value = total.toNumber();
+  // Individually exact numeric amounts need not have an exactly representable aggregate.
+  if (!total.isFinite() || !new BillingDecimal(value).equals(total)) {
+    throw new BadGatewayException({ code: 'BILLING_AGGREGATE_PRECISION',
+      message: '账单汇总金额超出现有数字响应可无损表达的精度，请查看已保存的费用明细。' });
+  }
+  return value;
 }
 
 function currencyAmounts(items: Array<{ currency: string; pretaxAmount: number }>) {
@@ -102,7 +109,7 @@ function platformBillingItems(items: BillingLineItemRecord[], proof: PlatformBil
     if (!ledger || !isPlatformCreatedLedger(ledger, proof) && !snapshotScope
       || (item.cloudWorkspaceId ?? 'legacy-unbound') !== (ledger.cloudWorkspaceId ?? 'legacy-unbound')
       || (item.cloudProvider ?? 'alibaba_cloud') !== ledger.cloudProvider
-      || (ledger.cloudProvider === 'alibaba_cloud' ? !isAlibabaBillingPayload(item.rawPayload) : !verifiedTencentItem(item, ledger))
+      || (ledger.cloudProvider === 'alibaba_cloud' ? !isAlibabaBillingPayload(item.rawPayload) : !verifiedTencentItem(item, ledger, proof))
       || item.cloudResourceId !== ledger.cloudResourceId || item.cloudResourceType !== ledger.cloudResourceType
       || item.cloudAccountUid && item.cloudAccountUid !== ledger.cloudAccountUid
       || item.rawPayload.OwnerID != null && String(item.rawPayload.OwnerID) !== ledger.cloudAccountUid
@@ -121,7 +128,7 @@ function platformBillingItems(items: BillingLineItemRecord[], proof: PlatformBil
   });
 }
 
-function verifiedTencentItem(item: BillingLineItemRecord, ledger: BillingLedgerResourceRecord) {
+function verifiedTencentItem(item: BillingLineItemRecord, ledger: BillingLedgerResourceRecord, proof: PlatformBillingProof) {
   const raw = item.rawPayload;
   const index = raw.__platformBillingComponentIndex;
   const component = Array.isArray(raw.ComponentSet) && Number.isSafeInteger(index) ? raw.ComponentSet[index as number] as Record<string, unknown> | undefined : null;
@@ -129,7 +136,7 @@ function verifiedTencentItem(item: BillingLineItemRecord, ledger: BillingLedgerR
   return isTencentBillingPayload(raw) && raw.OwnerUin === ledger.cloudAccountUid && raw.PayerUin === ledger.cloudAccountUid
     && raw.ResourceId === ledger.cloudResourceId && tencentBillRegionId(raw) === ledger.regionId
     && raw.BillDay === `${toIsoDate(item.billingDate)} 00:00:00` && raw.BillMonth === `${item.billCycle}-01 00:00:00`
-    && classification.kind === 'direct' && classification.cloudResourceType === ledger.cloudResourceType && tencentCosBillLifetimeMatches(ledger, raw, toIsoDate(item.billingDate))
+    && classification.kind === 'direct' && classification.cloudResourceType === ledger.cloudResourceType && tencentCosBillLifetimeMatches(ledger, raw, proof)
     && typeof component?.RealCost === 'string' && /^-?\d+(?:\.\d+)?$/.test(component.RealCost)
     && new Prisma.Decimal(component.RealCost).equals(item.pretaxAmount) && item.currency === 'CNY';
 }

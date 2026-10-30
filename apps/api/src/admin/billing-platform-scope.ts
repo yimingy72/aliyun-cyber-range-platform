@@ -119,7 +119,7 @@ export async function loadPlatformBillingProof(repository: AdminRepository, opti
       const bucket = cosBuckets.find(bucket => bucket.id === ledger.tagsSnapshot.PlatformManagedImportBucketId && bucket.cloudProvider === 'tencent_cloud'
         && ledger.cloudProvider === 'tencent_cloud' && bucket.cloudWorkspaceId === (ledger.cloudWorkspaceId ?? 'legacy-unbound') && bucket.cloudAccountUid === ledger.cloudAccountUid
         && bucket.regionId === ledger.regionId && bucket.bucketName === ledger.cloudResourceId && ownedCosBucketProof(bucket));
-      if (bucket && ledger.billingScope === 'platform' && ledger.ownerUserId === null && billingDayText(ledger.billingStartAt) === billingDayText(new Date(String(ownedCosBucketProof(bucket)!.cloudCreationAt)))) createdLedgerIds.add(ledger.id);
+      if (bucket && ledger.billingScope === 'platform' && ledger.ownerUserId === null && ledger.billingStartAt.getTime() === Date.parse(String(ownedCosBucketProof(bucket)!.cloudCreationAt))) createdLedgerIds.add(ledger.id);
       continue;
     }
     if (ledger.cloudResourceType === 'image' || ledger.cloudResourceType === 'snapshot') {
@@ -346,15 +346,39 @@ export function classifyTencentBillLine(line: Record<string, unknown>): ReturnTy
     : { kind: 'unknown', cloudResourceId: id, cloudResourceType: 'unknown', reason: '腾讯云账单资源类型尚未核实。' };
 }
 
-export function tencentCosBillLifetimeMatches(ledger: BillingLedgerResourceRecord, line: Record<string, unknown>, billingDate: string) {
-  if (ledger.cloudResourceType !== 'oss_bucket' || !ledger.releasedAt) return true;
-  if (billingDate <= billingDayText(ledger.releasedAt)) return true;
-  // Bucket names are reusable. A later billing day needs an explicit official usage interval from before deletion.
-  const end = typeof line.FeeEndTime === 'string' && /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/.test(line.FeeEndTime)
-    ? Date.parse(`${line.FeeEndTime.replace(' ', 'T')}+08:00`) : NaN;
-  const begin = typeof line.FeeBeginTime === 'string' && /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/.test(line.FeeBeginTime)
-    ? Date.parse(`${line.FeeBeginTime.replace(' ', 'T')}+08:00`) : NaN;
-  return Number.isFinite(begin) && Number.isFinite(end) && begin >= ledger.billingStartAt.getTime() && end >= begin && end <= ledger.releasedAt.getTime();
+export function tencentCosBillLifetimeMatches(ledger: BillingLedgerResourceRecord, line: Record<string, unknown>, proof: Pick<PlatformBillingProof, 'cosBuckets'>) {
+  if (ledger.cloudProvider !== 'tencent_cloud' || ledger.cloudResourceType !== 'oss_bucket') return true;
+  const bucket = proof.cosBuckets.find(row => row.id === ledger.tagsSnapshot.PlatformManagedImportBucketId
+    && row.cloudWorkspaceId === (ledger.cloudWorkspaceId ?? 'legacy-unbound') && row.cloudAccountUid === ledger.cloudAccountUid
+    && row.regionId === ledger.regionId && row.bucketName === ledger.cloudResourceId);
+  const ownership = bucket && ownedCosBucketProof(bucket);
+  if (!bucket || !ownership) return false;
+  // Only the start of a completed full remote identity check is an observation boundary.
+  // Historical proofs cannot be renewed from a local timestamp alone.
+  const observed = ownership.billingObservedThrough;
+  const observedAt = typeof observed === 'string' ? Date.parse(observed) : NaN;
+  if (!Number.isFinite(observedAt) || new Date(observedAt).toISOString() !== observed
+    || observedAt < ledger.billingStartAt.getTime() || observedAt > Date.parse(String(ownership.verifiedAt))) return false;
+  let endedAt = Math.min(observedAt, ledger.releasedAt?.getTime() ?? Infinity);
+  // An unknown DELETE may have succeeded; a later 404 is observation, not the original death time.
+  if (bucket.status === 'deleted' || ownership.deletionOutcome !== 'rejected'
+    && (bucket.status === 'deleting' || ownership.deletionRequestedAt != null)) {
+    const requested = ownership.deletionRequestedAt;
+    const time = typeof requested === 'string' ? Date.parse(requested) : NaN;
+    if (!['pending', 'accepted', 'unknown'].includes(String(ownership.deletionOutcome)) || !Number.isFinite(time)
+      || new Date(time).toISOString() !== requested || time < ledger.billingStartAt.getTime()) return false;
+    endedAt = Math.min(endedAt, time);
+  }
+  // COS bucket names are reusable. BillDay is bill attribution, not an incarnation identifier.
+  // https://cloud.tencent.com/document/api/555/19183#BillDetail
+  // Billing timestamps use UTC+8: https://cloud.tencent.com/document/product/555/7465
+  const usageTime = (value: unknown) => {
+    if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/.test(value)) return NaN;
+    const time = Date.parse(`${value.replace(' ', 'T')}+08:00`);
+    return Number.isFinite(time) && new Date(time + 8 * 60 * 60_000).toISOString().slice(0, 19).replace('T', ' ') === value ? time : NaN;
+  };
+  const begin = usageTime(line.FeeBeginTime), end = usageTime(line.FeeEndTime);
+  return Number.isFinite(begin) && Number.isFinite(end) && begin >= ledger.billingStartAt.getTime() && end >= begin && end <= endedAt;
 }
 
 export function pendingTencentBillingEvidence(input: {
@@ -368,7 +392,7 @@ export function pendingTencentBillingEvidence(input: {
   if (!owned.length) return null;
   const region = tencentBillRegionId(input.line);
   const classification = classifyTencentBillLine(input.line);
-  const exact = owned.filter(ledger => ledger.regionId === region && ledger.cloudResourceType === classification.cloudResourceType && tencentCosBillLifetimeMatches(ledger, input.line, input.billingDate));
+  const exact = owned.filter(ledger => ledger.regionId === region && ledger.cloudResourceType === classification.cloudResourceType && tencentCosBillLifetimeMatches(ledger, input.line, input.proof));
   return { kind: classification.kind === 'direct' && exact.length === 1 ? 'resource_pending' : 'source_pending',
     ledgerIds: owned.map(ledger => ledger.id), imageImportJobIds: [] };
 }

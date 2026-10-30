@@ -1,6 +1,7 @@
 import { BadRequestException, Body, Controller, Delete, Get, Param, Patch, Post, Query, Req, UseGuards } from '@nestjs/common';
 
 import { AdminAuthGuard } from './admin-auth.guard';
+import { RangeInstanceModeGuard } from './range-instance-mode.guard';
 import type { AuthenticatedPlatformRequest } from '../auth/request-auth-context';
 import { SaveRangeInstanceDraftDto } from './dto/range-instance-draft.dto';
 import { SaveRangeInstanceAsTemplateDto } from './dto/range-instance-template-copy.dto';
@@ -21,7 +22,7 @@ import { redactMcpMetadata } from '../auth/mcp-response.interceptor';
 type AuthenticatedAdminRequest = AuthenticatedPlatformRequest;
 
 @Controller('admin/ranges')
-@UseGuards(AdminAuthGuard)
+@UseGuards(AdminAuthGuard, RangeInstanceModeGuard)
 export class RangesController {
   constructor(
     private readonly rangeInstancesService: RangeInstancesService,

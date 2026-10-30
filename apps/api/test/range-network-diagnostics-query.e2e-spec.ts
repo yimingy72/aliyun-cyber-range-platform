@@ -1,3 +1,4 @@
+import { RangeInstanceModeGuard } from '../src/admin/range-instance-mode.guard';
 import { Test } from '@nestjs/testing';
 import request from 'supertest';
 import { configureApp } from '../src/bootstrap/configure-app';
@@ -9,7 +10,7 @@ import { OperationControlService } from '../src/operations/operation-control.ser
 describe('Range diagnostics REST query contract', () => {
   let app: any; const read = jest.fn(async () => ({ id: 'owned' })); const user = { id: 'alice', role: 'user' };
   beforeAll(async () => {
-    const module = await Test.createTestingModule({ controllers: [RangesController], providers: [{ provide: RangeInstancesService, useValue: { getById: read } }, { provide: RangeInstanceNodeActionsService, useValue: {} }, { provide: OperationControlService, useValue: {} }] }).overrideGuard(AdminAuthGuard).useValue({ canActivate(context: any) { context.switchToHttp().getRequest().adminUser = user; return true; } }).compile();
+    const module = await Test.createTestingModule({ controllers: [RangesController], providers: [{ provide: RangeInstancesService, useValue: { getById: read } }, { provide: RangeInstanceNodeActionsService, useValue: {} }, { provide: OperationControlService, useValue: {} }] }).overrideGuard(RangeInstanceModeGuard).useValue({ canActivate: () => true }).overrideGuard(AdminAuthGuard).useValue({ canActivate(context: any) { context.switchToHttp().getRequest().adminUser = user; return true; } }).compile();
     app = module.createNestApplication(); configureApp(app); await app.init();
   });
   beforeEach(() => read.mockClear()); afterAll(async () => app.close());
