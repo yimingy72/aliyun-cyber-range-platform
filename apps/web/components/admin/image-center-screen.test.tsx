@@ -538,8 +538,12 @@ describe('ImageCenterScreen', () => {
     expect(await screen.findByText('腾讯平台镜像')).toBeTruthy();
     expect(screen.queryByRole('button', { name: '创建实例 腾讯平台镜像' })).toBeNull();
     fireEvent.mouseDown(screen.getByRole('tab', { name: '云上镜像来源' }));
-    expect(await screen.findByRole('tab', { name: '腾讯云自定义镜像' })).toBeTruthy();
-    expect(screen.getByRole('tab', { name: '腾讯云公共镜像' })).toBeTruthy();
+    const selector = await screen.findByRole('combobox', { name: '云上镜像来源切换' });
+    expect(selector.textContent).toContain('腾讯云自定义镜像');
+    fireEvent.keyDown(selector, { key: 'ArrowDown' });
+    expect(await screen.findByRole('option', { name: '腾讯云公共镜像' })).toBeTruthy();
+    expect(screen.queryByRole('option', { name: 'ACR 容器镜像' })).toBeNull();
+    fireEvent.keyDown(screen.getByRole('listbox'), { key: 'Escape' });
     expect(screen.queryByText('只读预览')).toBeNull();
     fireEvent.mouseDown(screen.getByRole('tab', { name: '我的镜像' }));
     expect((await screen.findByRole('button', { name: '上传镜像' }) as HTMLButtonElement).disabled).toBe(true);
@@ -583,7 +587,7 @@ describe('ImageCenterScreen', () => {
     const cloudPanel = await screen.findByRole('tabpanel', { name: '云上镜像来源' });
     expect(within(cloudPanel).queryByRole('tabpanel')).toBeNull();
     expect(screen.getByRole('combobox', { name: '云上镜像来源切换' }).textContent).toContain('阿里云自定义镜像');
-    expect(screen.getAllByRole('tabpanel')).toHaveLength(2);
+    expect(screen.getAllByRole('tabpanel')).toHaveLength(1);
   });
 
   it('renders 平台镜像 / 我的镜像 / 云上镜像来源 and loads all payloads', async () => {
