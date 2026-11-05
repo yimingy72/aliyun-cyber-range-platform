@@ -1,3 +1,4 @@
+import * as imageCapacity from '../src/admin/aliyun-image-capacity';
 import { fixturePlan } from './opentofu-state-fixture';
 import fs from 'node:fs/promises';
 import os from 'node:os';
@@ -157,6 +158,7 @@ describe('OpenTofu persisted destroy recovery', () => {
   );
 
   it('persists apply-attempt evidence before invoking apply and reuses partial state for compensation', async () => {
+    const capacity = jest.spyOn(imageCapacity, 'readAliyunImageSystemDisk').mockResolvedValue({ imageId: 'mock.vhd', minimumSystemDiskSize: 40, requestId: 'capacity-receipt' });
     const f = await fixture(); await fs.mkdir(path.join(f.root, 'infra/module'), { recursive: true });
     const onApplyStart = jest.fn(async () => undefined);
     f.runner.apply.mockImplementation(async () => {
@@ -175,6 +177,7 @@ describe('OpenTofu persisted destroy recovery', () => {
     const originalVars = await fs.readFile(path.join(f.workspaceDir, 'range.auto.tfvars.json'), 'utf8');
     await expect(f.provisioner.destroy(input)).rejects.toThrow('previous apply outcome is unknown');
     expect(f.runner.destroy).toHaveBeenCalled();
+    expect(capacity).toHaveBeenCalledTimes(1);
     expect(await fs.readFile(path.join(f.workspaceDir, 'range.auto.tfvars.json'), 'utf8')).toBe(originalVars); f.assertNoLookup();
   });
 });

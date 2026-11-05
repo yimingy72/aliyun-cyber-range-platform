@@ -37,6 +37,10 @@ describe('OpenTofuRangeProvisioner multi-NIC scheduling', () => {
     const fetchMock = jest.fn(async (input: RequestInfo | URL) => {
       const url = String(input);
 
+      if (url.includes('Action=DescribeImages')) {
+        return new Response(JSON.stringify({ RequestId: 'capacity-receipt', TotalCount: 1, Images: { Image: [{ ImageId: new URL(url).searchParams.get('ImageId'), Status: 'Available', Size: 40 }] } }), { status: 200 });
+      }
+
       if (url.includes('Action=DescribeInstanceTypes')) {
         return {
           ok: true,
@@ -214,6 +218,10 @@ describe('OpenTofuRangeProvisioner multi-NIC scheduling', () => {
     const originalFetch = global.fetch;
     const fetchMock = jest.fn(async (input: RequestInfo | URL) => {
       const url = String(input);
+
+      if (url.includes('Action=DescribeImages')) {
+        return new Response(JSON.stringify({ RequestId: 'capacity-receipt', TotalCount: 1, Images: { Image: [{ ImageId: new URL(url).searchParams.get('ImageId'), Status: 'Available', Size: 40 }] } }), { status: 200 });
+      }
 
       if (url.includes('Action=DescribeInstanceTypes')) {
         return {

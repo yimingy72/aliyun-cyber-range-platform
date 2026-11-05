@@ -7,8 +7,9 @@ if (url && (new URL(url).hostname !== 'eco-stop-db' || new URL(url).pathname !==
 const databaseDescribe = url ? describe : describe.skip;
 const scope = { cloudWorkspaceId: 'power-repository-test', provider: 'alibaba_cloud' as const, accountUid: '100001' };
 databaseDescribe('power migration, CAS and worker claims', () => {
-  const prisma = new PrismaService({ datasources: { db: { url } } }), repository = new PrismaAdminRepository(prisma);
+  let prisma: PrismaService, repository: PrismaAdminRepository;
   beforeAll(async () => runInSystemCloudWorkspaceScope(async () => {
+    prisma = new PrismaService({ datasources: { db: { url: url! } } }); repository = new PrismaAdminRepository(prisma);
     await prisma.cloudWorkspace.create({ data: { id: scope.cloudWorkspaceId, provider: scope.provider, accountUid: scope.accountUid, displayName: 'Ephemeral power test' } });
   }));
   afterAll(async () => {

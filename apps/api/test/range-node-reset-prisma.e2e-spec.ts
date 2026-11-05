@@ -6,8 +6,9 @@ const url=process.env.NODE_RESET_TEST_DATABASE_URL;
 const databaseDescribe=url?describe:describe.skip;
 const scope={cloudWorkspaceId:'node-reset-repository-fixture',provider:'alibaba_cloud' as const,accountUid:'10001'};
 databaseDescribe('reset enum migration and atomic Prisma queue',()=>{
-  const prisma=new PrismaService({datasources:{db:{url}}}),repository=new PrismaAdminRepository(prisma);
+  let prisma: PrismaService, repository: PrismaAdminRepository;
   beforeAll(async()=>runInSystemCloudWorkspaceScope(async()=>{
+    prisma=new PrismaService({datasources:{db:{url:url!}}});repository=new PrismaAdminRepository(prisma);
     await prisma.cloudWorkspace.create({data:{id:scope.cloudWorkspaceId,provider:scope.provider,accountUid:scope.accountUid,displayName:'ephemeral reset test'}});
   }));
   afterAll(async()=>{
