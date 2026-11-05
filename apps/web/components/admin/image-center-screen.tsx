@@ -1,7 +1,7 @@
 'use client';
 
 import React from 'react';
-import { useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { ChevronDown, MoreHorizontal, RefreshCw, Upload } from 'lucide-react';
 
@@ -20,7 +20,6 @@ import { Input } from '@/components/ui/input';
 import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group';
 import { Label } from '@/components/ui/label';
 import { TableCell, TableRow } from '@/components/ui/table';
-import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 
 import {
   collectPlatformImage,
@@ -81,6 +80,7 @@ import { AdminListToolbar } from './shared/admin-list-toolbar';
 import { AdminDialog, AdminConfirmationDialog, type AdminDialogSize } from './shared/admin-dialog';
 import { AdminPaginatedList } from './shared/admin-paginated-list';
 import { TableLoadingState } from './shared/table-loading-state';
+import { AcrImageCatalogView } from './acr-image-catalog';
 import { MogongImageCatalogView } from './mogong-image-catalog';
 import { useAdminSession } from './use-admin-session';
 import { useCloudWorkspace } from './cloud-workspace-provider';
@@ -121,6 +121,10 @@ type ImageImportDialogDraft = {
   bootMode: 'BIOS' | 'UEFI';
   imageFormat: 'qcow2' | 'raw' | 'vhd';
   systemDiskSize: string;
+};
+
+const acrMatchLabels = {
+  matched: 'ACR 已匹配', candidate: 'ACR 候选待确认', ambiguous: 'ACR 有多个候选', unmatched: 'ACR 未匹配', not_checked: 'ACR 待同步',
 };
 
 const ASSET_COLUMNS: readonly AdminDataColumn[] = [
@@ -515,45 +519,6 @@ function ImageCenterDialog({
   );
 }
 
-function CloudSourceTabs({
-  activeTab,
-  children,
-  isCloudView,
-  providerName,
-  onTabChange,
-}: {
-  activeTab: ActiveTab;
-  children: React.ReactNode;
-  isCloudView: boolean;
-  providerName: string;
-  onTabChange: (tab: 'custom' | 'public') => void;
-}) {
-  if (!isCloudView) {
-    return <>{children}</>;
-  }
-
-  const cloudTab = activeTab === 'public' ? 'public' : 'custom';
-
-  return (
-    <Tabs
-      onValueChange={(tab) => {
-        if (tab === 'custom' || tab === 'public') {
-          onTabChange(tab);
-        }
-      }}
-      value={cloudTab}
-    >
-      <TabsList aria-label="云上镜像来源切换" variant="line">
-        <TabsTrigger value="custom">{providerName}自定义镜像</TabsTrigger>
-        <TabsTrigger value="public">{providerName}公共镜像</TabsTrigger>
-      </TabsList>
-      <TabsContent className="mt-4" value={cloudTab}>
-        {children}
-      </TabsContent>
-    </Tabs>
-  );
-}
-
 export function ImageCenterScreen({
   apiBaseUrl = 'http://localhost:3001',
 }: ImageCenterScreenProps) {
@@ -594,9 +559,15 @@ function CloudImageCenterScreen({
 
   const [activeTab, setActiveTab] = useState<ActiveTab>('platform');
   const [showMogong, setShowMogong] = useState(false);
+  const [acrSelected, setAcrSelected] = useState(false);
+  const [acrActionHost, setAcrActionHost] = useState<HTMLDivElement | null>(null);
+  const showAcr = acrSelected && !showMogong && activeTab !== 'platform' && activeTab !== 'mine' && provider === 'alibaba_cloud' && session.isAdmin;
   const [mogongActionHost, setMogongActionHost] = useState<HTMLDivElement | null>(null);
   const [mogongRefreshRevision, setMogongRefreshRevision] = useState(0);
   const screenCache = useAdminScreenCache();
+  const invalidateAcrMatches = useCallback(() => {
+    screenCache?.invalidate(apiBaseUrl, session.token, 'platform-container-images:');
+  }, [apiBaseUrl, screenCache, session.token]);
   const cachedPlatformAssets = screenCache?.read<PlatformImageAssetListPayload>(
     apiBaseUrl,
     session.token,
@@ -627,6 +598,7 @@ function CloudImageCenterScreen({
   const [tagManagerError, setTagManagerError] = useState('');
   const mountedRef = useRef(true);
   useEffect(() => { mountedRef.current = true; return () => { mountedRef.current = false; }; }, []);
+  const [platformTypeFilter, setPlatformTypeFilter] = useState('');
   const [platformCreatedByFilter, setPlatformCreatedByFilter] = useState('');
   const [platformTagFilter, setPlatformTagFilter] = useState('');
   const [myTagFilter, setMyTagFilter] = useState('');
@@ -1051,7 +1023,7 @@ function CloudImageCenterScreen({
   }, [apiBaseUrl, hasCreatingImages, hasImportingJobs, isPageActive, session.token]);
 
   useEffect(() => {
-    if (!isPageActive || !session.isReady) {
+    if (!isPageActive || !session.isReady || showAcr) {
       return;
     }
 
@@ -1061,6 +1033,7 @@ function CloudImageCenterScreen({
       setContainersLoaded(false);
       setMyAssets([]);
       setAvailablePlatformImageTags([]);
+      setPlatformTypeFilter('');
       setPlatformCreatedByFilter('');
       setPlatformTagFilter('');
       setPublicScope(null);
@@ -1218,6 +1191,7 @@ function CloudImageCenterScreen({
     screenCache,
     session.isReady,
     session.token,
+    showAcr,
   ]);
 
   async function handleSyncPublicImages() {
@@ -1721,12 +1695,12 @@ function CloudImageCenterScreen({
   );
   const filteredPlatformAssets = platformAssets.filter(
     (asset) =>
-      matchesPlatformAssetSearch(asset, searchName) &&
+      platformTypeFilter !== 'container' && matchesPlatformAssetSearch(asset, searchName) &&
       (!platformCreatedByFilter || getPlatformAssetCreator(asset) === platformCreatedByFilter) &&
       (!platformTagFilter || asset.tags.some((tag) => tag.id === platformTagFilter)),
   );
   const filteredPlatformContainers = platformContainers.filter((asset) =>
-    (!normalizeKeyword(searchName) || asset.displayName.toLowerCase().includes(normalizeKeyword(searchName))) &&
+    platformTypeFilter !== 'vm' && (!normalizeKeyword(searchName) || asset.displayName.toLowerCase().includes(normalizeKeyword(searchName))) &&
     (!platformCreatedByFilter || (asset.creator?.trim() || '—') === platformCreatedByFilter) && !platformTagFilter,
   );
   const filteredMyAssets = myAssets.filter(
@@ -1746,7 +1720,7 @@ function CloudImageCenterScreen({
 
   useEffect(() => {
     setPage(activeTab, 1);
-  }, [activeTab, myTagFilter, platformCreatedByFilter, platformTagFilter, searchName]);
+  }, [activeTab, myTagFilter, platformCreatedByFilter, platformTagFilter, platformTypeFilter, searchName]);
 
   const activePagination = getPagination(activeItemsCount, tabPages[activeTab], pageSize);
   const visiblePages = buildVisiblePages(activePagination.totalPages, activePagination.page);
@@ -1928,7 +1902,9 @@ function CloudImageCenterScreen({
         <AdminDataTableCell column={imageIdColumn!}>—</AdminDataTableCell>
         <AdminDataTableCell column={createdByColumn!}>{asset.creator || '—'}</AdminDataTableCell>
         <AdminDataTableCell column={tagsColumn!}>—</AdminDataTableCell>
-        <AdminDataTableCell column={statusColumn!}><Badge variant="secondary">{asset.referenceStatus === 'needs_review' ? '引用待核验' : '待支持实例'}</Badge></AdminDataTableCell>
+        <AdminDataTableCell column={statusColumn!}><Badge variant={asset.acrMatch === 'matched' ? 'default' : 'secondary'} title={asset.referenceStatus === 'needs_review' ? '源仓库引用待核验' : undefined}>
+          {asset.acrMatch ? acrMatchLabels[asset.acrMatch] : asset.referenceStatus === 'needs_review' ? '引用待核验' : '待支持实例'}
+        </Badge></AdminDataTableCell>
         <AdminDataTableCell column={actionsColumn!}>
           {session.isAdmin && !workspace?.isReadOnly ? (
             <DropdownMenu>
@@ -2025,7 +2001,7 @@ function CloudImageCenterScreen({
   const activeRevalidationError = revalidationErrors[activeTab] ?? '';
   const isActiveTabLoading = (!loadedTabs[activeTab] || activeTab === 'platform' && !containersLoaded) && !activeTabError;
   const isRefreshing = refreshingTabs[activeTab] || (isLoading && loadedTabs[activeTab]);
-  const hasActiveFilters = !!searchName || (activeTab === 'platform' && (!!platformCreatedByFilter || !!platformTagFilter)) || (activeTab === 'mine' && !!myTagFilter);
+  const hasActiveFilters = !!searchName || (activeTab === 'platform' && (!!platformTypeFilter || !!platformCreatedByFilter || !!platformTagFilter)) || (activeTab === 'mine' && !!myTagFilter);
   const emptyState = hasActiveFilters
     ? {
         title: '没有匹配的镜像',
@@ -2033,7 +2009,7 @@ function CloudImageCenterScreen({
           ? '请调整名称或镜像 ID 筛选条件。'
           : activeMainView === 'mine'
             ? '请调整名称或标签筛选条件。'
-            : '请调整名称、创建人或标签筛选条件。',
+            : '请调整名称、类型、创建人或标签筛选条件。',
       }
     : activeTab === 'platform'
       ? {
@@ -2102,9 +2078,11 @@ function CloudImageCenterScreen({
               ...(session.isAdmin ? [{ label: '云上镜像来源', value: 'cloud' }] : []),
             ]}
             searchControls={
-              <div className={session.isAdmin ? `${showMogong || (activeTab !== 'platform' && activeTab !== 'mine') ? 'hidden sm:block ' : ''}w-full sm:w-[22.5rem]` : 'w-full sm:w-auto'}>
+              <div className={session.isAdmin ? `${showMogong ? 'hidden sm:block ' : ''}w-full sm:w-[22.5rem]` : 'w-full sm:w-auto'}>
                 {!showMogong && activeTab === 'platform' ? (
-                  <div className="grid w-full gap-2 sm:w-auto sm:grid-cols-[11rem_11rem]">
+                  <div className="grid w-full grid-cols-2 gap-2 sm:grid-cols-3">
+                    <AdminSelectField ariaLabel="按镜像类型筛选" emptyOptionLabel="全部类型"
+                      onValueChange={setPlatformTypeFilter} options={[{ label: '虚拟机', value: 'vm' }, { label: '容器', value: 'container' }]} value={platformTypeFilter} />
                     <AdminSelectField
                       ariaLabel="按创建人筛选"
                       className="w-full"
@@ -2140,13 +2118,28 @@ function CloudImageCenterScreen({
                     options={platformImageTags.map((tag) => ({ label: tag.name, value: tag.id }))}
                     value={myTagFilter}
                   />
-                ) : undefined}
+                 ) : !showMogong ? (
+                   <AdminSelectField
+                     ariaLabel="云上镜像来源切换"
+                     className="w-full sm:w-44"
+                     onValueChange={(value) => {
+                       setAcrSelected(value === 'acr');
+                       if (value === 'custom' || value === 'public') setActiveTab(value);
+                     }}
+                     options={[
+                       { label: `${providerName}自定义镜像`, value: 'custom' },
+                       { label: `${providerName}公共镜像`, value: 'public' },
+                       ...(provider === 'alibaba_cloud' ? [{ label: 'ACR 容器镜像', value: 'acr' }] : []),
+                     ]}
+                     value={showAcr ? 'acr' : activeTab === 'public' ? 'public' : 'custom'}
+                   />
+                 ) : undefined}
               </div>
             }
             action={
               <div className={session.isAdmin ? 'flex w-56 flex-wrap items-center gap-2' : 'flex flex-wrap items-center gap-2'}>
                 {session.isAdmin ? <Button disabled={workspace?.isReadOnly || pendingActionKeys.length > 0} onClick={() => { setTagManagerError(''); setTagManagerOpen(true); }} size="sm" type="button" variant="outline">管理标签</Button> : null}
-                {showMogong ? <div ref={setMogongActionHost} /> : activeTab === 'platform' || activeTab === 'mine' ? (
+                {showMogong ? <div ref={setMogongActionHost} /> : showAcr ? <div ref={setAcrActionHost} /> : activeTab === 'platform' || activeTab === 'mine' ? (
                   <Button
                     disabled={!canImportImages || pendingActionKeys.includes('create:image-import')}
                     title={imageImportUnavailableMessage ?? undefined}
@@ -2209,6 +2202,9 @@ function CloudImageCenterScreen({
                   setMogongRefreshRevision((value) => value + 1);
                 }}
               />
+            ) : showAcr ? (
+              <AcrImageCatalogView apiBaseUrl={apiBaseUrl} token={session.token} search={searchName}
+                actionHost={acrActionHost} readOnly={Boolean(workspace?.isReadOnly)} logout={session.logout} onCatalogChanged={invalidateAcrMatches} />
             ) : <AdminPaginatedList
               className="mt-4"
               footer={
@@ -2229,12 +2225,6 @@ function CloudImageCenterScreen({
                 ) : null
               }
             >
-              <CloudSourceTabs
-                providerName={providerName}
-                activeTab={activeTab}
-                isCloudView={activeMainView === 'cloud'}
-                onTabChange={setActiveTab}
-              >
                 <div className="space-y-4">
                   {activeTab === 'mine' && visibleImageImportJobs.length > 0 ? (
                     <div className="image-import-job-list" aria-live="polite">
@@ -2362,7 +2352,6 @@ function CloudImageCenterScreen({
                   </div>
 
                 </div>
-              </CloudSourceTabs>
             </AdminPaginatedList>}
           </AdminListToolbar>
         </div>

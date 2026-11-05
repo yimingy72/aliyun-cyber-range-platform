@@ -1,5 +1,6 @@
-import { BadRequestException, ConflictException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ConflictException, ForbiddenException, Injectable, NotFoundException, Optional } from '@nestjs/common';
 import { getCurrentCloudWorkspaceScope } from '../auth/cloud-workspace-scope';
+import { AcrCatalogService } from './acr-catalog.service';
 import { PrismaService } from '../database/prisma.service';
 import type { SessionUserProfile } from './admin-user-auth';
 import { containerReferenceStatus, isBoundMogongWorkspace, isCollectableMogongContainer, mogongContainerDigest, readMogongImageCatalog, type MogongImage } from './mogong-image-catalog';
@@ -8,12 +9,15 @@ const publicFields = { id: true, sourceId: true, displayName: true, creator: tru
 
 @Injectable()
 export class PlatformContainerImagesService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(private readonly prisma: PrismaService, @Optional() private readonly acr?: AcrCatalogService) {}
 
   async list() {
     const scope = getCurrentCloudWorkspaceScope();
     if (!scope || 'system' in scope) throw new ForbiddenException('Cloud workspace scope is required');
-    return { items: await this.prisma.platformContainerImage.findMany({ select: publicFields, orderBy: { createdAt: 'desc' } }) };
+    const match = this.acr?.matcher();
+    if (!match) return { items: await this.prisma.platformContainerImage.findMany({ select: publicFields, orderBy: { createdAt: 'desc' } }) };
+    const assets = await this.prisma.platformContainerImage.findMany({ select: { ...publicFields, imageReference: true }, orderBy: { createdAt: 'desc' } });
+    return { items: assets.map(({ imageReference, ...asset }) => ({ ...asset, acrMatch: match(imageReference) })) };
   }
 
   private async source() {

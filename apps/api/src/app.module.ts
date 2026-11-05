@@ -6,6 +6,8 @@ import path from 'node:path';
 
 import { ADMIN_REPOSITORY } from './admin/admin.repository';
 import { AdminAuthGuard } from './admin/admin-auth.guard';
+import { AcrCatalogController } from './admin/acr-catalog.controller';
+import { AcrCatalogService } from './admin/acr-catalog.service';
 import { ImageCatalogController } from './admin/image-catalog.controller';
 import { PlatformContainerImagesController } from './admin/platform-container-images.controller';
 import { PlatformContainerImagesService } from './admin/platform-container-images.service';
@@ -105,6 +107,7 @@ function resolveProjectRootDir() {
     CloudWorkspacesController,
     PlatformSessionController,
     ImageCatalogController,
+    AcrCatalogController,
     PlatformContainerImagesController,
     TencentCloudCatalogController,
     ImageImportsController,
@@ -119,6 +122,7 @@ function resolveProjectRootDir() {
     AdminAuthGuard,
     BillingBssClient,
     ImageCatalogService,
+    AcrCatalogService,
     PlatformContainerImagesService,
     TencentCloudCatalogService,
     CloudAccountContextsService,

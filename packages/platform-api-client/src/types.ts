@@ -431,6 +431,8 @@ export type PlatformApiClientLike = {
   removeRangeTemplate(id: string, operation?: OperationRequest): Promise<void>;
   listPlatformImages(view?: PlatformImageView): Promise<PlatformImageAsset[]>;
   listPlatformContainerImages(): Promise<PlatformContainerImage[]>;
+  listAcrImageCatalog(filters?: { page?: number; pageSize?: 20 | 50 | 100; search?: string }): Promise<AcrImageCatalog>;
+  syncAcrImageCatalog(): Promise<{ state: 'running' }>;
   previewMogongContainers(): Promise<MogongContainerPreview>;
   collectMogongContainers(catalogDigest: string, operation?: OperationRequest): Promise<MogongContainerCollectResult>;
   listPlatformImageTags(): Promise<PlatformImageTag[]>;
@@ -531,6 +533,16 @@ export type PlatformApiClientLike = {
   packSingleInstanceImage(id: string, payload?: SingleInstanceActionPayload, operation?: OperationRequest): Promise<Record<string, unknown>>;
 };
 
-export type PlatformContainerImage = { id: string; sourceId: number; displayName: string; creator: string | null; referenceStatus: string; createdAt: string };
+export type AcrMatch = 'matched' | 'candidate' | 'ambiguous' | 'unmatched' | 'not_checked';
+export type AcrImage = {
+  id: string; region: string; instance: string; repository: string; tag: string; digest: string | null;
+  domains: string[]; status: string; updatedAt: string | null;
+};
+export type AcrImageCatalog = {
+  state: 'idle' | 'running' | 'ready' | 'failed'; error: string | null; syncedAt: string | null;
+  regionCount: number; instanceCount: number; repositoryCount: number; imageCount: number;
+  total: number; page: number; pageSize: number; items: AcrImage[];
+};
+export type PlatformContainerImage = { acrMatch?: AcrMatch; id: string; sourceId: number; displayName: string; creator: string | null; referenceStatus: string; createdAt: string };
 export type MogongContainerPreview = { digest: string; eligible: number; alreadyCollected: number; toCollect: number; needsReview: number; capturedAt: string };
 export type MogongContainerCollectResult = { added: number; alreadyCollected: number; eligible: number };
