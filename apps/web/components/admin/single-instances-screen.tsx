@@ -56,6 +56,7 @@ import {
   AdminDataTableRevalidationNotice,
   AdminDataTableState,
   AdminDataTableText,
+  ADMIN_TABLE_WIDTHS,
   type AdminDataColumn,
 } from './shared/admin-data-table';
 import { AdminListToolbar } from './shared/admin-list-toolbar';
@@ -77,28 +78,28 @@ type SingleInstancesScreenProps = {
 type ListMode = 'active' | 'history';
 
 const activeInstanceColumns = [
-  { id: 'name', label: '实例 / 批次', priority: 'primary' },
-  { id: 'image', label: '镜像', priority: 'secondary' },
+  { id: 'name', label: '实例 / 批次', priority: 'primary', minWidth: '12rem' },
+  { id: 'image', label: '镜像', priority: 'secondary', minWidth: '12rem' },
   { id: 'specification', label: '数量 / 规格', priority: 'primary', width: '7rem' },
   { id: 'public-ip', label: '公网 IP', priority: 'primary', width: '10rem' },
-  { id: 'status', label: '状态', priority: 'secondary', width: '8rem' },
-  { id: 'created-at', label: '创建时间', priority: 'detail', width: '10.5rem' },
-  { id: 'expires-at', label: '到期时间', priority: 'detail', width: '10.5rem' },
-  { id: 'created-by', label: '创建人', priority: 'detail', width: '7rem' },
   { id: 'credentials', label: '账号 / 密码', priority: 'detail', width: '9rem' },
-  { id: 'actions', label: '操作', priority: 'primary', width: '13rem' },
+  { id: 'status', label: '状态', priority: 'secondary', width: ADMIN_TABLE_WIDTHS.status },
+  { id: 'created-at', label: '创建时间', priority: 'detail', width: ADMIN_TABLE_WIDTHS.dateTime },
+  { id: 'expires-at', label: '到期时间', priority: 'detail', width: ADMIN_TABLE_WIDTHS.dateTime },
+  { id: 'created-by', label: '创建人', priority: 'tertiary', width: ADMIN_TABLE_WIDTHS.creator },
+  { id: 'actions', label: '操作', priority: 'primary', width: ADMIN_TABLE_WIDTHS.actions },
 ] as const satisfies readonly AdminDataColumn[];
 
 const historyInstanceColumns = [
-  { id: 'name', label: '实例 / 批次', priority: 'primary' },
-  { id: 'image', label: '镜像', priority: 'secondary' },
+  { id: 'name', label: '实例 / 批次', priority: 'primary', minWidth: '12rem' },
+  { id: 'image', label: '镜像', priority: 'secondary', minWidth: '12rem' },
   { id: 'summary', label: '数量 / 规格', priority: 'primary', width: '7rem' },
   { id: 'public-ip', label: '公网 IP', priority: 'primary', width: '10rem' },
-  { id: 'status', label: '状态', priority: 'secondary', width: '8rem' },
-  { id: 'started-at', label: '开启时间', priority: 'detail', width: '10.5rem' },
-  { id: 'ended-at', label: '结束时间', priority: 'secondary', width: '10.5rem' },
+  { id: 'status', label: '状态', priority: 'secondary', width: ADMIN_TABLE_WIDTHS.status },
+  { id: 'started-at', label: '开启时间', priority: 'detail', width: ADMIN_TABLE_WIDTHS.dateTime },
+  { id: 'ended-at', label: '结束时间', priority: 'secondary', width: ADMIN_TABLE_WIDTHS.dateTime },
   { id: 'duration', label: '运行时长', priority: 'detail', width: '8rem' },
-  { id: 'created-by', label: '创建人', priority: 'detail', width: '7rem' },
+  { id: 'created-by', label: '创建人', priority: 'tertiary', width: ADMIN_TABLE_WIDTHS.creator },
 ] as const satisfies readonly AdminDataColumn[];
 
 type CreateDialogState = {
@@ -1543,13 +1544,13 @@ export function SingleInstancesScreen({
         <AdminDataTableCell column={columns[1]}>{getImageLabel(instance)}</AdminDataTableCell>
         <AdminDataTableCell column={columns[2]}>{getSpecLabel(instance)}</AdminDataTableCell>
         <AdminDataTableCell column={columns[3]}>{getPublicIp(instance)}</AdminDataTableCell>
-        <AdminDataTableCell column={columns[4]}>
+        <AdminDataTableCell column={columns[4]}>{renderCredentials(instance)}</AdminDataTableCell>
+        <AdminDataTableCell column={columns[5]}>
           <InstancePowerBadge instance={instance} />
         </AdminDataTableCell>
-        <AdminDataTableCell column={columns[5]}>{formatDateTime(instance.createdAt)}</AdminDataTableCell>
-        <AdminDataTableCell column={columns[6]}><span className="whitespace-nowrap text-xs tabular-nums">{formatDateTime(instance.expiresAt)}</span></AdminDataTableCell>
-        <AdminDataTableCell column={columns[7]}>{instance.createdBy?.trim() || '暂无'}</AdminDataTableCell>
-        <AdminDataTableCell column={columns[8]}>{renderCredentials(instance)}</AdminDataTableCell>
+        <AdminDataTableCell className="text-xs tabular-nums" column={columns[6]}>{formatDateTime(instance.createdAt)}</AdminDataTableCell>
+        <AdminDataTableCell column={columns[7]}><span className="whitespace-nowrap text-xs tabular-nums">{formatDateTime(instance.expiresAt)}</span></AdminDataTableCell>
+        <AdminDataTableCell column={columns[8]}>{instance.createdBy?.trim() || '暂无'}</AdminDataTableCell>
         <AdminDataTableCell column={columns[9]}>{renderInstanceActions(instance, actions)}</AdminDataTableCell>
       </>
     );
@@ -1591,9 +1592,9 @@ export function SingleInstancesScreen({
         <AdminDataTableCell column={columns[2]}>{getSpecLabel(instance)}</AdminDataTableCell>
         <AdminDataTableCell column={columns[3]}>{getPublicIp(instance)}</AdminDataTableCell>
         <AdminDataTableCell column={columns[4]}><InstancePowerBadge instance={instance} /></AdminDataTableCell>
-        <AdminDataTableCell column={columns[5]}>{formatDateTime(startedAt)}</AdminDataTableCell>
-        <AdminDataTableCell column={columns[6]}>{formatDateTime(endedAt)}</AdminDataTableCell>
-        <AdminDataTableCell column={columns[7]}>{formatDuration(startedAt, endedAt)}</AdminDataTableCell>
+        <AdminDataTableCell className="text-xs tabular-nums" column={columns[5]}>{formatDateTime(startedAt)}</AdminDataTableCell>
+        <AdminDataTableCell className="text-xs tabular-nums" column={columns[6]}>{formatDateTime(endedAt)}</AdminDataTableCell>
+        <AdminDataTableCell className="text-xs tabular-nums" column={columns[7]}>{formatDuration(startedAt, endedAt)}</AdminDataTableCell>
         <AdminDataTableCell column={columns[8]}>{instance.createdBy?.trim() || 'admin'}</AdminDataTableCell>
       </>
     );
@@ -1763,8 +1764,8 @@ export function SingleInstancesScreen({
                                     <AdminDataTableCell column={columns[4]}>
                                       {formatBatchSummary(group.instances)}
                                     </AdminDataTableCell>
-                                    <AdminDataTableCell column={columns[5]}>{formatDateTime(group.batch.createdAt)}</AdminDataTableCell>
-                                    <AdminDataTableCell column={columns[6]}>{formatDateTime(group.batch.expiresAt)}</AdminDataTableCell>
+                                    <AdminDataTableCell className="text-xs tabular-nums" column={columns[5]}>{formatDateTime(group.batch.createdAt)}</AdminDataTableCell>
+                                    <AdminDataTableCell className="text-xs tabular-nums" column={columns[6]}>{formatDateTime(group.batch.expiresAt)}</AdminDataTableCell>
                                     <AdminDataTableCell column={columns[7]}>
                                       {formatDuration(group.batch.createdAt, group.batch.expiresAt)}
                                     </AdminDataTableCell>
@@ -1772,11 +1773,11 @@ export function SingleInstancesScreen({
                                   </>
                                 ) : (
                                   <>
-                                    <AdminDataTableCell column={columns[4]}>{formatBatchSummary(group.instances)}</AdminDataTableCell>
-                                    <AdminDataTableCell column={columns[5]}>{formatDateTime(group.batch.createdAt)}</AdminDataTableCell>
-                                    <AdminDataTableCell column={columns[6]}>{batchExpiryLabel}</AdminDataTableCell>
-                                    <AdminDataTableCell column={columns[7]}>{group.batch.createdBy?.trim() || 'admin'}</AdminDataTableCell>
-                                    <AdminDataTableCell column={columns[8]}>批次内实例</AdminDataTableCell>
+                                    <AdminDataTableCell column={columns[4]}>批次内实例</AdminDataTableCell>
+                                    <AdminDataTableCell column={columns[5]}>{formatBatchSummary(group.instances)}</AdminDataTableCell>
+                                    <AdminDataTableCell className="text-xs tabular-nums" column={columns[6]}>{formatDateTime(group.batch.createdAt)}</AdminDataTableCell>
+                                    <AdminDataTableCell column={columns[7]}>{batchExpiryLabel}</AdminDataTableCell>
+                                    <AdminDataTableCell column={columns[8]}>{group.batch.createdBy?.trim() || 'admin'}</AdminDataTableCell>
                                     <AdminDataTableCell column={columns[9]}>
                                       <div className="inline-flex flex-nowrap! items-center justify-start gap-1 whitespace-nowrap" data-slot="instance-batch-actions">
                                         <Button onClick={() => handleBatchExport(group)} size="sm" type="button" variant="outline">

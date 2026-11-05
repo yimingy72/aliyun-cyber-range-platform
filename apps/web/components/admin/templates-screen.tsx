@@ -50,6 +50,7 @@ import {
   AdminDataTableCell,
   AdminDataTableRevalidationNotice,
   AdminDataTableState,
+  ADMIN_TABLE_WIDTHS,
   type AdminDataColumn,
 } from './shared/admin-data-table';
 import { AdminListToolbar } from './shared/admin-list-toolbar';
@@ -109,12 +110,12 @@ const EMPTY_LAUNCH_INSTANCE_DRAFT: LaunchInstanceDraft = {
 };
 
 const TEMPLATE_COLUMNS: readonly AdminDataColumn[] = [
-  { id: 'template', label: '靶场', priority: 'primary' },
-  { id: 'creator', label: '创建人', priority: 'secondary', width: '7rem' },
-  { id: 'description', label: '靶场描述', priority: 'detail' },
+  { id: 'template', label: '靶场', priority: 'primary', width: '20rem' },
+  { id: 'description', label: '靶场描述', priority: 'detail', minWidth: '18rem' },
   { id: 'topology', label: '拓扑概览', priority: 'tertiary', width: '10rem' },
-  { id: 'status', label: '状态', priority: 'primary', width: '8rem' },
-  { id: 'actions', label: '操作', priority: 'primary', width: '11rem' },
+  { id: 'status', label: '状态', priority: 'primary', width: ADMIN_TABLE_WIDTHS.status },
+  { id: 'creator', label: '创建人', priority: 'tertiary', width: ADMIN_TABLE_WIDTHS.creator },
+  { id: 'actions', label: '操作', priority: 'primary', width: ADMIN_TABLE_WIDTHS.actions },
 ];
 
 function readTemplateView(value: string | null): RangeTemplateView {
@@ -894,7 +895,7 @@ export function TemplatesScreen({
                 label="靶场列表"
               >
                 {(columns) => {
-                  const [templateColumn, creatorColumn, descriptionColumn, topologyColumn, statusColumn, actionsColumn] = columns;
+                  const [templateColumn, descriptionColumn, topologyColumn, statusColumn, creatorColumn, actionsColumn] = columns;
 
                   if (errorMessage) {
                     return (
@@ -953,9 +954,6 @@ export function TemplatesScreen({
                         <AdminDataTableCell className="font-medium" column={templateColumn!}>
                           {getScenarioDisplayName(template)}
                         </AdminDataTableCell>
-                        <AdminDataTableCell column={creatorColumn!}>
-                          {templateCreator(template)}
-                        </AdminDataTableCell>
                         <AdminDataTableCell
                           className="max-w-72 whitespace-normal text-muted-foreground"
                           column={descriptionColumn!}
@@ -971,6 +969,9 @@ export function TemplatesScreen({
                         </AdminDataTableCell>
                         <AdminDataTableCell column={statusColumn!}>
                           <StatusBadge status={isPublished ? 'published' : 'private'} />
+                        </AdminDataTableCell>
+                        <AdminDataTableCell column={creatorColumn!}>
+                          {templateCreator(template)}
                         </AdminDataTableCell>
                         <AdminDataTableCell column={actionsColumn!}>
                           <div className="flex justify-start gap-1">

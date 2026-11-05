@@ -46,8 +46,8 @@ const resourceColumns='grid-cols-[minmax(0,1fr)_minmax(0,8rem)] gap-x-3 px-3 @mi
 const amountCell='text-right [overflow-wrap:anywhere] [&_span]:whitespace-normal';
 const detailSurface='@container/billing rounded-lg border border-border bg-card text-xs leading-4';
 const detailHeading='hidden rounded-t-lg bg-muted py-2.5 text-muted-foreground';
-const ledgerColumns='grid-cols-[minmax(0,1fr)_minmax(0,8rem)] gap-x-3 px-3 @min-[38rem]/billing:grid-cols-[minmax(0,1fr)_10.5rem_5rem_8rem] @min-[38rem]/billing:gap-x-4 @min-[38rem]/billing:px-5';
-const eventColumns='grid-cols-[minmax(0,1fr)_auto] gap-x-3 px-3 @min-[28rem]/billing:grid-cols-[10rem_minmax(0,1fr)_5rem] @min-[28rem]/billing:gap-x-4 @min-[28rem]/billing:px-5';
+const ledgerColumns='grid-cols-[minmax(0,1fr)_minmax(0,8rem)] gap-x-3 px-3 @min-[38rem]/billing:grid-cols-[minmax(0,1fr)_11.5rem_5rem_8rem] @min-[38rem]/billing:gap-x-4 @min-[38rem]/billing:px-5';
+const eventColumns='grid-cols-[minmax(0,1fr)_auto] gap-x-3 px-3 @min-[28rem]/billing:grid-cols-[11.5rem_minmax(0,1fr)_5rem] @min-[28rem]/billing:gap-x-4 @min-[28rem]/billing:px-5';
 
 function chargeCaption(charge: BillingCharge) {
   const name = componentLabels[charge.name]??charge.name;

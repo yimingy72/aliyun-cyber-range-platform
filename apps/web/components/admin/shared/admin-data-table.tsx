@@ -9,6 +9,14 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import { cn } from '@/lib/utils';
 
+export const ADMIN_TABLE_WIDTHS = {
+  creator: '7rem',
+  status: '7rem',
+  dateTime: '11.5rem',
+  identifier: '14rem',
+  actions: '11rem',
+} as const;
+
 export type AdminDataColumn = {
   id: string;
   label: string;

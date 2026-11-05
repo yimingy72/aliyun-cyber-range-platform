@@ -75,6 +75,7 @@ import {
   AdminDataTableRevalidationNotice,
   AdminDataTableState,
   AdminDataTableText,
+  ADMIN_TABLE_WIDTHS,
   type AdminDataColumn,
 } from './shared/admin-data-table';
 import { AdminListToolbar } from './shared/admin-list-toolbar';
@@ -130,21 +131,21 @@ const acrMatchLabels = {
 };
 
 const ASSET_COLUMNS: readonly AdminDataColumn[] = [
-  { id: 'name', label: '镜像名', priority: 'primary' },
+  { id: 'name', label: '镜像名', priority: 'primary', minWidth: '18rem' },
   { id: 'type', label: '镜像类型', priority: 'primary', width: '6rem' },
-  { id: 'imageId', label: '镜像 ID', priority: 'secondary', width: '14rem' },
-  { id: 'createdBy', label: '创建人', priority: 'tertiary', width: '7rem' },
+  { id: 'imageId', label: '镜像 ID', priority: 'secondary', width: ADMIN_TABLE_WIDTHS.identifier },
   { id: 'tags', label: '标签', priority: 'tertiary', width: '10rem' },
-  { id: 'status', label: '状态', priority: 'secondary', width: '8rem' },
-  { id: 'actions', label: '操作', priority: 'primary', width: '11rem' },
+  { id: 'status', label: '状态', priority: 'secondary', width: ADMIN_TABLE_WIDTHS.status },
+  { id: 'createdBy', label: '创建人', priority: 'tertiary', width: ADMIN_TABLE_WIDTHS.creator },
+  { id: 'actions', label: '操作', priority: 'primary', width: ADMIN_TABLE_WIDTHS.actions },
 ];
 
 const CLOUD_IMAGE_COLUMNS: readonly AdminDataColumn[] = [
   { id: 'name', label: '镜像名', priority: 'primary' },
-  { id: 'imageId', label: '镜像 ID', priority: 'secondary', width: '14rem' },
+  { id: 'imageId', label: '镜像 ID', priority: 'secondary', width: ADMIN_TABLE_WIDTHS.identifier },
   { id: 'os', label: '操作系统', priority: 'secondary', width: '9rem' },
-  { id: 'status', label: '状态', priority: 'secondary', width: '8rem' },
-  { id: 'actions', label: '操作', priority: 'primary', width: '11rem' },
+  { id: 'status', label: '状态', priority: 'secondary', width: ADMIN_TABLE_WIDTHS.status },
+  { id: 'actions', label: '操作', priority: 'primary', width: ADMIN_TABLE_WIDTHS.actions },
 ];
 
 function createImageImportDraft(provider: 'alibaba_cloud' | 'tencent_cloud' = 'alibaba_cloud'): ImageImportDialogDraft {
@@ -1786,7 +1787,7 @@ function CloudImageCenterScreen({
     },
   ) {
     return items.map((asset) => {
-      const [nameColumn, typeColumn, imageIdColumn, createdByColumn, tagsColumn, statusColumn, actionsColumn] = columns;
+      const [nameColumn, typeColumn, imageIdColumn, tagsColumn, statusColumn, createdByColumn, actionsColumn] = columns;
       const renameActionKey = `rename:platform:${asset.id}`;
       const toggleActionKey = `${asset.enabled ? 'disable' : 'enable'}:platform:${asset.id}`;
       const visibilityActionKey = `${asset.visibility === 'platform' ? 'unpublish' : 'publish'}:platform:${asset.id}`;
@@ -1818,7 +1819,6 @@ function CloudImageCenterScreen({
           <AdminDataTableCell className="font-mono text-xs text-muted-foreground" column={imageIdColumn!}>
             {asset.imageId}
           </AdminDataTableCell>
-          <AdminDataTableCell column={createdByColumn!}>{getPlatformAssetCreator(asset)}</AdminDataTableCell>
           <AdminDataTableCell column={tagsColumn!}>
             <ImageTagsDropdown
               asset={asset}
@@ -1832,6 +1832,7 @@ function CloudImageCenterScreen({
           <AdminDataTableCell column={statusColumn!}>
             <Badge variant={statusVariant}>{formatAssetStatus(asset)}</Badge>
           </AdminDataTableCell>
+          <AdminDataTableCell column={createdByColumn!}>{getPlatformAssetCreator(asset)}</AdminDataTableCell>
           <AdminDataTableCell column={actionsColumn!}>
             <div className="inline-flex flex-nowrap! items-center justify-start gap-1">
               {canCreate ? (
@@ -1890,17 +1891,17 @@ function CloudImageCenterScreen({
   }
 
   function renderContainerRows(items: PlatformContainerImage[], columns: readonly AdminDataColumn[]) {
-    const [nameColumn, typeColumn, imageIdColumn, createdByColumn, tagsColumn, statusColumn, actionsColumn] = columns;
+    const [nameColumn, typeColumn, imageIdColumn, tagsColumn, statusColumn, createdByColumn, actionsColumn] = columns;
     return items.map((asset) => (
       <TableRow key={`container:${asset.id}`}>
         <AdminDataTableCell className="font-medium" column={nameColumn!}><AdminDataTableText>{asset.displayName}</AdminDataTableText></AdminDataTableCell>
         <AdminDataTableCell column={typeColumn!}>容器</AdminDataTableCell>
         <AdminDataTableCell column={imageIdColumn!}>—</AdminDataTableCell>
-        <AdminDataTableCell column={createdByColumn!}>{asset.creator || '—'}</AdminDataTableCell>
         <AdminDataTableCell column={tagsColumn!}>—</AdminDataTableCell>
         <AdminDataTableCell column={statusColumn!}><Badge variant={asset.acrMatch === 'matched' ? 'default' : 'secondary'} title={asset.referenceStatus === 'needs_review' ? '源仓库引用待核验' : undefined}>
           {asset.acrMatch ? acrMatchLabels[asset.acrMatch] : asset.referenceStatus === 'needs_review' ? '引用待核验' : '待支持实例'}
         </Badge></AdminDataTableCell>
+        <AdminDataTableCell column={createdByColumn!}>{asset.creator || '—'}</AdminDataTableCell>
         <AdminDataTableCell column={actionsColumn!}>
           {session.isAdmin && !workspace?.isReadOnly ? (
             <DropdownMenu>

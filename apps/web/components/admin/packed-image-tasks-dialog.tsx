@@ -1,5 +1,7 @@
 'use client';
 
+import { ADMIN_TABLE_WIDTHS } from './shared/admin-data-table';
+
 import React, { useEffect, useRef, useState } from 'react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -184,7 +186,7 @@ export function PackedImageTasksDialog({ apiBaseUrl, token, open, onOpenChange, 
       </section> : <>
       <div className="max-h-80 overflow-auto rounded-md border" tabIndex={0} aria-label="镜像导出记录">
         <Table className="min-w-[40rem] table-fixed">
-          <colgroup><col /><col style={{ width: '9rem' }} /><col style={{ width: '10.5rem' }} /><col style={{ width: '7rem' }} /></colgroup>
+          <colgroup><col /><col style={{ width: ADMIN_TABLE_WIDTHS.status }} /><col style={{ width: ADMIN_TABLE_WIDTHS.dateTime }} /><col style={{ width: '7rem' }} /></colgroup>
           <TableHeader className="sticky top-0 z-10 bg-muted"><TableRow><TableHead>镜像 / 来源</TableHead><TableHead>状态</TableHead><TableHead>创建时间</TableHead><TableHead>操作</TableHead></TableRow></TableHeader>
           <TableBody>
             {!filtered.length ? <TableRow><TableCell className="h-32 text-center text-sm text-muted-foreground" colSpan={4}>{loading ? '正在读取导出记录…' : error ? '记录暂不可读，请刷新重试。' : search ? '没有匹配的导出记录。' : '暂无导出记录。可从实例的“打包为镜像”操作创建。'}</TableCell></TableRow> : null}

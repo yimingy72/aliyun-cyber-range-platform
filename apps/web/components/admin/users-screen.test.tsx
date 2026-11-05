@@ -125,7 +125,7 @@ describe('UsersScreen', () => {
       within(table)
         .getAllByRole('columnheader')
         .map((header) => header.textContent),
-    ).toEqual(['用户名', '角色', '创建时间', '更新时间', '状态', '操作']);
+    ).toEqual(['用户名', '角色', '状态', '创建时间', '更新时间', '操作']);
 
     const actionsHeader = within(table).getByRole('columnheader', { name: '操作' });
     const actionsCell = within(screen.getByRole('row', { name: /operator/ })).getByRole('button', { name: '禁用用户' }).parentElement;

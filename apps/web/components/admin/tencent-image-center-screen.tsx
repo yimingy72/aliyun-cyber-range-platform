@@ -10,16 +10,16 @@ import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { useAdminRouteIsActive } from './admin-page-cache';
 import { useAdminSession } from './use-admin-session';
 import { AdminPageHeader } from './shared/admin-page-header';
-import { AdminDataTable, AdminDataTableCell, AdminDataTableState, AdminDataTableText, type AdminDataColumn } from './shared/admin-data-table';
+import { ADMIN_TABLE_WIDTHS, AdminDataTable, AdminDataTableCell, AdminDataTableState, AdminDataTableText, type AdminDataColumn } from './shared/admin-data-table';
 import { TableLoadingState } from './shared/table-loading-state';
 import { AdminPaginationControls, getPagination, useAdminPageSize } from './admin-pagination';
 import { AdminPaginatedList } from './shared/admin-paginated-list';
 
 const columns: readonly AdminDataColumn[] = [
   { id: 'displayName', label: '镜像名', priority: 'primary' },
-  { id: 'imageId', label: '镜像 ID', priority: 'secondary', width: '14rem' },
+  { id: 'imageId', label: '镜像 ID', priority: 'secondary', width: ADMIN_TABLE_WIDTHS.identifier },
   { id: 'platform', label: '系统', priority: 'secondary', width: '10rem' },
-  { id: 'status', label: '状态', priority: 'primary', width: '8rem' },
+  { id: 'status', label: '状态', priority: 'primary', width: ADMIN_TABLE_WIDTHS.status },
 ];
 
 export function TencentImageCenterScreen({ apiBaseUrl, workspace }: { apiBaseUrl: string; workspace: CloudWorkspaceView }) {

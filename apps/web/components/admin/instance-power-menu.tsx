@@ -8,6 +8,7 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSepara
 import { CalendarClock, ChevronDown, ClipboardList, Play, Power } from 'lucide-react';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { AdminDialog } from './shared/admin-dialog';
+import { ADMIN_TABLE_WIDTHS } from './shared/admin-data-table';
 import { InstanceExpiryDialog } from './instance-expiry-dialog';
 import { StatusBadge } from './shared/status-badge';
 import { instancePowerStatus } from '@/lib/instance-power-state';
@@ -173,7 +174,7 @@ export function InstancePowerDialog({ apiBaseUrl, token, scopeKey, target, name,
           <h3 className="font-semibold">将处理 {preview.plans.length} 个实例 / {preview.plans.reduce((count, plan) => count + plan.hosts.length, 0)} 台 ECS</h3>
           {preview.scheduledAt ? <p>预约执行：{time(preview.scheduledAt)}</p> : null}
           {preview.replacingSchedule ? <p className="text-sm">本次将替换所列实例已有的未来预约，不新增第二份预约。</p> : null}
-          <div className="max-h-64 overflow-auto rounded-md border" tabIndex={0}><Table><TableHeader className="sticky top-0 z-10 bg-background"><TableRow><TableHead>实例 / 节点</TableHead><TableHead>原云主机 ID</TableHead><TableHead>当前启停</TableHead><TableHead>原到期时间</TableHead></TableRow></TableHeader>
+          <div className="max-h-64 overflow-auto rounded-md border" tabIndex={0}><Table className="min-w-[46.5rem] table-fixed"><colgroup><col/><col style={{width:ADMIN_TABLE_WIDTHS.identifier}}/><col style={{width:ADMIN_TABLE_WIDTHS.status}}/><col style={{width:ADMIN_TABLE_WIDTHS.dateTime}}/></colgroup><TableHeader className="sticky top-0 z-10 bg-background"><TableRow><TableHead>实例 / 节点</TableHead><TableHead>原云主机 ID</TableHead><TableHead>当前启停</TableHead><TableHead>原到期时间</TableHead></TableRow></TableHeader>
             <TableBody>{preview.plans.flatMap(plan => plan.hosts.map(host => <TableRow key={plan.instanceId + host.nodeId}><TableCell className="whitespace-normal">{plan.instanceName} / {host.name}</TableCell><TableCell>{host.instanceId}</TableCell><TableCell>{host.originalStatus} {host.originalStoppedMode ?? ''}</TableCell><TableCell>{time(plan.expiresAt)}</TableCell></TableRow>))}</TableBody></Table></div>
           {preview.skipped.length ? <p className="text-xs text-muted-foreground">跳过已回收 / 创建失败记录：{preview.skipped.map(item => item.name).join('、')}</p> : null}
           <label className="flex items-start gap-2 text-sm"><Checkbox checked={confirmed} onCheckedChange={value => setConfirmed(value === true)} aria-label="确认启停操作影响" /><span>我已核对以上准确目标与时间，接受断开连接、剩余费用和再次开机可能失败的影响。</span></label>
@@ -182,7 +183,7 @@ export function InstancePowerDialog({ apiBaseUrl, token, scopeKey, target, name,
           <div className="flex flex-wrap gap-2"><Button type="button" variant="outline" disabled={pending} onClick={() => switchMode('schedule')}>新建 / 修改预约</Button><Button type="button" variant="outline" disabled={pending} onClick={() => switchMode('resume')}>恢复开机</Button>
             {schedules.length ? <Button type="button" variant="outline" disabled={pending} onClick={() => setCancelOpen(true)}>取消所列预约（{schedules.length} 项）</Button> : null}
             <Button type="button" variant="outline" disabled={pending} onClick={() => setAttempt(value => value + 1)}>刷新状态</Button></div>
-          {!view ? <p role="status">正在读取启停任务…</p> : <div className="max-h-56 overflow-auto rounded-md border" tabIndex={0}><Table><TableHeader className="sticky top-0 z-10 bg-background"><TableRow><TableHead>实例</TableHead><TableHead>启停状态</TableHead><TableHead>预约</TableHead></TableRow></TableHeader><TableBody>{view.instances.map(instance => <TableRow key={instance.id}>
+          {!view ? <p role="status">正在读取启停任务…</p> : <div className="max-h-56 overflow-auto rounded-md border" tabIndex={0}><Table className="min-w-[38rem] table-fixed"><colgroup><col/><col style={{width:'12rem'}}/><col style={{width:'14rem'}}/></colgroup><TableHeader className="sticky top-0 z-10 bg-background"><TableRow><TableHead>实例</TableHead><TableHead>启停状态</TableHead><TableHead>预约</TableHead></TableRow></TableHeader><TableBody>{view.instances.map(instance => <TableRow key={instance.id}>
             <TableCell className="whitespace-normal">{instance.name}</TableCell><TableCell className="whitespace-normal">{instancePowerLabel(instance.powerControl) ?? '未记录节省停机'}{instance.powerControl?.error ? <p className="text-destructive">{instance.powerControl.error}</p> : null}</TableCell>
             <TableCell className="whitespace-normal">{instance.powerControl?.schedule ? <>{SCHEDULE[instance.powerControl.schedule.status]} · {time(instance.powerControl.schedule.at)}<p>{instance.powerControl.schedule.message}</p></> : '无预约'}</TableCell></TableRow>)}</TableBody></Table></div>}
           <section className="space-y-3" aria-label="启停任务记录"><h3 className="font-semibold">原任务及逐台核验记录</h3>

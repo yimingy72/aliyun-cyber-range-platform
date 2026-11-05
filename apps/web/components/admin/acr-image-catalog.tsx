@@ -9,7 +9,7 @@ import { TableRow } from '@/components/ui/table';
 import { fetchAcrImageCatalog, syncAcrImageCatalog } from '../../lib/admin-api';
 import { isUnauthorizedAdminError } from '../../lib/admin-screen';
 import { AdminPaginationControls, getPagination, useAdminPageSize } from './admin-pagination';
-import { AdminDataTable, AdminDataTableCell, AdminDataTableState, AdminDataTableText, type AdminDataColumn } from './shared/admin-data-table';
+import { ADMIN_TABLE_WIDTHS, AdminDataTable, AdminDataTableCell, AdminDataTableState, AdminDataTableText, type AdminDataColumn } from './shared/admin-data-table';
 import { AdminPaginatedList } from './shared/admin-paginated-list';
 import { TableLoadingState } from './shared/table-loading-state';
 
@@ -19,7 +19,7 @@ const columns: readonly AdminDataColumn[] = [
   { id: 'instance', label: 'ACR 实例', priority: 'secondary', width: '12rem' },
   { id: 'region', label: '地域', priority: 'secondary', width: '9rem' },
   { id: 'registry', label: '仓库域名', priority: 'tertiary', width: '19rem' },
-  { id: 'status', label: '状态', priority: 'secondary', width: '7rem' },
+  { id: 'status', label: '状态', priority: 'secondary', width: ADMIN_TABLE_WIDTHS.status },
 ];
 
 export function AcrImageCatalogView({ apiBaseUrl, token, search, actionHost, readOnly, logout, onCatalogChanged }: {

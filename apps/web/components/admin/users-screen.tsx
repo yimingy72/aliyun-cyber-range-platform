@@ -40,6 +40,7 @@ import {
   AdminDataTableCell,
   AdminDataTableRevalidationNotice,
   AdminDataTableState,
+  ADMIN_TABLE_WIDTHS,
   type AdminDataColumn,
 } from './shared/admin-data-table';
 import { AdminListToolbar } from './shared/admin-list-toolbar';
@@ -65,12 +66,12 @@ const EMPTY_CREATE_USER_DRAFT: CreateAdminUserInput = {
   role: 'user',
 };
 const USER_COLUMNS: readonly AdminDataColumn[] = [
-  { id: 'username', label: '用户名', priority: 'primary' },
+  { id: 'username', label: '用户名', priority: 'primary', minWidth: '16rem' },
   { id: 'role', label: '角色', priority: 'secondary', width: '7rem' },
-  { id: 'createdAt', label: '创建时间', priority: 'tertiary', width: '10.5rem' },
-  { id: 'updatedAt', label: '更新时间', priority: 'detail', width: '10.5rem' },
-  { id: 'status', label: '状态', priority: 'primary', width: '8rem' },
-  { id: 'actions', label: '操作', priority: 'primary', width: '11rem' },
+  { id: 'status', label: '状态', priority: 'primary', width: ADMIN_TABLE_WIDTHS.status },
+  { id: 'createdAt', label: '创建时间', priority: 'tertiary', width: ADMIN_TABLE_WIDTHS.dateTime },
+  { id: 'updatedAt', label: '更新时间', priority: 'detail', width: ADMIN_TABLE_WIDTHS.dateTime },
+  { id: 'actions', label: '操作', priority: 'primary', width: ADMIN_TABLE_WIDTHS.actions },
 ];
 
 function getUserRoleLabel(role: AdminUser['role']) {
@@ -545,7 +546,7 @@ export function UsersScreen({
             >
               <AdminDataTable columns={USER_COLUMNS} isRefreshing={isRefreshing} label="用户列表">
                 {(columns) => {
-                  const [usernameColumn, roleColumn, createdAtColumn, updatedAtColumn, statusColumn, actionsColumn] = columns;
+                  const [usernameColumn, roleColumn, statusColumn, createdAtColumn, updatedAtColumn, actionsColumn] = columns;
 
                   if (isBootstrapLoading) {
                     return <TableLoadingState columnCount={columns.length} label="正在加载用户列表" rowCount={5} />;
@@ -599,11 +600,11 @@ export function UsersScreen({
                           <div className="grid min-w-0 gap-1"><span className="truncate" title={user.username}>{user.username}</span>{user.loginUsername && user.loginUsername !== user.username ? <span className="break-all text-xs font-normal text-muted-foreground">登录账号：{user.loginUsername}</span> : null}</div>
                         </AdminDataTableCell>
                         <AdminDataTableCell column={roleColumn!}>{getUserRoleLabel(user.role)}</AdminDataTableCell>
-                        <AdminDataTableCell column={createdAtColumn!}>{formatAdminDateTime(user.createdAt)}</AdminDataTableCell>
-                        <AdminDataTableCell column={updatedAtColumn!}>{formatAdminDateTime(user.updatedAt)}</AdminDataTableCell>
                         <AdminDataTableCell column={statusColumn!}>
                           <StatusBadge status={user.status === 'active' ? 'enabled' : user.status} />
                         </AdminDataTableCell>
+                        <AdminDataTableCell className="text-xs tabular-nums" column={createdAtColumn!}>{formatAdminDateTime(user.createdAt)}</AdminDataTableCell>
+                        <AdminDataTableCell className="text-xs tabular-nums" column={updatedAtColumn!}>{formatAdminDateTime(user.updatedAt)}</AdminDataTableCell>
                         <AdminDataTableCell column={actionsColumn!}>
                           <div className="flex justify-start gap-1">
                             <Button

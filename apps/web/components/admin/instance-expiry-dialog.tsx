@@ -1,5 +1,7 @@
 'use client';
 
+import { ADMIN_TABLE_WIDTHS } from './shared/admin-data-table';
+
 import React, { useEffect, useRef, useState } from 'react';
 import { Button } from '@/components/ui/button';
 import { Checkbox } from '@/components/ui/checkbox';
@@ -101,12 +103,12 @@ function ExpiryDialogContent({ apiBaseUrl, token, target, name, disabled, onClos
           <DateTimePicker id="instance-expiry-time" aria-label="新回收时间（北京时间）" value={date} disabled={pending || disabled || processing}
             onValueChange={value => { initialized.current = true; setDate(value); setError(null); }} />
           <p className="text-xs text-muted-foreground">至少 30 分钟后。原回收时间不足 5 分钟、已有活动任务或节省停机预约时不可修改。</p></div>
-        {view ? <div className="max-h-48 overflow-auto rounded-md border"><Table><TableHeader><TableRow><TableHead>实例</TableHead><TableHead>当前平台回收时间</TableHead></TableRow></TableHeader>
+        {view ? <div className="max-h-48 overflow-auto rounded-md border"><Table className="min-w-[26rem] table-fixed"><colgroup><col/><col style={{width:ADMIN_TABLE_WIDTHS.dateTime}}/></colgroup><TableHeader><TableRow><TableHead>实例</TableHead><TableHead>当前平台回收时间</TableHead></TableRow></TableHeader>
           <TableBody>{view.instances.map(row => <TableRow key={row.id}><TableCell className="whitespace-normal">{row.name}</TableCell><TableCell>{time(row.expiresAt)}</TableCell></TableRow>)}</TableBody></Table></div> : null}
       </> : <>
         <div className="rounded-md border bg-muted/30 p-3"><p className="text-sm text-muted-foreground">统一修改为 · 北京时间</p><p className="mt-1 font-semibold">{time(preview.expiresAt)}</p>
           <p className="mt-1 text-sm">影响 {preview.plans.length} 个实例，共 {preview.plans.reduce((sum, plan) => sum + plan.hosts.length, 0)} 台云主机</p></div>
-        <div className="max-h-48 overflow-auto rounded-md border"><Table><TableHeader><TableRow><TableHead>实例</TableHead><TableHead>原回收时间</TableHead><TableHead>变更</TableHead></TableRow></TableHeader><TableBody>
+        <div className="max-h-48 overflow-auto rounded-md border"><Table className="min-w-[33rem] table-fixed"><colgroup><col/><col style={{width:ADMIN_TABLE_WIDTHS.dateTime}}/><col style={{width:ADMIN_TABLE_WIDTHS.status}}/></colgroup><TableHeader><TableRow><TableHead>实例</TableHead><TableHead>原回收时间</TableHead><TableHead>变更</TableHead></TableRow></TableHeader><TableBody>
           {preview.plans.map(plan => <TableRow key={plan.instanceId}><TableCell className="whitespace-normal">{plan.instanceName}</TableCell><TableCell>{time(plan.expiresAt)}</TableCell>
             <TableCell className={Date.parse(plan.expiresAt) > Date.parse(preview.expiresAt) ? 'text-destructive' : ''}>{Date.parse(plan.expiresAt) > Date.parse(preview.expiresAt) ? '提前回收' : '延长使用'}</TableCell></TableRow>)}</TableBody></Table></div>
         {preview.skipped.length ? <p className="text-sm text-muted-foreground">不修改：{preview.skipped.map(row => row.name + '（' + row.reason + '）').join('、')}</p> : null}

@@ -218,7 +218,7 @@ describe('SingleInstancesScreen list states', () => {
     const table = screen.getByRole('table', { name: '实例列表' });
 
     expect(table).toBeTruthy();
-    expect(Array.from(table.querySelectorAll('col')).at(-1)?.getAttribute('style') ?? '').toContain('width: 13rem');
+    expect(Array.from(table.querySelectorAll('col')).at(-1)?.getAttribute('style') ?? '').toContain('width: 11rem');
     fireEvent.click(screen.getByRole('button', { name: '重试加载' }));
 
     expect(await screen.findByText('web-lab-01')).toBeTruthy();

@@ -23,7 +23,7 @@ const columns: readonly AdminDataColumn[] = [
   { id: 'resource', label: '资源', priority: 'primary', width: '18rem' },
   { id: 'source', label: '所属实例 / 账号', priority: 'secondary', width: '18rem' },
   { id: 'reason', label: '告警原因', priority: 'primary', minWidth: '20rem' },
-  { id: 'action', label: '操作', priority: 'primary', align: 'right', width: '8.5rem' },
+  { id: 'action', label: '操作', priority: 'primary', width: '8.5rem' },
 ];
 type Review = { preview: ResourceReclaimPreview; workspaceId: string; idempotencyKey: string };
 

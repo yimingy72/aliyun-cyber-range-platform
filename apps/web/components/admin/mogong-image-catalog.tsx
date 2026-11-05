@@ -11,7 +11,7 @@ import { isUnauthorizedAdminError } from '../../lib/admin-screen';
 import { useAdminScreenCache } from '../../lib/admin-screen-cache';
 import type { ImageCatalogScopePayload, ImageSnapshot, PlatformContainerImage, PlatformImageAsset } from '../../lib/admin-types';
 import { AdminPaginationControls, getPagination, useAdminPageSize } from './admin-pagination';
-import { AdminDataTable, AdminDataTableCell, AdminDataTableState, AdminDataTableText, type AdminDataColumn } from './shared/admin-data-table';
+import { ADMIN_TABLE_WIDTHS, AdminDataTable, AdminDataTableCell, AdminDataTableState, AdminDataTableText, type AdminDataColumn } from './shared/admin-data-table';
 import { AdminPaginatedList } from './shared/admin-paginated-list';
 import { AdminSelectField } from './shared/admin-select-field';
 import { TableLoadingState } from './shared/table-loading-state';
@@ -19,9 +19,9 @@ import { TableLoadingState } from './shared/table-loading-state';
 const columns: readonly AdminDataColumn[] = [
   { id: 'name', label: '镜像名', priority: 'primary' },
   { id: 'type', label: '镜像类型', priority: 'primary', width: '6rem' },
-  { id: 'imageId', label: '阿里云镜像 ID', priority: 'secondary', width: '14rem' },
-  { id: 'creator', label: '创建人', priority: 'primary', width: '10rem' },
-  { id: 'actions', label: '操作', priority: 'primary', width: '11rem' },
+  { id: 'imageId', label: '阿里云镜像 ID', priority: 'secondary', width: ADMIN_TABLE_WIDTHS.identifier },
+  { id: 'creator', label: '创建人', priority: 'tertiary', width: ADMIN_TABLE_WIDTHS.creator },
+  { id: 'actions', label: '操作', priority: 'primary', width: ADMIN_TABLE_WIDTHS.actions },
 ];
 
 type MogongImage = MogongImageCatalog['items'][number];

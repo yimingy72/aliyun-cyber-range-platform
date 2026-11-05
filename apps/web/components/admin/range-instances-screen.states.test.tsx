@@ -97,7 +97,7 @@ describe('RangeInstancesScreen list states', () => {
     expect(screen.getByRole('columnheader', { name: '公网 IP（DNAT IP）' })).toBeTruthy();
     expect(
       Array.from(screen.getByRole('table', { name: '编排实例列表' }).querySelectorAll('col')).at(-1)?.getAttribute('style') ?? '',
-    ).toContain('width: 12rem');
+    ).toContain('width: 11rem');
   });
 
   it.each(['active', 'history'])('shows the explicit DNAT public IP in the %s list', async view => {
@@ -125,7 +125,7 @@ describe('RangeInstancesScreen list states', () => {
     expect(screen.getByRole('columnheader', { name: '状态' })).toBeTruthy();
     expect(
       Array.from(screen.getByRole('table', { name: '编排实例历史' }).querySelectorAll('col')).at(-1)?.getAttribute('style') ?? '',
-    ).toContain('width: 12rem');
+    ).toContain('width: 11rem');
     expect(fetchRangeInstancesMock).toHaveBeenCalledWith(
       'http://localhost:3001',
       'dev-admin-token',

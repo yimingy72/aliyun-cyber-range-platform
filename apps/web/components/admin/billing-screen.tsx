@@ -20,7 +20,7 @@ import { useAdminRouteIsActive } from './admin-page-cache';
 import { BillingAmounts, BillingDocumentBadge, BillingEntryDetails, billingDocumentLabels, canActivateBillingRow } from './billing-entry-details';
 import { downloadCsv, getDefaultRange, LegacyBillingScreen } from './billing-legacy-screen';
 import { useCloudWorkspace } from './cloud-workspace-provider';
-import { AdminDataTable, AdminDataTableCell, AdminDataTableText, type AdminDataColumn } from './shared/admin-data-table';
+import { ADMIN_TABLE_WIDTHS, AdminDataTable, AdminDataTableCell, AdminDataTableText, type AdminDataColumn } from './shared/admin-data-table';
 import { AdminPageHeader } from './shared/admin-page-header';
 import { AdminPaginatedList } from './shared/admin-paginated-list';
 import { AdminSelectField } from './shared/admin-select-field';
@@ -29,10 +29,10 @@ import { useAdminSession } from './use-admin-session';
 const columns:readonly AdminDataColumn[]=[
   {id:'name',label:'账目',priority:'primary',minWidth:'17rem'},
   {id:'type',label:'类型',priority:'secondary',width:'8rem'},
-  {id:'status',label:'出账状态',priority:'primary',width:'8rem'},
   {id:'amount',label:'已出账金额',priority:'primary',width:'13rem',align:'right'},
-  {id:'created',label:'创建时间',priority:'secondary',width:'11rem'},
-  {id:'action',label:'操作',priority:'primary',width:'6rem',align:'right'},
+  {id:'status',label:'出账状态',priority:'primary',width: ADMIN_TABLE_WIDTHS.status},
+  {id:'created',label:'创建时间',priority:'secondary',width: ADMIN_TABLE_WIDTHS.dateTime},
+  {id:'action',label:'操作',priority:'primary',width:'6rem'},
 ];
 const kinds:Record<BillingEntry['kind'],string>={single:'单实例',range:'编排实例',platform_image:'镜像 / 快照',platform_bucket:'对象存储',resource:'独立资源',platform_import:'镜像上传'};
 const uses:Record<string,string>={creating:'创建中',active:'使用中',partially_released:'部分回收',released:'已回收',failed:'任务失败',allocation_ended:'费用归属结束'};

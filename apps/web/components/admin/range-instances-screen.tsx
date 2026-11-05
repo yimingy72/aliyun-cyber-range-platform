@@ -43,6 +43,7 @@ import {
   AdminDataTableCell,
   AdminDataTableRevalidationNotice,
   AdminDataTableState,
+  ADMIN_TABLE_WIDTHS,
   type AdminDataColumn,
 } from './shared/admin-data-table';
 import { AdminListToolbar } from './shared/admin-list-toolbar';
@@ -75,25 +76,25 @@ type RangeListSnapshot = {
 };
 
 const RANGE_ACTIVE_COLUMNS: readonly AdminDataColumn[] = [
-  { id: 'name', label: '实例 / 批次', priority: 'primary' },
-  { id: 'createdBy', label: '创建人', priority: 'tertiary', width: '7rem' },
-  { id: 'template', label: '所属靶场', priority: 'secondary' },
-  { id: 'status', label: '状态', priority: 'primary', width: '8rem' },
+  { id: 'name', label: '实例 / 批次', priority: 'primary', minWidth: '14rem' },
+  { id: 'template', label: '所属靶场', priority: 'secondary', minWidth: '14rem' },
   { id: 'dnatPublicIp', label: '公网 IP（DNAT IP）', priority: 'primary', width: '10rem' },
-  { id: 'createdAt', label: '创建时间', priority: 'secondary', width: '10.5rem' },
-  { id: 'actions', label: '操作', priority: 'primary', width: '12rem' },
+  { id: 'status', label: '状态', priority: 'primary', width: ADMIN_TABLE_WIDTHS.status },
+  { id: 'createdAt', label: '创建时间', priority: 'secondary', width: ADMIN_TABLE_WIDTHS.dateTime },
+  { id: 'createdBy', label: '创建人', priority: 'tertiary', width: ADMIN_TABLE_WIDTHS.creator },
+  { id: 'actions', label: '操作', priority: 'primary', width: ADMIN_TABLE_WIDTHS.actions },
 ];
 
 const RANGE_HISTORY_COLUMNS: readonly AdminDataColumn[] = [
-  { id: 'name', label: '实例 / 批次', priority: 'primary' },
-  { id: 'createdBy', label: '创建人', priority: 'tertiary', width: '7rem' },
-  { id: 'template', label: '所属靶场', priority: 'secondary' },
-  { id: 'status', label: '状态', priority: 'primary', width: '8rem' },
+  { id: 'name', label: '实例 / 批次', priority: 'primary', minWidth: '14rem' },
+  { id: 'template', label: '所属靶场', priority: 'secondary', minWidth: '14rem' },
   { id: 'dnatPublicIp', label: '公网 IP（DNAT IP）', priority: 'primary', width: '10rem' },
-  { id: 'createdAt', label: '创建时间', priority: 'secondary', width: '10.5rem' },
-  { id: 'endedAt', label: '结束时间', priority: 'tertiary', width: '10.5rem' },
+  { id: 'status', label: '状态', priority: 'primary', width: ADMIN_TABLE_WIDTHS.status },
+  { id: 'createdAt', label: '创建时间', priority: 'secondary', width: ADMIN_TABLE_WIDTHS.dateTime },
+  { id: 'endedAt', label: '结束时间', priority: 'tertiary', width: ADMIN_TABLE_WIDTHS.dateTime },
   { id: 'duration', label: '持续时长', priority: 'detail', width: '8rem' },
-  { id: 'actions', label: '操作', priority: 'primary', width: '12rem' },
+  { id: 'createdBy', label: '创建人', priority: 'tertiary', width: ADMIN_TABLE_WIDTHS.creator },
+  { id: 'actions', label: '操作', priority: 'primary', width: ADMIN_TABLE_WIDTHS.actions },
 ];
 
 function readRangeListMode(value: string | null): RangeListMode {
@@ -790,26 +791,26 @@ export function RangeInstancesScreen({
                           <AdminDataTableCell className={indented ? 'pl-10 font-medium' : 'font-medium'} column={nameColumn}>
                             {getInstanceDisplayName(instance)}
                           </AdminDataTableCell>
-                          <AdminDataTableCell column={createdByColumn}>
-                            {instance.createdBy?.trim() || 'admin'}
-                          </AdminDataTableCell>
                           <AdminDataTableCell column={templateColumn}>
                             {getInstanceTemplateLabel(instance)}
-                          </AdminDataTableCell>
-                          <AdminDataTableCell column={getRangeColumn(tableColumns, 'status')}>
-                            <InstancePowerBadge instance={instance} />
                           </AdminDataTableCell>
                           <AdminDataTableCell column={getRangeColumn(tableColumns, 'dnatPublicIp')}>
                             {instance.dnatPublicIp?.trim() || '暂无'}
                           </AdminDataTableCell>
-                          <AdminDataTableCell column={createdAtColumn}>
+                          <AdminDataTableCell column={getRangeColumn(tableColumns, 'status')}>
+                            <InstancePowerBadge instance={instance} />
+                          </AdminDataTableCell>
+                          <AdminDataTableCell className="text-xs tabular-nums" column={createdAtColumn}>
                             {formatAdminDateTime(instance.createdAt)}
                           </AdminDataTableCell>
-                          <AdminDataTableCell column={getRangeColumn(tableColumns, 'endedAt')}>
+                          <AdminDataTableCell className="text-xs tabular-nums" column={getRangeColumn(tableColumns, 'endedAt')}>
                             {getEndedAtLabel(recentJob)}
                           </AdminDataTableCell>
                           <AdminDataTableCell column={getRangeColumn(tableColumns, 'duration')}>
                             {getDurationLabel(instance.createdAt, endedAt)}
+                          </AdminDataTableCell>
+                          <AdminDataTableCell column={createdByColumn}>
+                            {instance.createdBy?.trim() || 'admin'}
                           </AdminDataTableCell>
                           <AdminDataTableCell column={actionsColumn}>
                             <div className="flex justify-start gap-1" data-slot="range-history-detail-action">
@@ -834,20 +835,20 @@ export function RangeInstancesScreen({
                         <AdminDataTableCell className={indented ? 'pl-10 font-medium' : 'font-medium'} column={nameColumn}>
                           {getInstanceDisplayName(instance)}
                         </AdminDataTableCell>
-                        <AdminDataTableCell column={createdByColumn}>
-                          {instance.createdBy?.trim() || 'admin'}
-                        </AdminDataTableCell>
                         <AdminDataTableCell column={templateColumn}>
                           {getInstanceTemplateLabel(instance)}
-                        </AdminDataTableCell>
-                        <AdminDataTableCell column={getRangeColumn(tableColumns, 'status')}>
-                          <InstancePowerBadge instance={instance} />
                         </AdminDataTableCell>
                         <AdminDataTableCell column={getRangeColumn(tableColumns, 'dnatPublicIp')}>
                           {instance.dnatPublicIp?.trim() || '暂无'}
                         </AdminDataTableCell>
-                        <AdminDataTableCell column={createdAtColumn}>
+                        <AdminDataTableCell column={getRangeColumn(tableColumns, 'status')}>
+                          <InstancePowerBadge instance={instance} />
+                        </AdminDataTableCell>
+                        <AdminDataTableCell className="text-xs tabular-nums" column={createdAtColumn}>
                           {getInstanceCreatedAt(instance)}
+                        </AdminDataTableCell>
+                        <AdminDataTableCell column={createdByColumn}>
+                          {instance.createdBy?.trim() || 'admin'}
                         </AdminDataTableCell>
                         <AdminDataTableCell column={actionsColumn}>
                           <div className="inline-flex flex-nowrap! items-center justify-start gap-1 whitespace-nowrap" data-slot="range-instance-actions">
@@ -892,8 +893,8 @@ export function RangeInstancesScreen({
                           : column.id === 'template' ? getInstanceTemplateLabel(first)
                           : column.id === 'status' ? <span className="text-xs whitespace-normal">{rangeBatchStatus(group.instances)}</span>
                           : column.id === 'dnatPublicIp' ? <span title={publicIps.join('、')}>{publicIps.length ? `${publicIps.length} 个公网入口` : '暂无'}</span>
-                          : column.id === 'createdAt' ? getInstanceCreatedAt(first)
-                          : column.id === 'endedAt' ? formatAdminDateTime(endedAt)
+                          : column.id === 'createdAt' ? <span className="text-xs tabular-nums">{getInstanceCreatedAt(first)}</span>
+                          : column.id === 'endedAt' ? <span className="text-xs tabular-nums">{formatAdminDateTime(endedAt)}</span>
                           : column.id === 'duration' ? getDurationLabel(first.createdAt, endedAt)
                           : column.id === 'actions' ? <div className="inline-flex flex-nowrap! items-center gap-1 whitespace-nowrap" data-slot="range-batch-actions">
                             <Button aria-label={`导出批次 ${group.name}`} onClick={() => openExport(group)} size="sm" type="button" variant="outline">导出</Button>

@@ -8,7 +8,7 @@ import { Button } from '@/components/ui/button';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
 import { TableRow } from '@/components/ui/table';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
-import { AdminDataTable, AdminDataTableCell, AdminDataTableState, AdminDataTableText, type AdminDataColumn } from './shared/admin-data-table';
+import { ADMIN_TABLE_WIDTHS, AdminDataTable, AdminDataTableCell, AdminDataTableState, AdminDataTableText, type AdminDataColumn } from './shared/admin-data-table';
 import { TableLoadingState } from './shared/table-loading-state';
 
 type NodeActionName = 'start' | 'stop' | 'reboot' | 'open-vnc' | 'reset' | 'pack-image' | 'verify-dns';
@@ -56,12 +56,12 @@ type RangeInstanceNodeDirectoryProps = {
 
 const COLUMNS: readonly AdminDataColumn[] = [
   { id: 'name', label: '实例名', priority: 'primary', width: '13rem' },
-  { id: 'status', label: '状态', priority: 'primary', width: '6.5rem' },
   { id: 'image', label: '镜像信息', priority: 'primary', minWidth: '14rem' },
   { id: 'address', label: 'IP 地址', priority: 'primary', width: '13rem' },
   { id: 'account', label: '账号信息', priority: 'primary', width: '10.5rem' },
-  { id: 'expiry', label: '有效期', priority: 'primary', width: '11.5rem' },
-  { id: 'created', label: '创建时间', priority: 'primary', width: '11.5rem' },
+  { id: 'status', label: '状态', priority: 'primary', width: ADMIN_TABLE_WIDTHS.status },
+  { id: 'created', label: '创建时间', priority: 'primary', width: ADMIN_TABLE_WIDTHS.dateTime },
+  { id: 'expiry', label: '有效期', priority: 'primary', width: ADMIN_TABLE_WIDTHS.dateTime },
   { id: 'actions', label: '操作', priority: 'primary', width: '9rem' },
 ];
 
@@ -145,9 +145,8 @@ export function RangeInstanceNodeDirectory({
           return (
             <TableRow className="range-instance-directory-row" key={node.id}>
               <AdminDataTableCell column={columns[0]!}><strong className="block min-w-0 truncate" title={node.label}>{node.label}</strong></AdminDataTableCell>
-              <AdminDataTableCell column={columns[1]!}><span className="block">{node.statusLabel ?? '未知状态'}</span><DnsVerificationStatus node={node} /></AdminDataTableCell>
-              <AdminDataTableCell column={columns[2]!}><AdminDataTableText>{node.imageName || '暂无'}</AdminDataTableText></AdminDataTableCell>
-              <AdminDataTableCell column={columns[3]!}>
+              <AdminDataTableCell column={columns[1]!}><AdminDataTableText>{node.imageName || '暂无'}</AdminDataTableText></AdminDataTableCell>
+              <AdminDataTableCell column={columns[2]!}>
                 <div className="range-instance-address-cell">
                   {node.publicEntry ? <>
                     <span className="font-medium text-foreground">{node.publicEntry.address}</span>
@@ -156,7 +155,7 @@ export function RangeInstanceNodeDirectory({
                   {node.ipAddresses?.length ? node.ipAddresses.map((ip) => <span key={ip}>私网 · {ip}</span>) : <span>暂无私网 IP</span>}
                 </div>
               </AdminDataTableCell>
-              <AdminDataTableCell column={columns[4]!}>
+              <AdminDataTableCell column={columns[3]!}>
                 <div className="flex min-w-0 items-center gap-1">
                   <Tooltip>
                     <TooltipTrigger asChild>
@@ -170,8 +169,9 @@ export function RangeInstanceNodeDirectory({
                   </Button>
                 </div>
               </AdminDataTableCell>
-              <AdminDataTableCell column={columns[5]!}><span className="whitespace-nowrap text-xs tabular-nums">{node.expiresAt || '暂无'}</span></AdminDataTableCell>
-              <AdminDataTableCell column={columns[6]!}><span className="whitespace-nowrap text-xs tabular-nums">{node.createdAt || '暂无'}</span></AdminDataTableCell>
+              <AdminDataTableCell column={columns[4]!}><span className="block">{node.statusLabel ?? '未知状态'}</span><DnsVerificationStatus node={node} /></AdminDataTableCell>
+              <AdminDataTableCell column={columns[5]!}><span className="whitespace-nowrap text-xs tabular-nums">{node.createdAt || '暂无'}</span></AdminDataTableCell>
+              <AdminDataTableCell column={columns[6]!}><span className="whitespace-nowrap text-xs tabular-nums">{node.expiresAt || '暂无'}</span></AdminDataTableCell>
               <AdminDataTableCell column={columns[7]!}>
                 {allowActions ? <div className="flex flex-wrap items-center justify-start gap-1">
                   {node.dns ? <Button size="sm" variant="outline" disabled={isPending || node.cloudStatus !== 'Running'} onClick={() => onNodeAction?.(node.id, 'verify-dns')}>

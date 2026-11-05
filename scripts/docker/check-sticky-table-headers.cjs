@@ -116,7 +116,7 @@ async function revealFooter(page, footer) {
     return true;
   }), 'Pagination is clipped by an ancestor and cannot be reached by page scrolling');
 }
-(async () => {
+if (require.main === module) (async () => {
   const browser = await chromium.launch({ executablePath: '/usr/bin/chromium', args: ['--no-sandbox', '--disable-dev-shm-usage'] });
   const errors = [], reports = [], mockWrites = [];
   try {
@@ -241,3 +241,5 @@ async function revealFooter(page, footer) {
     throw error;
   } finally { await browser.close(); }
 })().catch(error => { console.error(error.stack); process.exitCode = 1; });
+
+module.exports = { base, artifacts, profile, cloud, workspace, indexes, images, cloudSnapshot, payload, scrollCheck };
