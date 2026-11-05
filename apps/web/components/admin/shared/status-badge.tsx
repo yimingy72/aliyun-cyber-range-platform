@@ -7,6 +7,12 @@ interface StatusBadgeProps {
 }
 
 const statusConfig = {
+  economical_stopped: { label: '节省停机', variant: 'secondary' },
+  power_stopping: { label: '节省停机中', variant: 'secondary' },
+  power_starting: { label: '恢复开机中', variant: 'secondary' },
+  power_stopped_standard: { label: '普通停机（未节省）', variant: 'destructive' },
+  power_partial: { label: '电源状态部分完成', variant: 'destructive' },
+  power_unknown: { label: '电源结果待核验', variant: 'destructive' },
   pending_create: {
     label: '等待创建',
     variant: 'secondary',

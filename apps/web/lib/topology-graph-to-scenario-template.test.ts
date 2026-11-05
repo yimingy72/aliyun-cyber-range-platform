@@ -136,23 +136,12 @@ describe('buildScenarioTemplateSpecFromTopologyGraph', () => {
 
     expect(template.access.securityGroupRules).toEqual([
       expect.objectContaining({
-        key: 'ecs-default-ecs-default-nic-1-ecs-default-nic-1-default-ssh',
+        key: 'ecs-default-ecs-default-nic-1-ecs-default-nic-1-default-all',
         targetHostKey: 'ecs-default',
         targetDeviceIndex: 0,
         direction: 'ingress',
-        protocol: 'tcp',
-        portRange: '22/22',
-        sourceCidr: '0.0.0.0/0',
-        policy: 'accept',
-        priority: 1,
-      }),
-      expect.objectContaining({
-        key: 'ecs-default-ecs-default-nic-1-ecs-default-nic-1-default-http',
-        targetHostKey: 'ecs-default',
-        targetDeviceIndex: 0,
-        direction: 'ingress',
-        protocol: 'tcp',
-        portRange: '80/80',
+        protocol: 'all',
+        portRange: '-1/-1',
         sourceCidr: '0.0.0.0/0',
         policy: 'accept',
         priority: 1,

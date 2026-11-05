@@ -7,6 +7,10 @@ import { SystemConfigService } from '../src/admin/system-config.service';
 import { ProvisioningWorkerService } from '../src/provisioning/provisioning-worker.service';
 import { createMemoryAdminRepository } from './support/create-memory-admin-repository';
 import * as tencentResources from '../src/admin/tencent-cloud-resources';
+import * as imageCapacity from '../src/admin/aliyun-image-capacity';
+
+beforeEach(() => jest.spyOn(imageCapacity, 'readAliyunImageSystemDisk').mockImplementation(async (_account, imageId) => ({ imageId, minimumSystemDiskSize: 20, requestId: 'image-request' })));
+afterEach(() => jest.restoreAllMocks());
 
 function createLaunchFixture() {
   const repository = createMemoryAdminRepository();
@@ -46,6 +50,16 @@ function createLaunchFixture() {
 }
 
 describe('SingleInstancesService', () => {
+  it('defaults Alibaba disks to their real image size and rejects an explicit smaller disk before network creation', async () => {
+    const f = createLaunchFixture();
+    jest.mocked(imageCapacity.readAliyunImageSystemDisk).mockResolvedValue({ imageId: f.image.imageId, minimumSystemDiskSize: 64, requestId: 'image-request' });
+    await expect(f.service.launch({ ...f.input, systemDiskSize: 40 }, f.actor.id)).rejects.toThrow('64 GiB');
+    expect(f.network.ensureDefaultProfile).not.toHaveBeenCalled();
+    expect(await f.repository.listProvisionJobs()).toEqual([]);
+    const launched = await f.service.launch(f.input, f.actor.id);
+    expect(launched.batch.systemDiskSize).toBe(64);
+    expect(launched.instances.every(instance => instance.singleInstanceConfig?.systemDiskSize === 64)).toBe(true);
+  });
   it('rejects an excessive Alibaba platform expiry before network preparation or job intake', async () => {
     const f = createLaunchFixture();
     await expect(f.service.launch({ ...f.input, expiresAt: new Date(Date.now() + 1100 * 24 * 60 * 60_000).toISOString() }, f.actor.id)).rejects.toThrow('1095');

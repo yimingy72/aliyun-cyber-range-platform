@@ -26,7 +26,7 @@ export class PlatformImagesController {
   @UseGuards(AdminAuthGuard)
   collect(@Req() request: AuthenticatedAdminRequest, @Body() body: CollectPlatformImageDto) {
     return this.mcpWrite(request, 'platform_image_collect', body as unknown as Record<string, unknown>, body.snapshotId, () =>
-      this.imageCatalogService.collectPlatformAsset(body.snapshotId, body.displayName, request.adminUser),
+      this.imageCatalogService.collectPlatformAsset(body.snapshotId, body.displayName, request.adminUser, body.visibility),
     );
   }
 
@@ -119,7 +119,11 @@ export class PlatformImagesController {
       resolveConfirmation: async () => ({
         targetId,
         targetSnapshot: { platformImageAssetId: targetId },
-        summary: { targetName: targetId, destructive: toolName === 'platform_image_remove' },
+        summary: {
+          targetName: targetId, destructive: toolName === 'platform_image_remove',
+          ...(toolName === 'platform_image_collect' && argumentsValue.visibility === 'private'
+            ? { visibility: 'private', displayName: argumentsValue.displayName } : {}),
+        },
       }),
       execute: async () => ({ result: await execute() }),
     });

@@ -28,7 +28,9 @@ import {
   Undo2,
 } from 'lucide-react';
 
-import { toFlowEdges, toFlowNodes } from './topology-flow-adapter';
+import { fromFlowNodes, toFlowEdges, toFlowNodes } from './topology-flow-adapter';
+import { TopologyNetworkEdge } from './topology-network-edge';
+import { TopologyNetworkRegions } from './topology-network-regions';
 import { TopologyFlowNode } from './topology-flow-node';
 import {
   TopologyFlowResourceRail,
@@ -41,6 +43,7 @@ import type {
   TopologyViewport,
 } from './topology-flow-types';
 import type { TemplateNode } from '../../../lib/scenario-graph';
+import type { TopologyLayoutSize } from './topology-flow-layout';
 
 const topologyNodeTypes = {
   'topology-router': TopologyFlowNode,
@@ -50,8 +53,9 @@ const topologyNodeTypes = {
 
 const topologyFitViewOptions = {
   maxZoom: 1.2,
-  padding: 0.45,
+  padding: 0.2,
 } as const;
+const topologyEdgeTypes = { 'topology-network': TopologyNetworkEdge };
 const resourceNodeFootprint = { height: 96, width: 208 };
 const resourcePlacementStep = { x: 240, y: 144 };
 
@@ -71,7 +75,7 @@ export type TopologyFlowCanvasProps = {
   onAddNode: (kind: TopologyResourceKind, position?: XYPosition) => void;
   onConnect: (connection: { source: string; target: string }) => void;
   onDeleteSelection: () => void;
-  onLayoutAll: () => void;
+  onLayoutAll: (canvas?: TopologyLayoutSize) => void;
   onNodeActivate: (nodeId: string) => void;
   onPositionsCommit: (positions: NodePositionCommit[]) => void;
   onRedo: () => void;
@@ -225,14 +229,15 @@ function TopologyFlowCanvasInner({
     [selection, topologyFlowNodes],
   );
   const [flowNodes, setFlowNodes, onNodesChange] = useNodesState(externalFlowNodes);
+  const routedFlowEdges = React.useMemo(() => toFlowEdges(nodes, edges), [nodes, edges]);
   const flowEdges = React.useMemo(() => {
     const selectedEdgeIds = new Set(selection.edgeIds);
 
-    return toFlowEdges(nodes, edges).map((edge) => ({
+    return routedFlowEdges.map((edge) => ({
       ...edge,
       selected: selectedEdgeIds.has(edge.id),
     }));
-  }, [edges, nodes, selection.edgeIds]);
+  }, [routedFlowEdges, selection.edgeIds]);
   const syncedTopologyNodesRef = React.useRef(nodes);
   const syncedConnectModeRef = React.useRef(isConnectMode);
   const syncedEdgesRef = React.useRef(edges);
@@ -513,7 +518,8 @@ function TopologyFlowCanvasInner({
 
   function handleLayoutAll() {
     pendingFitViewAfterLayoutRef.current = true;
-    onLayoutAll();
+    const bounds = canvasRef.current?.getBoundingClientRect();
+    onLayoutAll(bounds && bounds.width > 0 && bounds.height > 0 ? { width: bounds.width, height: bounds.height } : undefined);
     setLayoutFitRequestId((current) => current + 1);
   }
 
@@ -615,7 +621,7 @@ function TopologyFlowCanvasInner({
               aria-label="全部自动布局"
               className="topology-flow-tool-button"
               onClick={handleLayoutAll}
-              title="全部自动布局"
+              title="按网络区域自动布局，保留每台多网卡主机的唯一节点"
               type="button"
             >
               <LayoutGrid aria-hidden="true" />
@@ -671,9 +677,10 @@ function TopologyFlowCanvasInner({
           defaultViewport={viewport ?? undefined}
           deleteKeyCode={null}
           edges={flowEdges}
+          edgeTypes={topologyEdgeTypes}
           fitView={!viewport}
           fitViewOptions={topologyFitViewOptions}
-          minZoom={0.25}
+          minZoom={0.1}
           nodes={flowNodes}
           nodesConnectable={!isReadonly}
           nodesDraggable={!isReadonly}
@@ -698,6 +705,7 @@ function TopologyFlowCanvasInner({
           selectionOnDrag={false}
         >
           <Background gap={20} size={1} />
+          <TopologyNetworkRegions nodes={fromFlowNodes(flowNodes)} edges={edges} />
           <Controls showInteractive={false} />
           {isMiniMapVisible ? (
             <MiniMap

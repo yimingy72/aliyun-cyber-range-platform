@@ -44,7 +44,10 @@ describe('shared network durable apply intent', () => {
         const [pending] = await repository.listSingleInstanceNetworkProfiles();
         expect(pending).toMatchObject({ status: 'destroying', vpcId: '', cloudAccountUid: account.accountUid, cloudAccountContextId: account.cloudAccountContextId, workspaceKey, vpcCidr: '10.80.0.0/16' });
         expect(audit.mock.calls.some(([event]) => event.phase === 'dispatched' && event.targetId === pending.id)).toBe(true);
-        if (mode === 'unknown') throw new Error('create response lost');
+        if (mode === 'unknown') {
+          await fs.writeFile(path.join(dir, 'terraform.tfstate'), JSON.stringify({ version: 4, serial: 1, lineage: 'fixture-network', resources: [] }));
+          throw new Error('create response lost');
+        }
         await fs.writeFile(path.join(dir, 'terraform.tfstate'), JSON.stringify({ version: 4, serial: 1, lineage: 'fixture-network', resources: stateResources }));
         if (mode === 'complete_then_fail') throw new Error('command failed after complete state');
         return {};
@@ -101,6 +104,47 @@ describe('shared network durable apply intent', () => {
     await expect(service.ensureDefaultProfile(account, admin.id)).rejects.toThrow('cleanup is required');
     expect(runner.apply).toHaveBeenCalledTimes(1);
     expect((await repository.listSingleInstanceNetworkProfiles())[0]).toMatchObject({ status: 'destroying', cloudAccountUid: account.accountUid });
+  });
+
+  it('clears an old unknown empty apply only after the exact cloud-tag scan proves absence', async () => {
+    mode = 'unknown';
+    await expect(service.ensureDefaultProfile(account, admin.id)).rejects.toThrow('cleanup is required');
+    const evidencePath = path.join(dir,'.range-apply-started');
+    const evidence = JSON.parse(await fs.readFile(evidencePath,'utf8'));
+    evidence.submittedAt = new Date(Date.now()-120_000).toISOString();
+    evidence.addresses.push('module.network.alicloud_security_group_rule.open_all_ingress');
+    evidence.createAddresses.push('module.network.alicloud_security_group_rule.open_all_ingress');
+    await fs.writeFile(evidencePath,JSON.stringify(evidence));
+    const [pending] = await repository.listSingleInstanceNetworkProfiles();
+    const patrol = { findAliyunDefaultNetworkCandidates: jest.fn().mockResolvedValue([]) };
+    service = new SingleInstanceNetworkService(repository, {
+      getExecutionAccountContext: async () => account, getAccountContext: async () => account, getAccountContextById: async () => account,
+    } as any, bootstrap, new CidrPoolService(), { assertNetworkUnused: async () => undefined } as any, patrol as any);
+    await service.registerCleanup(pending.id,'unknown-empty',new Date(Date.now()-300_000).toISOString(),[admin.id],admin);
+    await expect(service.destroy(pending.id,admin,'unknown-empty')).resolves.toMatchObject({status:'destroyed',vpcId:''});
+    expect(patrol.findAliyunDefaultNetworkCandidates).toHaveBeenCalledWith(expect.objectContaining({accountUid:account.accountUid}),expect.objectContaining({id:pending.id}));
+    expect(await repository.listSingleInstanceNetworkProfiles()).toEqual([]);
+    await expect(fs.stat(dir)).rejects.toThrow();
+  });
+
+  it('preserves an unknown empty apply when the cloud-tag scan finds a candidate', async () => {
+    mode = 'unknown';
+    await expect(service.ensureDefaultProfile(account, admin.id)).rejects.toThrow('cleanup is required');
+    const evidencePath = path.join(dir,'.range-apply-started');
+    const evidence = JSON.parse(await fs.readFile(evidencePath,'utf8'));
+    evidence.submittedAt = new Date(Date.now()-120_000).toISOString();
+    evidence.addresses.push('module.network.alicloud_security_group_rule.open_all_ingress');
+    evidence.createAddresses.push('module.network.alicloud_security_group_rule.open_all_ingress');
+    await fs.writeFile(evidencePath,JSON.stringify(evidence));
+    const [pending] = await repository.listSingleInstanceNetworkProfiles();
+    service = new SingleInstanceNetworkService(repository, {
+      getExecutionAccountContext: async () => account, getAccountContext: async () => account, getAccountContextById: async () => account,
+    } as any, bootstrap, new CidrPoolService(), { assertNetworkUnused: async () => undefined } as any,
+    { findAliyunDefaultNetworkCandidates: async () => [{type:'vpc',id:'vpc-late'}] } as any);
+    await service.registerCleanup(pending.id,'unknown-candidate',new Date(Date.now()-300_000).toISOString(),[admin.id],admin);
+    await expect(service.destroy(pending.id,admin,'unknown-candidate')).rejects.toThrow('tagged cloud resources');
+    expect(await repository.getSingleInstanceNetworkProfileById(pending.id)).not.toBeNull();
+    await expect(fs.stat(evidencePath)).resolves.toBeDefined();
   });
 
   it('clears a verified failed bootstrap and can create again while retaining the old permanent resource audit', async () => {

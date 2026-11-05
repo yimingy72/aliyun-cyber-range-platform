@@ -101,6 +101,11 @@ export type BillingWindowInput = {
 export type BillingGroupInput = BillingWindowInput & {
   userId?: string;
 };
+export type BillingEntriesInput = BillingGroupInput & {
+  view?: 'user' | 'platform';
+  groupBy?: 'batch';
+  billStatus?: 'issued' | 'partial' | 'unissued' | 'not_applicable' | 'pending';
+};
 
 export type PaginatedResult<T> = {
   items: T[];
@@ -140,6 +145,7 @@ export type BillingSummary = Record<string, unknown> & {
   reconciliationIssues?: Array<{ resourceType: 'snapshot' | 'oss' | 'unknown' | 'disk'; resourceCount: number; reason: string; resources?: BillingReconciliationResource[] }>;
   unallocatedCurrencyTotals?: Array<{ currency: string; pretaxAmount: number }>;
   resourcesWithoutBillCount?: number;
+  resourcesWithoutBill?: BillingReconciliationResource[];
   totalPretaxAmount: number | null;
   platformPretaxAmount: number | null;
   anomalyCount: number;
@@ -220,6 +226,9 @@ export type ProvisionJobEvidence = {
   coverage: 'platform_recorded_job_evidence';
   inventories: Array<{ recordedAt: string; executionContext: { provider: 'alibaba_cloud' | 'tencent_cloud'; cloudAccountContextId: string; cloudAccountUid: string; regionId: string; zoneId: string }; resources: Record<string, unknown> }>;
   invalidInventoryCount: number;
+  destroyCommands?: Array<{ stepName: string; status: string; completedBy: string; coverage: 'recorded_opentofu_output'; commandReportedComplete: boolean;
+    reportedDestroyedCount: number | null; completedResourceIds: string[]; completedAddresses: string[] }>;
+  eipAllocationIntents?: Array<{ cloudResourceId: string; key: string; bindTargetType: string; bindTargetKey: string; bandwidthMbps: number }>;
   steps: Array<{ stepName: string; status: string; description: string; startedAt: string | null; finishedAt: string | null }>;
   relatedJobs: Array<{ id: string; jobType: string; status: string; createdAt: string; startedAt: string | null; finishedAt: string | null }>;
   billingResources: Array<{ cloudProvider: 'alibaba_cloud' | 'tencent_cloud'; cloudAccountUid: string | null; regionId: string; cloudResourceId: string; cloudResourceType: string; sourceProvisionJobId: string | null; billingStartAt: string; releasedAt: string | null }>;
@@ -365,10 +374,17 @@ export type SaveRangeInstanceDraftInput = {
 };
 
 export type RangeInstanceNodeActionPayload = {
+  planDigest?: string;
+  confirmedNodeName?: string;
   displayName?: string;
   defaultHostName?: string;
   defaultPassword?: string;
   description?: string;
+};
+
+export type RangeNodeResetPreview = {
+  rangeInstanceId:string;nodeId:string;nodeName:string;instanceId:string;systemDiskId:string;imageId:string;planDigest:string;
+  originalPowerState:'Running'|'Stopped';dataDiskIds:string[];regionId:string;accountUid:string;hasDns:boolean;expiresAt:string|null;destructive:true;
 };
 
 export type LaunchSingleInstancesInput = {
@@ -392,6 +408,7 @@ export type SingleInstanceActionPayload = {
 };
 
 export type CollectPlatformImageInput = {
+  visibility?: 'private';
   snapshotId: string;
   displayName: string;
 };
@@ -475,11 +492,13 @@ export type PlatformApiClientLike = {
   runRangeInstanceNodeAction(
     rangeInstanceId: string,
     nodeId: string,
-    action: 'start' | 'stop' | 'reboot' | 'open-vnc' | 'pack-image' | 'verify-dns' | 'apply-dns',
+    action: 'start' | 'stop' | 'reboot' | 'open-vnc' | 'pack-image' | 'verify-dns' | 'apply-dns' | 'reset',
     payload?: RangeInstanceNodeActionPayload,
     operation?: OperationRequest,
   ): Promise<Record<string, unknown>>;
+  previewRangeInstanceNodeReset?(rangeInstanceId:string,nodeId:string):Promise<RangeNodeResetPreview>;
   listSingleInstanceNetworks?():Promise<Record<string,unknown>[]>;
+  createSingleInstanceNetwork?(operation?:OperationRequest):Promise<Record<string,unknown>>;
   registerSingleInstanceNetworkCleanup?(id:string,payload:{runId:string;createdAfter:string;ownerUserIds:string[]}):Promise<Record<string,unknown>>;
   destroySingleInstanceNetwork?(id:string,cleanupRunId:string,operation?:OperationRequest):Promise<Record<string,unknown>>;
   listSingleInstances(view?: InstanceView): Promise<SingleInstanceListPayload>;
@@ -488,7 +507,7 @@ export type PlatformApiClientLike = {
   getSingleInstanceAccess(id: string): Promise<RangeAccessPayload>;
   getInstanceTypeAvailability(cpu: number, memory: number): Promise<InstanceTypeAvailabilitySnapshot>;
   listProvisionJobs(instanceMode?: InstanceMode): Promise<ProvisionJob[]>;
-  getProvisionJob(id: string, options?: { includeEvidence?: boolean }): Promise<ProvisionJob>;
+  getProvisionJob(id: string, options?: { includeEvidence?: boolean; includeCloudEvents?: boolean; cloudResourceIds?: string[] }): Promise<ProvisionJob>;
   fetchCloudConfig(): Promise<CloudConfigSnapshot>;
   saveCloudConfig(payload: CloudConfigSnapshot, operation?: OperationRequest): Promise<CloudConfigSnapshot>;
   listCloudAccountContexts(includeInactive?: boolean): Promise<CloudAccountContext[]>;
@@ -502,6 +521,9 @@ export type PlatformApiClientLike = {
   listTencentCloudImages(input: TencentCloudImagesInput): Promise<TencentCloudImagesPayload>;
   getCloudAccountInstanceTypeAvailability(id: string, cpu: number, memory: number): Promise<InstanceTypeAvailabilitySnapshot>;
   getBillingSummary(input?: BillingWindowInput): Promise<BillingSummary>;
+  listBillingEntries?(input?: BillingEntriesInput): Promise<Record<string, unknown>>;
+  getBillingEntryDetail?(entryId: string, input?: Pick<BillingWindowInput, 'startAt' | 'endAt'>): Promise<Record<string, unknown>>;
+  diagnoseBillingMonth?(input: { billingCycle: string; ledgerIds: string[] }): Promise<Record<string, unknown>>;
   listBillingUsers(input?: BillingWindowInput): Promise<PaginatedResult<BillingUserSummary>>;
   getBillingUserSummary(userId: string, input?: BillingWindowInput): Promise<BillingUserSummary>;
   listBillingUserGroups(input?: BillingGroupInput): Promise<PaginatedResult<BillingLaunchGroup>>;

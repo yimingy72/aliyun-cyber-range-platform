@@ -31,7 +31,7 @@ describe('tool contract trust boundaries', () => {
     const client = new PlatformApiClient({ baseUrl: 'https://fixture.invalid', token: 'fixture-only', fetch });
     const registry = createToolRegistry(client);
     const tools = registry.listTools(ADMIN_SCOPES, 'admin');
-    expect.soft(tools).toHaveLength(105);
+    expect(tools).toHaveLength(111);
     for (const tool of tools) {
       const parsed = tool.inputSchema.safeParse({ __unknownCallerField: true });
       expect(parsed.success, tool.name).toBe(false);
@@ -59,6 +59,17 @@ describe('tool contract trust boundaries', () => {
     expect((await sdk.listTools()).tools.map(tool => tool.name)).not.toContain('billing_summary_get');
     expect(await sdk.callTool({ name: 'admin_user_create', arguments: { username: 'blocked', password: 'fixture-only', role: 'admin' } })).toMatchObject({ isError: true });
     expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it('forwards a private catalog dependency only for administrators', async () => {
+    const fetch = vi.fn().mockResolvedValue(new Response(JSON.stringify({ id: 'private-asset', visibility: 'private' })));
+    const registry = createToolRegistry(new PlatformApiClient({ baseUrl: 'https://fixture.invalid', token: 'fixture-only', fetch }));
+    const input = { snapshotId: 'verified-snapshot', displayName: 'Migration VM', visibility: 'private' };
+    await expect(registry.callTool('platform_image_collect', ['images:write'], input, 'user')).rejects.toThrow('Forbidden tool');
+    const result = await registry.callTool('platform_image_collect', ['images:write'], input, 'admin');
+    expect(result.structuredContent.result).toMatchObject({ visibility: 'private' });
+    expect(fetch).toHaveBeenCalledTimes(1);
+    expect(JSON.parse(fetch.mock.calls[0][1].body)).toEqual(input);
   });
 
   it('requires both instance-control and image-write authority before creating a packed image', async () => {

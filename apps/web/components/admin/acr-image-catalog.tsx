@@ -8,7 +8,7 @@ import { Button } from '@/components/ui/button';
 import { TableRow } from '@/components/ui/table';
 import { fetchAcrImageCatalog, syncAcrImageCatalog } from '../../lib/admin-api';
 import { isUnauthorizedAdminError } from '../../lib/admin-screen';
-import { AdminPaginationControls, buildVisiblePages, getPagination, useAdminPageSize } from './admin-pagination';
+import { AdminPaginationControls, getPagination, useAdminPageSize } from './admin-pagination';
 import { AdminDataTable, AdminDataTableCell, AdminDataTableState, AdminDataTableText, type AdminDataColumn } from './shared/admin-data-table';
 import { AdminPaginatedList } from './shared/admin-paginated-list';
 import { TableLoadingState } from './shared/table-loading-state';
@@ -28,7 +28,6 @@ export function AcrImageCatalogView({ apiBaseUrl, token, search, actionHost, rea
 }) {
   const [catalog, setCatalog] = useState<AcrImageCatalog | null>(null);
   const [page, setPage] = useState(1);
-  const [jump, setJump] = useState('1');
   const [query, setQuery] = useState(search);
   const [revision, setRevision] = useState(0);
   const [starting, setStarting] = useState(false);
@@ -88,13 +87,9 @@ export function AcrImageCatalogView({ apiBaseUrl, token, search, actionHost, rea
   const syncing = starting || catalog?.state === 'running';
   const failure = error || catalog?.error;
   const pagination = getPagination(catalog?.total ?? 0, catalog?.page ?? 1, pageSize);
-  useEffect(() => { setJump(String(pagination.page)); }, [pagination.page]);
   return (
     <AdminPaginatedList className="mt-4" footer={catalog?.total ? (
       <AdminPaginationControls label="ACR 镜像分页" pageSize={pageSize} pagination={pagination}
-        visiblePages={buildVisiblePages(pagination.totalPages, pagination.page)} jumpPageValue={jump} onJumpPageValueChange={setJump}
-        onJumpPage={() => setPage(Math.min(pagination.totalPages, Math.max(1, Number.parseInt(jump, 10) || pagination.page)))}
-        onPreviousPage={() => setPage(pagination.page - 1)} onNextPage={() => setPage(pagination.page + 1)}
         onPageSelect={setPage} onPageSizeChange={value => { setPageSize(value); setPage(1); }} />
     ) : null}>
       {actionHost ? createPortal(

@@ -22,7 +22,7 @@ description: 通过 aliyun-cyber-range-platform MCP 操作阿里云或腾讯云�
 | 用户管理 | `user-management` | [空间内用户、角色和状态](./references/products/user-management.md) |
 | 账单费用 | `billing` | [官方费用、平台归属和待核对状态](./references/products/billing.md) |
 | 基础配置 | `settings` | [账号绑定、工作空间切换和地域](./references/products/settings.md) |
-| 资源告警 | `resource-alerts` | [当前账号巡检、来源核验和确认回收](./references/products/resource-alerts.md) |
+| 账单费用中的资源告警 | `billing` | [当前账号巡检、来源核验和确认回收](./references/products/resource-alerts.md) |
 
 - 查询已有模板、查看 VPC/ACL、管理模板名称或发布状态：直接走相应只读/管理工具，无需 `RangeDesign/v1`。
 - 新建或替换模板拓扑：先读靶场编排参考。用户提供 YAML 时严格解析 `RangeDesign/v1`，拒绝重复键、截断字段和歧义；使用可见平台镜像转换为完整 `topologyGraph`。既有完整图可基于最新详情修改，不要求往返重写成 YAML。
@@ -57,7 +57,7 @@ description: 通过 aliyun-cyber-range-platform MCP 操作阿里云或腾讯云�
 
 | 操作 | MCP 工具 | 必填参数 | 可选参数 | Scope | 用途 |
 |---|---|---|---|---|---|
-| 查询异步任务 | `provision_job_get` | `provisionJobId` | `includeEvidence: boolean` | `jobs:read` | 查看状态与脱敏失败摘要；证据包括同来源库存、固定阶段、相关作业和资源台账释放时间。 |
+| 查询异步任务 | `provision_job_get` | `provisionJobId` | `includeEvidence: boolean`、`includeCloudEvents: boolean`、`cloudResourceIds`（1–20项，需启用云审计） | `jobs:read` | 查看状态与脱敏失败摘要；证据包括同来源库存、固定阶段、相关作业和资源台账释放时间。 |
 
 证据、DNS 核验、云网络诊断和正式账单各有不同含义：云资源 Running 不证明客体 DNS 生效；网络诊断完成不证明流量连通；`verify_destroy`/`releasedAt` 不证明官方费用已结清；未出账不等于免费。只报告当前证据能支持的结论。
 

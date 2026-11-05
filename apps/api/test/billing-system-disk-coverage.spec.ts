@@ -34,7 +34,7 @@ describe('embedded system-disk billing coverage', () => {
 
   it('does not count a proven system disk twice when the official component is billed under its host', async () => {
     const f = await fixture();
-    await expect(f.service.getSummary(WINDOW)).resolves.toMatchObject({ totalPretaxAmount: 0.013906704, resourcesWithoutBillCount: 0, reconciliationIssues: [] });
+    await expect(f.service.getSummary(WINDOW)).resolves.toMatchObject({ totalPretaxAmount: 0.013906704, resourcesWithoutBillCount: 0, resourcesWithoutBill: [], reconciliationIssues: [] });
     await expect(f.service.listUserItems('alice', WINDOW)).resolves.toEqual([expect.objectContaining({ cloudResourceId: 'i-platform', pretaxAmount: 0.013906704 })]);
   });
 
@@ -59,7 +59,9 @@ describe('embedded system-disk billing coverage', () => {
 
   it('keeps an accurately identified data disk awaiting its independent bill', async () => {
     const f = await fixture({ systemDiskIds: {}, dataDiskIds: { data: 'd-system' } });
-    await expect(f.service.getSummary(WINDOW)).resolves.toMatchObject({ resourcesWithoutBillCount: 1, reconciliationIssues: [] });
+    await expect(runInCloudWorkspace({ cloudWorkspaceId: f.instance.cloudWorkspaceId!, provider: 'alibaba_cloud', accountUid: UID,
+      actorUserId: 'admin', isPlatformManager: true }, () => f.service.getSummary(WINDOW))).resolves.toMatchObject({
+      resourcesWithoutBillCount: 1, resourcesWithoutBill: [{ cloudResourceId: 'd-system', proofFailureReason: 'BILL_DETAILS_PENDING' }], reconciliationIssues: [] });
   });
 
   it('does not cover one host\'s disk using another host\'s system-disk component', async () => {

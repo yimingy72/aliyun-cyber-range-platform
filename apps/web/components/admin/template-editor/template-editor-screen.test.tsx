@@ -831,6 +831,24 @@ describe('TemplateEditorScreen', () => {
     ).toBeTruthy();
   });
 
+  it('keeps a non-preset imported specification and explains exact matching at launch', async () => {
+    fetchInstanceTypeAvailabilityMock.mockResolvedValue({
+      cpu: 1, memory: 2, regionId: 'cn-test', zoneId: 'test-zone',
+      exactAvailable: false, matches: [], warning: '平台单实例执行器不支持 1C2G 规格。',
+    });
+    render(<TemplateEditorScreen template={{
+      id: 'template-1', name: 'Imported scene', slug: 'imported', cloudProvider: 'alibaba_cloud', version: 'v1',
+      currentDraftVersionId: 'draft-1',
+      currentDraftVersion: { id: 'draft-1', status: 'draft', version: 'v1', topologyGraph: { schemaVersion: '2.0.0', nodes: [], edges: [] } },
+    }} />);
+    fireEvent.click(screen.getAllByRole('button', { name: '虚拟主机 virtual client' })[0]!);
+    fireEvent.click(screen.getByRole('button', { name: /ECS 1/ }));
+    fireEvent.change(screen.getByLabelText('CPU'), { target: { value: '1' } });
+    await screen.findByText('创建编排时将按原始 CPU、内存和网卡数量精确匹配可售机型。');
+    expect((screen.getByLabelText('CPU') as HTMLInputElement).value).toBe('1');
+    expect(screen.queryByText('平台单实例执行器不支持 1C2G 规格。')).toBeNull();
+  });
+
   it('rechecks instance type availability when ecs cpu-memory fields change', async () => {
     fetchInstanceTypeAvailabilityMock
       .mockResolvedValueOnce({
@@ -1875,10 +1893,12 @@ describe('TemplateEditorScreen', () => {
     expect(screen.getByText('ECS')).toBeTruthy();
     expect(screen.queryByLabelText('启动优先级')).toBeNull();
     expect(screen.queryByLabelText('启动等待时间')).toBeNull();
+    const beforeRules = screen.queryAllByLabelText(/^安全方向 1-\d+$/).length;
     fireEvent.click(screen.getByRole('button', { name: '添加安全规则' }));
-    expect(screen.getByLabelText('安全方向 1-3')).toBeTruthy();
-    fireEvent.click(screen.getByRole('button', { name: '删除安全规则 1-3' }));
-    expect(screen.queryByLabelText('安全方向 1-3')).toBeNull();
+    expect(screen.queryAllByLabelText(/^安全方向 1-\d+$/)).toHaveLength(beforeRules + 1);
+    expect(screen.getByLabelText(`安全方向 1-${beforeRules + 1}`)).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: `删除安全规则 1-${beforeRules + 1}` }));
+    expect(screen.queryAllByLabelText(/^安全方向 1-\d+$/)).toHaveLength(beforeRules);
 
     fireEvent.click(screen.getAllByRole('button', { name: '交换机 switch' })[0]!);
     fireEvent.click(screen.getByRole('button', { name: /交换机 1/ }));

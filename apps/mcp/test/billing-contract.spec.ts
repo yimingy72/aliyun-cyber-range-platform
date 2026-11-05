@@ -18,6 +18,7 @@ const pendingSummary: BillingSummary = {
   startAt: '2026-10-10', endAt: '2026-10-10', billingScope: 'platform_resources', billingStatus: 'provisional',
   platformBillingStartedAt: '2026-10-01T00:00:00.000Z',
   totalPretaxAmount: 0, platformPretaxAmount: 0, anomalyCount: 0, resourcesWithoutBillCount: 1, unallocatedCurrencyTotals: [],
+  resourcesWithoutBill: [{ ...pendingResource, proofFailureReason: 'BILL_DETAILS_PENDING' }],
   reconciliationIssues: [{ resourceType: 'unknown', resourceCount: 1, reason: 'Source evidence needs verification', resources: [pendingResource] }],
   resourceTypeTotals: [], dailyTotals: [],
 };
@@ -56,6 +57,7 @@ describe('billing currency and export contracts', () => {
       regionId: '', releasedAt: null, proofFailureReason: 'SOURCE_SNAPSHOT_INVENTORY_OR_BILL_PROOF_INCOMPLETE' })).toMatchObject({ ledgerId: null });
     for (const extra of [{ password: 'secret' }, { rawPayload: {} }, { credentials: {} }]) {
       expect(billingReconciliationResourceSchema.safeParse({ ...pendingResource, ...extra }).success).toBe(false);
+      expect(billingSummaryOutputSchema.safeParse({ result: { ...pendingSummary, resourcesWithoutBill: [{ ...pendingResource, ...extra }] } }).success).toBe(false);
     }
     expect(billingReconciliationResourceSchema.safeParse({ ...pendingResource, cloudProvider: 'external' }).success).toBe(false);
     expect(billingReconciliationResourceSchema.safeParse({ ...pendingResource, releasedAt: 'unknown' }).success).toBe(false);

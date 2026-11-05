@@ -1,6 +1,7 @@
 'use client';
 
 import type { XYPosition } from '@xyflow/react';
+import { useEffect, useState } from 'react';
 
 import { TopologyFlowCanvas } from './template-editor/topology-flow-canvas';
 import type { TopologyResourceKind } from './template-editor/topology-flow-resource-rail';
@@ -89,6 +90,8 @@ export function RangeInstanceTopologyWorkspace({
   );
   const selectedNode = nodes.find((node) => node.id === effectiveSelection.nodeIds[0])
     ?? legacySelectedNode;
+  const [isPropertyPanelOpen, setIsPropertyPanelOpen] = useState(true);
+  useEffect(() => { setIsPropertyPanelOpen(Boolean(selectedNode)); }, [selectedNode?.id]);
 
   function handleSelectionChange(nextSelection: TopologySelection) {
     onSelectionChange?.(nextSelection);
@@ -96,6 +99,7 @@ export function RangeInstanceTopologyWorkspace({
   }
 
   function handleNodeActivate(nodeId: string) {
+    setIsPropertyPanelOpen(current => nodeId === selectedNode?.id ? !current : true);
     onNodeActivate?.(nodeId);
     onSelectNode?.(nodeId);
   }
@@ -126,7 +130,7 @@ export function RangeInstanceTopologyWorkspace({
         viewport={viewport}
       />
 
-      <TemplatePropertyPanel
+      {selectedNode && isPropertyPanelOpen ? <TemplatePropertyPanel
         allNodes={nodes}
         instanceTypeAvailability={instanceTypeAvailability}
         linkedSwitchIdsByHostId={linkedSwitchIdsByHostId}
@@ -136,7 +140,8 @@ export function RangeInstanceTopologyWorkspace({
         runtimeNodeStatus={runtimeNodeStatus}
         runtimeExistingNode={Boolean(selectedNode && deployedNodeIds.includes(selectedNode.id))}
         selectedNode={selectedNode}
-      />
+        onClose={() => setIsPropertyPanelOpen(false)}
+      /> : null}
     </section>
   );
 }

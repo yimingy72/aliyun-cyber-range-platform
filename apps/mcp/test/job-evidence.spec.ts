@@ -18,4 +18,15 @@ describe('job evidence MCP path', () => {
     await expect(registry.callTool('provision_job_get', [], { provisionJobId: 'job-1', includeEvidence: true })).rejects.toThrow('Forbidden');
     await expect(registry.callTool('provision_job_get', ['jobs:read'], { provisionJobId: 'job-1', includeEvidence: 'true' })).rejects.toThrow('Invalid input');
   });
+  it('forwards bounded cloud-event selection and rejects arbitrary IDs or selection without an explicit flag', async () => {
+    const getProvisionJob = vi.fn(async () => ({ id: 'job-1', evidence: { cloudEvents: [] } }));
+    const registry = createToolRegistry({ getProvisionJob } as any);
+    await registry.callTool('provision_job_get', ['jobs:read'], { provisionJobId: 'job-1', includeCloudEvents: true, cloudResourceIds: ['eip-owned'] });
+    expect(getProvisionJob).toHaveBeenCalledWith('job-1', { includeCloudEvents: true, cloudResourceIds: ['eip-owned'] });
+    for (const args of [{ cloudResourceIds: ['eip-owned'] }, { includeCloudEvents: true, cloudResourceIds: ['../../secret'] },
+      { includeCloudEvents: true, cloudResourceIds: Array.from({ length: 21 }, (_, i) => 'eip-' + i) }]) {
+      await expect(registry.callTool('provision_job_get', ['jobs:read'], { provisionJobId: 'job-1', ...args })).rejects.toThrow('Invalid input');
+    }
+    expect(getProvisionJob).toHaveBeenCalledTimes(1);
+  });
 });

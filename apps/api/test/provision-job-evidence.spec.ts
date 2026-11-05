@@ -22,6 +22,47 @@ function repository() {
 }
 
 describe('controlled provisioning evidence', () => {
+  it('shows the actual destroy phase and bounded provider output without interpreting it as native deletion time', () => {
+    const output = 'module.range.alicloud_instance.hosts["win"]: Destroying... [id=i-win]\n'
+      + 'module.range.alicloud_instance.hosts["win"]: Destruction complete after 2s\nDestroy complete! Resources: 10 destroyed.\nprivate secret';
+    const evidence = buildProvisionJobEvidence({ ...job, status: 'failed' }, [{ ...step('destroy'), stdoutExcerpt: output }], [], [ledger]);
+    expect(evidence.steps).toEqual([{ stepName: 'destroy', status: 'succeeded', description: 'Destroy the recorded topology', startedAt: now, finishedAt: now }]);
+    expect(evidence.destroyCommands).toEqual([{ stepName: 'destroy', status: 'succeeded', completedBy: now, coverage: 'recorded_opentofu_output',
+      commandReportedComplete: true, reportedDestroyedCount: 10, completedResourceIds: ['i-win'], completedAddresses: ['module.range.alicloud_instance.hosts["win"]'] }]);
+    expect(JSON.stringify(evidence)).not.toMatch(/private|secret|stdoutExcerpt/);
+  });
+  it('does not treat a completion without its exact same-excerpt start, foreign IDs or a failed command as complete destruction', () => {
+    const output = 'module.range.alicloud_instance.hosts["win"]: Destruction complete after 2s\n'
+      + 'module.range.alicloud_instance.hosts["foreign"]: Destroying... [id=i-other]\nmodule.range.alicloud_instance.hosts["foreign"]: Destruction complete after 1s\nDestroy complete! Resources: 1 destroyed.';
+    const evidence = buildProvisionJobEvidence(job, [{ ...step('destroy'), status: 'failed', stdoutExcerpt: output }], [], [ledger]);
+    expect(evidence.destroyCommands).toMatchObject([{ commandReportedComplete: false, completedResourceIds: [] }]);
+    expect(buildProvisionJobEvidence({ ...job, jobType: 'create' }, [step('destroy')], [], [ledger]).destroyCommands).toEqual([]);
+  });
+  it('projects EIP binding intent only from the original frozen submission and exact same-job inventory', () => {
+    const source = { ...job, jobType: 'create', topologySnapshot: { compiledProvisionSpec: { eips: [
+      { key: 'ingress', bindTargetType: 'nat_gateway', bindTargetKey: 'shared', bandwidthMbps: 30, password: 'private' },
+    ] } } };
+    const evidence = buildProvisionJobEvidence(source, [step('range_resource_inventory', JSON.stringify({ ...inventory,
+      resources: { eipAllocationIds: { ingress: 'eip-owned' } } }))], [], [{ ...ledger, sourceProvisionJobId: job.id, cloudResourceId: 'eip-owned', cloudResourceType: 'eip' }]);
+    expect(evidence.eipAllocationIntents).toEqual([{ cloudResourceId: 'eip-owned', key: 'ingress', bindTargetType: 'nat_gateway', bindTargetKey: 'shared', bandwidthMbps: 30 }]);
+    expect(JSON.stringify(evidence)).not.toContain('private');
+    expect(buildProvisionJobEvidence(source, [step('range_resource_inventory', JSON.stringify(inventory))], [], [ledger]).eipAllocationIntents).toEqual([]);
+  });
+  it('shows only credential-checked cloud codes from the same failed job and workspace', async () => {
+    const repo = repository();
+    repo.getProvisionJobById.mockResolvedValue({ ...job, status: 'failed' });
+    repo.getRangeInstanceById.mockResolvedValue({ id: 'range-1', ownerUserId: 'alice', createdBy: 'alice', cloudWorkspaceId: job.cloudWorkspaceId,
+      resourceSummary: { executionContext: context }, runtimeCredentials: { win: { password: 'FixturePassword' } } } as any);
+    repo.listProvisionJobStepLogs.mockResolvedValue([
+      { ...step('tofu_apply'), status: 'failed', stdoutExcerpt: 'SDKError: Code: InvalidUserData.NotSupported\nCode: Invalid.FixturePassword\nCode: Invalid.privatekey' },
+      { ...step('tofu_apply'), status: 'failed', cloudWorkspaceId: 'foreign', stdoutExcerpt: 'Code: ForeignCode' },
+    ]);
+    const config: any = { getAccountContextById: jest.fn().mockResolvedValue({ provider: 'alibaba_cloud', accountUid: context.cloudAccountUid,
+      defaultRegion: context.regionId, accessKeyId: 'key-id', accessKeySecret: 'privatekey' }) };
+    const result = await new ProvisionJobsService(repo as any, config).getById('job-1', { id: 'alice', role: 'user' } as any, true);
+    expect(result.errorSummary).toBe('Alibaba cloud error codes: InvalidUserData.NotSupported');
+    expect(JSON.stringify(result)).not.toMatch(/FixturePassword|privatekey|ForeignCode|stdoutExcerpt|SDKError/);
+  });
   it('projects exact single-instance completion inventory while hiding raw provider output', () => {
     const receipt = step('single_instance_creation_receipt', JSON.stringify(inventory));
     const evidence = buildProvisionJobEvidence(job, [receipt, { ...receipt, cloudWorkspaceId: 'foreign' }], [], []);
@@ -142,8 +183,13 @@ describe('controlled provisioning evidence', () => {
   });
   it('accepts only boolean query strings', () => {
     const service: any = { getById: jest.fn() }; const controller = new ProvisionJobsController(service); const req: any = { adminUser: { id: 'alice' } };
-    controller.getById(req, 'job-1', 'true'); expect(service.getById).toHaveBeenLastCalledWith('job-1', req.adminUser, true);
-    controller.getById(req, 'job-1', 'false'); expect(service.getById).toHaveBeenLastCalledWith('job-1', req.adminUser, false);
+    controller.getById(req, 'job-1', 'true'); expect(service.getById).toHaveBeenLastCalledWith('job-1', req.adminUser, true, false, undefined);
+    controller.getById(req, 'job-1', 'false'); expect(service.getById).toHaveBeenLastCalledWith('job-1', req.adminUser, false, false, undefined);
     expect(() => controller.getById(req, 'job-1', 'yes')).toThrow('must be');
+    controller.getById(req, 'job-1', undefined, 'true', 'i-owned,d-owned');
+    expect(service.getById).toHaveBeenLastCalledWith('job-1', req.adminUser, false, true, ['i-owned', 'd-owned']);
+    for (const ids of ['i-owned,i-owned', 'i-owned,../../secret', '']) expect(() => controller.getById(req, 'job-1', undefined, 'true', ids)).toThrow();
+    expect(() => controller.getById(req, 'job-1', undefined, 'false', 'i-owned')).toThrow();
+    expect(() => controller.getById(req, 'job-1', undefined, 'yes')).toThrow();
   });
 });

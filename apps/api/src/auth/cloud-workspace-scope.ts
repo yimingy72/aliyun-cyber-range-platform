@@ -10,6 +10,7 @@ export type CloudWorkspaceScope = {
   actorUserId?: string;
   isPlatformManager?: boolean;
   cloudAccountContextId?: string;
+  isBillingWorker?: boolean;
 };
 
 export type SystemCloudWorkspaceScope = { system: true };

@@ -15,6 +15,8 @@ import { TencentCloudOpenTofuRenderer, TENCENTCLOUD_PROVIDER_VERSION } from '../
 import * as mirrors from '../provisioning/provider-mirror-publication';
 import { createHostCloudReleaseDeadline, assertCloudReleaseDeadlineCanCreate, verifyCloudReleaseDeadlines } from '../provisioning/cloud-release-deadlines';
 import { hasVerifiedSystemDiskReleasePolicy } from './instance-disk-inventory';
+import { readAliyunImageSystemDisk } from './aliyun-image-capacity';
+import { verifiedExpiryEdit } from './instance-expiry-types';
 
 export type SingleInstanceOpenTofuBatchLease = { batchId: string; assertCurrent(): Promise<void>; signal: AbortSignal };
 type CommandOptions = OpenTofuWorkspaceCommandOptions & { signal?: AbortSignal; upgrade?: boolean };
@@ -38,7 +40,7 @@ type Manifest = { schemaVersion: 1; identity: Identity; members: Record<string, 
 type StateMember = { id: string; diskId: string; privateIp: string | null; publicIp: string | null; status: string; tainted: boolean; tags: Record<string, string> };
 type Plan = { format_version: string; resource_changes?: Array<{ address: string; type: string; mode?: string; change: { actions: string[] } }> };
 type Context = { lease: SingleInstanceOpenTofuBatchLease; items: SingleInstanceExecutionItem[]; batch: SingleInstanceBatchWithInstancesRecord;
-  account: SystemCloudAccountContext; manifest: Manifest; workspace: string; secrets: string[]; env: NodeJS.ProcessEnv; state: Map<string, StateMember>; knownIds: Map<string, string[]> };
+  account: SystemCloudAccountContext; manifest: Manifest; workspace: string; secrets: string[]; env: NodeJS.ProcessEnv; state: Map<string, StateMember>; knownIds: Map<string, string[]>; rejectedCreateIds?: Set<string> };
 const MODULE_PATH = 'infra/opentofu/modules/alicloud-single-instance-batch';
 function modulePath(context: Context) { return context.manifest.identity.provider === 'tencent_cloud' ? 'infra/opentofu/modules/tencentcloud-single-instance-batch' : MODULE_PATH; }
 function batchResourceSummary(context: Context): RangeResourceSummary {
@@ -81,6 +83,11 @@ export class SingleInstanceOpenTofuExecutionService {
       if (context.account.provider === 'tencent_cloud') {
         const metadata = await this.command(context, () => assertTencentImagesAvailable(context!.account,valid.map(item => item.instance.singleInstanceConfig!.imageId)));
         if (valid.some(item => item.instance.singleInstanceConfig!.systemDiskSize < metadata[item.instance.singleInstanceConfig!.imageId].minimumSystemDiskSize)) throw new Error('Frozen Tencent system disk is smaller than the current image minimum');
+      }
+      if (context.account.provider === 'alibaba_cloud') for (const item of valid) {
+        const cfg = item.instance.singleInstanceConfig!;
+        const image = await this.command(context, () => readAliyunImageSystemDisk(context!.account, cfg.imageId));
+        if (cfg.systemDiskSize < image.minimumSystemDiskSize) throw new Error(`阿里云镜像至少需要 ${image.minimumSystemDiskSize} GiB 系统盘，当前设置为 ${cfg.systemDiskSize} GiB。`);
       }
       if (context.manifest.pending || await exists(path.join(context.workspace, APPLY_MARKER))) {
         await this.recoverPartialCreate(context, valid, 'Interrupted OpenTofu operation requires recovery before creation');
@@ -224,7 +231,9 @@ export class SingleInstanceOpenTofuExecutionService {
         throw new Error('OpenTofu recovery marker is malformed');
       }
     }
-    if (marker) manifest.pending = { ...(manifest.pending ?? marker), knownIds: Object.fromEntries(Object.keys(manifest.members).map(id => [id,
+    if (marker && manifest.pending?.submittedAt && marker.submittedAt && manifest.pending.submittedAt !== marker.submittedAt)
+      throw new Error('OpenTofu recovery marker submission time differs from its manifest');
+    if (marker) manifest.pending = { ...(manifest.pending ?? marker), submittedAt: manifest.pending?.submittedAt ?? marker.submittedAt, knownIds: Object.fromEntries(Object.keys(manifest.members).map(id => [id,
       [...new Set([...(manifest!.pending?.knownIds?.[id] ?? []), ...(marker.knownIds?.[id] ?? [])])]])), createIds: [...new Set([
       ...pendingCreateIds(manifest.pending), ...pendingCreateIds(marker),
     ])], recoveryIds: [...new Set([
@@ -241,7 +250,7 @@ export class SingleInstanceOpenTofuExecutionService {
     const missingAppliedIds = batch.instances.filter(member => member.singleInstanceConfig?.opentofuCreateJobId && !context.state.has(member.id)).map(member => member.id);
     if (missingAppliedIds.length) {
       const prior = manifest.pending;
-      manifest.pending = { kind: prior?.kind ?? 'create', ids: prior?.ids ?? missingAppliedIds, jobIds: prior?.jobIds ?? [],
+      manifest.pending = { ...(prior?.submittedAt ? { submittedAt: prior.submittedAt } : {}), kind: prior?.kind ?? 'create', ids: prior?.ids ?? missingAppliedIds, jobIds: prior?.jobIds ?? [],
         knownIds: Object.fromEntries(context.knownIds), createIds: [...new Set([...pendingCreateIds(prior), ...missingAppliedIds])],
         recoveryIds: [...new Set([...(prior?.recoveryIds ?? prior?.ids ?? []), ...missingAppliedIds])] };
     }
@@ -284,9 +293,23 @@ export class SingleInstanceOpenTofuExecutionService {
 
   private async restoreFrozenDeadline(instance: RangeInstanceRecord, member: CatalogMember, items: SingleInstanceExecutionItem[], account: SystemCloudAccountContext, lease: SingleInstanceOpenTofuBatchLease) {
     const config = instance.singleInstanceConfig!;
+    const edit = await verifiedExpiryEdit(this.repository, instance);
+    if (edit?.job.status === 'succeeded' && config.cloudReleaseDeadline
+      && (!member.cloudReleaseDeadline || !sameDeadline(config.cloudReleaseDeadline, member.cloudReleaseDeadline))) {
+      const host = edit.plan.hosts.find(host => host.nodeId === member.hostKey);
+      const current = config.cloudReleaseDeadline, original = member.cloudReleaseDeadline;
+      if (!host || host.sourceJobId !== current.sourceProvisionJobId || member.sourceJobId !== current.sourceProvisionJobId
+        || original && (current.provider !== original.provider || current.sourceProvisionJobId !== original.sourceProvisionJobId
+          || current.creationPhaseStartedAt !== original.creationPhaseStartedAt)
+        || current.instanceId !== host.instanceId || current.platformExpiresAt !== edit.plan.requestedExpiresAt
+        || current.cloudReleaseAt !== edit.plan.cloudReleaseAt || current.status !== 'verified' || config.autoReleaseTime !== current.cloudReleaseAt)
+        throw new Error('Verified deadline edit cannot alter the frozen creation identity');
+      member.cloudReleaseDeadline = structuredClone(current);
+      member.definition.auto_release_time = current.cloudReleaseAt;
+    }
     const record = member.cloudReleaseDeadline ?? config.cloudReleaseDeadline;
     if (!record) return;
-    if (record.provider !== account.provider || !instance.expiresAt || Date.parse(record.platformExpiresAt) !== instance.expiresAt.getTime()
+    if (record.provider !== account.provider || !instance.expiresAt || !edit && Date.parse(record.platformExpiresAt) !== instance.expiresAt.getTime()
       || !Number.isFinite(Date.parse(record.creationPhaseStartedAt)) || !Number.isFinite(Date.parse(record.cloudReleaseAt))
       || member.cloudReleaseDeadline && member.definition.auto_release_time !== record.cloudReleaseAt
       || config.cloudReleaseDeadline && (!sameDeadline(config.cloudReleaseDeadline, record) || config.autoReleaseTime !== record.cloudReleaseAt))
@@ -682,8 +705,16 @@ export class SingleInstanceOpenTofuExecutionService {
 
   private async assertAbsent(context: Context, item: SingleInstanceExecutionItem) {
     // An accepted create can remain invisible after a lost response. Empty lists cannot close that uncertainty.
-    if (pendingCreateIds(context.manifest.pending).includes(item.instance.id) && !context.knownIds.get(item.instance.id)?.length) {
-      throw new Error('OpenTofu creation outcome is unknown; preserve recovery material until the physical resource is identified');
+    let rejectedDiskRequest: Awaited<ReturnType<typeof readAliyunImageSystemDisk>> | undefined;
+    if (pendingCreateIds(context.manifest.pending).includes(item.instance.id) && !context.knownIds.get(item.instance.id)?.length && !context.rejectedCreateIds?.has(item.instance.id)) {
+      const member = context.manifest.members[item.instance.id];
+      if (context.account.provider === 'alibaba_cloud' && Number.isFinite(Date.parse(context.manifest.pending?.submittedAt ?? ''))
+        && item.instance.singleInstanceConfig?.opentofuCreateJobId === member.sourceJobId) {
+        const image = await this.command(context, () => readAliyunImageSystemDisk(context.account, member.definition.image_id));
+        // An immutable image cannot create a smaller system disk, even if the original error output was lost.
+        if (member.definition.system_disk_size < image.minimumSystemDiskSize) rejectedDiskRequest = image;
+      }
+      if (!rejectedDiskRequest) throw new Error('OpenTofu creation outcome is unknown; preserve recovery material until the physical resource is identified');
     }
     for (let round = 0; round < 2; round += 1) {
       await this.assertLease(context.lease);
@@ -691,6 +722,15 @@ export class SingleInstanceOpenTofuExecutionService {
         this.native.readOpenTofuInstances(context.account, context.knownIds.get(item.instance.id) ?? [])]);
       if (tagged.length || known.length) throw new Error('Cloud member deletion has not been confirmed');
       await this.native.assertInstanceDisksAbsent(item.instance, context.account);
+    }
+    if (rejectedDiskRequest) {
+      const now = new Date();
+      await this.repository.createProvisionJobStepLog({ jobId: item.job.id, stepName: 'single_instance_create_rejection', status: 'succeeded',
+        message: JSON.stringify({ version: 1, rangeInstanceId: item.instance.id, sourceProvisionJobId: context.manifest.members[item.instance.id].sourceJobId,
+          executionContext: batchResourceSummary(context).executionContext, reason: 'InvalidSystemDiskSize.LessThanImageSize',
+          requestedSystemDiskSize: context.manifest.members[item.instance.id].definition.system_disk_size, ...rejectedDiskRequest }),
+        startedAt: now, finishedAt: now, stdoutExcerpt: null, stderrExcerpt: null });
+      (context.rejectedCreateIds ??= new Set()).add(item.instance.id);
     }
   }
   private async syncLedger(context: Context, item: SingleInstanceExecutionItem, summary: RangeResourceSummary) {
@@ -828,6 +868,15 @@ function matchesCloud(detail: NormalizedInstanceDetail, instance: RangeInstanceR
 function collectSecrets(items: Array<{ instance: RangeInstanceRecord }>) { return items.flatMap(item => Object.values(item.instance.runtimeCredentials ?? {}).map(value => value.password)).filter(Boolean); }
 function sanitize(error: unknown, secrets: string[]) {
   let text = error instanceof Error ? error.message : 'OpenTofu batch operation failed';
+  const stdout = (error as { stdout?: unknown } | null)?.stdout;
+  if (typeof stdout === 'string') for (const line of stdout.split('\n')) {
+    try {
+      const event = JSON.parse(line);
+      if (event?.type !== 'diagnostic' || event.diagnostic?.severity !== 'error') continue;
+      const diagnostic = [event.diagnostic.summary, event.diagnostic.detail].filter(value => typeof value === 'string').join(': ');
+      if (diagnostic) text += `\n${diagnostic.slice(0, 16_384)}`;
+    } catch { /* Ignore non-JSON progress output. */ }
+  }
   const encoded = secrets.flatMap(value => [value, encodeURIComponent(value), JSON.stringify(value).slice(1, -1)]).filter(Boolean).sort((a, b) => b.length - a.length);
   for (const secret of encoded) text = text.split(secret).join('[REDACTED]');
   return text;

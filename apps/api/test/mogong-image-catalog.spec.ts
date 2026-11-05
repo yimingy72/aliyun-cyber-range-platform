@@ -4,11 +4,12 @@ import { readFile } from 'node:fs/promises';
 jest.mock('node:fs/promises', () => ({ readFile: jest.fn() }));
 
 const catalog = {
-  capturedAt: '2026-10-28T00:00:00Z', total: 4, items: [
+  capturedAt: '2026-10-28T00:00:00Z', total: 5, items: [
     { id: 1, name: '演练镜像', type: 'vm', imageId: 'm-fixture', active: true, status: 'successful', creator: '张三' },
     { id: 2, name: '已停用镜像', type: 'vm', imageId: 'm-disabled', active: false, status: 'successful' },
     { id: 3, name: '镜像-废弃', type: 'vm', imageId: 'm-retired', active: true, status: 'successful' },
     { id: 4, name: '容器镜像', type: 'docker', imageId: null, active: true, status: 'successful' },
+    { id: 5, name: '已停用容器', type: 'docker', imageId: null, active: false, status: 'successful' },
   ],
 };
 
@@ -61,8 +62,9 @@ describe('墨攻镜像收录', () => {
     expect(repo.collectPlatformImageAsset).not.toHaveBeenCalled();
   });
 
-  it('does not expose source records outside the current cloud catalog', async () => {
-    const { controller } = setup();
+  it('only shows active entries matched to the current cloud catalog in an unbound workspace', async () => {
+    const { controller, repo } = setup();
+    repo.listImageSnapshots.mockResolvedValueOnce([snapshot, { ...snapshot, imageId: 'm-disabled' }]);
     const result = await controller.listMogong();
     expect(result.items.map((item) => item.id)).toEqual([1]);
     expect(result.items[0].creator).toBe('张三');
@@ -70,14 +72,15 @@ describe('墨攻镜像收录', () => {
     await expect(controller.collectMogong(request, '4')).rejects.toBeInstanceOf(ConflictException);
   });
 
-  it('shows all source records only in the bound workspace without exposing container references', async () => {
+  it('shows active entries including unmatched VMs and containers in the bound workspace without exposing container references', async () => {
     const { controller } = setup();
     const previous = process.env.MOGONG_CATALOG_WORKSPACE_ID;
     process.env.MOGONG_CATALOG_WORKSPACE_ID = 'bound-space';
     jest.mocked(readFile).mockResolvedValueOnce(JSON.stringify({ ...catalog, version: 2, items: catalog.items.map(item => ({ ...item, containerReference: item.type === 'docker' ? 'registry.example/team/private:1' : null })) }) as never);
     try {
       const result = await runInCloudWorkspace({ cloudWorkspaceId: 'bound-space', provider: 'alibaba_cloud', accountUid: '123' }, () => controller.listMogong());
-      expect(result.total).toBe(catalog.items.length);
+      expect(result.items.map((item) => item.id)).toEqual([1, 3, 4]);
+      expect(result.total).toBe(3);
       expect(result.containersCollectable).toBe(true);
       expect(JSON.stringify(result)).not.toContain('registry.example');
     } finally {

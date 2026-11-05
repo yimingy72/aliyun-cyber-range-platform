@@ -11,6 +11,7 @@ import {
   singleInstancePackImageInputSchema,
   singleInstanceRebootInputSchema,
   singleInstanceRetryInputSchema,
+  operationSchema,
 } from './input-schemas';
 import {
   actionOutputSchema,
@@ -90,6 +91,8 @@ function readSingleInstanceCredential(instance: Record<string, unknown>) {
 export const singleInstanceTools: ToolDefinition[] = [
   { name:'single_instance_network_list',title:'查询独立实例共享网络',description:'仅管理员可查询账号绑定的共享网络 profile，供明确回收已空闲测试网络使用。',requiredScopes:['settings:read'],adminOnly:true,readOnlyHint:true,inputSchema:z.strictObject({}),outputSchema:resultOutputSchema(z.array(resourceSchema)),
     call(context) {if(!context.client.listSingleInstanceNetworks) throw new Error('Network lifecycle API unavailable');return context.client.listSingleInstanceNetworks();}},
+  {name:'single_instance_network_create',title:'创建独立实例共享网络',description:'仅管理员显式创建或复用当前云账号、地域和可用区的共享网络；只创建 VPC、交换机和安全组，不创建 ECS。',requiredScopes:['settings:write','instances:create'],adminOnly:true,inputSchema:operationSchema,outputSchema:actionOutputSchema,
+    call(context,args){if(!context.client.createSingleInstanceNetwork)throw new Error('Network lifecycle API unavailable');return context.client.createSingleInstanceNetwork(operation(args as {idempotencyKey?:string;confirmationId?:string}));}},
   {name:'single_instance_network_cleanup_register',title:'登记本轮新网络回收许可',description:'仅管理员登记本轮启动之后、由明确临时用户创建的新managed profile。登记后只有这些用户可继续使用，回收需同一runId和登记管理员。',requiredScopes:['settings:write'],adminOnly:true,inputSchema:z.strictObject({networkProfileId:z.string().min(1),runId:z.string().min(1),createdAfter:z.string().datetime({offset:true}),ownerUserIds:z.array(z.string().min(1)).min(1).max(99)}),outputSchema:actionOutputSchema,call(context,args){const input=args as {networkProfileId:string;runId:string;createdAfter:string;ownerUserIds:string[]};if(!context.client.registerSingleInstanceNetworkCleanup)throw new Error('Network registration API unavailable');return context.client.registerSingleInstanceNetworkCleanup(input.networkProfileId,{runId:input.runId,createdAfter:input.createdAfter,ownerUserIds:input.ownerUserIds});}},
   { name:'single_instance_network_destroy',title:'回收独立实例共享网络',description:'仅管理员明确指定 profileId 回收无实例引用、无作业、云端为空的网络。来源账号/地域固定，旧未绑定网络禁止操作。',requiredScopes:['settings:write','instances:destroy'],adminOnly:true,annotations:{destructiveHint:true,idempotentHint:false},inputSchema:singleInstanceDestroyInputSchema.omit({singleInstanceId:true}).extend({networkProfileId:z.string().min(1),cleanupRunId:z.string().min(1)}),outputSchema:actionOutputSchema,
     call(context,args) {const input=args as {networkProfileId:string;cleanupRunId:string;idempotencyKey?:string;confirmationId?:string};if(!context.client.destroySingleInstanceNetwork) throw new Error('Network lifecycle API unavailable');return context.client.destroySingleInstanceNetwork(input.networkProfileId,input.cleanupRunId,operation(input));}},

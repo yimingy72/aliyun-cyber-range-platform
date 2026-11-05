@@ -16,7 +16,7 @@
 | 创建标签定义 | `platform_image_tag_create` | `name`（1–32字符） | 操作元数据 | `images:write`，仅管理员 |
 | 删除标签定义 | `platform_image_tag_delete` | `platformImageTagId` | 操作元数据 | `images:write`，仅管理员 |
 | 替换资产标签关联 | `platform_image_tags_set` | `platformImageAssetId`、完整 `tagIds` | 操作元数据 | `images:write`，owner或管理员 |
-| 收录云快照 | `platform_image_collect` | `snapshotId`、`displayName` | 操作元数据 | `images:write`，仅管理员 |
+| 收录云快照 | `platform_image_collect` | `snapshotId`、`displayName` | `visibility: private`、操作元数据 | `images:write`，仅管理员 |
 | 重命名 | `platform_image_rename` | `platformImageAssetId`、`displayName` | 操作元数据 | `images:write` |
 | 启用 | `platform_image_enable` | `platformImageAssetId` | 操作元数据 | `images:write` |
 | 停用 | `platform_image_disable` | `platformImageAssetId` | 操作元数据 | `images:write` |
@@ -39,7 +39,7 @@
 - ACR 目录按当前已核验阿里云主账号查询企业版地域、实例、仓库和标签，且只读取云元数据。同步先返回 `running`，查询结果为 `ready` 才表示本次同步成功；失败保留上次目录。目录缓存随 API 重启清空。权限至少包括 `cr:ListInstance`、`cr:ListInstanceEndpoint`、`cr:ListRepository`、`cr:ListRepositoryTag`；地域发现使用 `ListInstanceRegion`。不包含个人版或其他主账号仓库。
 - ACR 匹配使用实例的官方入口域名、完整仓库路径以及精确标签或摘要。缺域名的唯一候选仅提示人工确认，多候选和格式错误不绑定；匹配结果不会改写墨攻原始资产，也不表示仓库已经授权拉取。
 - 业务镜像名必须精确匹配一个当前可见、已启用的资产。无匹配、重名或停用时停止；转换后将资产的 `displayName` 写入 ECS `image`/`imageName`，将资产 `id` 写入 `platformImageAssetId`，将云镜像 ID 写入 `imageId` 与 `imageStrategy.imageId`。
-- “收录快照”先用 `image_catalog_list({ scope: 'custom' })` 或 `image_catalog_sync` 确认 `snapshotId`，由管理员再经确认调用 `platform_image_collect`。
+- “收录快照”先用 `image_catalog_list({ scope: 'custom' })` 或 `image_catalog_sync` 确认 `snapshotId`，由管理员再经确认调用 `platform_image_collect`。需要为私有模板收录依赖时传 `visibility: private`；已有资产的归属和可见性不会改变。
 - 收录只建立平台目录，不代表该云镜像或快照由平台创建，不写入平台创建标签、不接管其费用。平台打包/导入已有的费用账本保留原来源、owner 和回收时间，重新收录只更新目录关联。
 - `enable`/`disable` 控制能否用于后续创建；`publish`/`unpublish` 控制其他用户能否看见。两者不可混用，且都不销毁已有资源。
 - 收录、发布和取消发布仅管理员可执行。发布或取消发布前，必须检查资产返回的 `canChangeVisibility`。只有 owner-backed 资产可切换可见性；从公共或自定义云镜像目录收录的资产可能已固定为 `platform` 且 `canChangeVisibility: false`，此时不得调用发布/取消发布工具或重试，应如实说明平台限制。

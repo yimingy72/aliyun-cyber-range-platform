@@ -54,7 +54,7 @@ import {
   undoTopology,
   type TopologyHistory,
 } from './topology-flow-history';
-import { layoutTopology } from './topology-flow-layout';
+import { layoutTopology, type TopologyLayoutSize } from './topology-flow-layout';
 import { TopologyFlowCanvas } from './topology-flow-canvas';
 import type {
   TopologySelection,
@@ -1488,7 +1488,11 @@ export function TemplateEditorScreen({
           return;
         }
 
-        setInstanceTypeAvailability(payload);
+        setInstanceTypeAvailability(
+          currentProvider() === 'alibaba_cloud' && resolvePreferredInstanceTypes(cpu, memory).length === 0
+            ? { ...payload, warning: '创建编排时将按原始 CPU、内存和网卡数量精确匹配可售机型。' }
+            : payload,
+        );
       })
       .catch((error) => {
         if (!isActive || requestId !== instanceTypeAvailabilityRequestRef.current) {
@@ -1839,13 +1843,13 @@ export function TemplateEditorScreen({
     setViewport(validatedViewport);
   }
 
-  function handleLayoutAll() {
+  function handleLayoutAll(canvas?: TopologyLayoutSize) {
     if (isSubmitting || nodes.length === 0) {
       return;
     }
 
     try {
-      commitSnapshot({ nodes: layoutTopology(nodes, edges), edges, viewport }, '');
+      commitSnapshot({ nodes: layoutTopology(nodes, edges, canvas), edges, viewport }, '');
     } catch {
       setStatusMessage('自动布局失败，请保留当前节点位置。');
     }

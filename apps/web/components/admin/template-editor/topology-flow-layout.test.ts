@@ -3,6 +3,8 @@ import { describe, expect, it } from 'vitest';
 import type { TemplateEdge } from './template-editor-screen';
 import { layoutTopology } from './topology-flow-layout';
 import type { TemplateNode } from '../../../lib/scenario-graph';
+import { readTopologyNetworks, topologyNodeSize } from './topology-network-model';
+import { createNetworkLayoutFixture } from './topology-network.fixture';
 
 function createTopologyNodes(): TemplateNode[] {
   return [{
@@ -46,7 +48,7 @@ function positionsById(nodes: TemplateNode[]) {
 }
 
 describe('topology flow layout', () => {
-  it('让 router、switch 和 ecs 按从左到右确定性排列', () => {
+  it('让 router、交换机与区内 ECS 按自上而下的网络层次排列', () => {
     const nodes: TemplateNode[] = [{
       id: 'router-1',
       kind: 'router',
@@ -95,20 +97,17 @@ describe('topology flow layout', () => {
     const switchNode = firstResult.find((node) => node.id === 'switch-1');
     const ecs = firstResult.find((node) => node.id === 'ecs-1');
 
-    expect(router?.position?.x).toBeLessThan(switchNode?.position?.x ?? Number.NaN);
-    expect(switchNode?.position?.x).toBeLessThan(ecs?.position?.x ?? Number.NaN);
+    expect(router?.position?.y).toBeLessThan(switchNode?.position?.y ?? Number.NaN);
+    expect(switchNode?.position?.y).toBeLessThan(ecs?.position?.y ?? Number.NaN);
     expect(secondResult).toEqual(firstResult);
     expect(nodes.every((node) => node.position === undefined)).toBe(true);
   });
 
-  it('将孤立 router、switch 和 ecs 固定在各自的横向列', () => {
+  it('将没有网卡配置或连线的主机留在未关联区域，不凭 zoneKey 伪造归属', () => {
     const result = layoutTopology(createTopologyNodes(), []);
 
-    expect(result.map((node) => ({ kind: node.kind, x: node.position?.x }))).toEqual([
-      { kind: 'router', x: 80 },
-      { kind: 'switch', x: 396 },
-      { kind: 'ecs', x: 712 },
-    ]);
+    expect(readTopologyNetworks(result, []).unassignedHosts.map(node => node.id)).toEqual(['ecs-1']);
+    expect(result.find(node => node.id === 'ecs-1')!.position!.y).toBeGreaterThan(result.find(node => node.id === 'switch-1')!.position!.y);
   });
 
   it('忽略指向不存在节点的边，不影响真实节点布局', () => {
@@ -200,7 +199,7 @@ describe('topology flow layout', () => {
     expect(positionsById(reordered)).toEqual(positionsById(ordered));
   });
 
-  it('同一交换机下的 ECS 按添加顺序从上到下排列', () => {
+  it('同一交换机下的 ECS 采用不重叠的局部网格，并位于该交换机下方', () => {
     const nodes: TemplateNode[] = [{
       id: 'switch-1',
       kind: 'switch',
@@ -274,8 +273,57 @@ describe('topology flow layout', () => {
     const result = layoutTopology(nodes, edges);
     const ecsY = ['ecs-1', 'ecs-2', 'ecs-3'].map((id) => result.find((node) => node.id === id)?.position?.y ?? Number.NaN);
 
-    expect(ecsY[0]).toBeLessThan(ecsY[1]);
-    expect(ecsY[1]).toBeLessThan(ecsY[2]);
+    expect(ecsY.every(y => y > result[0]!.position!.y)).toBe(true);
+    expect(result.find(node => node.id === 'ecs-1')!.position!.x).toBeLessThan(result.find(node => node.id === 'ecs-2')!.position!.x);
+    expect(ecsY[2]).toBeGreaterThan(ecsY[0]!);
+  });
+
+  it('按真实网卡与连线分区，多网卡主机只出现一次，所有业务字段保持原样', () => {
+    const { nodes, edges } = createNetworkLayoutFixture();
+    const multi = nodes.find(node => node.id === 'bastion')!;
+    if(multi.kind!=='ecs')throw new Error('Missing fixture host');
+    multi.nics![1]!.secondaryIps=['10.0.40.21'];
+    multi.nics![1]!.securityGroupRules=[{key:'keep-rule',direction:'ingress',protocol:'tcp',portRange:'3389/3389',sourceCidr:'10.0.0.0/16',policy:'accept',priority:4}];
+    multi.dns={servers:['10.0.40.10'],nicIds:[multi.nics![1]!.id]};
+    multi.initScript='fixture boot configuration, not executed';
+    const original = structuredClone({ nodes, edges });
+    const result = layoutTopology(nodes, edges), model = readTopologyNetworks(result, edges);
+    expect(result).toHaveLength(nodes.length);
+    expect(result.filter(node => node.id === 'bastion')).toHaveLength(1);
+    expect(model.memberships.get('bastion')?.map(link => link.switchId)).toEqual(['sw-ops', 'sw-app', 'sw-storage']);
+    for (const zone of model.zones) for (const host of zone.localHosts) {
+      expect(host.position!.y).toBeGreaterThan(zone.node.position!.y);
+    }
+    const sharedTop = Math.min(...model.sharedHosts.map(host => host.position!.y));
+    expect(model.zones.every(zone => zone.localHosts.every(host => host.position!.y < sharedTop))).toBe(true);
+    expect(result.map(({ position, ...node }) => node)).toEqual(original.nodes.map(({ position, ...node }) => node));
+    expect({ nodes, edges }).toEqual(original);
+    expect(positionsById(layoutTopology([...nodes].reverse(), [...edges].reverse()))).toEqual(positionsById(result));
+    expect(layoutTopology(result, edges)).toEqual(result);
+    for (let i = 0; i < result.length; i++) for (let j = i + 1; j < result.length; j++) {
+      const a = result[i]!, b = result[j]!, sa = topologyNodeSize(a, model.memberships.get(a.id)), sb = topologyNodeSize(b, model.memberships.get(b.id));
+      expect(a.position!.x < b.position!.x + sb.width && a.position!.x + sa.width > b.position!.x
+        && a.position!.y < b.position!.y + sb.height && a.position!.y + sa.height > b.position!.y).toBe(false);
+    }
+  });
+
+  it('多张网卡接入同一交换机时仍属于区内主机，而不是虚假的跨区节点', () => {
+    const { nodes, edges } = createNetworkLayoutFixture();
+    const host = nodes.find(node => node.id === 'gitlab')!;
+    if (host.kind !== 'ecs') throw new Error('Fixture host missing');
+    host.nics!.push({ ...host.nics![0]!, id: 'gitlab-nic-2', privateIp: '172.16.30.20' });
+    const model = readTopologyNetworks(nodes, edges);
+    expect(model.sharedHosts.some(host => host.id === 'gitlab')).toBe(false);
+    expect(model.zones.find(zone => zone.node.id === 'sw-dev')?.localHosts.some(host => host.id === 'gitlab')).toBe(true);
+    expect(topologyNodeSize(host, model.memberships.get(host.id)).height).toBeGreaterThan(72);
+  });
+  it('根据窄画布分行组织分区，而不是强制将所有网段挤成横向长条',()=>{
+    const {nodes,edges}=createNetworkLayoutFixture();
+    const narrow=layoutTopology(nodes,edges,{width:720,height:900}),wide=layoutTopology(nodes,edges,{width:1800,height:900});
+    const switchRows=(items:TemplateNode[])=>new Set(items.filter(node=>node.kind==='switch').map(node=>node.position!.y));
+    expect(switchRows(narrow).size).toBeGreaterThan(1);
+    expect(switchRows(wide).size).toBeLessThan(switchRows(narrow).size);
+    expect(layoutTopology(narrow,edges,{width:720,height:900})).toEqual(narrow);
   });
 
 });

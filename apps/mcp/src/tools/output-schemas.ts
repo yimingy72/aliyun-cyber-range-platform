@@ -18,6 +18,14 @@ export const resourceSchema = z
 export const nullableResourceOutputSchema = resultOutputSchema(resourceSchema.nullable());
 export const resourceOutputSchema = resultOutputSchema(resourceSchema);
 export const resourceListOutputSchema = resultOutputSchema(z.array(resourceSchema));
+export const rangeNodeResetPreviewOutputSchema = resultOutputSchema(z.object({
+  version:z.literal(1),rangeInstanceId:nonEmptyString,cloudWorkspaceId:nonEmptyString,ownerUserId:nonEmptyString.nullable(),
+  nodeId:nonEmptyString,nodeName:nonEmptyString,instanceId:nonEmptyString,systemDiskId:nonEmptyString,imageId:nonEmptyString,
+  sourceJobId:nonEmptyString,tagJobId:nonEmptyString,cloudAccountContextId:nonEmptyString,accountUid:nonEmptyString,regionId:nonEmptyString,
+  originalPowerState:z.enum(['Running','Stopped']),dataDiskIds:z.array(nonEmptyString),networkDigest:z.string().regex(/^[a-f0-9]{64}$/),
+  autoReleaseTime:z.string().nullable(),expiresAt:z.string().nullable(),hasDns:z.boolean(),
+  planDigest:z.string().regex(/^[a-f0-9]{64}$/),destructive:z.literal(true),
+}).strict());
 const imageTagSchema = z.object({ id: nonEmptyString, name: nonEmptyString });
 export const imageTagOutputSchema = resultOutputSchema(imageTagSchema);
 export const imageTagListOutputSchema = resultOutputSchema(z.array(imageTagSchema));
@@ -152,6 +160,8 @@ export const billingSummaryOutputSchema = resultOutputSchema(
       .describe('已证明属于平台创建资源但尚未分配的精确金额，按币种单列；不包含外部资源或账号混合聚合金额，不计入用户或平台公共费用；缺失表示未知。'),
     resourcesWithoutBillCount: z.number().int().nonnegative().optional()
       .describe('统计窗口内平台创建资源缺少独立费用明细的数量；不含SNAT/DNAT、阿里云镜像、已精确核实由主机系统盘组件覆盖的盘。历史盘映射待核验另列disk问题，不代表云端未出账或免费。'),
+    resourcesWithoutBill: z.array(billingReconciliationResourceSchema).optional()
+      .describe('与resourcesWithoutBillCount同口径的待补齐资源清单，包含资源ID、所属实例/用户、计费起止和原因，不包含估算金额、原始账单或凭据；缺失表示旧接口未提供清单。'),
     anomalyCount: z.number().int().nonnegative().describe('已证明属于平台创建资源但未能完成归属的异常账单条目数。'),
     resourceTypeTotals: z.array(z.object({ resourceType: nonEmptyString, currency: z.string().optional(), pretaxAmount: z.number() })),
     dailyTotals: z.array(z.object({ billingDate: nonEmptyString, currency: z.string().optional(), pretaxAmount: z.number() })),

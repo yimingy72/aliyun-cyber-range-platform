@@ -92,7 +92,7 @@ describeDb('billing atomic replacement in isolated PostgreSQL', () => {
     ]);
     const csv = await service.exportPlatformCsv({ startAt: DAY, endAt: DAY });
     expect(csv).toContain('CNY,0.1325781503,0.1325781503\n');
-    expect(csv).toContain('USD,1e-18,1e-18\n');
+    expect(csv).toContain('USD,0.000000000000000001,0.000000000000000001\n');
   });
 
   it('serializes simultaneous whole-day versions while retaining another account and unknown history', async () => {

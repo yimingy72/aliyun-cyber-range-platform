@@ -1,9 +1,14 @@
-import type { BillingLedgerResourceRecord, ProvisionJobRecord, ProvisionJobStepLogRecord } from './admin.repository';
+import type { BillingLedgerResourceRecord, BillingSourceJob, ProvisionJobStepLogRecord, BillingSourceInstance } from './admin.repository';
 import { isIPv4 } from 'node:net';
+import { readSingleInstanceCreationRejection } from './single-instance-creation-rejection';
 
 const descriptions: Record<string, string> = {
-  prepare: 'Prepare the recorded operation', tofu_init: 'Initialize OpenTofu', tofu_apply: 'Apply the recorded topology',
-  tofu_destroy: 'Destroy the recorded topology', verify_destroy: 'Platform cloud absence verification',
+  node_reset_stop:'Stop the selected node without releasing cloud inventory',node_reset_reinit_intent:'Persist the system-disk-only reset intent',
+  node_reset_reinit_receipt:'Record the native disk reset receipt',node_reset_reinit_rejected:'Record an identified cloud rejection',
+  node_reset_verify_disk:'Verify original system disk and attachment',node_reset_start:'Restore the selected node power',
+  node_reset_dns:'Restore and verify deployed DNS',node_reset_restore_power:'Restore original power state',node_reset_verified:'Verify reset target and preserved resources',
+  prepare: 'Prepare the recorded operation', render_template: 'Validate and render the topology before cloud creation', tofu_init: 'Initialize OpenTofu', tofu_apply: 'Apply the recorded topology',
+  destroy: 'Destroy the recorded topology', tofu_destroy: 'Destroy the recorded topology', verify_destroy: 'Platform cloud absence verification',
   persist_access_entry: 'Persist cloud resources and billing sources', range_resource_inventory: 'Persist resource identities',
   single_instance_creation_receipt: 'Persist exact provider creation identity',
   platform_billing_origin_repair: 'Restore a verified billing creation source',
@@ -61,19 +66,49 @@ function inventory(step: ProvisionJobStepLogRecord, rangeInstanceId: string) {
 }
 
 // Deliberately project identities and fixed phase descriptions; raw logs and provider output may contain secrets.
-export function buildProvisionJobEvidence(job: ProvisionJobRecord, steps: ProvisionJobStepLogRecord[], jobs: ProvisionJobRecord[], ledgers: BillingLedgerResourceRecord[]) {
+export function buildProvisionJobEvidence(job: BillingSourceJob, steps: ProvisionJobStepLogRecord[], jobs: BillingSourceJob[], ledgers: BillingLedgerResourceRecord[], instance?: BillingSourceInstance | null) {
   const scopedSteps = steps.filter(step => step.jobId === job.id && step.cloudWorkspaceId === job.cloudWorkspaceId);
   const inventories: ReturnType<typeof inventory>[] = [];
   let invalidInventoryCount = 0;
   for (const step of scopedSteps.filter(step => ['range_resource_inventory', 'single_instance_creation_receipt'].includes(step.stepName) && step.status === 'succeeded')) {
     try { inventories.push(inventory(step, job.rangeInstanceId)); } catch { invalidInventoryCount++; }
   }
-  return { coverage: 'platform_recorded_job_evidence' as const, inventories, invalidInventoryCount,
+  const ownLedgers = ledgers.filter(item => item.rangeInstanceId === job.rangeInstanceId && item.cloudWorkspaceId === job.cloudWorkspaceId);
+  const nativeIds = new Set(ownLedgers.map(item => item.cloudResourceId));
+  const destroyCommands = scopedSteps.filter(step => ['destroy', 'tofu_destroy'].includes(step.stepName) && step.finishedAt
+    && (job.jobType === 'destroy' || job.topologySnapshot?.operation === 'destroy')).map(step => {
+    const output = typeof step.stdoutExcerpt === 'string' && step.stdoutExcerpt.length <= 64_000 ? step.stdoutExcerpt : '';
+    const started = new Map<string, string>(), completedResourceIds = new Set<string>(), completedAddresses = new Set<string>();
+    for (const line of output.split(/\r?\n/)) {
+      const start = /^(module\.range\.alicloud_[a-z_]+\.[A-Za-z0-9_]+(?:\["[A-Za-z0-9:_-]+"\])?): Destroying\.\.\. \[id=((?:i|d|eip|ngw)-[a-z0-9]+)\]$/.exec(line.trim());
+      if (start && nativeIds.has(start[2])) started.set(start[1], start[2]);
+      const end = /^(module\.range\.alicloud_[a-z_]+\.[A-Za-z0-9_]+(?:\["[A-Za-z0-9:_-]+"\])?): Destruction complete after [0-9.hms]+$/.exec(line.trim());
+      if (end) { completedAddresses.add(end[1]); if (started.has(end[1])) completedResourceIds.add(started.get(end[1])!); }
+    }
+    const summary = /^Destroy complete! Resources: (\d{1,6}) destroyed\.$/m.exec(output);
+    return { stepName: step.stepName, status: step.status, completedBy: step.finishedAt,
+      coverage: 'recorded_opentofu_output' as const, commandReportedComplete: step.status === 'succeeded' && Boolean(summary),
+      reportedDestroyedCount: summary ? Number(summary[1]) : null, completedResourceIds: [...completedResourceIds], completedAddresses: [...completedAddresses] };
+  });
+  const submitted = job.topologySnapshot?.compiledProvisionSpec?.eips;
+  const eipAllocationIntents = Array.isArray(submitted) ? inventories.flatMap(item => {
+    const ids = item.resources.eipAllocationIds;
+    if (!object(ids)) return [];
+    return submitted.flatMap(value => {
+      if (!object(value) || !identity(value.key) || !['nat_gateway', 'ecs'].includes(String(value.bindTargetType)) || !identity(value.bindTargetKey)
+        || !Number.isInteger(value.bandwidthMbps) || Number(value.bandwidthMbps) <= 0 || Number(value.bandwidthMbps) > 100_000) return [];
+      const id = ids[String(value.key)];
+      if (typeof id !== 'string' || !ownLedgers.some(row => row.cloudResourceId === id && row.sourceProvisionJobId === job.id)) return [];
+      return [{ cloudResourceId: id, key: value.key, bindTargetType: value.bindTargetType, bindTargetKey: value.bindTargetKey, bandwidthMbps: value.bandwidthMbps }];
+    });
+  }) : [];
+  const creationRejections = scopedSteps.map(step => readSingleInstanceCreationRejection(instance, job, step, jobs)).filter(value => value !== null);
+  return { coverage: 'platform_recorded_job_evidence' as const, inventories, invalidInventoryCount, destroyCommands, eipAllocationIntents, creationRejections,
     steps: scopedSteps.filter(step => Object.prototype.hasOwnProperty.call(descriptions, step.stepName)).map(step => ({
       stepName: step.stepName, status: step.status, description: descriptions[step.stepName], startedAt: step.startedAt, finishedAt: step.finishedAt })),
     relatedJobs: jobs.filter(item => item.rangeInstanceId === job.rangeInstanceId && item.cloudWorkspaceId === job.cloudWorkspaceId).map(item => ({
       id: item.id, jobType: item.jobType, status: item.status, createdAt: item.createdAt, startedAt: item.startedAt, finishedAt: item.finishedAt })),
-    billingResources: ledgers.filter(item => item.rangeInstanceId === job.rangeInstanceId && item.cloudWorkspaceId === job.cloudWorkspaceId).map(item => ({
+    billingResources: ownLedgers.map(item => ({
       cloudProvider: item.cloudProvider, cloudAccountUid: item.cloudAccountUid, regionId: item.regionId, cloudResourceId: item.cloudResourceId,
       cloudResourceType: item.cloudResourceType, sourceProvisionJobId: item.sourceProvisionJobId, billingStartAt: item.billingStartAt, releasedAt: item.releasedAt })),
   };

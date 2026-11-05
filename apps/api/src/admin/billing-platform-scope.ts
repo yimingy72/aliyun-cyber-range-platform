@@ -1,5 +1,5 @@
-import type { AdminRepository, BillingImageImportResourceRecord, BillingManagedCosBucketRecord, BillingLedgerResourceRecord, PackedImageArtifactRecord, RangeResourceSummary, RangeInstanceRecord, ProvisionJobRecord, ProvisionJobStepLogRecord } from './admin.repository';
-import { classifyBillLine } from './billing-classifier';
+import type { AdminRepository, BillingImageImportResourceRecord, BillingManagedCosBucketRecord, BillingLedgerResourceRecord, PackedImageArtifactRecord, RangeResourceSummary, BillingSourceInstance, BillingSourceJob, ProvisionJobStepLogRecord } from './admin.repository';
+import { classifyBillLine, cdtBillingIdentity } from './billing-classifier';
 import { ownedCosBucketProof } from './tencent-cos-proof';
 import { billingDayText } from './billing-window';
 import { readTencentPackBaseline } from './tencent-pack-snapshot-baseline';
@@ -15,8 +15,10 @@ export type PlatformBillingProof = {
   cosBuckets: BillingManagedCosBucketRecord[];
   createdLedgerIds: Set<string>;
   unverifiedSourceLedgerIds: Set<string>;
-  creationJobs?: Map<string, ProvisionJobRecord>;
+  creationJobs?: Map<string, BillingSourceJob>;
   snapshotParentProof?: PlatformBillingProof;
+  sourceInstances?: BillingSourceInstance[];
+  sourceJobs?: BillingSourceJob[];
 };
 
 function inventoryIncludes(summary: RangeResourceSummary | null | undefined, ledger: BillingLedgerResourceRecord): boolean {
@@ -30,7 +32,7 @@ function inventoryIncludes(summary: RangeResourceSummary | null | undefined, led
   return ids.includes(ledger.cloudResourceId) || inventoryIncludes(summary.retiredResources, ledger);
 }
 
-function tencentContextMatches(value: unknown, ledger: BillingLedgerResourceRecord, instance: RangeInstanceRecord, contextId?: string) {
+function tencentContextMatches(value: unknown, ledger: BillingLedgerResourceRecord, instance: BillingSourceInstance, contextId?: string) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
   const context = value as Record<string, unknown>, config = instance.singleInstanceConfig;
   return context.provider === 'tencent_cloud' && typeof context.cloudAccountContextId === 'string' && Boolean(context.cloudAccountContextId)
@@ -40,7 +42,7 @@ function tencentContextMatches(value: unknown, ledger: BillingLedgerResourceReco
       && config.regionId === context.regionId && config.zoneId === context.zoneId);
 }
 
-export function tencentInventoryMatches(ledger: BillingLedgerResourceRecord, instance: RangeInstanceRecord, logs: ProvisionJobStepLogRecord[], contextId?: string) {
+export function tencentInventoryMatches(ledger: BillingLedgerResourceRecord, instance: BillingSourceInstance, logs: ProvisionJobStepLogRecord[], contextId?: string) {
   if (tencentContextMatches(instance.resourceSummary?.executionContext, ledger, instance, contextId) && inventoryIncludes(instance.resourceSummary, ledger)) return true;
   return logs.some(log => {
     if (log.jobId !== ledger.sourceProvisionJobId || log.status !== 'succeeded' || log.stepName !== 'platform_billing_creation_inventory' || !log.message
@@ -56,8 +58,8 @@ export function tencentInventoryMatches(ledger: BillingLedgerResourceRecord, ins
   });
 }
 
-function originalTencentCreationSource(ledger: BillingLedgerResourceRecord, instance: RangeInstanceRecord,
-  jobs: ProvisionJobRecord[], logs: Map<string, ProvisionJobStepLogRecord[]>) {
+function originalTencentCreationSource(ledger: BillingLedgerResourceRecord, instance: BillingSourceInstance,
+  jobs: BillingSourceJob[], logs: Map<string, ProvisionJobStepLogRecord[]>) {
   const namespace = ledger.cloudWorkspaceId ?? 'legacy-unbound';
   if (instance.cloudProvider !== 'tencent_cloud' || namespace !== (instance.cloudWorkspaceId ?? 'legacy-unbound')
     || ledger.ownerUserId !== (instance.ownerUserId ?? null) || ledger.billingScope !== (instance.ownerUserId ? 'user' : 'platform')
@@ -66,7 +68,7 @@ function originalTencentCreationSource(ledger: BillingLedgerResourceRecord, inst
   const frozen = instance.singleInstanceConfig ?? instance.resourceSummary?.executionContext;
   const eligible = jobs.filter(job => job.rangeInstanceId === instance.id && (job.cloudWorkspaceId ?? 'legacy-unbound') === namespace
     && ['create', 'retry', 'update'].includes(job.jobType));
-  const matches = (job: ProvisionJobRecord, log: ProvisionJobStepLogRecord) => {
+  const matches = (job: BillingSourceJob, log: ProvisionJobStepLogRecord) => {
       // Both timestamps come from the database. Later inventories cannot establish this resource's original creator.
       if (Object.prototype.toString.call(ledger.createdAt) !== '[object Date]' || Object.prototype.toString.call(log.createdAt) !== '[object Date]'
         || !Number.isFinite(ledger.createdAt.getTime()) || !Number.isFinite(log.createdAt.getTime()) || log.createdAt > ledger.createdAt) return false;
@@ -84,10 +86,12 @@ function originalTencentCreationSource(ledger: BillingLedgerResourceRecord, inst
   return candidates.length === 1 ? candidates[0] : null;
 }
 
-export async function loadPlatformBillingProof(repository: AdminRepository, options: { ledgers?: BillingLedgerResourceRecord[] } = {}): Promise<PlatformBillingProof> {
+export async function loadPlatformBillingProof(repository: AdminRepository, options: { ledgers?: BillingLedgerResourceRecord[]; display?: boolean } = {}): Promise<PlatformBillingProof> {
   const [ledgers, imageImports, packedImages, instances, sourceJobs, cosBuckets] = await Promise.all([
     options.ledgers ?? repository.listBillingLedgerResources(), repository.listBillingImageImportResources(),
-    repository.listPackedImageArtifacts(), repository.listRangeInstances(), repository.listProvisionJobs(),
+    repository.listPackedImageArtifacts(),
+    (options.display ? repository.listBillingSourceInstances?.() : undefined) ?? repository.listRangeInstances(),
+    (options.display ? repository.listBillingSourceJobs?.() : undefined) ?? repository.listProvisionJobs(),
     typeof repository.listBillingManagedCosBuckets === 'function' ? repository.listBillingManagedCosBuckets() : [],
   ]);
   const jobs = new Map(sourceJobs.map(job => [job.id, job]));
@@ -98,7 +102,7 @@ export async function loadPlatformBillingProof(repository: AdminRepository, opti
     .map(async id => [id, await repository.listProvisionJobStepLogs(id)] as const)));
   const launchInstanceIds = new Set(sourceJobs.filter(job => ['create', 'retry', 'update'].includes(job.jobType)).map(job => job.rangeInstanceId));
   const createdLedgerIds = new Set<string>();
-  const creationJobs = new Map<string, ProvisionJobRecord>();
+  const creationJobs = new Map<string, BillingSourceJob>();
   const unverifiedSourceLedgerIds = new Set<string>();
   for (const ledger of ledgers) {
     const sourceJob = ledger.sourceProvisionJobId ? jobs.get(ledger.sourceProvisionJobId) : null;
@@ -189,7 +193,7 @@ export async function loadPlatformBillingProof(repository: AdminRepository, opti
     }
   }
   for (const id of createdLedgerIds) unverifiedSourceLedgerIds.delete(id);
-  return { ledgers, imageImports, packedImages, cosBuckets, createdLedgerIds, unverifiedSourceLedgerIds, creationJobs };
+  return { ledgers, imageImports, packedImages, cosBuckets, createdLedgerIds, unverifiedSourceLedgerIds, creationJobs, sourceInstances: instances, sourceJobs };
 }
 
 // Collection and tags are not creation proof; this set was checked against persisted job/artifact identities.
@@ -205,6 +209,11 @@ export function isAlibabaBillingPayload(line: Record<string, unknown>) {
 
 export function classifyPlatformBillLine(line: Record<string, unknown>) {
   if (!isAlibabaBillingPayload(line)) return classifyBillLine({});
+  if (line.__platformBillingSource === 'DescribeSplitItemBill' && ['eip', 'cdt', 'cbwp'].includes(text(line.ProductCode))
+    && /^eip-[a-z0-9-]+$/i.test(text(line.SplitItemID)))
+    return { kind: 'direct' as const, cloudResourceType: 'eip' as const, cloudResourceId: text(line.SplitItemID) };
+  if (line.__platformBillingSource === 'DescribeSplitItemBill' && line.ProductCode === 'cdt' && /^i-[a-z0-9-]+$/i.test(text(line.SplitItemID)))
+    return { kind: 'direct' as const, cloudResourceType: 'ecs' as const, cloudResourceId: text(line.SplitItemID) };
   if (line.__platformBillingSource === 'DescribeSplitItemBill' && line.ProductCode === 'oss'
     && /^[a-z0-9][a-z0-9-]{1,61}[a-z0-9]$/.test(text(line.SplitItemID))) {
     return { kind: 'direct' as const, cloudResourceType: 'oss_bucket' as const, cloudResourceId: text(line.SplitItemID) };
@@ -214,12 +223,12 @@ export function classifyPlatformBillLine(line: Record<string, unknown>) {
 }
 
 export function billRegionConflict(line: Record<string, unknown>) {
-  const explicit = [line.RegionId, line.Region].map(text).filter(value => REGION_ID.test(value));
+  const explicit = [line.RegionId, line.Region, line.ProductCode === 'cdt' ? cdtBillingIdentity(text(line.InstanceID))?.regionId : null].map(text).filter(value => REGION_ID.test(value));
   return new Set(explicit).size > 1 || Boolean(text(line.RegionId) && !REGION_ID.test(text(line.RegionId)));
 }
 
 export function billRegionId(line: Record<string, unknown>) {
-  const explicit = [line.RegionId, line.Region].map(text).filter(value => REGION_ID.test(value));
+  const explicit = [line.RegionId, line.Region, line.ProductCode === 'cdt' ? cdtBillingIdentity(text(line.InstanceID))?.regionId : null].map(text).filter(value => REGION_ID.test(value));
   if (new Set(explicit).size > 1) return null;
   if (explicit.length) return explicit[0];
   const instanceRegion = text(line.InstanceID).split(';')[0];
@@ -280,6 +289,10 @@ export function pendingPlatformBillingEvidence(input: {
   const candidates = owned.filter(ledger => ledger.regionId === regionId && ledgerBillingDateMatches(ledger, input.billingDate, correction));
   // An unknown aggregation region is not evidence that any platform resource participated.
   if (accountConflict || !regionId || billRegionConflict(input.line)) return null;
+  if (classification.cloudResourceType === 'eip') {
+    const eips = candidates.filter(ledger => ledger.cloudResourceType === 'eip');
+    return eips.length ? { kind: 'aggregate_pending', ledgerIds: eips.map(ledger => ledger.id), imageImportJobIds: [] } : null;
+  }
   if (classification.cloudResourceType === 'snapshot_region') {
     const splitId = text(input.line.SplitItemID);
     const snapshotIds = /^i-/.test(splitId) ? new Set(input.proof.packedImages.filter(artifact => artifact.cloudAccountUid === input.cloudAccountUid && artifact.regionId === regionId && artifact.sourceInstanceId === splitId).flatMap(artifact => artifact.backingSnapshotIds)) : null;

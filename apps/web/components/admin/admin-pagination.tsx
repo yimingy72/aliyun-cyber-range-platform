@@ -1,9 +1,10 @@
 'use client';
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
+import { Pagination, PaginationContent, PaginationEllipsis, PaginationItem, PaginationLink, PaginationNext, PaginationPrevious } from '@/components/ui/pagination';
 import {
   Select,
   SelectContent,
@@ -28,6 +29,9 @@ function parsePageSize(value: number | string | null | undefined): AdminPageSize
 }
 
 export function getPagination(totalItems: number, currentPage: number, pageSize: number) {
+  totalItems = Number.isFinite(totalItems) ? Math.max(0, Math.floor(totalItems)) : 0;
+  pageSize = Number.isFinite(pageSize) && pageSize >= 1 ? Math.floor(pageSize) : DEFAULT_ADMIN_PAGE_SIZE;
+  currentPage = Number.isFinite(currentPage) ? Math.floor(currentPage) : 1;
   const totalPages = Math.max(1, Math.ceil(totalItems / pageSize));
   const page = Math.min(Math.max(currentPage, 1), totalPages);
   const startIndex = (page - 1) * pageSize;
@@ -44,27 +48,11 @@ export function getPagination(totalItems: number, currentPage: number, pageSize:
 }
 
 export function buildVisiblePages(totalPages: number, currentPage: number): VisiblePage[] {
-  if (totalPages <= 1) {
-    return [1];
-  }
-
-  const page = Math.min(Math.max(currentPage, 1), totalPages);
-  const pages = new Set([1, totalPages, page - 1, page, page + 1]);
-  const sortedPages = [...pages].filter((candidate) => candidate >= 1 && candidate <= totalPages).sort((left, right) => left - right);
-  const visiblePages: VisiblePage[] = [];
-
-  for (const pageNumber of sortedPages) {
-    const previousPage = visiblePages.at(-1);
-    const previousNumber = typeof previousPage === 'number' ? previousPage : 0;
-
-    if (previousNumber && pageNumber - previousNumber > 1) {
-      visiblePages.push(previousNumber === 1 ? 'ellipsis-left' : 'ellipsis-right');
-    }
-
-    visiblePages.push(pageNumber);
-  }
-
-  return visiblePages;
+  const { page, totalPages: count } = getPagination(totalPages, currentPage, 1);
+  if (count <= 7) return Array.from({ length: count }, (_, index) => index + 1);
+  if (page <= 4) return [1, 2, 3, 4, 5, 'ellipsis-right', count];
+  if (page >= count - 3) return [1, 'ellipsis-left', count - 4, count - 3, count - 2, count - 1, count];
+  return [1, 'ellipsis-left', page - 1, page, page + 1, 'ellipsis-right', count];
 }
 
 export function useAdminPageSize() {
@@ -102,31 +90,40 @@ export function AdminPaginationControls({
   label,
   pageSize,
   pagination,
-  visiblePages,
-  jumpPageValue,
+  isPending = false,
   onPageSizeChange,
-  onPreviousPage,
-  onNextPage,
   onPageSelect,
-  onJumpPageValueChange,
-  onJumpPage,
 }: {
   label: string;
   pageSize: AdminPageSize;
   pagination: ReturnType<typeof getPagination>;
-  visiblePages: VisiblePage[];
-  jumpPageValue: string;
+  isPending?: boolean;
   onPageSizeChange: (value: AdminPageSize) => void;
-  onPreviousPage: () => void;
-  onNextPage: () => void;
   onPageSelect: (page: number) => void;
-  onJumpPageValueChange: (value: string) => void;
-  onJumpPage: () => void;
 }) {
+  const root = useRef<HTMLDivElement>(null);
+  const [jumpPageValue, setJumpPageValue] = useState(String(pagination.page));
+  const visiblePages = buildVisiblePages(pagination.totalPages, pagination.page);
+  useLayoutEffect(() => {
+    setJumpPageValue(String(pagination.page));
+    const body = root.current?.closest('.admin-paginated-list')?.querySelector('.admin-paginated-list-body');
+    if (body) body.scrollTop = 0;
+  }, [label, pageSize, pagination.page]);
+  function selectPage(value: number) {
+    const page = getPagination(pagination.totalPages, value, 1).page;
+    if (page !== pagination.page) onPageSelect(page);
+  }
+  function jump() {
+    const value = Number(jumpPageValue);
+    const page = jumpPageValue.trim() && Number.isSafeInteger(value)
+      ? getPagination(pagination.totalPages, value, 1).page : pagination.page;
+    setJumpPageValue(String(page));
+    selectPage(page);
+  }
   return (
-    <div aria-label={label} className="admin-pagination">
+    <div aria-label={label} aria-busy={isPending || undefined} className="admin-pagination" ref={root}>
       <span className="admin-pagination-summary">
-        显示 {pagination.itemStart}–{pagination.itemEnd} 条，共 {pagination.totalItems} 条
+        {isPending ? `正在加载第 ${pagination.page} 页，共 ${pagination.totalItems} 条` : `显示 ${pagination.itemStart}–${pagination.itemEnd} 条，共 ${pagination.totalItems} 条`}
       </span>
       <div className="admin-pagination-actions">
         <div className="admin-pagination-size">
@@ -144,43 +141,21 @@ export function AdminPaginationControls({
             </SelectContent>
           </Select>
         </div>
-        <div className="admin-pagination-navigation">
-          <Button aria-label="上一页" disabled={pagination.page <= 1} size="sm" type="button" variant="outline" onClick={onPreviousPage}>
-            上一页
-          </Button>
-          <div className="admin-pagination-pages" aria-label="页码">
-            {visiblePages.map((pageNumber, index) =>
-              typeof pageNumber === 'number' ? (
-                <Button
-                  key={pageNumber}
-                  aria-label={`第 ${pageNumber} 页`}
-                  aria-pressed={pageNumber === pagination.page}
-                  size="icon-xs"
-                  type="button"
-                  variant={pageNumber === pagination.page ? 'default' : 'outline'}
-                  onClick={() => onPageSelect(pageNumber)}
-                >
-                  {pageNumber}
-                </Button>
-              ) : (
-                <span aria-hidden="true" className="admin-pagination-ellipsis" key={`${pageNumber}-${index}`}>
-                  …
-                </span>
-              ),
-            )}
-          </div>
-          <Button
-            aria-label="下一页"
-            disabled={pagination.page >= pagination.totalPages}
-            size="sm"
-            type="button"
-            variant="outline"
-            onClick={onNextPage}
-          >
-            下一页
-          </Button>
-        </div>
-        <div className="admin-pagination-jump">
+        <Pagination aria-label={`${label}导航`} className="mx-0 w-auto">
+          <PaginationContent className="flex-wrap justify-end">
+            <PaginationItem><PaginationPrevious aria-label="上一页" aria-disabled={pagination.page <= 1}
+              className="aria-disabled:pointer-events-none aria-disabled:opacity-50" href="#" tabIndex={pagination.page <= 1 ? -1 : 0}
+              text="上一页" onClick={event => { event.preventDefault(); selectPage(pagination.page - 1); }} /></PaginationItem>
+            {visiblePages.map(pageNumber => <PaginationItem key={pageNumber}>
+              {typeof pageNumber === 'number' ? <PaginationLink aria-label={`第 ${pageNumber} 页`} href="#" isActive={pageNumber === pagination.page}
+                onClick={event => { event.preventDefault(); selectPage(pageNumber); }}>{pageNumber}</PaginationLink> : <PaginationEllipsis />}
+            </PaginationItem>)}
+            <PaginationItem><PaginationNext aria-label="下一页" aria-disabled={pagination.page >= pagination.totalPages}
+              className="aria-disabled:pointer-events-none aria-disabled:opacity-50" href="#" tabIndex={pagination.page >= pagination.totalPages ? -1 : 0}
+              text="下一页" onClick={event => { event.preventDefault(); selectPage(pagination.page + 1); }} /></PaginationItem>
+          </PaginationContent>
+        </Pagination>
+        <form className="admin-pagination-jump" noValidate onSubmit={event => { event.preventDefault(); jump(); }}>
           <label>
             <span>跳转到</span>
             <Input
@@ -189,13 +164,13 @@ export function AdminPaginationControls({
               max={pagination.totalPages}
               type="number"
               value={jumpPageValue}
-              onChange={(event) => onJumpPageValueChange(event.target.value)}
+              onChange={(event) => setJumpPageValue(event.target.value)}
             />
           </label>
-          <Button aria-label="跳转" size="sm" type="button" variant="outline" onClick={onJumpPage}>
+          <Button aria-label="跳转" size="sm" type="submit" variant="outline">
             跳转
           </Button>
-        </div>
+        </form>
       </div>
     </div>
   );

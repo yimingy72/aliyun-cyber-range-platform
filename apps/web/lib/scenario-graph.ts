@@ -79,24 +79,14 @@ export type ScenarioGraphNic = {
 export function getPlatformDefaultSecurityGroupRules(nicId: string): ScenarioGraphSecurityGroupRule[] {
   return [
     {
-      key: `${nicId}-default-ssh`,
+      key: `${nicId}-default-all`,
       direction: 'ingress',
-      protocol: 'tcp',
-      portRange: '22/22',
+      protocol: 'all',
+      portRange: '1/65535',
       sourceCidr: '0.0.0.0/0',
       policy: 'accept',
       priority: 1,
-      description: '平台默认 SSH 访问',
-    },
-    {
-      key: `${nicId}-default-http`,
-      direction: 'ingress',
-      protocol: 'tcp',
-      portRange: '80/80',
-      sourceCidr: '0.0.0.0/0',
-      policy: 'accept',
-      priority: 1,
-      description: '平台默认 HTTP 访问',
+      description: '平台默认全部端口访问',
     },
   ];
 }

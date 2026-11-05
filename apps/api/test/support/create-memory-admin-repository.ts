@@ -790,6 +790,9 @@ export function createMemoryAdminRepository(): AdminRepository {
 
       return record ? clone(record) : null;
     },
+    async listSingleInstanceBatchNames(ids) {
+      return singleInstanceBatches.filter(batch => ids.includes(batch.id)).map(({id, name}) => ({id, name}));
+    },
     async listSingleInstanceBatchesWithInstances() {
       return cloneList(
         singleInstanceBatches.map((batch) => ({
@@ -805,6 +808,14 @@ export function createMemoryAdminRepository(): AdminRepository {
     },
     async listRangeInstances() {
       return cloneList(rangeInstances);
+    },
+    async listRangeLaunchReceipts(instanceIds: string[]) {
+      const selected = new Set(instanceIds);
+      return idempotentOperations.filter(operation => operation.toolName === 'web_range_instance_launch' && operation.status === 'succeeded'
+        && typeof operation.result?.id === 'string' && selected.has(operation.result.id)).map(operation => ({
+        cloudWorkspaceId: operation.cloudWorkspaceId ?? 'legacy-unbound', actorUserId: operation.actorUserId,
+        idempotencyKey: operation.idempotencyKey, rangeInstanceId: operation.result!.id as string,
+      }));
     },
     async listProvisioningInstancesByIds(ids: string[]) {
       const selected = new Set(ids);
@@ -886,6 +897,50 @@ export function createMemoryAdminRepository(): AdminRepository {
 
       return record ? clone(record) : null;
     },
+    async saveInstancePowerControl(id, expectedUpdatedAt, control, jobInput) {
+      const record = rangeInstances.find(row => row.id === id && row.updatedAt.getTime() === expectedUpdatedAt.getTime());
+      if (!record || jobInput && record.status !== 'running') return null;
+      if (jobInput && provisionJobs.some(row => row.rangeInstanceId === id && ['pending', 'running'].includes(row.status))) throw new Error('实例存在活动任务');
+      const job = jobInput ? createJobRecord(jobInput) : null;
+      const updatedControl = job ? { ...control, jobId: job.id, ...(control.schedule?.status === 'queued' ? { schedule: { ...control.schedule, jobId: job.id } } : {}) } : control;
+      const instance = await this.updateRangeInstance(id, { powerControl: updatedControl, ...(job ? { lastJobId: job.id } : {}) });
+      return { instance, job: job ? clone(job) : null };
+    },
+    async queueInstanceExpiryJob(id, expectedUpdatedAt, jobInput, effectiveExpiresAt) {
+      const record = rangeInstances.find(row => row.id === id && row.status === 'running' && row.updatedAt.getTime() === expectedUpdatedAt.getTime()
+        && row.expiresAt && row.expiresAt.getTime() > Date.now() + 5 * 60_000);
+      if (!record) return null;
+      if (provisionJobs.some(row => row.rangeInstanceId === id && ['pending', 'running'].includes(row.status))) throw new Error('实例存在活动任务');
+      const job = createJobRecord(jobInput);
+      await this.updateRangeInstance(id, { expiresAt: effectiveExpiresAt, lastJobId: job.id,
+        resourceSummary: { ...record.resourceSummary!, expiryChangeJobId: job.id } });
+      return clone(job);
+    },
+    async requeueInstanceExpiryJob(jobId, expectedInstanceUpdatedAt, expectedJobUpdatedAt) {
+      const job = provisionJobs.find(row => row.id === jobId && row.jobType === 'change_expiry' && row.status === 'failed'
+        && row.updatedAt.getTime() === expectedJobUpdatedAt.getTime());
+      const instance = job && rangeInstances.find(row => row.id === job.rangeInstanceId && row.lastJobId === jobId && row.status === 'running'
+        && row.updatedAt.getTime() === expectedInstanceUpdatedAt.getTime());
+      if (!job || !instance || provisionJobs.some(row => row.rangeInstanceId === instance.id && ['pending', 'running'].includes(row.status))) return false;
+      await this.updateProvisionJob(jobId, { status: 'pending', startedAt: null, finishedAt: null, availableAt: now(),
+        topologySnapshot: { ...job.topologySnapshot!, expiryObserveOnly: true } });
+      return true;
+    },
+    async listDuePowerSchedules(date) {
+      return cloneList(rangeInstances.filter(row => row.powerControl?.schedule?.status === 'scheduled'
+        && (row.status !== 'running' || Date.parse(row.powerControl.schedule.at) <= date.getTime())));
+    },
+    async updateInstancePowerForClaim(id, startedAt, input, jobInput) {
+      const job = provisionJobs.find(row => row.id === id && row.status === 'running' && row.startedAt?.getTime() === startedAt.getTime());
+      const instance = job && rangeInstances.find(row => row.id === job.rangeInstanceId && row.lastJobId === id && row.status === 'running');
+      if (!job || !instance) {
+        if (job) Object.assign(job, { status: 'cancelled', finishedAt: now(), errorSummary: '原实例已进入其他操作；旧电源任务未继续执行。' });
+        return false;
+      }
+      Object.assign(job, jobInput, { updatedAt: now() });
+      await this.updateRangeInstance(instance.id, input);
+      return true;
+    },
     async updateRangeInstanceDnsState(id: string, hostKey: string, nativeId: string, expectedClaim: string | null, entry: RangeDnsVerification) {
       const scope = getCurrentCloudWorkspaceScope();
       if (!scope || 'system' in scope) throw new Error('Cloud workspace scope is required');
@@ -949,6 +1004,7 @@ export function createMemoryAdminRepository(): AdminRepository {
         allocatedCidr: input.allocatedCidr !== undefined ? input.allocatedCidr : record.allocatedCidr,
         accessEntry: input.accessEntry !== undefined ? cloneIfDefined(input.accessEntry) : record.accessEntry,
         resourceSummary: input.resourceSummary !== undefined ? cloneIfDefined(input.resourceSummary) : record.resourceSummary,
+        powerControl: input.powerControl !== undefined ? cloneIfDefined(input.powerControl) : record.powerControl,
         errorSummary: input.errorSummary !== undefined ? input.errorSummary : record.errorSummary,
         expiresAt: input.expiresAt !== undefined ? input.expiresAt : record.expiresAt,
         lastJobId: input.lastJobId !== undefined ? input.lastJobId : record.lastJobId,
@@ -1115,7 +1171,8 @@ export function createMemoryAdminRepository(): AdminRepository {
         }
       }
       const instance = rangeInstances.find(record => record.id === input.rangeInstanceId && record.instanceMode === 'range'
-        && record.status === input.expectedStatus && record.ownerUserId === input.expectedOwnerUserId);
+        && record.status === input.expectedStatus && record.ownerUserId === input.expectedOwnerUserId
+        && (!input.expectedUpdatedAt || record.updatedAt.getTime() === input.expectedUpdatedAt.getTime()));
       if (!instance || provisionJobs.some(job => job.rangeInstanceId === input.rangeInstanceId && ['pending', 'running'].includes(job.status))) return null;
       const job = createJobRecord(input);
       Object.assign(instance, { status: input.nextStatus, lastJobId: job.id, errorSummary: null, updatedAt: now(),
@@ -1163,7 +1220,7 @@ export function createMemoryAdminRepository(): AdminRepository {
         Object.assign(job, { status: 'cancelled', finishedAt: startedAt, errorSummary: 'Superseded by the current range operation' });
         return null;
       }
-      if (job.jobType === 'update' && instance.status !== 'running'
+      if (['update','reset'].includes(job.jobType) && instance.status !== 'running'
         || (job.jobType === 'create' || job.topologySnapshot?.operation === 'create')
           && ['pending_destroy', 'destroying', 'destroy_failed', 'destroyed'].includes(instance.status)) {
         Object.assign(job, { status: 'cancelled', finishedAt: startedAt, errorSummary: 'Range operation is incompatible with the current instance state' });
@@ -1867,10 +1924,15 @@ export function createMemoryAdminRepository(): AdminRepository {
     async repairBillingLedgerOrigin(input: RepairBillingLedgerOriginInput) {
       const expected = input.expected;
       const namespace = expected.cloudWorkspaceId ?? 'legacy-unbound';
-      if (expected.sourceProvisionJobId !== null || namespace !== (getCurrentCloudWorkspaceId() ?? 'legacy-unbound')) return false;
+      if (namespace !== (getCurrentCloudWorkspaceId() ?? 'legacy-unbound')
+        || expected.sourceProvisionJobId !== null && (!input.cloudAccountUid || expected.sourceProvisionJobId !== input.sourceProvisionJobId)) return false;
+      const scope = getCurrentCloudWorkspaceScope();
+      if (input.cloudAccountUid && (!scope || 'system' in scope || scope.provider !== expected.cloudProvider || scope.accountUid !== input.cloudAccountUid
+        || expected.cloudAccountUid && expected.cloudAccountUid !== input.cloudAccountUid)) return false;
       const source = provisionJobs.find(job => job.id === input.sourceProvisionJobId && (job.cloudWorkspaceId ?? 'legacy-unbound') === namespace
-        && job.rangeInstanceId === expected.rangeInstanceId && ['create', 'retry'].includes(job.jobType));
-      const record = billingLedgerResources.find(row => row.id === expected.id && row.sourceProvisionJobId === null
+        && job.rangeInstanceId === expected.rangeInstanceId && ['create', 'retry', ...(input.cloudAccountUid ? ['update'] : [])].includes(job.jobType)
+        && job.topologySnapshot?.operation !== 'destroy' && (job.jobType !== 'update' || job.topologySnapshot?.operation === 'update'));
+      const record = billingLedgerResources.find(row => row.id === expected.id && row.sourceProvisionJobId === expected.sourceProvisionJobId && row.updatedAt.getTime() === expected.updatedAt.getTime()
         && ['cloudProvider', 'cloudAccountUid', 'regionId', 'cloudResourceId', 'cloudResourceType', 'rangeInstanceId', 'ownerUserId', 'singleInstanceBatchId', 'billingScope'].every(key => row[key as keyof BillingLedgerResourceRecord] === expected[key as keyof BillingLedgerResourceRecord])
         && (row.cloudWorkspaceId ?? 'legacy-unbound') === namespace && row.billingStartAt.getTime() === expected.billingStartAt.getTime()
         && (row.releasedAt?.getTime() ?? null) === (expected.releasedAt?.getTime() ?? null));
@@ -1879,6 +1941,8 @@ export function createMemoryAdminRepository(): AdminRepository {
       provisionJobStepLogs.push({ id: nextId(), jobId: input.sourceProvisionJobId, stepName: 'platform_billing_origin_repair', status: 'succeeded',
         message: input.auditMessage, startedAt: timestamp, finishedAt: timestamp, stdoutExcerpt: null, stderrExcerpt: null, createdAt: timestamp, updatedAt: timestamp });
       record.sourceProvisionJobId = input.sourceProvisionJobId; record.updatedAt = timestamp;
+      if (input.cloudAccountUid) record.cloudAccountUid = input.cloudAccountUid;
+      if (input.cloudAccountContextId) record.tagsSnapshot = { ...record.tagsSnapshot, CloudAccountContextId: input.cloudAccountContextId };
       return true;
     },
     async getLatestBillingLineItemDate(cloudAccountUid?: string) {
@@ -1983,7 +2047,8 @@ export function createMemoryAdminRepository(): AdminRepository {
             (filter.cloudAccountUid === undefined || item.cloudAccountUid === filter.cloudAccountUid) &&
             (filter.ownerUserId === undefined || item.ownerUserId === filter.ownerUserId) &&
             (filter.billingScope === undefined || item.billingScope === filter.billingScope) &&
-            (filter.matchedLedgerId === undefined || item.matchedLedgerId === filter.matchedLedgerId),
+            (filter.matchedLedgerId === undefined || item.matchedLedgerId === filter.matchedLedgerId) &&
+            (filter.matchedLedgerIds === undefined || item.matchedLedgerId !== null && filter.matchedLedgerIds.includes(item.matchedLedgerId)),
         ),
       );
     },

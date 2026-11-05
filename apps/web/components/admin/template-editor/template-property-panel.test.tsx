@@ -128,7 +128,7 @@ describe('TemplatePropertyPanel', () => {
     expect(screen.queryByRole('button', { name: '收起节点属性' })).toBeNull();
   });
 
-  it('shows the platform default SSH and HTTP rules without a status label', () => {
+  it('shows the platform default allow-all rule without a status label', () => {
     const node: TemplateNode = {
       id: 'ecs-1',
       kind: 'ecs',
@@ -164,11 +164,9 @@ describe('TemplatePropertyPanel', () => {
     render(<TemplatePropertyPanel selectedNode={node} allNodes={[node]} onUpdateNode={vi.fn()} />);
 
     expect(screen.queryByText('平台默认')).toBeNull();
-    expect(screen.getByRole('combobox', { name: '安全协议 1-1' }).textContent).toBe('tcp');
-    expect((screen.getByLabelText('安全端口 1-1') as HTMLInputElement).value).toBe('22/22');
-    expect(screen.getByRole('combobox', { name: '安全协议 1-2' }).textContent).toBe('tcp');
-    expect((screen.getByLabelText('安全端口 1-2') as HTMLInputElement).value).toBe('80/80');
-    expect(screen.getAllByDisplayValue('0.0.0.0/0')).toHaveLength(2);
+    expect(screen.getByRole('combobox', { name: '安全协议 1-1' }).textContent).toBe('all');
+    expect((screen.getByLabelText('安全端口 1-1') as HTMLInputElement).value).toBe('1/65535');
+    expect(screen.getAllByDisplayValue('0.0.0.0/0')).toHaveLength(1);
   });
 
   it('uses an unnumbered action label when adding a security rule', () => {
@@ -282,7 +280,7 @@ describe('TemplatePropertyPanel', () => {
     expect(securityRuleCard?.parentElement?.className).toContain('template-property-card-sub-list');
   });
 
-  it('persists the remaining rules as custom when a platform default rule is deleted', () => {
+  it('persists an empty custom rule set when the platform default rule is deleted', () => {
     const node: TemplateNode = {
       id: 'ecs-1',
       kind: 'ecs',
@@ -325,7 +323,7 @@ describe('TemplatePropertyPanel', () => {
         nics: [
           expect.objectContaining({
             securityGroupRulesMode: 'custom',
-            securityGroupRules: [expect.objectContaining({ portRange: '80/80' })],
+            securityGroupRules: [],
           }),
         ],
       }),
@@ -337,7 +335,7 @@ describe('TemplatePropertyPanel', () => {
     const onUpdateNode = vi.fn();
 
     render(<TemplatePropertyPanel selectedNode={node} allNodes={[node]} onUpdateNode={onUpdateNode} />);
-    fireEvent.change(screen.getByLabelText('安全端口 1-1'), { target: { value: '2222/2222' } });
+    fireEvent.change(screen.getByLabelText('安全源网段 1-1'), { target: { value: '10.0.0.0/8' } });
 
     expect(onUpdateNode).toHaveBeenCalledWith(
       'ecs-1',
@@ -345,10 +343,7 @@ describe('TemplatePropertyPanel', () => {
         nics: [
           expect.objectContaining({
             securityGroupRulesMode: 'custom',
-            securityGroupRules: [
-              expect.objectContaining({ portRange: '2222/2222' }),
-              expect.objectContaining({ portRange: '80/80' }),
-            ],
+            securityGroupRules: [expect.objectContaining({ sourceCidr: '10.0.0.0/8' })],
           }),
         ],
       }),

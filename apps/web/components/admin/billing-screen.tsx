@@ -1,1025 +1,224 @@
 'use client';
 
-import { DateTimePicker } from '@/components/ui/date-time-picker';
-
-import { useEffect, useLayoutEffect, useMemo, useState } from 'react';
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { useRouter } from 'next/navigation';
-import { ChevronDown, ChevronRight, Download, RefreshCw } from 'lucide-react';
-
-import {
-  AdminApiError,
-  exportBillingUserItemsCsv,
-  exportBillingUsersCsv,
-  exportPlatformBillingCsv,
-  fetchAdminUsers,
-  fetchBillingSummary,
-  fetchBillingUserGroups,
-  fetchBillingUsers,
-  fetchPlatformBillingGroups,
-  triggerBillingSync,
-} from '../../lib/admin-api';
-import { useAdminScreenCache } from '../../lib/admin-screen-cache';
-import { useCloudWorkspace } from './cloud-workspace-provider';
-import { formatAdminDateTime, isUnauthorizedAdminError } from '../../lib/admin-screen';
-import type { AdminUser, BillingLaunchGroup, BillingSummary, BillingUserSummary, PaginatedResult } from '../../lib/admin-types';
+import { ArrowLeft, CalendarDays, ChevronDown, ChevronRight, Download, RefreshCw } from 'lucide-react';
+import dynamic from 'next/dynamic';
+import { AdminApiError, exportBillingUserItemsCsv, exportBillingUsersCsv, exportPlatformBillingCsv, fetchAdminUsers } from '@/lib/admin-api';
+import { formatAdminDateTime, isUnauthorizedAdminError } from '@/lib/admin-screen';
+import type { AdminUser } from '@/lib/admin-types';
+import { billingSessionScope, clearBillingReadCache, fetchBillingEntries, readCachedBillingEntries, type BillingDocumentStatus, type BillingEntriesQuery, type BillingEntriesResult, type BillingEntry, type BillingRange, type BillingRequestContext } from '@/lib/billing-lifecycle-api';
+import { readCloudWorkspaceSelection } from '@/lib/cloud-workspace-selection';
 import { Button } from '../ui/button';
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuTrigger,
-} from '../ui/dropdown-menu';
+import { DateTimePicker, parseLocalDate } from '../ui/date-time-picker';
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuRadioGroup, DropdownMenuRadioItem, DropdownMenuTrigger } from '../ui/dropdown-menu';
+import { Popover, PopoverContent, PopoverTrigger } from '../ui/popover';
 import { Skeleton } from '../ui/skeleton';
-import { AdminPaginationControls, buildVisiblePages, getPagination, useAdminPageSize } from './admin-pagination';
-import { AdminSelectField } from './shared/admin-select-field';
+import { TableCell, TableRow } from '../ui/table';
+import { AdminPaginationControls, getPagination, useAdminPageSize } from './admin-pagination';
+import { useAdminRouteIsActive } from './admin-page-cache';
+import { BillingAmounts, BillingDocumentBadge, BillingEntryDetails, billingDocumentLabels, canActivateBillingRow } from './billing-entry-details';
+import { downloadCsv, getDefaultRange, LegacyBillingScreen } from './billing-legacy-screen';
+import { useCloudWorkspace } from './cloud-workspace-provider';
+import { AdminDataTable, AdminDataTableCell, AdminDataTableText, type AdminDataColumn } from './shared/admin-data-table';
 import { AdminPageHeader } from './shared/admin-page-header';
 import { AdminPaginatedList } from './shared/admin-paginated-list';
-import { StatusBadge } from './shared/status-badge';
-import { useAdminRouteIsActive } from './admin-page-cache';
+import { AdminSelectField } from './shared/admin-select-field';
 import { useAdminSession } from './use-admin-session';
 
-type BillingScreenProps = {
-  apiBaseUrl?: string;
-};
-
-type BillingRange = {
-  startAt: string;
-  endAt: string;
-};
-
-type DetailView = 'users' | 'platform';
-type BillingExportKind = 'platform' | 'users' | 'user';
-type BillingOverviewSnapshot = {
-  summary: BillingSummary;
-  users: PaginatedResult<BillingUserSummary>;
-  filterUsers: AdminUser[];
-};
-
-const preciseMoneyFormatter = new Intl.NumberFormat('zh-CN', {
-  minimumFractionDigits: 2,
-  maximumFractionDigits: 18,
+const columns:readonly AdminDataColumn[]=[
+  {id:'name',label:'账目',priority:'primary',minWidth:'17rem'},
+  {id:'type',label:'类型',priority:'secondary',width:'8rem'},
+  {id:'status',label:'出账状态',priority:'primary',width:'8rem'},
+  {id:'amount',label:'已出账金额',priority:'primary',width:'13rem',align:'right'},
+  {id:'created',label:'创建时间',priority:'secondary',width:'11rem'},
+  {id:'action',label:'操作',priority:'primary',width:'6rem',align:'right'},
+];
+const kinds:Record<BillingEntry['kind'],string>={single:'单实例',range:'编排实例',platform_image:'镜像 / 快照',platform_bucket:'对象存储',resource:'独立资源',platform_import:'镜像上传'};
+const uses:Record<string,string>={creating:'创建中',active:'使用中',partially_released:'部分回收',released:'已回收',failed:'任务失败',allocation_ended:'费用归属结束'};
+const billStatuses=['','issued','partial','unissued','not_applicable','pending'] as const;
+const validBillingRange=({startAt,endAt}:BillingRange)=>Boolean(parseLocalDate(startAt,false)&&parseLocalDate(endAt,false)&&startAt<=endAt);
+const ResourceAlertsPanel = dynamic(() => import('./resource-alerts-screen').then(module => module.ResourceAlertsPanel), {
+  loading: () => <Skeleton aria-label="正在加载资源告警" className="h-20 w-full" />,
 });
 
-function getDefaultRange(): BillingRange {
-  const endAt = new Date(`${new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Shanghai' }).format(new Date())}T00:00:00.000Z`);
-  const startAt = new Date(endAt);
-  startAt.setUTCDate(startAt.getUTCDate() - 29);
-
-  return {
-    startAt: startAt.toISOString().slice(0, 10),
-    endAt: endAt.toISOString().slice(0, 10),
-  };
-}
-
-function formatMoney(value: number | null | undefined, currency = 'CNY') {
-  if (value === null) return '按币种查看';
-  if (typeof value !== 'number' || !Number.isFinite(value)) return '未知';
-  const amount = value;
-
-  if (currency === 'CNY') {
-    return `¥ ${preciseMoneyFormatter.format(amount)}`;
-  }
-
-  try {
-    return new Intl.NumberFormat('zh-CN', {
-      style: 'currency',
-      currency,
-      currencyDisplay: 'code',
-      minimumFractionDigits: 2,
-      maximumFractionDigits: 18,
-    }).format(amount);
-  } catch {
-    return `${currency} ${preciseMoneyFormatter.format(amount)}`;
-  }
-}
-
-function formatResourceType(resourceType: string) {
-  switch (resourceType) {
-    case 'ecs':
-      return 'ECS 实例';
-    case 'disk':
-      return '系统盘 / 数据盘';
-    case 'eip':
-      return '弹性公网 IP';
-    case 'nat_gateway':
-      return 'NAT 网关';
-    case 'snat_entry':
-      return 'SNAT 条目';
-    case 'dnat_entry':
-      return 'DNAT 条目';
-    case 'image':
-      return '自定义镜像';
-    case 'snapshot':
-      return '快照';
-    case 'snapshot_region':
-      return '快照链容量';
-    default:
-      return resourceType;
-  }
-}
-
-function formatBillingLineSecondary(item: BillingLaunchGroup['items'][number]) {
-  return item.productDetail?.trim() || item.productCode || '账单项';
-}
-
-function formatBillingGroupTitle(group: Pick<BillingLaunchGroup, 'kind' | 'title'>) {
-  if (group.kind === 'single_launch') {
-    return '单实例';
-  }
-
-  if (group.kind === 'range_launch') {
-    return '编排实例';
-  }
-
-  return group.title;
-}
-
-function downloadCsv(contents: string, fileName: string) {
-  const blob = new Blob([contents], { type: 'text/csv;charset=utf-8' });
-  const url = window.URL.createObjectURL(blob);
-  const link = document.createElement('a');
-  link.href = url;
-  link.download = fileName;
-  link.click();
-  window.URL.revokeObjectURL(url);
-}
-
-export function BillingScreen({ apiBaseUrl = 'http://localhost:3001' }: BillingScreenProps) {
-  const router = useRouter();
-  const { isAdmin, isReady, logout, token } = useAdminSession();
-  const workspace = useCloudWorkspace()?.workspace;
-  const isPageActive = useAdminRouteIsActive('/admin/billing');
-  const screenCache = useAdminScreenCache();
-  const [range, setRange] = useState<BillingRange>(getDefaultRange);
-  const [selectedUserId, setSelectedUserId] = useState<string>('');
-  const [detailView, setDetailView] = useState<DetailView>('users');
-  const [groupsPage, setGroupsPage] = useState(1);
-  const [usersPage, setUsersPage] = useState(1);
-  const [usersJumpPageValue, setUsersJumpPageValue] = useState('1');
-  const { pageSize, setPageSize } = useAdminPageSize();
-  const overviewResource = `billing:overview:${range.startAt}:${range.endAt}:${usersPage}:${pageSize}`;
-  const groupsResource =
-    detailView === 'users'
-      ? `billing:user-groups:${selectedUserId || 'all'}:${range.startAt}:${range.endAt}:${groupsPage}:${pageSize}`
-      : `billing:platform-groups:${range.startAt}:${range.endAt}:${groupsPage}:${pageSize}`;
-  const cachedOverview = screenCache?.read<BillingOverviewSnapshot>(apiBaseUrl, token, overviewResource);
-  const cachedGroups = screenCache?.read<PaginatedResult<BillingLaunchGroup>>(apiBaseUrl, token, groupsResource);
-  const [summary, setSummary] = useState<BillingSummary | null>(() => cachedOverview?.data.summary ?? null);
-  const [usersResult, setUsersResult] = useState<PaginatedResult<BillingUserSummary>>(
-    () =>
-      cachedOverview?.data.users ?? {
-        items: [],
-        page: 1,
-        pageSize,
-        total: 0,
-      },
-  );
-  const [groupsResult, setGroupsResult] = useState<PaginatedResult<BillingLaunchGroup>>(
-    () =>
-      cachedGroups?.data ?? {
-        items: [],
-        page: 1,
-        pageSize: 20,
-        total: 0,
-      },
-  );
-  const [filterUsers, setFilterUsers] = useState<AdminUser[]>(() => cachedOverview?.data.filterUsers ?? []);
-  const [expandedGroupIds, setExpandedGroupIds] = useState<Set<string>>(new Set());
-  const [loadedOverviewResource, setLoadedOverviewResource] = useState<string | null>(() =>
-    cachedOverview ? overviewResource : null,
-  );
-  const [loadedGroupsResource, setLoadedGroupsResource] = useState<string | null>(() =>
-    cachedGroups ? groupsResource : null,
-  );
-  const [overviewLoadAttempt, setOverviewLoadAttempt] = useState(0);
-  const [groupsLoadAttempt, setGroupsLoadAttempt] = useState(0);
-  const [groupsJumpPageValue, setGroupsJumpPageValue] = useState('1');
-  const [errorMessage, setErrorMessage] = useState<string | null>(null);
-  const [overviewRevalidationErrorMessage, setOverviewRevalidationErrorMessage] = useState<string | null>(null);
-  const [groupsErrorMessage, setGroupsErrorMessage] = useState<string | null>(null);
-  const [syncMessage, setSyncMessage] = useState<string | null>(null);
-  const [isLoading, setIsLoading] = useState(() => !cachedOverview);
-  const [isRefreshingOverview, setIsRefreshingOverview] = useState(false);
-  const [isLoadingGroups, setIsLoadingGroups] = useState(() => !cachedGroups);
-  const [isSyncing, setIsSyncing] = useState(false);
-
-  const hasPlatformBillingScope = summary?.billingScope === 'platform_resources';
-  const overviewReconciliationIssues = (summary?.reconciliationIssues ?? []).flatMap((issue) => {
-    if (issue.resourceType !== 'disk' || !issue.resources || issue.resources.length !== issue.resourceCount) return [issue];
-    const resources = issue.resources.filter((resource) => {
-      const releasedAt = resource.releasedAt ? Date.parse(resource.releasedAt) : NaN;
-      const billingStartAt = Date.parse(resource.billingStartAt);
-      return !(resource.cloudResourceType === 'disk' && resource.ledgerId?.trim() && resource.cloudResourceId?.trim()
-        && resource.proofFailureReason === 'SYSTEM_DISK_MAPPING_UNVERIFIED'
-        && Number.isFinite(releasedAt) && Number.isFinite(billingStartAt) && releasedAt >= billingStartAt && releasedAt <= Date.now());
-    });
-    return resources.length ? [{ ...issue, resourceCount: resources.length, resources }] : [];
-  });
-  const users = usersResult.items;
-  const groups = groupsResult.items;
-  const hasOverviewSnapshot = loadedOverviewResource !== null;
-  const hasGroupsSnapshot = loadedGroupsResource !== null;
-  const userNameById = useMemo(
-    () =>
-      new Map([
-        ...filterUsers.map((user) => [user.id, user.username] as const),
-        ...users.map((user) => [user.userId, user.username] as const),
-      ]),
-    [filterUsers, users],
-  );
-  useEffect(() => {
-    if (!isPageActive || !isReady) {
-      return;
-    }
-
-    if (!token) {
-      setSummary(null);
-      setUsersResult({ items: [], page: 1, pageSize, total: 0 });
-      setGroupsResult({ items: [], page: 1, pageSize, total: 0 });
-      setFilterUsers([]);
-      setLoadedOverviewResource(null);
-      setLoadedGroupsResource(null);
-      setOverviewLoadAttempt(0);
-      setGroupsLoadAttempt(0);
-      setErrorMessage(null);
-      setOverviewRevalidationErrorMessage(null);
-      setGroupsErrorMessage(null);
-      setSyncMessage(null);
-      setIsLoading(false);
-      setIsRefreshingOverview(false);
-      setIsLoadingGroups(false);
-      return;
-    }
-
-    if (!isAdmin) {
-      router.replace('/admin/scenarios');
-      return;
-    }
-
-    let isActive = true;
-    const cachedSnapshot = screenCache?.read<BillingOverviewSnapshot>(apiBaseUrl, token, overviewResource);
-
-    if (cachedSnapshot?.isFresh && overviewLoadAttempt === 0) {
-      setSummary(cachedSnapshot.data.summary);
-      setUsersResult(cachedSnapshot.data.users);
-      setUsersPage(cachedSnapshot.data.users.page);
-      setFilterUsers(cachedSnapshot.data.filterUsers);
-      setLoadedOverviewResource(overviewResource);
-      setSelectedUserId((current) =>
-        current && cachedSnapshot.data.filterUsers.some((user) => user.id === current) ? current : '',
-      );
-      setErrorMessage(null);
-      setOverviewRevalidationErrorMessage(null);
-      setIsLoading(false);
-      setIsRefreshingOverview(false);
-
-      return () => {
-        isActive = false;
-      };
-    }
-
-    if (loadedOverviewResource === overviewResource && !screenCache && overviewLoadAttempt === 0) {
-      setIsLoading(false);
-      setIsRefreshingOverview(false);
-
-      return () => {
-        isActive = false;
-      };
-    }
-
-    if (hasOverviewSnapshot) {
-      setOverviewRevalidationErrorMessage(null);
-    } else {
-      setErrorMessage(null);
-    }
-    setIsLoading(!hasOverviewSnapshot);
-    setIsRefreshingOverview(hasOverviewSnapshot);
-
-    const loadOverview = async (): Promise<BillingOverviewSnapshot> => {
-      const [summary, users, filterUsers] = await Promise.all([
-        fetchBillingSummary(apiBaseUrl, token, range),
-        fetchBillingUsers(apiBaseUrl, token, { ...range, page: usersPage, pageSize }),
-        fetchAdminUsers(apiBaseUrl, token),
-      ]);
-
-      return { summary, users, filterUsers };
-    };
-    const request = screenCache
-      ? screenCache.load(apiBaseUrl, token, overviewResource, loadOverview, { force: overviewLoadAttempt > 0 })
-      : loadOverview();
-
-    request
-      .then((snapshot) => {
-        if (!isActive) {
-          return;
-        }
-
-        setSummary(snapshot.summary);
-        setUsersResult(snapshot.users);
-        setUsersPage(snapshot.users.page);
-        setFilterUsers(snapshot.filterUsers);
-        setLoadedOverviewResource(overviewResource);
-        setSelectedUserId((current) =>
-          current && snapshot.filterUsers.some((user) => user.id === current) ? current : '',
-        );
-        setOverviewRevalidationErrorMessage(null);
-        if (overviewLoadAttempt > 0) {
-          setOverviewLoadAttempt(0);
-        }
-      })
-      .catch((error: unknown) => {
-        if (!isActive) {
-          return;
-        }
-
-        if (isUnauthorizedAdminError(error)) {
-          logout();
-          router.replace('/admin/login');
-          return;
-        }
-
-        const message = '账单费用加载失败，请稍后重试。';
-
-        if (hasOverviewSnapshot) {
-          setOverviewRevalidationErrorMessage(message);
-          return;
-        }
-
-        setErrorMessage(message);
-      })
-      .finally(() => {
-        if (isActive) {
-          setIsLoading(false);
-          setIsRefreshingOverview(false);
-        }
-      });
-
-    return () => {
-      isActive = false;
-    };
-  }, [
-    apiBaseUrl,
-    hasOverviewSnapshot,
-    isAdmin,
-    isPageActive,
-    isReady,
-    loadedOverviewResource,
-    logout,
-    overviewLoadAttempt,
-    overviewResource,
-    pageSize,
-    usersPage,
-    range,
-    router,
-    screenCache,
-    token,
-  ]);
-
-  useEffect(() => {
-    if (!isPageActive || !isReady || !token || !isAdmin) {
-      return;
-    }
-
-    let isActive = true;
-    const cachedSnapshot = screenCache?.read<PaginatedResult<BillingLaunchGroup>>(apiBaseUrl, token, groupsResource);
-
-    if (cachedSnapshot?.isFresh && groupsLoadAttempt === 0) {
-      setGroupsResult(cachedSnapshot.data);
-      setGroupsPage(cachedSnapshot.data.page);
-      setLoadedGroupsResource(groupsResource);
-      setGroupsErrorMessage(null);
-      setIsLoadingGroups(false);
-
-      return () => {
-        isActive = false;
-      };
-    }
-
-    if (loadedGroupsResource === groupsResource && !screenCache && groupsLoadAttempt === 0) {
-      setIsLoadingGroups(false);
-
-      return () => {
-        isActive = false;
-      };
-    }
-
-    setIsLoadingGroups(true);
-    setGroupsErrorMessage(null);
-
-    const loadGroups = () =>
-      detailView === 'users'
-        ? fetchBillingUserGroups(apiBaseUrl, token, {
-            ...range,
-            page: groupsPage,
-            pageSize,
-            userId: selectedUserId || undefined,
-          })
-        : fetchPlatformBillingGroups(apiBaseUrl, token, { ...range, page: groupsPage, pageSize });
-    const request = screenCache
-      ? screenCache.load(apiBaseUrl, token, groupsResource, loadGroups, { force: groupsLoadAttempt > 0 })
-      : loadGroups();
-
-    request
-      .then((payload) => {
-        if (isActive) {
-          setGroupsResult(payload);
-          setGroupsPage(payload.page);
-          setLoadedGroupsResource(groupsResource);
-          if (groupsLoadAttempt > 0) {
-            setGroupsLoadAttempt(0);
-          }
-        }
-      })
-      .catch((error: unknown) => {
-        if (!isActive) {
-          return;
-        }
-
-        if (isUnauthorizedAdminError(error)) {
-          logout();
-          router.replace('/admin/login');
-          return;
-        }
-
-        setGroupsErrorMessage('费用明细加载失败，请稍后重试。');
-      })
-      .finally(() => {
-        if (isActive) {
-          setIsLoadingGroups(false);
-        }
-      });
-
-    return () => {
-      isActive = false;
-    };
-  }, [
-    apiBaseUrl,
-    detailView,
-    groupsLoadAttempt,
-    groupsPage,
-    groupsResource,
-    isAdmin,
-    isPageActive,
-    isReady,
-    loadedGroupsResource,
-    logout,
-    pageSize,
-    range,
-    router,
-    screenCache,
-    selectedUserId,
-    token,
-  ]);
-
-  const usersPagination = getPagination(usersResult.total, usersResult.page, usersResult.pageSize);
-  const usersVisiblePages = buildVisiblePages(usersPagination.totalPages, usersPagination.page);
-
-  useLayoutEffect(() => setUsersJumpPageValue(String(usersPagination.page)), [usersPagination.page]);
-
-  const groupsPagination = getPagination(groupsResult.total, groupsResult.page, groupsResult.pageSize);
-  const groupsVisiblePages = buildVisiblePages(groupsPagination.totalPages, groupsPagination.page);
-
-  useLayoutEffect(() => {
-    setGroupsJumpPageValue(String(groupsPagination.page));
-  }, [groupsPagination.page]);
-
-  if (!isReady) {
-    return null;
-  }
-
-  if (!token) {
-    return (
-      <main className="admin-shell">
-        <section className="admin-panel admin-login-panel">
-          <h2>正在跳转到管理员登录页...</h2>
-          <p className="admin-empty">检测到当前没有有效的管理员会话。</p>
-        </section>
-      </main>
-    );
-  }
-
-  if (!isAdmin) {
-    return (
-      <main className="admin-shell">
-        <section className="admin-panel admin-login-panel">
-          <h2>正在返回主工作台...</h2>
-          <p className="admin-empty">当前账号无权访问账单费用。</p>
-        </section>
-      </main>
-    );
-  }
-
-  const handleSync = async () => {
-    if (!token) {
-      return;
-    }
-
-    setIsSyncing(true);
-    setErrorMessage(null);
-    setSyncMessage(null);
-
-    try {
-      const result = await triggerBillingSync(apiBaseUrl, token, range);
-      screenCache?.invalidate(apiBaseUrl, token, 'billing:');
-      setGroupsPage(1);
-      setGroupsLoadAttempt((current) => current + 1);
-      setOverviewLoadAttempt((current) => current + 1);
-      setSyncMessage(result.syncInProgress ? '已有账单同步进行中，请稍后刷新。'
-        : `已同步 ${result.syncedDays} 天，导入 ${result.importedLineItems} 条账单。${result.deferredDates?.length ? ' 未完成的账期已延后同步，不代表费用为零。' : ''}`);
-    } catch (error) {
-      if (isUnauthorizedAdminError(error)) {
-        logout();
-        router.replace('/admin/login');
-        return;
-      }
-
-      const details = error instanceof AdminApiError ? error.details : null;
-      setErrorMessage(details && typeof details === 'object' && 'code' in details
-        && details.code === 'BILLING_AMOUNT_PRECISION' && error instanceof AdminApiError
-        ? error.message : '账单同步失败，请稍后重试。');
-    } finally {
-      setIsSyncing(false);
-    }
-  };
-
-  const handleExport = async (kind: BillingExportKind) => {
-    if (!token) {
-      return;
-    }
-
-    setErrorMessage(null);
-    try {
-      if (kind === 'platform') {
-        downloadCsv(await exportPlatformBillingCsv(apiBaseUrl, token, range), 'platform-billing.csv');
-      } else if (kind === 'user' && selectedUserId) {
-        downloadCsv(await exportBillingUserItemsCsv(apiBaseUrl, token, selectedUserId, range), `billing-user-${selectedUserId}.csv`);
-      } else if (kind === 'users') {
-        downloadCsv(await exportBillingUsersCsv(apiBaseUrl, token, range), 'billing-users.csv');
-      }
-    } catch (error) {
-      if (isUnauthorizedAdminError(error)) {
-        logout();
-        router.replace('/admin/login');
-        return;
-      }
-      setErrorMessage('账单导出失败，请稍后重试。');
-    }
-  };
-
-  const selectUser = (userId: string) => {
-    if (detailView === 'users' && selectedUserId === userId) {
-      return;
-    }
-
-    setIsLoadingGroups(true);
-    setSelectedUserId(userId);
-    setDetailView('users');
-    setGroupsPage(1);
-  };
-
-  const selectDetailView = (view: DetailView) => {
-    if (detailView === view) {
-      return;
-    }
-
-    setIsLoadingGroups(true);
-    setDetailView(view);
-    setGroupsPage(1);
-  };
-
-  const updateRange = (nextRange: BillingRange) => {
-    setIsLoadingGroups(true);
-    setGroupsPage(1);
-    setUsersPage(1);
-    setRange(nextRange);
-  };
-
-  const handlePageSizeChange = (nextPageSize: 20 | 50 | 100) => {
-    setPageSize(nextPageSize);
-    setGroupsPage(1);
-    setUsersPage(1);
-  };
-
-  const handleGroupsJump = () => {
-    const parsedPage = Number.parseInt(groupsJumpPageValue, 10);
-    setGroupsPage(Number.isNaN(parsedPage) ? groupsPagination.page : parsedPage);
-  };
-
-  const retryGroups = () => {
-    setIsLoadingGroups(true);
-    setGroupsErrorMessage(null);
-    setGroupsLoadAttempt((current) => current + 1);
-  };
-
-  const retryOverview = () => {
-    setErrorMessage(null);
-    setOverviewRevalidationErrorMessage(null);
-    setOverviewLoadAttempt((current) => current + 1);
-  };
-
-  const toggleGroup = (groupId: string) => {
-    setExpandedGroupIds((current) => {
-      const next = new Set(current);
-      if (next.has(groupId)) {
-        next.delete(groupId);
-      } else {
-        next.add(groupId);
-      }
-      return next;
-    });
-  };
-
-  return (
-    <div className="admin-screen admin-workbench-screen admin-pagination-screen gap-3 max-lg:h-auto! max-lg:min-h-full!">
-      <section className="admin-workbench-surface admin-pagination-surface max-lg:flex-none! max-lg:overflow-visible!">
-        <AdminPageHeader
-          action={
-            <>
-              <DropdownMenu>
-                <DropdownMenuTrigger asChild>
-                  <Button type="button" variant="outline">
-                    <Download aria-hidden="true" />
-                    导出账单
-                    <ChevronDown aria-hidden="true" />
-                  </Button>
-                </DropdownMenuTrigger>
-                <DropdownMenuContent align="end" className="w-44">
-                  <DropdownMenuItem onSelect={() => void handleExport('platform')}>导出平台账单</DropdownMenuItem>
-                  <DropdownMenuItem onSelect={() => void handleExport('users')}>导出用户汇总</DropdownMenuItem>
-                  <DropdownMenuItem disabled={!selectedUserId} onSelect={() => void handleExport('user')}>
-                    导出当前用户
-                  </DropdownMenuItem>
-                </DropdownMenuContent>
-              </DropdownMenu>
-              <Button disabled={isSyncing || Boolean(workspace && !workspace.capabilities.billingSync)} title={workspace && !workspace.capabilities.billingSync ? '当前云账号尚未开放账单同步。' : undefined} onClick={() => void handleSync()} type="button">
-                <RefreshCw aria-hidden="true" className={isSyncing ? 'animate-spin' : undefined} />
-                {isSyncing ? '正在同步...' : '立即同步'}
-              </Button>
-            </>
-          }
-          description="仅统计平台创建资源的应付费用。账单可能因延迟出账、退款或调账继续变化。"
-          title="账单费用"
-        />
-
-        <dl
-          aria-busy={isRefreshingOverview || undefined}
-          aria-label="账单概览"
-          className="mt-4 flex flex-wrap items-stretch gap-y-3 border-l border-border"
-        >
-          <div className="grid min-w-36 gap-1 border-r border-border px-4">
-            <dt className="text-xs font-medium text-muted-foreground">平台已归属费用</dt>
-            <dd className="text-base font-semibold tabular-nums text-foreground">
-              {hasPlatformBillingScope ? summary.currencyTotals?.length ? summary.currencyTotals.map(item => <span className="block" key={item.currency}>{formatMoney(item.totalPretaxAmount, item.currency)}</span>) : formatMoney(summary.totalPretaxAmount, summary.currency ?? 'CNY') : summary ? '范围待确认' : isLoading ? <Skeleton className="h-5 w-20" /> : '未知'}
-            </dd>
-          </div>
-          <div className="grid min-w-36 gap-1 border-r border-border px-4">
-            <dt className="text-xs font-medium text-muted-foreground">平台公共费用</dt>
-            <dd className="text-base font-semibold tabular-nums text-foreground">
-              {hasPlatformBillingScope ? summary.currencyTotals?.length ? summary.currencyTotals.map(item => <span className="block" key={item.currency}>{formatMoney(item.platformPretaxAmount, item.currency)}</span>) : formatMoney(summary.platformPretaxAmount, summary.currency ?? 'CNY') : summary ? '范围待确认' : isLoading ? <Skeleton className="h-5 w-20" /> : '未知'}
-            </dd>
-          </div>
-          <div className="grid min-w-36 gap-1 border-r border-border px-4">
-            <dt className="text-xs font-medium text-muted-foreground">平台待分配费用</dt>
-            <dd className="text-base font-semibold tabular-nums text-foreground">
-              {hasPlatformBillingScope && summary.unallocatedCurrencyTotals
-                ? summary.unallocatedCurrencyTotals.length
-                  ? summary.unallocatedCurrencyTotals.map(item => <span className="block" key={item.currency}>{formatMoney(item.pretaxAmount, item.currency)}</span>)
-                  : '无未分配记录'
-                : summary && !hasPlatformBillingScope ? '范围待确认' : isLoading && !summary ? <Skeleton className="h-5 w-20" /> : '未知'}
-            </dd>
-          </div>
-          <div className="grid min-w-36 gap-1 px-4">
-            <dt className="text-xs font-medium text-muted-foreground">资源费用明细待补齐</dt>
-            <dd className="text-base font-semibold tabular-nums text-foreground">
-              {hasPlatformBillingScope && typeof summary.resourcesWithoutBillCount === 'number' ? `${summary.resourcesWithoutBillCount} 项`
-                : summary && !hasPlatformBillingScope ? '范围待确认' : isLoading && !summary ? <Skeleton className="h-5 w-20" /> : '未知'}
-            </dd>
-          </div>
-        </dl>
-
-        {hasPlatformBillingScope && summary.platformBillingStartedAt ? (
-          <p aria-label="当前平台统计范围" className="mt-3 text-xs leading-5 text-muted-foreground">
-            当前范围：{formatAdminDateTime(summary.platformBillingStartedAt)} 起由平台创建的资源。历史账单保留，不计入当前汇总。
-          </p>
-        ) : null}
-
-        <p className="mt-3 text-xs leading-5 text-muted-foreground">
-          明细待补齐不代表云端未出账或免费。平台待分配费用已确认属于平台，尚未计入用户或平台公共费用。
-          {summary && !hasPlatformBillingScope
-            ? ' 账单范围尚未确认，暂不展示平台汇总。'
-            : summary && (summary.billingStatus === undefined || summary.unallocatedCurrencyTotals === undefined || summary.resourcesWithoutBillCount === undefined || summary.reconciliationIssues === undefined)
-              ? ' 对账信息尚不完整，未知项不能按零计算。' : null}
-        </p>
-
-        {hasPlatformBillingScope && summary.anomalyCount > 0 ? (
-          <p className="mt-3 text-sm text-muted-foreground">{summary.anomalyCount} 条平台账单待分配，汇总仅包含已归属费用。</p>
-        ) : null}
-        {hasPlatformBillingScope && overviewReconciliationIssues.length ? (
-          <ul aria-label="平台资源对账提示" className="mt-2 grid gap-1 text-xs leading-5 text-muted-foreground">
-            {overviewReconciliationIssues.map((issue, index) => (
-              <li className="break-words" key={`${issue.resourceType}-${index}`}>
-                {issue.resourceType === 'unknown'
-                  ? `平台资源来源待核验：${issue.resourceCount} 项。`
-                  : issue.resourceType === 'disk' ? `磁盘映射待核验：${issue.resourceCount} 项。`
-                  : `${issue.resourceType === 'snapshot' ? '快照' : 'OSS'}：${issue.resourceCount} 项平台资源待核对。`}{issue.reason}
-              </li>
-            ))}
-          </ul>
-        ) : null}
-
-        {errorMessage ? (
-          <p className="mt-4 border border-destructive/20 bg-destructive/5 px-3 py-2 text-sm text-destructive" role="alert">
-            {errorMessage}
-          </p>
-        ) : null}
-        {overviewRevalidationErrorMessage ? (
-          <div
-            className="mt-4 flex flex-wrap items-center justify-between gap-3 border border-destructive/20 bg-destructive/5 px-3 py-2 text-sm"
-            role="alert"
-          >
-            <span className="text-destructive">
-              {overviewRevalidationErrorMessage} 正在显示上次成功加载的账单数据。
-            </span>
-            <Button aria-label="重试加载账单概览" onClick={retryOverview} size="sm" type="button" variant="outline">
-              重试加载
-            </Button>
-          </div>
-        ) : null}
-      {syncMessage ? (
-        <p className="mt-4 border border-emerald-700/20 bg-emerald-700/5 px-3 py-2 text-sm text-emerald-800" role="status">
-          {syncMessage}
-        </p>
-      ) : null}
-
-      <div className="mt-4 flex min-h-0 min-w-0 flex-1 flex-col items-stretch gap-5 max-lg:flex-none lg:grid lg:grid-cols-[minmax(0,1fr)_17rem]">
-        <section aria-busy={isLoadingGroups || undefined} aria-label="费用明细" className="flex min-w-0 min-h-0 flex-col max-lg:shrink-0">
-          <div className="billing-detail-panel-header flex flex-col gap-3 border-b border-border pb-3 lg:flex-row lg:items-end lg:justify-between">
-            <div>
-              <h2 className="font-heading text-base font-semibold text-foreground">费用明细</h2>
-              <p className="mt-1 text-sm text-muted-foreground">按每次开通任务展开关联资源的费用。</p>
-            </div>
-
-            <div className="flex flex-wrap items-end gap-x-3 gap-y-2">
-              <div className="grid gap-1">
-                <span className="text-xs font-medium text-muted-foreground">查看</span>
-                <div aria-label="费用明细视图" className="inline-flex w-fit rounded-lg bg-muted p-0.5" role="group">
-                  <Button variant="ghost"
-                    aria-pressed={detailView === 'users'}
-                    className={
-                      detailView === 'users'
-                        ? 'h-7 rounded-md bg-background px-2.5 text-xs font-medium text-foreground shadow-sm'
-                        : 'h-7 rounded-md px-2.5 text-xs font-medium text-muted-foreground hover:text-foreground'
-                    }
-                    onClick={() => selectDetailView('users')}
-                    type="button"
-                  >
-                    用户明细
-                  </Button>
-                  <Button variant="ghost"
-                    aria-pressed={detailView === 'platform'}
-                    className={
-                      detailView === 'platform'
-                        ? 'h-7 rounded-md bg-background px-2.5 text-xs font-medium text-foreground shadow-sm'
-                        : 'h-7 rounded-md px-2.5 text-xs font-medium text-muted-foreground hover:text-foreground'
-                    }
-                    onClick={() => selectDetailView('platform')}
-                    type="button"
-                  >
-                    平台费用明细
-                  </Button>
-                </div>
-              </div>
-
-              <label className="grid min-w-36 gap-1">
-                <span className="text-xs font-medium text-muted-foreground">筛选用户</span>
-                <AdminSelectField
-                  ariaLabel="筛选用户"
-                  className="min-w-36"
-                  disabled={detailView === 'platform'}
-                  emptyOptionLabel="全部用户"
-                  onValueChange={selectUser}
-                  options={filterUsers.map((user) => ({ label: user.username, value: user.id }))}
-                  value={selectedUserId}
-                />
-              </label>
-
-              <div className="grid gap-1">
-                <span className="text-xs font-medium text-muted-foreground">账期</span>
-                <div className="flex items-center gap-1.5">
-                  <label>
-                    <span className="sr-only">开始账期</span>
-                    <DateTimePicker
-                      aria-label="开始账期"
-                      className="w-36"
-                      includeTime={false}
-                      onValueChange={(value) => updateRange({ ...range, startAt: value })}
-                      value={range.startAt}
-                    />
-                  </label>
-                  <span className="text-xs text-muted-foreground">至</span>
-                  <label>
-                    <span className="sr-only">结束账期</span>
-                    <DateTimePicker
-                      aria-label="结束账期"
-                      className="w-36"
-                      includeTime={false}
-                      onValueChange={(value) => updateRange({ ...range, endAt: value })}
-                      value={range.endAt}
-                    />
-                  </label>
-                </div>
-              </div>
-            </div>
-          </div>
-
-          <p className="mt-2 text-xs leading-5 text-muted-foreground">整月对账可选择月初至月末后同步；上月账单建议在次月 3 日 12 点后核对。</p>
-
-          <AdminPaginatedList
-            className="mt-3 max-lg:flex-none! max-lg:grid-rows-[auto_auto]! max-lg:[&>.admin-paginated-list-body]:overflow-visible!"
-            footer={
-              groupsResult.total > 0 && !groupsErrorMessage ? (
-                <AdminPaginationControls
-                  jumpPageValue={groupsJumpPageValue}
-                  label="费用明细分页"
-                  pageSize={groupsResult.pageSize}
-                  pagination={groupsPagination}
-                  visiblePages={groupsVisiblePages}
-                  onJumpPage={handleGroupsJump}
-                  onJumpPageValueChange={setGroupsJumpPageValue}
-                  onNextPage={() => setGroupsPage(groupsPagination.page + 1)}
-                  onPageSelect={setGroupsPage}
-                  onPageSizeChange={handlePageSizeChange}
-                  onPreviousPage={() => setGroupsPage(groupsPagination.page - 1)}
-                />
-              ) : null
-            }
-          >
-          <div aria-live="polite" className="overflow-hidden rounded border border-border bg-background">
-            {groupsErrorMessage ? (
-              <div className="flex flex-wrap items-center justify-between gap-3 border-b border-destructive/15 bg-destructive/5 px-3 py-2 text-sm" role="alert">
-                <span className="text-destructive">
-                  {groupsErrorMessage}
-                  {groups.length ? ' 正在显示上次成功加载的费用明细。' : ''}
-                </span>
-                <Button onClick={retryGroups} size="sm" type="button" variant="outline">
-                  重试加载
-                </Button>
-              </div>
-            ) : null}
-
-            {isLoadingGroups && !hasGroupsSnapshot ? (
-              <div className="space-y-3 px-3 py-5" role="status" aria-label="正在加载费用明细">
-                <Skeleton className="h-4 w-48" />
-                <Skeleton className="h-12 w-full" />
-                <Skeleton className="h-12 w-full" />
-                <Skeleton className="h-12 w-full" />
-                <Skeleton className="h-12 w-full" />
-                <Skeleton className="h-12 w-full" />
-              </div>
-            ) : null}
-
-            {isLoadingGroups && hasGroupsSnapshot ? (
-              <p className="border-b border-border px-3 py-2 text-sm text-muted-foreground" role="status">
-                正在更新费用明细...
-              </p>
-            ) : null}
-
-            {!groups.length && !isLoadingGroups && !groupsErrorMessage ? (
-              <div className="px-3 py-12 text-sm">
-                <h3 className="font-medium text-foreground">当前账期没有费用明细</h3>
-                <p className="mt-1 text-muted-foreground">
-                  {detailView === 'users' ? '当前账期内暂无用户费用明细。' : '当前账期内暂无平台费用明细。'}
-                </p>
-              </div>
-            ) : null}
-
-            {groups.map((group) => {
-              const isExpanded = expandedGroupIds.has(group.id);
-              const ownerName = group.ownerUserId ? group.ownerUsername ?? userNameById.get(group.ownerUserId) ?? group.ownerUserId : null;
-              const groupTime = group.completedAt ? formatAdminDateTime(group.completedAt) : `账期 ${group.billingPeriodStart} 至 ${group.billingPeriodEnd}`;
-
-              return (
-                <article key={group.id} className="border-b border-border last:border-b-0">
-                  <Button variant="ghost"
-                    aria-expanded={isExpanded}
-                    className="grid h-auto min-h-14 w-full rounded-none whitespace-normal grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-3 px-3 py-2 text-left hover:bg-muted/60 focus-visible:bg-muted focus-visible:outline-none sm:grid-cols-[auto_9rem_minmax(0,1fr)_auto]"
-                    onClick={() => toggleGroup(group.id)}
-                    type="button"
-                  >
-                    <ChevronRight
-                      aria-hidden="true"
-                      className={isExpanded ? 'size-4 rotate-90 text-primary transition-transform' : 'size-4 text-muted-foreground transition-transform'}
-                    />
-                    <span className="hidden text-xs tabular-nums text-muted-foreground sm:block">{groupTime}</span>
-                    <span className="grid min-w-0 gap-1">
-                      <span className="flex min-w-0 items-center gap-2">
-                        <strong className="truncate text-sm font-medium text-foreground">{formatBillingGroupTitle(group)}</strong>
-                        {group.provisionJobStatus ? <StatusBadge status={group.provisionJobStatus} /> : null}
-                      </span>
-                      <span className="truncate text-xs text-muted-foreground">
-                        {[ownerName, group.instance?.name, `${group.resourceCount} 项资源`].filter(Boolean).join(' · ')}
-                      </span>
-                    </span>
-                    <span className="inline-flex items-baseline justify-end gap-1 text-right text-sm font-semibold tabular-nums text-foreground">
-                      {formatMoney(group.pretaxAmount, group.currency)}
-                      <span className="font-medium text-muted-foreground">{group.currency}</span>
-                    </span>
-                  </Button>
-
-                  {isExpanded ? (
-                    <div className="border-t border-border bg-muted/25 pl-10 sm:pl-10">
-                      {group.items.map((item) => (
-                        <div
-                          key={item.id}
-                          className="grid min-h-11 grid-cols-[minmax(0,1fr)_auto] items-center gap-x-3 gap-y-1 border-b border-border/70 px-3 py-2 text-xs last:border-b-0 sm:grid-cols-[8.5rem_minmax(0,1fr)_minmax(0,1fr)_22ch]"
-                        >
-                          <span className="text-muted-foreground">账期 {item.billingDate.slice(0, 10)}</span>
-                          <span className="min-w-0 truncate text-foreground">
-                            <strong className="font-medium">{formatResourceType(item.cloudResourceType)}</strong> · {item.cloudResourceId}
-                          </span>
-                          <span
-                            className="min-w-0 truncate text-left text-muted-foreground sm:col-start-3"
-                            data-slot="billing-line-description"
-                          >
-                            {item.billItem} · {formatBillingLineSecondary(item)}
-                          </span>
-                          <span className="col-start-2 inline-flex items-baseline justify-end gap-1 text-right font-semibold tabular-nums text-foreground sm:col-start-4">
-                            {formatMoney(item.pretaxAmount, item.currency)}
-                            <span className="font-medium text-muted-foreground">{item.currency}</span>
-                          </span>
-                        </div>
-                      ))}
-                    </div>
-                  ) : null}
-                </article>
-              );
-            })}
-          </div>
-          </AdminPaginatedList>
-        </section>
-
-      <aside aria-label="用户账单" className="billing-users-panel flex min-h-0 flex-col overflow-hidden rounded-lg border border-border bg-card max-lg:shrink-0">
-        <div className="billing-users-panel-header flex shrink-0 items-center justify-between gap-3 border-b border-border px-3 py-3">
-          <div>
-            <h2 className="font-heading text-base font-semibold text-foreground">用户账单</h2>
-            <p className="mt-0.5 text-xs text-muted-foreground">{usersResult.total} 位用户</p>
-          </div>
-        </div>
-
-        <div className="min-h-0 flex-1 divide-y divide-border overflow-y-auto max-lg:flex-none">
-          {isLoading && !hasOverviewSnapshot ? (
-            <div className="space-y-3 px-3 py-4" role="status" aria-label="正在加载用户账单">
-              <Skeleton className="h-9 w-full" />
-              <Skeleton className="h-9 w-full" />
-              <Skeleton className="h-9 w-full" />
-              <Skeleton className="h-9 w-full" />
-              <Skeleton className="h-9 w-full" />
-            </div>
-          ) : null}
-          {isLoading && hasOverviewSnapshot ? (
-            <p className="border-b border-border px-3 py-2 text-sm text-muted-foreground" role="status">
-              正在更新用户账单...
-            </p>
-          ) : null}
-          {users.map((user) => (
-            <Button variant="ghost"
-              aria-pressed={user.userId === selectedUserId && detailView === 'users'}
-              className={
-                user.userId === selectedUserId && detailView === 'users'
-                  ? 'flex h-auto w-full items-center justify-between gap-3 rounded-none bg-accent/60 px-3 py-2.5 text-left whitespace-normal'
-                  : 'flex h-auto w-full items-center justify-between gap-3 rounded-none px-3 py-2.5 text-left whitespace-normal hover:bg-muted/60'
-              }
-              key={user.userId}
-              onClick={() => selectUser(user.userId)}
-              type="button"
-            >
-              <span className="grid min-w-0 gap-1">
-                <strong className="truncate text-sm font-medium text-foreground">{user.username}</strong>
-                <span className="truncate text-xs text-muted-foreground">
-                  {user.launchCount} 个已出账开通任务 · {user.itemCount} 项费用
-                </span>
-              </span>
-              <strong className="shrink-0 text-sm font-semibold tabular-nums text-foreground">{user.amounts?.length ? user.amounts.map(item => <span className="block" key={item.currency}>{formatMoney(item.pretaxAmount, item.currency)}</span>) : formatMoney(user.pretaxAmount, user.currency ?? 'CNY')}</strong>
-            </Button>
-          ))}
-          {!users.length && !isLoading ? <p className="px-3 py-8 text-sm text-muted-foreground">当前账期内暂无用户账单。</p> : null}
-        </div>
-        {usersResult.total > usersResult.pageSize ? (
-          <div className="shrink-0 border-t border-border px-2 py-2 [&_.admin-pagination-actions]:flex-wrap [&_.admin-pagination-navigation]:flex-wrap [&_.admin-pagination-pages]:flex-wrap">
-            <AdminPaginationControls
-              label="用户账单分页" pagination={usersPagination} visiblePages={usersVisiblePages}
-              pageSize={usersResult.pageSize} jumpPageValue={usersJumpPageValue}
-              onJumpPageValueChange={setUsersJumpPageValue}
-              onJumpPage={() => { const page = Number.parseInt(usersJumpPageValue, 10); setUsersPage(Number.isNaN(page) ? usersPagination.page : page); }}
-              onNextPage={() => setUsersPage(usersPagination.page + 1)}
-              onPreviousPage={() => setUsersPage(usersPagination.page - 1)}
-              onPageSelect={setUsersPage} onPageSizeChange={handlePageSizeChange}
-            />
-          </div>
-        ) : null}
-      </aside>
+function BillingRangeFilter({range,onChange}:{range:BillingRange;onChange:(range:BillingRange)=>void}) {
+  const [open,setOpen]=useState(false),[draft,setDraft]=useState(range);
+  const valid=validBillingRange(draft);
+  const label=`${range.startAt} 至 ${range.endAt}`;
+  const sameYear=range.startAt.slice(0,4)===range.endAt.slice(0,4);
+  return <Popover open={open} onOpenChange={next=>{if(next)setDraft(range);setOpen(next);}}>
+    <PopoverTrigger asChild>
+      <Button type="button" size="sm" variant="outline" aria-label={`账期：${label}`} className="h-8 min-w-0 justify-start px-2 text-xs sm:px-3">
+        <CalendarDays aria-hidden="true" className="hidden size-3.5 sm:block"/>
+        <span className="hidden tabular-nums sm:inline">{label}</span>
+        <span aria-hidden="true" className="min-w-0 truncate tabular-nums sm:hidden">{sameYear?`${range.startAt.slice(5)} 至 ${range.endAt.slice(5)}`:label}</span>
+        <ChevronDown aria-hidden="true" className="ml-auto size-3"/>
+      </Button>
+    </PopoverTrigger>
+    <PopoverContent aria-label="设置账期" className="w-80">
+      <div className="grid grid-cols-2 gap-2">
+        <div className="grid min-w-0 gap-1.5"><span className="text-xs text-muted-foreground">开始日期</span><DateTimePicker aria-label="开始账期" includeTime={false} required value={draft.startAt} onValueChange={value=>setDraft(previous=>({...previous,startAt:value}))}/></div>
+        <div className="grid min-w-0 gap-1.5"><span className="text-xs text-muted-foreground">结束日期</span><DateTimePicker aria-label="结束账期" includeTime={false} required value={draft.endAt} onValueChange={value=>setDraft(previous=>({...previous,endAt:value}))}/></div>
       </div>
-      </section>
+      {!valid?<p className="mt-2 text-xs text-destructive" role="alert">请选择完整账期，开始日期不能晚于结束日期。</p>:null}
+      <div className="mt-3 flex justify-end">
+        <Button type="button" size="sm" disabled={!valid} onClick={()=>{if(draft.startAt!==range.startAt||draft.endAt!==range.endAt)onChange(draft);setOpen(false);}}>应用账期</Button>
+      </div>
+    </PopoverContent>
+  </Popover>;
+}
+
+export function BillingScreen({apiBaseUrl='http://localhost:3001'}:{apiBaseUrl?:string}) {
+  const router=useRouter(),session=useAdminSession(),workspaceContext=useCloudWorkspace();
+  const active=useAdminRouteIsActive('/admin/billing');
+  const [alertsOpen,setAlertsOpen]=useState(false);
+  const workspaceId=workspaceContext?.workspace?.id??readCloudWorkspaceSelection(session.profile?.id);
+  const principalKey=JSON.stringify([session.profile?.id,session.profile?.role,session.profile?.isPlatformManager===true,workspaceContext?.workspace?.provider,workspaceContext?.workspace?.accountUid,billingSessionScope(session.token??'')]);
+  const context=useMemo(()=>({apiBaseUrl,token:session.token??'',workspaceId,principalKey}),[apiBaseUrl,session.token,workspaceId,principalKey]);
+  useEffect(()=>{setAlertsOpen(false);},[workspaceId,principalKey]);
+  const onUnauthorized=useCallback(()=>{clearBillingReadCache();session.logout();router.replace('/admin/login');},[session.logout,router]);
+  useEffect(()=>{if(!active||!session.isReady)return;if(!session.token)router.replace('/admin/login');else if(!session.isAdmin)router.replace('/admin/scenarios');},[active,session.isReady,session.token,session.isAdmin,router]);
+  if(!session.isReady)return null;
+  if(!session.token||!session.isAdmin)return <p className="admin-empty">{!session.token?'正在跳转到管理员登录页...':'当前账号无权访问账单费用。'}</p>;
+  if(workspaceContext&&(!workspaceContext.isReady||workspaceContext.isSwitching||!workspaceContext.workspace))return <div className="admin-screen"><section className="admin-workbench-surface"><AdminPageHeader title="账单费用"/><Skeleton aria-label="正在确认云账号工作空间" className="mt-4 h-12 w-full"/></section></div>;
+  const showAlerts=alertsOpen&&session.profile?.isPlatformManager===true;
+  const resourceAction=session.profile?.isPlatformManager?<Button type="button" size="sm" variant="outline" onClick={()=>setAlertsOpen(true)}>资源告警</Button>:null;
+  return <>
+    <div style={{display:showAlerts?'none':'contents'}} hidden={showAlerts}>
+      {workspaceContext?.workspace?.provider==='tencent_cloud'?<LegacyBillingScreen apiBaseUrl={apiBaseUrl} visible={active&&!showAlerts} resourceAction={resourceAction}/>
+        :<BillingLifecycleScreen key={JSON.stringify([apiBaseUrl,principalKey,workspaceId])} context={context} active={active&&!showAlerts} readOnly={workspaceContext?.workspace?.isReadOnly===true} onUnauthorized={onUnauthorized} resourceAction={resourceAction}/>}
     </div>
-  );
+    {showAlerts?<div className="admin-screen"><section className="admin-workbench-surface">
+      <AdminPageHeader title="账单费用" action={<Button type="button" size="sm" variant="outline" onClick={()=>setAlertsOpen(false)}><ArrowLeft aria-hidden="true"/>返回费用明细</Button>}/>
+      {active?<ResourceAlertsPanel apiBaseUrl={apiBaseUrl}/>:null}
+    </section></div>:null}
+  </>;
+}
+
+function BillingLifecycleScreen({context,active,readOnly,onUnauthorized,resourceAction}:{context:BillingRequestContext;active:boolean;readOnly:boolean;onUnauthorized:()=>void;resourceAction:ReactNode}) {
+  const [range,setRange]=useState<BillingRange>(getDefaultRange),[view,setView]=useState<'user'|'platform'>('user');
+  const [userId,setUserId]=useState(''),[billStatus,setBillStatus]=useState<BillingDocumentStatus|''>('');
+  const [page,setPage]=useState(1),{pageSize,setPageSize}=useAdminPageSize();
+  const [revision,setRevision]=useState(0),[snapshot,setSnapshot]=useState<{key:string;result:BillingEntriesResult}|null>(null);
+  const [users,setUsers]=useState<AdminUser[]>([]),[usersError,setUsersError]=useState(false),[usersAttempt,setUsersAttempt]=useState(0);
+  const [loading,setLoading]=useState(true),[loadError,setLoadError]=useState<string|null>(null),[actionError,setActionError]=useState<string|null>(null);
+  const [legacy,setLegacy]=useState(false),[exporting,setExporting]=useState(false);
+  const [expanded,setExpanded]=useState<Set<string>>(new Set()),[selectedEntry,setSelectedEntry]=useState<BillingEntry|null>(null);
+  const validRange=validBillingRange(range);
+  const query=useMemo<BillingEntriesQuery>(()=>({...range,view,userId:view==='user'?userId||undefined:undefined,page,pageSize,groupBy:'batch',billStatus:billStatus||undefined}),[range,view,userId,page,pageSize,billStatus]);
+  const queryKey=JSON.stringify([context,query]);
+  const result=snapshot?.key===queryKey?snapshot.result:readCachedBillingEntries(context,query)??null;
+  const latest=useRef({context,active,queryKey});latest.current={context,active,queryKey};
+  const screen=useRef<HTMLDivElement>(null),mounted=useRef(false),previousRevision=useRef(revision);
+  useEffect(()=>{mounted.current=true;return()=>{mounted.current=false;};},[]);
+  useEffect(()=>{if(!active)setSelectedEntry(null);},[active]);
+  useEffect(()=>{setExporting(false);setActionError(null);},[context]);
+  useEffect(()=>{
+    if(!active||legacy)return;let current=true;setUsersError(false);
+    fetchAdminUsers(context.apiBaseUrl,context.token,context.workspaceId).then(items=>{if(current)setUsers(items);}).catch(error=>{if(!current)return;if(isUnauthorizedAdminError(error))onUnauthorized();else setUsersError(true);});
+    return()=>{current=false;};
+  },[context,active,legacy,usersAttempt,onUnauthorized]);
+  useEffect(()=>{
+    if(!active)return;
+    if(legacy||!validRange)return;
+    let current=true;const controller=new AbortController();let timer:ReturnType<typeof setTimeout>|undefined;
+    const refresh=previousRevision.current!==revision;previousRevision.current=revision;
+    const load=async(force:boolean)=>{
+      setLoading(true);setLoadError(null);
+      try{
+        const next=await fetchBillingEntries(context,query,controller.signal,{refresh:force});if(!current)return;
+        setSnapshot({key:queryKey,result:next});if(next.page!==page)setPage(next.page);
+        if(!readOnly&&(next.queryStatus.queuedCount>0||next.queryStatus.runningCount>0))timer=setTimeout(()=>void load(true),15000);
+      }catch(error){
+        if(!current)return;
+        if(isUnauthorizedAdminError(error))onUnauthorized();else if(error instanceof AdminApiError&&(error.status===404||error.status===501))setLegacy(true);
+        else {if(error instanceof AdminApiError&&error.status===403){clearBillingReadCache();setSnapshot(null);}setLoadError(error instanceof AdminApiError&&error.status===403?'当前账号无权查看此工作空间的账单。':'账单加载失败，请稍后重试。');}
+      }finally{if(current)setLoading(false);}
+    };
+    void load(refresh);return()=>{current=false;controller.abort();clearTimeout(timer);};
+  },[context,active,readOnly,legacy,validRange,queryKey,revision,onUnauthorized]);
+  const closeDetail=()=>{setSelectedEntry(null);setActionError(null);};
+  const updateRange=(next:BillingRange)=>{closeDetail();setRange(next);setPage(1);setExpanded(new Set());};
+  const refresh=()=>{clearBillingReadCache();setRevision(value=>value+1);};
+  const exportCsv=async(kind:'platform'|'users'|'user')=>{
+    if(!active||exporting||!validRange)return;const requestContext=context,requestKey=queryKey;
+    const stillCurrent=()=>mounted.current&&latest.current.active&&latest.current.context===requestContext&&latest.current.queryKey===requestKey;
+    setExporting(true);setActionError(null);
+    try{const {apiBaseUrl,token,workspaceId}=requestContext;const csv=kind==='platform'?await exportPlatformBillingCsv(apiBaseUrl,token,range,workspaceId):kind==='user'&&userId?await exportBillingUserItemsCsv(apiBaseUrl,token,userId,range,workspaceId):await exportBillingUsersCsv(apiBaseUrl,token,range,workspaceId);if(stillCurrent())downloadCsv(csv,kind==='platform'?'platform-billing.csv':kind==='user'?`billing-user-${userId}.csv`:'billing-users.csv');}
+    catch(error){if(!stillCurrent())return;if(isUnauthorizedAdminError(error))onUnauthorized();else setActionError('账单导出失败，请稍后重试。');}
+    finally{if(mounted.current&&latest.current.context===requestContext)setExporting(false);}
+  };
+  const toggle=(id:string)=>setExpanded(previous=>{const next=new Set(previous);if(next.has(id))next.delete(id);else next.add(id);return next;});
+  const counts=result?.billingStatusCounts;
+  const syncLabel=readOnly?'历史账单':result?.mode==='shadow'?'自动核对试运行':result?.mode==='legacy'?'自动同步':'每日自动核对';
+  const syncDescription=syncLabel+(result?.queryStatus.lastRunAt?`；最近核对：${formatAdminDateTime(result.queryStatus.lastRunAt)}`:'');
+  const row=(entry:BillingEntry,visibleColumns:readonly AdminDataColumn[],child=false)=>{
+    const batch=entry.rowType==='batch'&&Boolean(entry.members?.length);
+    const isExpanded=batch&&expanded.has(entry.id);
+    const activate=()=>batch?toggle(entry.id):setSelectedEntry(entry);
+    const values:Record<string,ReactNode>={
+      name:<div className={`grid min-w-0 gap-1 ${child?'pl-6':''}`}>
+        <AdminDataTableText className="font-medium">{entry.name}</AdminDataTableText>
+        <span className="truncate text-xs text-muted-foreground">{[entry.ownerUsername??(entry.ownerUserId?entry.ownerUserId:'平台公共'),batch?`${entry.members?.length} 个实例`:entry.sourceInstanceName??uses[entry.lifecycleStatus]].filter(Boolean).join(' · ')}</span>
+      </div>,
+      type:batch?entry.kind==='range'?'编排批次':'实例批次':kinds[entry.kind],
+      status:<BillingDocumentBadge entry={entry}/>,
+      amount:<span className={batch?'font-semibold':'font-medium'}><BillingAmounts amounts={entry.amounts}/></span>,
+      created:<span className="text-xs text-muted-foreground">{formatAdminDateTime(entry.createdAt)}</span>,
+      action:<Button variant="outline" size="sm" type="button" className="min-w-16 px-2 text-xs"
+        aria-label={batch?`${isExpanded?'收起':'展开'}批次 ${entry.name}`:`查看 ${entry.name} 账单详情`}
+        aria-expanded={batch?isExpanded:undefined} aria-haspopup={batch?undefined:'dialog'} onClick={activate}>
+        {batch?isExpanded?'收起':'展开':'明细'}
+        {batch?<ChevronDown aria-hidden="true" className={isExpanded?'size-3 rotate-180':'size-3'}/>:<ChevronRight aria-hidden="true" className="size-3"/>}
+      </Button>,
+    };
+    return <TableRow key={entry.id} className={`cursor-pointer ${batch?'bg-muted/35':child?'bg-background':''}`}
+      onClick={event=>{if(canActivateBillingRow(event))activate();}}>{visibleColumns.map(column=><AdminDataTableCell key={column.id} column={column}>{values[column.id]}</AdminDataTableCell>)}</TableRow>;
+  };
+  if(legacy)return <LegacyBillingScreen apiBaseUrl={context.apiBaseUrl} visible={active} resourceAction={resourceAction}/>;
+  return <div ref={screen} className="admin-screen admin-pagination-screen relative" data-testid="billing-lifecycle-screen">
+    <section className="admin-workbench-surface admin-pagination-surface">
+      <header className="flex shrink-0 flex-wrap items-center gap-2 pb-2 sm:gap-x-3">
+        <h1 className="mr-auto font-heading text-lg font-semibold text-foreground">账单费用</h1>
+        <div className="order-last flex w-full min-w-0 items-center gap-2 sm:order-none sm:w-auto">
+          <span className="shrink-0 text-xs text-muted-foreground" title="仅统计当前筛选范围内已确认归属的官方费用">已出账合计</span>
+          <strong className="min-w-0 max-w-72 text-sm font-semibold [overflow-wrap:anywhere] [&_span]:whitespace-normal"><BillingAmounts amounts={result?.filteredAmounts??[]}/></strong>
+        </div>
+        <div className="flex shrink-0 items-center gap-1.5">
+          {resourceAction}
+          <DropdownMenu><DropdownMenuTrigger asChild><Button type="button" size="sm" variant="outline" className="px-2 sm:px-3" disabled={exporting||!validRange}><Download aria-hidden="true" className="hidden size-3.5 sm:block"/>{exporting?'正在导出':'导出账单'}<ChevronDown aria-hidden="true" className="size-3"/></Button></DropdownMenuTrigger><DropdownMenuContent align="end"><DropdownMenuItem onSelect={()=>void exportCsv('users')}>导出用户汇总</DropdownMenuItem><DropdownMenuItem disabled={!userId||view!=='user'} onSelect={()=>void exportCsv('user')}>导出当前用户明细</DropdownMenuItem><DropdownMenuItem onSelect={()=>void exportCsv('platform')}>导出平台费用</DropdownMenuItem></DropdownMenuContent></DropdownMenu>
+          <Button type="button" size="sm" variant="outline" className="px-2 sm:px-3" title={syncDescription} aria-description={syncDescription} disabled={loading||!validRange} onClick={refresh}><RefreshCw aria-hidden="true" className={loading?'hidden size-3.5 animate-spin sm:block':'hidden size-3.5 sm:block'}/>刷新</Button>
+        </div>
+      </header>
+      <div className="grid shrink-0 grid-cols-[minmax(0,1.25fr)_minmax(0,1fr)] items-center gap-2 pb-2 sm:flex sm:flex-wrap" aria-label="账单筛选">
+        <div aria-label="费用明细视图" role="group" className="inline-flex justify-self-start rounded-md bg-muted p-0.5">{(['user','platform'] as const).map(value=><Button key={value} type="button" variant="ghost" size="sm" aria-pressed={view===value} className={`rounded px-1.5 text-xs sm:px-3 ${view===value?'bg-background shadow-sm':'text-muted-foreground'}`} onClick={()=>{if(view!==value){closeDetail();setView(value);setPage(1);}}}>{value==='user'?'用户明细':'平台费用'}</Button>)}</div>
+        <AdminSelectField ariaLabel="筛选用户" className="h-8 w-full min-w-0 sm:w-28" disabled={view==='platform'} emptyOptionLabel={view==='platform'?'平台公共':'全部用户'} options={users.map(user=>({label:user.username,value:user.id}))} value={view==='user'?userId:''} onValueChange={value=>{closeDetail();setUserId(value);setPage(1);}}/>
+        <BillingRangeFilter range={range} onChange={updateRange}/>
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild><Button type="button" size="sm" variant={billStatus?'secondary':'outline'} aria-label={`出账状态：${billStatus?billingDocumentLabels[billStatus]:'全部状态'}`} className="h-8 min-w-0 justify-between text-xs">
+            {billStatus?billingDocumentLabels[billStatus]:'全部状态'}<ChevronDown aria-hidden="true" className="size-3"/>
+          </Button></DropdownMenuTrigger>
+          <DropdownMenuContent align="end" className="min-w-40">
+            <DropdownMenuRadioGroup value={billStatus}>{billStatuses.map(status=><DropdownMenuRadioItem key={status||'all'} value={status}
+              onSelect={()=>{if(billStatus!==status){closeDetail();setBillStatus(status);setPage(1);}}}>
+              <span>{status?billingDocumentLabels[status]:'全部状态'}</span><span className="ml-auto text-xs tabular-nums text-muted-foreground">{status?counts?.[status]??'—':result?.rowTotal??result?.total??'—'}</span>
+            </DropdownMenuRadioItem>)}</DropdownMenuRadioGroup>
+          </DropdownMenuContent>
+        </DropdownMenu>
+        {usersError?<Button variant="ghost" size="sm" type="button" className="col-span-full justify-self-start" onClick={()=>setUsersAttempt(value=>value+1)}>重试用户列表</Button>:null}
+      </div>
+      {loadError?<div className="mb-3 flex items-center justify-between gap-3 text-sm" role="alert"><span className="text-destructive">{loadError}{result?' 当前显示上次数据。':''}</span><Button variant="outline" size="sm" onClick={refresh}>重试加载</Button></div>:null}
+      {actionError?<p className="mb-3 text-sm text-destructive" role="alert">{actionError}</p>:null}
+      {result?.integrity&&result.integrity.unrepresentedRows>0?<p className="mb-3 text-sm text-destructive" role="alert">有 {result.integrity.unrepresentedRows} 条出账明细尚未关联账目。</p>:null}
+      <AdminPaginatedList footer={result&&result.total>0?<AdminPaginationControls label="账目分页" pagination={getPagination(result.total,page,pageSize)} pageSize={pageSize} isPending={loading} onPageSelect={value=>{closeDetail();setPage(value);}} onPageSizeChange={value=>{closeDetail();setPageSize(value);setPage(1);}}/>:null}>
+        <AdminDataTable label="实例与平台资产账目" columns={columns} isRefreshing={loading&&Boolean(result)}>{visibleColumns=><>
+          {!result&&loading&&validRange?Array.from({length:6},(_,i)=><TableRow key={i}><TableCell colSpan={visibleColumns.length}><Skeleton className="my-1 h-10 w-full" aria-label={i===0?'正在加载账目':undefined}/></TableCell></TableRow>):null}
+          {result?.items.map(entry=><Fragment key={entry.id}>{row(entry,visibleColumns)}{entry.rowType==='batch'&&expanded.has(entry.id)?entry.members?.map(member=>row(member,visibleColumns,true)):null}</Fragment>)}
+          {result?.total===0?<TableRow><TableCell colSpan={visibleColumns.length}><p className="py-12 text-center text-sm text-muted-foreground">{billStatus?'当前筛选没有账目。':'当前账期没有账目。'}</p></TableCell></TableRow>:null}
+        </>}</AdminDataTable>
+      </AdminPaginatedList>
+    </section>
+    {selectedEntry&&active?<BillingEntryDetails key={JSON.stringify([context.apiBaseUrl,context.workspaceId,context.principalKey,selectedEntry.id])} context={context} entry={selectedEntry} range={range} revision={revision} container={screen.current} onOpenChange={open=>{if(!open)setSelectedEntry(null);}} onUnauthorized={onUnauthorized}/>:null}
+  </div>;
 }

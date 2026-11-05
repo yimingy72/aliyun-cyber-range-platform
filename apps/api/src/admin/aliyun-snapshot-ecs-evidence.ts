@@ -51,7 +51,16 @@ export function readAliyunPackSnapshotBaseline(source: PackSource & Pick<PackedI
   return input as AliyunPackSnapshotBaseline;
 }
 
-type Dependencies = { fetch?: typeof fetch; pause?: () => Promise<void>; now?: () => Date };
+export function aliyunPackSnapshotBaselineIssue(source: PackSource & Pick<PackedImageArtifactRecord, 'sourceSnapshotBaseline'>, billingDate: string): string | null {
+  if (!source.sourceSnapshotBaseline) return 'SNAPSHOT_BASELINE_MISSING';
+  const baseline = readAliyunPackSnapshotBaseline(source);
+  if (!baseline) return 'SNAPSHOT_BASELINE_INVALID';
+  if (baseline.autoSnapshotPolicyIds.length) return 'SNAPSHOT_POLICY_BASELINE_UNVERIFIED';
+  if (Date.parse(baseline.observedAt) > Date.parse(`${billingDate}T16:00:00.000Z`) - AUDIT_DELAY - 1000) return 'SNAPSHOT_BASELINE_NOT_MATURE';
+  return null;
+}
+
+type Dependencies = { fetch?: typeof fetch; pause?: () => Promise<void>; now?: () => Date; archivedHistory?: AliyunSnapshotHistory | null };
 async function rpc(credentials: Credentials, regionId: string, service: 'ecs' | 'actiontrail', action: string, parameters: Record<string, string>, dependencies: Dependencies) {
   if (credentials.provider !== 'alibaba_cloud' || !credentials.accountUid || !REGION.test(regionId)) throw new Error('INVALID_SNAPSHOT_EVIDENCE_CONTEXT');
   const query = signAliyunRpcQuery({ Action: action, AccessKeyId: credentials.accessKeyId, Format: 'JSON', RegionId: regionId,
@@ -159,11 +168,23 @@ export async function collectAliyunSnapshotHistory(credentials: Credentials, inp
   try {
     const source = input.sourceLedger, now = (dependencies.now ?? (() => new Date()))(), end = billingEnd(input.billingDate);
     const start = new Date(Math.floor(input.sourceCreatedAt.getTime() / 1000) * 1000);
-    if (!end || !Number.isFinite(start.getTime()) || start >= end || start.getTime() < now.getTime() - 90 * DAY || now.getTime() - end.getTime() < AUDIT_DELAY
+    if (!end || !Number.isFinite(start.getTime()) || start >= end || now.getTime() - end.getTime() < AUDIT_DELAY
       || source.cloudProvider !== 'alibaba_cloud' || credentials.accountUid !== source.cloudAccountUid || !/^i-[a-z0-9]+$/i.test(source.cloudResourceId)) return null;
-    const requestIds: string[] = [], collected = new Map<string, AliyunSnapshotEvent>();
+    const archived=dependencies.archivedHistory;
+    if(archived && (archived.version!==1||archived.provider!=='alibaba_cloud'||archived.cloudWorkspaceId!==namespace(source)
+      ||archived.cloudAccountUid!==source.cloudAccountUid||archived.regionId!==source.regionId||archived.sourceInstanceId!==source.cloudResourceId
+      ||archived.startAt!==isoSecond(start)||!instant(archived.endAt)||!instant(archived.observedAt)
+      ||Date.parse(archived.observedAt)-Date.parse(archived.endAt)<AUDIT_DELAY
+      ||!names(archived.requestIds)||!archived.requestIds.length||!Array.isArray(archived.events)
+      ||archived.events.some(event=>!EVENT_ID.test(event.id)||!instant(event.time)||Date.parse(event.time)<start.getTime()
+        ||Date.parse(event.time)>Date.parse(archived.endAt)||!names(event.requestResourceIds)||!names(event.responseResourceIds)||!names(event.resourceIds))
+      ||new Set(archived.events.map(event=>event.id)).size!==archived.events.length))return null;
+    const requestIds: string[] = archived?[...archived.requestIds]:[], collected = new Map<string, AliyunSnapshotEvent>(
+      archived?archived.events.filter(event=>Date.parse(event.time)<=end.getTime()).map(event=>[event.id,event]):[]);
+    const onlineStart=archived?Math.min(end.getTime(),Date.parse(archived.endAt)):start.getTime();
+    if(onlineStart<end.getTime()&&onlineStart<now.getTime()-90*DAY)return null;
     const pause = dependencies.pause ?? (() => new Promise(resolve => setTimeout(resolve, 550)));
-    for (let windowStart = start.getTime(); windowStart < end.getTime();) {
+    for (let windowStart = onlineStart; windowStart < end.getTime();) {
       const windowEnd = Math.min(windowStart + 29 * DAY, end.getTime());
       const startAt = isoSecond(new Date(windowStart)), endAt = isoSecond(new Date(windowEnd));
       const tokens = new Set<string>(), pageIds = new Set<string>();

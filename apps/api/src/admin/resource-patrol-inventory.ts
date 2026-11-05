@@ -84,7 +84,7 @@ function contextMatches(context: any, account: {provider:string;accountUid:strin
     && ['cloudAccountContextId', 'regionId', 'zoneId'].every(field => typeof context[field] === 'string' && context[field] && context[field].length <= 192);
 }
 
-export async function readPatrolInventories(repository: AdminRepository, instances: RangeInstanceRecord[], jobs: ProvisionJobRecord[],
+export async function readPatrolInventories(repository: Pick<AdminRepository, 'listProvisionJobStepLogs'>, instances: RangeInstanceRecord[], jobs: ProvisionJobRecord[],
   account: { provider: string; accountUid: string; cloudWorkspaceId: string }): Promise<ProvenInventory[]> {
   const result: ProvenInventory[] = [];
   for (const instance of instances) {

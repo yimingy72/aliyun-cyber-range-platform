@@ -14,7 +14,7 @@ cleanup() {
 }
 trap cleanup EXIT
 
-opencli browser "$session" open https://reversi-mgt.chaitin.net/targets/image >/dev/null
+OPENCLI_WINDOW=background opencli browser "$session" open 'https://reversi-mgt.chaitin.net/targets/image?active=true' >/dev/null
 script='(async()=>{
   const size=500, items=[]; let total;
   function reference(value) {
@@ -23,10 +23,10 @@ script='(async()=>{
     return ref;
   }
   for(let page=1;;page++){
-    const response=await fetch(`/api/target/image?page=${page}&size=${size}`,{credentials:"include"});
+    const response=await fetch(`/api/target/image?active=true&page=${page}&size=${size}`,{credentials:"include",redirect:"error"});
     if(!response.ok) throw Error(`HTTP ${response.status}`);
     const result=await response.json(), data=result.data;
-    if(result.code!==200 || !data || data.current!==page || data.size!==size || !Number.isSafeInteger(data.total) || !Array.isArray(data.items)) throw Error("Invalid page");
+    if(result.code!==200 || !data || data.current!==page || data.size!==size || !Number.isSafeInteger(data.total) || data.total<1 || data.total>10000 || !Array.isArray(data.items) || data.items.some(item=>item.active!==true)) throw Error("Invalid active image page");
     if(total===undefined) total=data.total;
     if(total!==data.total) throw Error("Total changed during collection");
     items.push(...data.items.map(item=>({id:item.id,name:item.name,type:item.image_type,imageId:item.image_type==="vm" && /^m-[a-z0-9]+$/i.test(item.external_resource_id||"") ? item.external_resource_id : null,active:item.active,status:item.status,creator:[item.create_user?.name,item.create_user?.username].find(value=>typeof value==="string" && value.trim())?.trim() || null,containerReference:item.image_type==="docker" ? reference(item.external_resource_id) : null})));
@@ -36,13 +36,13 @@ script='(async()=>{
   if(items.length!==total || new Set(items.map(item=>item.id)).size!==total) throw Error("Incomplete or duplicate results");
   return {capturedAt:new Date().toISOString(),total,version:2,items};
 })()'
-OPENCLI_BROWSER_COMMAND_TIMEOUT=120 opencli browser "$session" eval "$script" > "$tmp_file"
+OPENCLI_BROWSER_COMMAND_TIMEOUT="${OPENCLI_BROWSER_COMMAND_TIMEOUT:-120}" opencli browser "$session" eval "$script" > "$tmp_file"
 node - "$tmp_file" "$output_path" <<'NODE'
 const fs = require('fs');
 const catalog = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'));
 if (catalog.version !== 2 || !Array.isArray(catalog.items) || catalog.items.length !== catalog.total || catalog.items.some(item =>
-  !Number.isSafeInteger(item.id) || typeof item.name !== 'string' || !item.name.trim() || typeof item.type !== 'string' ||
-  typeof item.active !== 'boolean' || typeof item.status !== 'string' || !(item.creator === null || typeof item.creator === 'string') ||
+  !Number.isSafeInteger(item.id) || item.id < 1 || typeof item.name !== 'string' || !item.name.trim() || typeof item.type !== 'string' ||
+  item.active !== true || typeof item.status !== 'string' || !(item.creator === null || typeof item.creator === 'string') ||
   !(item.containerReference === null || typeof item.containerReference === 'string' && item.containerReference.length <= 512) ||
   !(item.imageId === null || /^m-[a-z0-9]+$/i.test(item.imageId)))) {
   throw new Error('Invalid catalog; the previous snapshot was retained');

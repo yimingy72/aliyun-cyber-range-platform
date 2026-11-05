@@ -7,6 +7,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { TopologyFlowNode } from './topology-flow-node';
 import type { TopologyFlowNodeData } from './topology-flow-types';
 import type { TemplateNode } from '../../../lib/scenario-graph';
+import {createNetworkLayoutFixture} from './topology-network.fixture';
+import {readTopologyNetworks} from './topology-network-model';
 
 const updateNodeInternals = vi.hoisted(() => vi.fn());
 
@@ -84,7 +86,7 @@ const ecsNode: TemplateNode = {
 function createFlowNode(
   topologyNode: TemplateNode,
   connectMode: boolean,
-  ports: Partial<Pick<TopologyFlowNodeData, 'sourcePorts' | 'targetPorts'>> = {},
+  ports: Partial<Pick<TopologyFlowNodeData, 'sourcePorts' | 'targetPorts' | 'networks'>> = {},
 ) {
   return (
     <div style={{ height: 400, width: 640 }}>
@@ -98,6 +100,7 @@ function createFlowNode(
             connectMode,
             sourcePorts: ports.sourcePorts ?? [],
             targetPorts: ports.targetPorts ?? [],
+            networks: ports.networks ?? [],
           },
         }]}
         nodeTypes={{ topology: TopologyFlowNode }}
@@ -110,12 +113,19 @@ function createFlowNode(
 function renderFlowNode(
   topologyNode: TemplateNode,
   connectMode: boolean,
-  ports: Partial<Pick<TopologyFlowNodeData, 'sourcePorts' | 'targetPorts'>> = {},
+  ports: Partial<Pick<TopologyFlowNodeData, 'sourcePorts' | 'targetPorts' | 'networks'>> = {},
 ) {
   return render(createFlowNode(topologyNode, connectMode, ports));
 }
 
 describe('TopologyFlowNode', () => {
+  it('shows each configured NIC with its network and private IP on one multi-homed node',()=>{
+    const {nodes,edges}=createNetworkLayoutFixture(),host=nodes.find(node=>node.id==='bastion')!;
+    renderFlowNode(host,false,{networks:readTopologyNetworks(nodes,edges).memberships.get(host.id)});
+    expect(screen.getByText('3 张网卡 · 3 个网络区域')).toBeTruthy();
+    expect(screen.getAllByTestId('topology-flow-node')).toHaveLength(1);
+    for(const ip of ['172.16.60.10','10.0.40.11','192.168.50.12'])expect(screen.getByText(ip)).toBeTruthy();
+  });
   it.each([
     [routerNode, 'VPC 根节点', '/topology-icons/router.svg'],
     [switchNode, '10.70.10.0/24', '/topology-icons/switch.svg'],

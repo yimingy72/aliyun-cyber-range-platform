@@ -156,6 +156,8 @@ const {
   previewRangeInstanceDraftMock,
   saveRangeInstanceAsTemplateMock,
   runRangeInstanceNodeActionMock,
+  previewRangeInstanceNodeResetMock,
+  resetRangeInstanceNodeMock,
   triggerRangeActionMock,
   fetchRangeRecoveryStatusMock,
   writeTextMock,
@@ -180,6 +182,8 @@ const {
     previewRangeInstanceDraftMock: vi.fn(),
     saveRangeInstanceAsTemplateMock: vi.fn(),
     runRangeInstanceNodeActionMock: vi.fn(),
+    previewRangeInstanceNodeResetMock: vi.fn(),
+    resetRangeInstanceNodeMock: vi.fn(),
     triggerRangeActionMock: vi.fn(),
     fetchRangeRecoveryStatusMock: vi.fn(),
     writeTextMock: vi.fn(),
@@ -198,15 +202,9 @@ vi.mock('next/navigation', () => ({
   useRouter: () => routerMock,
 }));
 
-vi.mock('../../lib/admin-api', () => ({
-  AdminApiError: class AdminApiError extends Error {
-    constructor(
-      readonly status: number,
-      message = `Admin API request failed with status ${status}`,
-    ) {
-      super(message);
-    }
-  },
+vi.mock('../../lib/admin-api', async () => ({
+  ...await vi.importActual<typeof import('../../lib/admin-api')>('../../lib/admin-api'),
+  fetchPackedImageTasks: async () => [],
   fetchRangeInstanceDetail: fetchRangeInstanceDetailMock,
   fetchInstanceTypeAvailability: fetchInstanceTypeAvailabilityMock,
   fetchPlatformImages: fetchPlatformImagesMock,
@@ -218,6 +216,8 @@ vi.mock('../../lib/admin-api', () => ({
   previewRangeInstanceDraft: previewRangeInstanceDraftMock,
   saveRangeInstanceAsTemplate: saveRangeInstanceAsTemplateMock,
   runRangeInstanceNodeAction: runRangeInstanceNodeActionMock,
+  previewRangeInstanceNodeReset: previewRangeInstanceNodeResetMock,
+  resetRangeInstanceNode: resetRangeInstanceNodeMock,
   triggerRangeAction: triggerRangeActionMock,
   fetchRangeRecoveryStatus: fetchRangeRecoveryStatusMock,
 }));
@@ -260,7 +260,7 @@ describe('RangeInstanceDetailScreen', () => {
     await waitFor(() => expect(fetchProvisionJobDetailMock).toHaveBeenCalledWith('http://localhost:3001', 'dev-admin-token', 'accepted-job'));
     await act(async () => rejectWrite(new AdminApiError(409)));
     expect(screen.queryByRole('button', { name: '安全重试原请求' })).toBeNull();
-    expect(screen.getByText('恢复任务已受理，正在跟踪任务。')).toBeTruthy();
+    expect(screen.getByText('原请求已受理，正在跟踪任务。')).toBeTruthy();
     expect(triggerRangeActionMock).toHaveBeenCalledTimes(1);
   });
 
@@ -311,7 +311,7 @@ describe('RangeInstanceDetailScreen', () => {
     expect(triggerRangeActionMock).toHaveBeenCalledTimes(1);
     expect(fetchProvisionJobDetailMock.mock.calls.some(call => call[2] !== 'old-job')).toBe(false);
     fetchRangeRecoveryStatusMock.mockResolvedValue({ state: 'accepted', jobId: 'accepted-job' });
-    fireEvent.click(screen.getByRole('button', { name: '查询恢复状态' }));
+    fireEvent.click(screen.getByRole('button', { name: '查询请求状态' }));
     await waitFor(() => expect(fetchProvisionJobDetailMock).toHaveBeenCalledWith('http://localhost:3001', 'dev-admin-token', 'accepted-job'));
     expect(triggerRangeActionMock).toHaveBeenCalledTimes(1);
     expect(fetchRangeRecoveryStatusMock.mock.calls.every(call => call[4] === intent.key)).toBe(true);
@@ -362,8 +362,8 @@ describe('RangeInstanceDetailScreen', () => {
     const key = triggerRangeActionMock.mock.calls[0][4];
     expect(readRangeRecoveryIntent(recoveryScopeFixture)?.key).toBe(key);
     fetchRangeRecoveryStatusMock.mockResolvedValue({ state: 'rejected', errorCode: 'REJECTED' });
-    fireEvent.click(screen.getByRole('button', { name: '查询恢复状态' }));
-    await screen.findByText(/恢复请求已被服务端明确拒绝/);
+    fireEvent.click(screen.getByRole('button', { name: '查询请求状态' }));
+    await screen.findByText(/原请求已被服务端明确拒绝/);
     expect(readRangeRecoveryIntent(recoveryScopeFixture)).toBeNull();
     fetchRangeRecoveryStatusMock.mockResolvedValue({ state: 'unconfirmed' });
     fireEvent.click(screen.getByRole('button', { name: '重试创建' }));
@@ -450,6 +450,7 @@ describe('RangeInstanceDetailScreen', () => {
   });
   beforeEach(() => {
     window.sessionStorage.clear();
+    previewRangeInstanceNodeResetMock.mockReset();resetRangeInstanceNodeMock.mockReset();
     fetchRangeRecoveryStatusMock.mockReset();
     fetchRangeRecoveryStatusMock.mockResolvedValue({ state: 'unconfirmed' });
     workspaceState.workspace = undefined;
@@ -494,6 +495,27 @@ describe('RangeInstanceDetailScreen', () => {
     cleanup();
     vi.unstubAllGlobals();
     vi.restoreAllMocks();
+  });
+
+  it('opens a read-only reset preview, requires the node name, and follows the accepted reset job',async()=>{
+    workspaceState.workspace={id:'space-reset',provider:'alibaba_cloud',isReadOnly:false,capabilities:{provisioning:true,rangeProvisioning:true}};
+    const detail={id:'range-1',status:'running',cloudProvider:'alibaba_cloud',runtimeTopologyGraph:createValidTopologyGraph('Smoke Node'),nodeStatuses:{'host-1':'Running'}};
+    fetchRangeInstanceDetailMock.mockResolvedValue(detail);
+    const preview={rangeInstanceId:'range-1',nodeId:'host-1',nodeName:'Smoke Node',instanceId:'i-temp',systemDiskId:'d-temp',imageId:'m-source',planDigest:'a'.repeat(64),
+      originalPowerState:'Running',dataDiskIds:[],regionId:'cn-beijing',accountUid:'1',hasDns:false,expiresAt:null,destructive:true};
+    previewRangeInstanceNodeResetMock.mockResolvedValue(preview);resetRangeInstanceNodeMock.mockResolvedValue({status:'accepted',action:'reset',jobId:'reset-job'});
+    fetchProvisionJobDetailMock.mockResolvedValue({job:{id:'reset-job',jobType:'reset',status:'succeeded'},steps:[]});
+    render(<RangeInstanceDetailScreen rangeId="range-1"/>);
+    fireEvent.keyDown(await screen.findByRole('button',{name:'更多操作'}),{key:'Enter',code:'Enter'});
+    fireEvent.click(await screen.findByRole('menuitem',{name:'重置系统盘'}));
+    await screen.findByText('d-temp');expect(resetRangeInstanceNodeMock).not.toHaveBeenCalled();
+    expect(previewRangeInstanceNodeResetMock).toHaveBeenCalledWith('http://localhost:3001','dev-admin-token','range-1','host-1','space-reset');
+    fireEvent.change(screen.getByLabelText('确认重置节点名称'),{target:{value:'Smoke Node'}});
+    fireEvent.click(screen.getByRole('button',{name:'确认清空系统盘并重置'}));
+    await screen.findByText('节点系统盘重置完成，原主机、网络及电源状态已核验。');
+    expect(resetRangeInstanceNodeMock).toHaveBeenCalledTimes(1);
+    expect(fetchProvisionJobDetailMock).toHaveBeenCalledWith('http://localhost:3001','dev-admin-token','reset-job');
+    expect(screen.queryByRole('dialog')).toBeNull();expect(screen.getByRole('button',{name:'更多操作'})).toBeTruthy();
   });
 
   it('refreshes a retained detail on return while preserving unsaved edits and their original revision', async () => {
@@ -616,6 +638,10 @@ describe('RangeInstanceDetailScreen', () => {
         mode: 'opentofu',
         dnatEntryIds: { 'dnat-ecs-1-22': 'fwd-1' },
         snatEntryIds: { 'snat-zone-1': 'snat-1', 'snat-zone-2': 'snat-2' },
+        hostIds: { 'host-1': 'i-overview' },
+        cloudReleaseDeadlines: { 'host-1': { provider: 'alibaba_cloud', platformExpiresAt: '2026-07-09T12:00:00Z',
+          creationPhaseStartedAt: '2026-07-06T10:00:00Z', cloudReleaseAt: '2026-07-09T12:05:00Z',
+          sourceProvisionJobId: 'job', status: 'verified', instanceId: 'i-overview' } },
       },
       runtimeTopologyGraph: {
         schemaVersion: '1',
@@ -628,6 +654,13 @@ describe('RangeInstanceDetailScreen', () => {
 
     expect((await screen.findAllByText('实例名')).length).toBeGreaterThan(0);
     expect(screen.getByRole('heading', { name: '实例详情' })).toBeTruthy();
+    const overview = screen.getByText('平台到期').closest('section')!;
+    expect(within(overview).queryByText('云端兜底')).toBeNull();
+    expect(overview.textContent).not.toContain('台已核验');
+    expect(screen.queryByText('已核验')).toBeNull();
+    expect(screen.queryByText(/^云端 /)).toBeNull();
+    expect(runRangeInstanceNodeActionMock).not.toHaveBeenCalled();
+    expect(triggerRangeActionMock).not.toHaveBeenCalled();
     expect(await screen.findByRole('tablist', { name: '实例详情视图切换' })).toBeTruthy();
     expect(screen.getByRole('tab', { name: '节点目录' })).toBeTruthy();
     expect((await screen.findAllByText('ECS 1')).length).toBeGreaterThan(0);
@@ -669,7 +702,7 @@ describe('RangeInstanceDetailScreen', () => {
     expect(menu.closest('.range-instance-directory-table')).toBeNull();
   });
 
-  it('shows linked subnet CIDRs instead of primary and auxiliary private IP lists', async () => {
+  it('shows concrete primary and auxiliary private IPs instead of linked subnet CIDRs', async () => {
     fetchRangeInstanceDetailMock.mockResolvedValue({
       id: 'range-1',
       name: '攻防实例-一号',
@@ -705,9 +738,9 @@ describe('RangeInstanceDetailScreen', () => {
 
     const nodeRow = (await screen.findByText('ECS 2')).closest('.range-instance-directory-row');
     expect(nodeRow).not.toBeNull();
-    expect(nodeRow?.textContent).toContain('10.0.0.0/24');
-    expect(nodeRow?.textContent).not.toContain('10.0.0.20');
-    expect(nodeRow?.textContent).not.toContain('10.0.0.21');
+    expect(nodeRow?.textContent).not.toContain('10.0.0.0/24');
+    expect(nodeRow?.textContent).toContain('10.0.0.20');
+    expect(nodeRow?.textContent).toContain('10.0.0.21');
   });
 
   it('blocks applying an instance draft with duplicate DNAT external ports', async () => {
@@ -1492,6 +1525,34 @@ describe('RangeInstanceDetailScreen', () => {
     expect(runRangeInstanceNodeActionMock).not.toHaveBeenCalled();
   });
 
+  it.each(['accepted', 'rejected', 'renewed'] as const)('pack image confirmation retains feedback for %s and submits only once', async outcome => {
+    fetchRangeInstanceDetailMock.mockResolvedValue({ id: 'range-1', name: 'GitLab', status: 'running', createdBy: 'admin',
+      runtimeTopologyGraph: { schemaVersion: '1', nodes: [{ id: 'host-1', kind: 'ecs', label: 'GitLab' }], edges: [] } });
+    let finish!: (value: unknown) => void;
+    let reject!: (error: Error) => void;
+    runRangeInstanceNodeActionMock.mockReturnValue(new Promise((resolve, fail) => { finish = resolve; reject = fail; }));
+    const view = render(<RangeInstanceDetailScreen rangeId="range-1" apiBaseUrl="http://localhost:3001" />);
+    fireEvent.keyDown(await screen.findByRole('button', { name: '更多操作' }), { key: 'Enter' });
+    fireEvent.click(await screen.findByRole('menuitem', { name: '二次打包镜像' }));
+    const dialog = screen.getByRole('dialog', { name: '二次打包镜像' });
+    fireEvent.click(within(dialog).getByRole('button', { name: '确认打包' }));
+    expect(within(dialog).getByRole('button', { name: '处理中...' })).toHaveProperty('disabled', true);
+    if (outcome === 'renewed') {
+      sessionState.token = 'renewed-token';
+      view.rerender(<RangeInstanceDetailScreen rangeId="range-1" apiBaseUrl="http://localhost:3001" />);
+    }
+    if (outcome === 'rejected') {
+      await act(async () => reject(new AdminApiError(502, '阿里云明确拒绝：Forbidden.RAM', { packedImageArtifactId: 'rejected-original', submissionRejected: true })));
+      expect((await within(dialog).findByRole('alert')).textContent).toContain('Forbidden.RAM');
+      expect(within(dialog).getByRole('button', { name: '确认打包' })).toHaveProperty('disabled', false);
+    } else {
+      await act(async () => finish({ status: 'accepted', imageReady: false }));
+      await screen.findByText(/镜像打包任务已提交/);
+      expect(screen.queryByRole('dialog', { name: '二次打包镜像' })).toBeNull();
+    }
+    expect(runRangeInstanceNodeActionMock).toHaveBeenCalledTimes(1);
+  });
+
   it('keeps history instances in read-only mode', async () => {
     fetchRangeInstanceDetailMock.mockResolvedValue({
       id: 'range-history',
@@ -1514,7 +1575,9 @@ describe('RangeInstanceDetailScreen', () => {
 
     render(<RangeInstanceDetailScreen rangeId="range-history" apiBaseUrl="http://localhost:3001" />);
 
-    expect(await screen.findByText('只读历史')).toBeTruthy();
+    expect(await screen.findByText('历史实例')).toBeTruthy();
+    expect(screen.queryByText('详情模式')).toBeNull();
+    expect(screen.queryByText('只读历史')).toBeNull();
     expect(screen.queryByRole('button', { name: '保存草稿' })).toBeNull();
     expect(screen.queryByRole('button', { name: '预览变更' })).toBeNull();
     expect(screen.queryByRole('button', { name: '另存为新拓扑' })).toBeNull();
@@ -1567,11 +1630,11 @@ describe('RangeInstanceDetailScreen', () => {
     expect(entry.textContent).toContain('47.1.1.1');
     expect(entry.textContent).toContain('TCP 2222 → 22');
     expect(entry.textContent).toContain('UDP 8080 → 80');
-    expect(entry.textContent).not.toContain('10.0.10.10');
-    expect(peer.textContent).toContain('172.16.50.0/24');
+    expect(entry.textContent).toContain('10.0.10.10');
+    expect(peer.textContent).not.toContain('172.16.50.0/24');
     expect(peer.textContent).not.toContain('47.1.1.1');
-    expect(peer.textContent).not.toContain('172.16.50.20');
-    expect(peer.textContent).not.toContain('172.16.50.21');
+    expect(peer.textContent).toContain('172.16.50.20');
+    expect(peer.textContent).toContain('172.16.50.21');
   });
 
   it('puts the single scroll region and keyboard focus on the shared table container', async () => {
@@ -1588,6 +1651,23 @@ describe('RangeInstanceDetailScreen', () => {
     expect(screen.getByRole('table', { name: '实例节点目录' }).querySelectorAll('th')).toHaveLength(8);
   });
 
+  it('closes and reopens node properties from the same node in historical details', async () => {
+    fetchRangeInstanceDetailMock.mockReset();
+    fetchRangeInstanceDetailMock.mockResolvedValue({ id: 'range-1', status: 'destroyed', runtimeTopologyGraph: createValidTopologyGraph() });
+    render(<RangeInstanceDetailScreen rangeId="range-1" />);
+    fireEvent.mouseDown(await screen.findByRole('tab', { name: '拓扑结构' }));
+    const node = await screen.findByRole('button', { name: 'checker' });
+    fireEvent.click(node);
+    expect(screen.getByLabelText('名称')).toBeTruthy();
+    fireEvent.click(node);
+    expect(screen.queryByRole('heading', { name: '属性面板' })).toBeNull();
+    fireEvent.click(node);
+    expect(screen.getByLabelText('名称')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: '收起节点属性' }));
+    expect(screen.queryByLabelText('名称')).toBeNull();
+    expect(saveRangeInstanceDraftMock).not.toHaveBeenCalled();
+  });
+
   it('does not advertise a draft-only or undeployed DNAT mapping as a public node entry', async () => {
     fetchRangeInstanceDetailMock.mockReset();
     fetchRangeInstanceDetailMock.mockResolvedValue({ id: 'range-1', status: 'running', accessEntry: { publicIp: '47.1.1.1' },
@@ -1597,7 +1677,8 @@ describe('RangeInstanceDetailScreen', () => {
     });
     render(<RangeInstanceDetailScreen rangeId="range-1" />);
     const row = (await screen.findByText('checker')).closest('tr')!;
-    expect(row.textContent).toContain('10.0.10.0/24');
+    expect(row.textContent).toContain('10.0.10.10');
+    expect(row.textContent).not.toContain('10.0.10.0/24');
     expect(row.textContent).not.toContain('47.1.1.1');
     expect(row.textContent).not.toContain('2222');
   });
@@ -1899,10 +1980,10 @@ describe('RangeInstanceDetailScreen', () => {
     render(<RangeInstanceDetailScreen rangeId="range-1" />);
     fireEvent.click(await screen.findByRole('button', { name: '重试创建' }));
     await waitFor(() => expect(fetchRangeRecoveryStatusMock.mock.calls.length).toBeGreaterThanOrEqual(3), { timeout: 6000 });
-    expect(screen.getByText('恢复操作结果未确认，状态查询失败，正在重试。')).toBeTruthy();
+    expect(screen.getByText('原请求结果尚未确认，状态查询失败，正在重试查询。')).toBeTruthy();
     expect((screen.getByRole('button', { name: '重试创建' }) as HTMLButtonElement).disabled).toBe(true);
     const readCount = fetchRangeRecoveryStatusMock.mock.calls.length;
-    fireEvent.click(screen.getByRole('button', { name: '查询恢复状态' }));
+    fireEvent.click(screen.getByRole('button', { name: '查询请求状态' }));
     await waitFor(() => expect(fetchRangeRecoveryStatusMock.mock.calls.length).toBeGreaterThan(readCount));
     expect(triggerRangeActionMock).toHaveBeenCalledTimes(1);
     expect(fetchProvisionJobDetailMock).not.toHaveBeenCalled();
@@ -1911,7 +1992,7 @@ describe('RangeInstanceDetailScreen', () => {
     fetchRangeRecoveryStatusMock.mockResolvedValue({ state: 'accepted', jobId: 'job-recovery' });
     expect(await screen.findByText('任务已完成，实例状态已更新。', undefined, { timeout: 4000 })).toBeTruthy();
     expect(triggerRangeActionMock).toHaveBeenCalledTimes(1);
-    expect(screen.queryByRole('button', { name: '查询恢复状态' })).toBeNull();
+    expect(screen.queryByRole('button', { name: '查询请求状态' })).toBeNull();
   }, 10000);
 
   it('keeps the unchanged failed instance locked until the server rejects the original intent', async () => {
@@ -1920,13 +2001,13 @@ describe('RangeInstanceDetailScreen', () => {
     triggerRangeActionMock.mockRejectedValue(new Error('recovery request result unknown'));
     render(<RangeInstanceDetailScreen rangeId="range-1" />);
     fireEvent.click(await screen.findByRole('button', { name: '重试创建' }));
-    await screen.findByRole('button', { name: '查询恢复状态' });
+    await screen.findByRole('button', { name: '查询请求状态' });
     expect((screen.getByRole('button', { name: '重试创建' }) as HTMLButtonElement).disabled).toBe(true);
     fetchRangeRecoveryStatusMock.mockResolvedValue({ state: 'rejected', errorCode: 'RECOVERY_CONFLICT' });
-    fireEvent.click(screen.getByRole('button', { name: '查询恢复状态' }));
-    await screen.findByText(/恢复请求已被服务端明确拒绝/);
+    fireEvent.click(screen.getByRole('button', { name: '查询请求状态' }));
+    await screen.findByText(/原请求已被服务端明确拒绝/);
     expect((screen.getByRole('button', { name: '重试创建' }) as HTMLButtonElement).disabled).toBe(false);
-    expect(screen.queryByRole('button', { name: '查询恢复状态' })).toBeNull();
+    expect(screen.queryByRole('button', { name: '查询请求状态' })).toBeNull();
     expect(triggerRangeActionMock).toHaveBeenCalledTimes(1);
   });
 
@@ -1960,7 +2041,7 @@ describe('RangeInstanceDetailScreen', () => {
     await act(async () => finishOldLookup({ state: 'accepted', jobId: 'old-job' }));
 
     expect(screen.queryByText('旧空间终态')).toBeNull();
-    expect(screen.queryByRole('button', { name: '查询恢复状态' })).toBeNull();
+    expect(screen.queryByRole('button', { name: '查询请求状态' })).toBeNull();
     expect((screen.getByRole('button', { name: '重试创建' }) as HTMLButtonElement).disabled).toBe(false);
     expect(fetchProvisionJobDetailMock).not.toHaveBeenCalled();
   });

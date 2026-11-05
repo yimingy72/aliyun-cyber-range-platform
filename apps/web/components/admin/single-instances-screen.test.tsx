@@ -1,4 +1,18 @@
 import React from 'react';
+
+async function actionItem(name: string, batch = false) {
+  const existing = screen.queryByRole('menuitem', { name });
+  if (existing) return existing;
+  for (const trigger of await screen.findAllByRole('button', { name: batch ? '更多批次操作' : '更多操作' })) {
+    fireEvent.keyDown(trigger, { key: 'Enter' });
+    const item = screen.queryByRole('menuitem', { name });
+    if (item) return item;
+    fireEvent.keyDown(screen.getByRole('menu'), { key: 'Escape' });
+    await waitFor(() => expect(screen.queryByRole('menu')).toBeNull());
+  }
+  throw new Error('Missing menu action: ' + name);
+}
+
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { AdminScreenCacheProvider, useAdminScreenCache } from '../../lib/admin-screen-cache';
@@ -73,15 +87,9 @@ vi.mock('./use-admin-session', () => ({
   }),
 }));
 
-vi.mock('../../lib/admin-api', () => ({
-  AdminApiError: class AdminApiError extends Error {
-    constructor(
-      readonly status: number,
-      message = `Admin API request failed with status ${status}`,
-    ) {
-      super(message);
-    }
-  },
+vi.mock('../../lib/admin-api', async () => ({
+  ...await vi.importActual<typeof import('../../lib/admin-api')>('../../lib/admin-api'),
+  fetchPackedImageTasks: async () => [],
   fetchSingleInstances: fetchSingleInstancesMock,
   fetchProvisionJobs: fetchProvisionJobsMock,
   fetchPlatformImages: fetchPlatformImagesMock,
@@ -293,6 +301,29 @@ describe('SingleInstancesScreen', () => {
     await waitFor(() => expect(launchSingleInstancesMock).toHaveBeenCalledWith(expect.anything(), expect.anything(), expect.objectContaining({ platformImageAssetId: 'tencent-image', systemDiskSize: 80 }), expect.any(String)));
   });
 
+  it('uses the Alibaba image minimum disk and prevents submitting an undersized disk', async () => {
+    workspaceState.value = { workspace: { provider: 'alibaba_cloud', isReadOnly: false, capabilities: { provisioning: true } } };
+    fetchSingleInstancesMock.mockResolvedValue({ batches: [], standaloneInstances: [] });
+    fetchProvisionJobsMock.mockResolvedValue([]);
+    fetchPlatformImagesMock.mockResolvedValue({ items: [{ id: 'alibaba-image', provider: 'alibaba_cloud', imageId: 'm-dc01', displayName: 'GOAD-DC01', enabled: true, minimumSystemDiskSize: 64 }] });
+    fetchInstanceTypeAvailabilityMock.mockResolvedValue({ cpu: 2, memory: 2, exactAvailable: true, matches: [{ instanceTypeId: 'ecs.fixture', cpu: 2, memoryGiB: 2, architecture: 'x86' }] });
+    launchSingleInstancesMock.mockResolvedValue({ batch: { id: 'new-batch' }, instances: [] });
+    render(<SingleInstancesScreen />);
+    await openCreateDialog();
+    expect((await screen.findByLabelText('磁盘大小') as HTMLInputElement).value).toBe('64');
+    fireEvent.change(screen.getByLabelText('实例名'), { target: { value: 'Alibaba capacity test' } });
+    const expiry = new Date(Date.now() + 60 * 60_000);
+    fireEvent.change(screen.getByLabelText('到期时间'), { target: { value: new Date(expiry.getTime() - expiry.getTimezoneOffset() * 60_000).toISOString().slice(0, 16) } });
+    fireEvent.change(screen.getByLabelText('磁盘大小'), { target: { value: '40' } });
+    fireEvent.submit(document.getElementById('single-instance-create-form')!);
+    expect(await screen.findByText('系统盘至少需要 64 G。')).toBeTruthy();
+    expect(launchSingleInstancesMock).not.toHaveBeenCalled();
+    fireEvent.change(screen.getByLabelText('磁盘大小'), { target: { value: '64' } });
+    await waitFor(() => expect(fetchInstanceTypeAvailabilityMock).toHaveBeenCalled());
+    fireEvent.submit(document.getElementById('single-instance-create-form')!);
+    await waitFor(() => expect(launchSingleInstancesMock).toHaveBeenCalledWith(expect.anything(), expect.anything(), expect.objectContaining({ platformImageAssetId: 'alibaba-image', systemDiskSize: 64 }), expect.any(String)));
+  });
+
   it('queries the original Tencent batch after two minutes without renewing its expiration or key', async () => {
     const now = vi.spyOn(Date, 'now').mockReturnValue(new Date('2026-10-11T08:00:00Z').getTime());
     try {
@@ -491,12 +522,12 @@ describe('SingleInstancesScreen', () => {
     expect(within(table).queryByText('web-lab-01')).toBeNull();
     fireEvent.click(screen.getByRole('button', { name: '展开批次 web-lab-batch' }));
     expect(await screen.findByText('web-lab-01')).toBeTruthy();
-    expect(screen.getByRole('button', { name: '关闭' })).toBeTruthy();
-    expect(screen.getByRole('button', { name: '关闭实例' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: '更多批次操作' })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: '销毁实例' })).toBeNull();
     expect(screen.getByRole('button', { name: '打开 VNC' })).toBeTruthy();
     fireEvent.keyDown(screen.getByRole('button', { name: '更多操作' }), { key: 'Enter' });
     expect(screen.getByRole('menuitem', { name: '重启实例' })).toBeTruthy();
-    expect(screen.queryByRole('menuitem', { name: '打包为镜像' })).toBeNull();
+    expect(screen.getByRole('menuitem', { name: '打包为镜像' })).toBeTruthy();
   });
 
   it('keeps pack image available for a quantity-1 batch child row', async () => {
@@ -588,7 +619,7 @@ describe('SingleInstancesScreen', () => {
     const cells = within(batchRow).getAllByRole('cell');
     expect(cells[2].textContent).toBe(`${quantity} 台`);
     expect(cells[3].textContent).toBe(expectedIp);
-    expect(cells[4].textContent).toContain(`${quantity} 已关闭`);
+    expect(cells[4].textContent).toContain(`${quantity} 已销毁`);
     expect(within(batchRow).queryByText('批次实例')).toBeNull();
 
     fireEvent.click(within(batchRow).getByRole('button', { name: '展开批次 history-batch-summary' }));
@@ -800,22 +831,22 @@ describe('SingleInstancesScreen', () => {
 
     expect(await screen.findByText('running-lab')).toBeTruthy();
 
-    expect(screen.getByRole('button', { name: '关闭实例' })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: '销毁实例' })).toBeNull();
     expect(screen.getByRole('button', { name: '打开 VNC' })).toBeTruthy();
     fireEvent.keyDown(screen.getAllByRole('button', { name: '更多操作' })[0], { key: 'Enter' });
     expect(
       screen.getAllByRole('menuitem').map((item) => item.textContent),
-    ).toEqual(['重启实例', '打包为镜像']);
+    ).toEqual(['节省停机', '预约节省停机', '恢复开机', '查看启停任务', '修改回收时间', '重启实例', '打包为镜像', '销毁实例']);
     expect(screen.getByRole('menuitem', { name: '重启实例' })).toBeTruthy();
     expect(screen.queryByRole('menuitem', { name: '重试创建' })).toBeNull();
-    expect(screen.queryByRole('menuitem', { name: '重试关闭' })).toBeNull();
+    expect(screen.queryByRole('menuitem', { name: '重试销毁' })).toBeNull();
     expect(screen.queryByText('failed-lab')).toBeNull();
 
     const destroyFailedRow = screen.getByText('destroy-failed-lab').closest('tr');
     fireEvent.keyDown(screen.getByRole('menu'), { key: 'Escape' });
     fireEvent.keyDown(within(destroyFailedRow!).getByRole('button', { name: '更多操作' }), { key: 'Enter' });
-    expect(screen.getByRole('menuitem', { name: '重试关闭' })).toBeTruthy();
-    expect(within(destroyFailedRow!).queryByRole('button', { name: '关闭实例' })).toBeNull();
+    expect(screen.getByRole('menuitem', { name: '重试销毁' })).toBeTruthy();
+    expect(within(destroyFailedRow!).queryByRole('button', { name: '销毁实例' })).toBeNull();
     expect(within(destroyFailedRow!).queryByRole('button', { name: '删除记录' })).toBeNull();
 
     fireEvent.keyDown(screen.getByRole('menu'), { key: 'Escape' });
@@ -1153,9 +1184,9 @@ describe('SingleInstancesScreen', () => {
     const initialTableBody = table.querySelector('tbody');
     fireEvent.keyDown(await screen.findByRole('button', { name: '更多操作' }), { key: 'Enter' });
     fireEvent.keyDown(screen.getByRole('menu'), { key: 'Escape' });
-    fireEvent.click(screen.getByRole('button', { name: '关闭实例' }));
+    fireEvent.click(await actionItem('销毁实例'));
     expect(triggerSingleInstanceActionMock).not.toHaveBeenCalled();
-    fireEvent.click(await screen.findByRole('button', { name: '确认关闭' }));
+    fireEvent.click(await screen.findByRole('button', { name: '确认销毁' }));
 
     await waitFor(() =>
       expect(triggerSingleInstanceActionMock).toHaveBeenCalledWith(
@@ -1229,9 +1260,9 @@ describe('SingleInstancesScreen', () => {
 
     expect(await screen.findByText('web-lab-batch')).toBeTruthy();
     fireEvent.click(screen.getByRole('button', { name: '展开批次 web-lab-batch' }));
-    fireEvent.click(screen.getByRole('button', { name: '关闭' }));
+    fireEvent.click(await actionItem('销毁整批', true));
     expect(destroySingleInstanceBatchMock).not.toHaveBeenCalled();
-    fireEvent.click(await screen.findByRole('button', { name: '确认全部关闭' }));
+    fireEvent.click(await screen.findByRole('button', { name: '确认销毁整批' }));
 
     await waitFor(() => {
       expect(destroySingleInstanceBatchMock).toHaveBeenCalledWith(
@@ -1281,10 +1312,10 @@ describe('SingleInstancesScreen', () => {
 
     expect(await screen.findByText('confirm-lab')).toBeTruthy();
     fireEvent.click(screen.getByRole('button', { name: '展开批次 confirm-lab' }));
-    fireEvent.click(screen.getAllByRole('button', { name: '关闭实例' })[0]);
+    fireEvent.click(await actionItem('销毁实例'));
     expect(triggerSingleInstanceActionMock).not.toHaveBeenCalled();
     fireEvent.click(await screen.findByRole('button', { name: '取消' }));
-    expect(screen.queryByRole('button', { name: '确认关闭' })).toBeNull();
+    expect(screen.queryByRole('button', { name: '确认销毁' })).toBeNull();
     expect(triggerSingleInstanceActionMock).not.toHaveBeenCalled();
   });
 
@@ -1567,6 +1598,23 @@ describe('SingleInstancesScreen', () => {
     expect(triggerSingleInstanceActionMock).toHaveBeenCalledTimes(1);
   });
 
+  it('shows the actual pack-image rejection inside the dialog without losing the requested name', async () => {
+    fetchSingleInstancesMock.mockResolvedValue([{ id: 'single-running', name: 'gitlab', createdBy: 'admin', instanceMode: 'single', status: 'running',
+      createdAt: '2026-07-08T09:00:00.000Z', singleInstanceConfig: { imageDisplayName: 'GitLab', cpu: 2, memory: 2 } }]);
+    triggerSingleInstanceActionMock.mockRejectedValue(new AdminApiError(502, '阿里云明确拒绝镜像打包（Forbidden.RAM）'));
+    render(<SingleInstancesScreen apiBaseUrl="http://localhost:3001" />);
+    await screen.findByText('gitlab');
+    fireEvent.keyDown(screen.getByRole('button', { name: '更多操作' }), { key: 'Enter' });
+    fireEvent.click(screen.getByRole('menuitem', { name: '打包为镜像' }));
+    const dialog = screen.getByRole('dialog', { name: '打包为镜像' });
+    fireEvent.change(within(dialog).getByLabelText('镜像名'), { target: { value: '【亭训营】破茧-GitLab new' } });
+    fireEvent.click(within(dialog).getByRole('button', { name: '确认打包' }));
+    expect((await within(dialog).findByRole('alert')).textContent).toContain('Forbidden.RAM');
+    expect((within(dialog).getByLabelText('镜像名') as HTMLInputElement).value).toBe('【亭训营】破茧-GitLab new');
+    expect(within(dialog).getByRole('button', { name: '确认打包' })).toHaveProperty('disabled', false);
+    expect(triggerSingleInstanceActionMock).toHaveBeenCalledTimes(1);
+  });
+
   it('shows masked credentials and copies only the password', async () => {
     fetchSingleInstancesMock.mockResolvedValue([
       {
@@ -1699,17 +1747,17 @@ describe('SingleInstancesScreen', () => {
     render(<SingleInstancesScreen apiBaseUrl="http://localhost:3001" />);
 
     expect(await screen.findByText('running-lab')).toBeTruthy();
-    fireEvent.click(screen.getByRole('button', { name: '关闭实例' }));
-    const confirmButton = (await screen.findByRole('button', { name: '确认关闭' })) as HTMLButtonElement;
+    fireEvent.click(await actionItem('销毁实例'));
+    const confirmButton = (await screen.findByRole('button', { name: '确认销毁' })) as HTMLButtonElement;
     fireEvent.click(confirmButton);
     fireEvent.click(confirmButton);
 
     expect(triggerSingleInstanceActionMock).toHaveBeenCalledTimes(1);
-    await waitFor(() => expect((screen.getByRole('button', { name: '确认关闭' }) as HTMLButtonElement).disabled).toBe(true));
+    await waitFor(() => expect((screen.getByRole('button', { name: '确认销毁' }) as HTMLButtonElement).disabled).toBe(true));
     expect((screen.getByRole('button', { name: '取消' }) as HTMLButtonElement).disabled).toBe(true);
 
     resolveAction?.({ jobId: 'job-destroy-reloaded' });
-    await waitFor(() => expect(screen.queryByRole('button', { name: '确认关闭' })).toBeNull());
+    await waitFor(() => expect(screen.queryByRole('button', { name: '确认销毁' })).toBeNull());
     await waitFor(() => expect(fetchSingleInstancesMock.mock.calls.length).toBeGreaterThan(1));
   });
 

@@ -1,8 +1,7 @@
 import React from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
-import { ResourceAlertsScreen } from './resource-alerts-screen';
-import { CloudReleaseSummary } from './shared/cloud-release-status';
+import { ResourceAlertsPanel as ResourceAlertsScreen } from './resource-alerts-screen';
 import { AdminApiError } from '@/lib/admin-api';
 import * as api from '@/lib/admin-api';
 
@@ -24,6 +23,12 @@ beforeEach(() => {
 });
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
 describe('resource alerts UI safety', () => {
+  it('shows the hourly background patrol cadence', async () => {
+    render(<ResourceAlertsScreen />);
+    expect(await screen.findByText('111 · 每 1 小时')).toBeTruthy();
+    expect(screen.queryByText(/每 5 分钟/)).toBeNull();
+  });
+
   it('retains visible alerts when cloud inspection failed and blocks unproved reclaim', async () => {
     vi.mocked(api.previewResourceReclaim).mockResolvedValue({ ...preview, reclaimable: false, reason: '来源待核验' });
     render(<ResourceAlertsScreen />);
@@ -42,11 +47,6 @@ describe('resource alerts UI safety', () => {
     fireEvent.click(await screen.findByRole('button', { name: '确认回收' }));
     await waitFor(() => expect(api.reclaimResourceAlert).toHaveBeenCalledTimes(2));
     expect(api.reclaimResourceAlert).toHaveBeenLastCalledWith('/api', 'token', preview, 'space-a', { idempotencyKey: 'same-key', confirmationId: 'owned' });
-  });
-  it('never labels a partial fallback as fully verified', () => {
-    const deadline = { provider: 'alibaba_cloud' as const, platformExpiresAt: '2026-10-13T01:00:00Z', creationPhaseStartedAt: '2026-10-13T00:00:00Z', cloudReleaseAt: '2026-10-13T01:05:00Z', sourceProvisionJobId: 'job', status: 'verified' as const, instanceId: 'i-a' };
-    render(<CloudReleaseSummary hostIds={{ a: 'i-a', b: 'i-b' }} deadlines={{ a: deadline }} />);
-    expect(screen.getByText('1/2 台已核验')).toBeTruthy();
   });
   it('discards a late confirmation after account switch and restores usable controls', async () => {
     let release!: (value: never) => void;

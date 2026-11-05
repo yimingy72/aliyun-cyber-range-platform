@@ -146,6 +146,7 @@ const bootstrapPayload = {
 };
 
 beforeEach(() => {
+  window.sessionStorage.clear();
   workspaceState.value = null;
   fetchRangeTemplatesMock.mockReset();
   cloneRangeTemplateMock.mockReset();
@@ -291,7 +292,7 @@ describe('TemplatesScreen', () => {
     expect(screen.getByRole('columnheader', { name: '操作' })).toBeTruthy();
     expect(
       Array.from(screen.getByRole('table', { name: '靶场列表' }).querySelectorAll('col')).at(-1)?.getAttribute('style') ?? '',
-    ).toContain('width: 12rem');
+    ).toContain('width: 11rem');
     expect(screen.queryByText('模板')).toBeNull();
     expect(screen.queryByText('状态与版本 / 操作')).toBeNull();
     expect(screen.queryByText('名称 / 标识 / 描述')).toBeNull();
@@ -1056,6 +1057,21 @@ describe('TemplatesScreen', () => {
     });
   });
 
+  it('launches numbered independent ranges from the template entry', async () => {
+    fetchRangeTemplatesMock.mockResolvedValue(bootstrapPayload.rangeTemplates);
+    launchRangeInstanceMock.mockResolvedValueOnce({ id: 'batch-1' }).mockResolvedValueOnce({ id: 'batch-2' });
+    render(<TemplatesScreen apiBaseUrl="http://localhost:3001" />);
+    await screen.findByText('办公网横向移动靶场');
+    openTemplateActionMenu(screen.getByRole('row', { name: /办公网横向移动靶场/ }));
+    fireEvent.click(screen.getByRole('menuitem', { name: '生成实例' }));
+    const dialog = screen.getByRole('dialog', { name: '生成实例' });
+    fireEvent.change(within(dialog).getByLabelText('到期时间'), { target: { value: '2100-01-01T12:00' } });
+    fireEvent.change(within(dialog).getByLabelText('编排实例数量'), { target: { value: '2' } });
+    fireEvent.click(within(dialog).getByRole('button', { name: '确认生成' }));
+    await waitFor(() => expect(pushMock).toHaveBeenCalledWith('/admin/ranges'));
+    expect(launchRangeInstanceMock.mock.calls.map(call => call[2].name)).toEqual(['办公网横向移动靶场 实例-1', '办公网横向移动靶场 实例-2']);
+  });
+
   it('asks for instance name and expiresAt before launching', async () => {
     fetchRangeTemplatesMock.mockImplementation(async (_apiBaseUrl: string, _token: string, view: 'platform' | 'mine') =>
       view === 'platform' ? [bootstrapPayload.rangeTemplates[0]] : bootstrapPayload.rangeTemplates,
@@ -1104,7 +1120,7 @@ describe('TemplatesScreen', () => {
     expect(pushMock).toHaveBeenCalledWith('/admin/ranges/range-100');
   });
 
-  it('reuses the same launch request after an unknown result and changes its key only for edited parameters', async () => {
+  it('reuses the same launch request after an unknown result and locks its parameters', async () => {
     fetchRangeTemplatesMock.mockResolvedValue(bootstrapPayload.rangeTemplates);
     launchRangeInstanceMock.mockRejectedValue(new TypeError('Network connection lost'));
     render(<TemplatesScreen apiBaseUrl="http://localhost:3001" />);
@@ -1121,10 +1137,9 @@ describe('TemplatesScreen', () => {
     await waitFor(() => expect(launchRangeInstanceMock).toHaveBeenCalledTimes(2));
     await waitFor(() => expect(within(dialog).getByRole('button', { name: '查询原请求' }).hasAttribute('disabled')).toBe(false));
     expect(launchRangeInstanceMock.mock.calls[1]).toEqual(firstRequest);
-    fireEvent.change(within(dialog).getByLabelText('实例名'), { target: { value: 'another-intended-launch' } });
-    fireEvent.click(within(dialog).getByRole('button', { name: '确认生成' }));
-    await waitFor(() => expect(launchRangeInstanceMock).toHaveBeenCalledTimes(3));
-    expect(launchRangeInstanceMock.mock.calls[2][3]).not.toEqual(firstRequest[3]);
+    expect((within(dialog).getByLabelText('实例名') as HTMLInputElement).disabled).toBe(true);
+    expect((within(dialog).getByLabelText('编排实例数量') as HTMLInputElement).disabled).toBe(true);
+    expect(launchRangeInstanceMock).toHaveBeenCalledTimes(2);
   });
 
   it('queries the original Tencent launch after its expiry crosses the new-request minimum', async () => {
@@ -1351,20 +1366,20 @@ describe('final authoring coverage: integrated template pagination', () => {
     const pagination = within(screen.getByLabelText('靶场列表分页'));
     expect(within(table).getAllByRole('row').slice(1)).toHaveLength(20);
     expectSummary('显示 1–20 条，共 125 条');
-    expect(pagination.getByRole('button', { name: '上一页' }).hasAttribute('disabled')).toBe(true);
-    fireEvent.click(pagination.getByRole('button', { name: '下一页' }));
+    expect(pagination.getByRole('link', { name: '上一页' }).getAttribute('aria-disabled')).toBe('true');
+    fireEvent.click(pagination.getByRole('link', { name: '下一页' }));
     expectSummary('显示 21–40 条，共 125 条');
     expect(within(table).queryByText('Audit Alpha 001')).toBeNull();
     expect(within(table).getByText('Audit Alpha 021')).toBeTruthy();
     fireEvent.change(pagination.getByRole('spinbutton', { name: '跳转到页码' }), { target: { value: '6' } });
     fireEvent.click(pagination.getByRole('button', { name: '跳转' }));
     expectSummary('显示 101–120 条，共 125 条');
-    expect(pagination.getByRole('button', { name: '第 6 页' }).getAttribute('aria-pressed')).toBe('true');
-    fireEvent.click(pagination.getByRole('button', { name: '下一页' }));
+    expect(pagination.getByRole('link', { name: '第 6 页' }).getAttribute('aria-current')).toBe('page');
+    fireEvent.click(pagination.getByRole('link', { name: '下一页' }));
     expectSummary('显示 121–125 条，共 125 条');
     expect(within(table).getAllByRole('row').slice(1)).toHaveLength(5);
-    expect(pagination.getByRole('button', { name: '下一页' }).hasAttribute('disabled')).toBe(true);
-    fireEvent.click(pagination.getByRole('button', { name: '上一页' }));
+    expect(pagination.getByRole('link', { name: '下一页' }).getAttribute('aria-disabled')).toBe('true');
+    fireEvent.click(pagination.getByRole('link', { name: '上一页' }));
     expectSummary('显示 101–120 条，共 125 条');
     expect(fetchRangeTemplatesMock).toHaveBeenCalledTimes(1);
   }, 15_000);
@@ -1372,13 +1387,13 @@ describe('final authoring coverage: integrated template pagination', () => {
   it('resets pagination when changing from 20 to 100 and 50 rows', async () => {
     const table = await renderPagedTemplates();
     const pagination = within(screen.getByLabelText('靶场列表分页'));
-    fireEvent.click(pagination.getByRole('button', { name: '下一页' }));
+    fireEvent.click(pagination.getByRole('link', { name: '下一页' }));
     fireEvent.keyDown(pagination.getByRole('combobox', { name: '每页条数' }), { key: 'ArrowDown' });
     fireEvent.click(await screen.findByRole('option', { name: '100 条' }));
     await waitFor(() => expectSummary('显示 1–100 条，共 125 条'));
     expect(within(table).getAllByRole('row').slice(1)).toHaveLength(100);
-    expect(pagination.getByRole('button', { name: '第 1 页' }).getAttribute('aria-pressed')).toBe('true');
-    fireEvent.click(pagination.getByRole('button', { name: '下一页' }));
+    expect(pagination.getByRole('link', { name: '第 1 页' }).getAttribute('aria-current')).toBe('page');
+    fireEvent.click(pagination.getByRole('link', { name: '下一页' }));
     expectSummary('显示 101–125 条，共 125 条');
     expect(within(table).getByText('Audit Beta 101')).toBeTruthy();
     fireEvent.keyDown(pagination.getByRole('combobox', { name: '每页条数' }), { key: 'ArrowDown' });
@@ -1386,7 +1401,7 @@ describe('final authoring coverage: integrated template pagination', () => {
     await waitFor(() => expectSummary('显示 1–50 条，共 125 条'));
     expect(within(table).getAllByRole('row').slice(1)).toHaveLength(50);
     expect(window.localStorage.getItem(ADMIN_PAGE_SIZE_STORAGE_KEY)).toBe('50');
-    fireEvent.click(pagination.getByRole('button', { name: '下一页' }));
+    fireEvent.click(pagination.getByRole('link', { name: '下一页' }));
     expectSummary('显示 51–100 条，共 125 条');
     expect(within(table).getByText('Audit Alpha 051')).toBeTruthy();
     expect(within(table).getByText('Audit Beta 100')).toBeTruthy();
@@ -1399,11 +1414,11 @@ describe('final authoring coverage: integrated template pagination', () => {
     expectSummary('显示 41–60 条，共 125 条');
     fireEvent.change(screen.getByRole('searchbox', { name: '筛选靶场名' }), { target: { value: 'Alpha' } });
     await waitFor(() => expectSummary('显示 1–20 条，共 80 条'));
-    expect(screen.getByRole('button', { name: '第 1 页' }).getAttribute('aria-pressed')).toBe('true');
+    expect(screen.getByRole('link', { name: '第 1 页' }).getAttribute('aria-current')).toBe('page');
     expect(within(table).getByText('Audit Alpha 001')).toBeTruthy();
     fireEvent.change(screen.getByRole('searchbox', { name: '筛选靶场名' }), { target: { value: 'no matching template' } });
     expect(screen.getByText('当前筛选条件下没有靶场')).toBeTruthy();
-    expect(screen.queryByRole('button', { name: '下一页' })).toBeNull();
+    expect(screen.queryByRole('link', { name: '下一页' })).toBeNull();
     fireEvent.change(screen.getByRole('searchbox', { name: '筛选靶场名' }), { target: { value: '' } });
     await waitFor(() => expectSummary('显示 1–20 条，共 125 条'));
     expect(fetchRangeTemplatesMock).toHaveBeenCalledTimes(1);
@@ -1423,7 +1438,7 @@ describe('final authoring coverage: integrated template pagination', () => {
     });
     observer.observe(table, { childList: true, subtree: true });
     try {
-      fireEvent.click(pagination.getByRole('button', { name: '下一页' }));
+      fireEvent.click(pagination.getByRole('link', { name: '下一页' }));
       await within(table).findByText('Audit Alpha 021');
       expect(jumpInput.value).toBe('6');
       expect(valuesAtFirstCommit).toEqual(['2']);

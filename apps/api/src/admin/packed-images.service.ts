@@ -15,6 +15,9 @@ import { PackedImageCloudError, PackedImageVerificationError, safePackedCloudCod
 import { TENCENT_PACK_BASELINE_KIND, readTencentPackBaseline, validTencentPackBaseline } from './tencent-pack-snapshot-baseline';
 import { collectAliyunPackSnapshotBaseline } from './aliyun-snapshot-ecs-evidence';
 import { encryptPackedImageAssetConfig, readPackedImageAssetConfig, type PackedImageAssetConfig } from './packed-image-asset-config';
+import { readAliyunPackedImageRejection } from './aliyun-packed-image-rejection';
+import { packedImageTaskView } from './packed-image-task-view';
+import { assertPowerAllowsMutation } from './instance-power-types';
 
 type Image = { ImageType?: string; ImageSize?: number | null; ImageId: string; ImageName?: string; Status: string; Progress?: string; Tags?: unknown; DiskDeviceMappings?: { DiskDeviceMapping?: Array<{ SnapshotId?: string }> } };
 type Snapshot = { SnapshotId: string; SourceDiskId?: string; SourceSnapshotId?: string; RegionId?: string; CreationTime?: string; Usage?: string; Tags?: unknown };
@@ -22,11 +25,52 @@ const ACTIVE = ['pending', 'creating', 'deleting'];
 type LeasedContext = CloudAccountContextCredentials & { artifactLease?: { id: string; token: string } };
 type TencentPackSource = { cloudAccountContextId: string; cloudAccountUid: string; regionId: string; ownerUserId: string; sourceRangeInstanceId: string; sourceHostKey: string; sourceInstanceId: string };
 type TencentPackRequestSource = TencentPackSource & { id: string; createdAt: Date; platformImageAssetId: string | null };
+type TaskReader = Pick<SessionUserProfile, 'id' | 'role'>;
 
 @Injectable()
 export class PackedImagesService {
+  private readonly rejectionChecks = new Map<string, number>();
   constructor(@Inject(ADMIN_REPOSITORY) private readonly repository: AdminRepository, private readonly contexts: CloudAccountContextsService,
     @Optional() private readonly systemConfigService?: SystemConfigService) {}
+
+  async listTasks(user: TaskReader, sourceId?: string) {
+    const rows = (await this.repository.listPackedImageArtifacts()).filter(row => this.canReadTask(row, user)
+      && (!sourceId || row.sourceRangeInstanceId === sourceId)).sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
+    return Promise.all(rows.map(row => this.taskView(row)));
+  }
+
+  async getTask(id: string, user: TaskReader) {
+    return this.taskView(await this.accessibleTask(id, user));
+  }
+
+  async verifyTask(id: string, user: TaskReader) {
+    const task = await this.accessibleTask(id, user);
+    // Reconciliation never submits CreateImage or starts/resumes a deletion.
+    if (['pending', 'creating'].includes(task.status) || task.status === 'failed' && task.imageId) {
+      await this.withClaim(id, true, token => this.refreshClaimed(id, token, true));
+    }
+    return this.getTask(id, user);
+  }
+
+  private canReadTask(row: PackedImageArtifactRecord, user: TaskReader) {
+    return (row.cloudWorkspaceId ?? 'legacy-unbound') === (getCurrentCloudWorkspaceId() ?? 'legacy-unbound')
+      && (user.role === 'admin' || row.ownerUserId === user.id);
+  }
+
+  private async accessibleTask(id: string, user: TaskReader) {
+    const row = await this.require(id);
+    if (!this.canReadTask(row, user)) throw new NotFoundException('打包任务不存在或无权访问。');
+    return row;
+  }
+
+  private async taskView(row: PackedImageArtifactRecord) {
+    const [asset, source, snapshot] = await Promise.all([
+      row.platformImageAssetId ? this.repository.getPlatformImageAssetById(row.platformImageAssetId) : null,
+      this.repository.getRangeInstanceById(row.sourceRangeInstanceId),
+      row.sourceSnapshotId ? this.repository.getImageSnapshotById(row.sourceSnapshotId) : null,
+    ]);
+    return packedImageTaskView(row, asset, source, snapshot);
+  }
 
   async begin(input: { cloudAccountContextId: string; cloudAccountUid: string; regionId: string; ownerUserId: string; sourceRangeInstanceId: string; sourceHostKey: string; sourceInstanceId: string }, context: CloudAccountContextCredentials, assetConfig?: PackedImageAssetConfig) {
     this.assertContext(input, context);
@@ -42,6 +86,7 @@ export class PackedImagesService {
         && item.cloudAccountUid === input.cloudAccountUid && item.regionId === input.regionId && item.sourceInstanceId === input.sourceInstanceId);
       if (existing) throw new ConflictException({ message: '该实例已有尚未确认或清理中的打包任务，请先核验原任务，避免重复生成计费快照。', packedImageArtifactId: existing.id });
       const source = await this.repository.getRangeInstanceById(input.sourceRangeInstanceId);
+      if (source) assertPowerAllowsMutation(source);
       const identity = { ...input, id: randomUUID(), cloudProvider: context.provider, cloudWorkspaceId: source?.cloudWorkspaceId ?? getCurrentCloudWorkspaceId() ?? 'legacy-unbound', sourceDiskIds };
       const assetConfigCiphertext = assetConfig ? encryptPackedImageAssetConfig(identity, assetConfig) : undefined;
       const createArtifact = (sourceSnapshotBaseline?: Record<string, unknown>) => this.repository.createPackedImageArtifact({ ...identity,
@@ -212,16 +257,17 @@ export class PackedImagesService {
     return this.withClaim(id, false, (token) => this.refreshClaimed(id, token));
   }
 
-  private async refreshClaimed(id: string, token: string) {
+  private async refreshClaimed(id: string, token: string, manual = false) {
     let artifact = await this.require(id);
     let phase: PackedImagePhase = 'account_context';
     let diagnosticContext: LeasedContext | undefined;
     try {
+      if (manual && ['deleting', 'deleted'].includes(artifact.status)) return artifact;
+      if (!ACTIVE.includes(artifact.status) && !(manual && artifact.status === 'failed' && artifact.imageId)) return artifact;
+      artifact = await this.updateClaimed(id, token, { lastPolledAt: new Date() });
       const context = await this.boundContext(artifact, token);
       diagnosticContext = context;
-      artifact = await this.updateClaimed(id, token, { lastPolledAt: new Date() });
       if (artifact.status === 'deleting') { phase = 'cleanup'; return await this.processCleanup(artifact, context); }
-      if (!ACTIVE.includes(artifact.status)) return artifact;
       let images: Image[];
       phase = 'describe_image';
       if (artifact.imageId) {
@@ -229,15 +275,30 @@ export class PackedImagesService {
       } else {
         images = await this.describeImages(context, { 'Tag.1.Key': 'PlatformPackedImageArtifactId', 'Tag.1.Value': artifact.id, ImageOwnerAlias: 'self' });
       }
-      if (!images.length) return artifact;
-      if (images.length !== 1) throw new ConflictException('打包来源标记匹配多个镜像，拒绝自动关联。');
+      if (!images.length) {
+        if (context.provider === 'alibaba_cloud' && !artifact.imageId && !artifact.backingSnapshotIds.length
+          && Date.now() - (this.rejectionChecks.get(id) ?? 0) >= (manual ? 10_000 : 120_000)) {
+          this.rejectionChecks.set(id, Date.now());
+          let auditDiagnostic: { phase: 'rejection_audit'; cloudErrorCode: string; cloudRequestId?: string } | undefined;
+          const rejected = await readAliyunPackedImageRejection(artifact, context, { onUnavailable: diagnostic => { auditDiagnostic = diagnostic; } });
+          if (rejected) {
+            this.rejectionChecks.delete(id);
+            return this.updateClaimed(id, token, { status: 'failed', completedAt: new Date(), errorMessage: encodePackedImageDiagnostic(rejected) });
+          }
+          if (auditDiagnostic) return this.updateClaimed(id, token, { errorMessage: encodePackedImageDiagnostic(auditDiagnostic) });
+        }
+        if (artifact.imageId) return this.updateClaimed(id, token, { errorMessage: encodePackedImageDiagnostic({ phase: 'describe_image', cloudErrorCode: 'ImageNotVisible' }) });
+        return artifact;
+      }
+      this.rejectionChecks.delete(id);
+      if (images.length !== 1) throw new PackedImageCloudError('verify_image', 'MultipleImagesMatched');
       const image = images[0];
       phase = 'verify_image';
       this.assertImage(artifact, image);
       if (!artifact.imageId) artifact = await this.updateClaimed(id, token, { imageId: image.ImageId, status: 'creating' });
       await this.upsertLedger(artifact, image.ImageId, 'image', token);
       const snapshotIds = this.snapshotIds(image);
-      if (image.Status === 'Available' && !snapshotIds.length) throw new ConflictException('打包镜像已可用，但快照绑定信息尚未完整，等待恢复。');
+      if (image.Status === 'Available' && !snapshotIds.length) throw new PackedImageCloudError('snapshot_verify', 'SnapshotBindingsIncomplete');
       if (snapshotIds.length) {
         phase = 'snapshot_verify';
         await this.captureSnapshots(artifact, context, snapshotIds);
@@ -250,16 +311,18 @@ export class PackedImagesService {
         const [source] = await repo.listImageSnapshots({ provider: context.provider, accountUid: artifact.cloudAccountUid, regionId: artifact.regionId, scope: 'custom', imageId: image.ImageId });
         const { platformImageAsset, legacyIncomplete } = await this.persistAsset(artifact, source.id, repo, status === 'available');
         const updated = await repo.updatePackedImageArtifact(id, { sourceSnapshotId: source.id, platformImageAssetId: platformImageAsset.id, status,
-          errorMessage: status === 'failed' ? `云镜像打包失败：${image.Status}` : legacyIncomplete ? '旧打包缺少原始资产默认配置；已恢复私有资产，默认密码留空，请核对后启用。' : null });
+          ...(['available', 'failed'].includes(status) ? { completedAt: new Date() } : {}),
+          errorMessage: status === 'failed' ? encodePackedImageDiagnostic({ phase: 'create_image', cloudErrorCode: image.Status }) : legacyIncomplete ? encodePackedImageDiagnostic({ phase: 'persist_asset', cloudErrorCode: 'OriginalDefaultsMissing' }) : null });
         await this.upsertLedger(updated, image.ImageId, 'image', undefined, repo);
         for (const sid of updated.backingSnapshotIds) await this.upsertLedger(updated, sid, 'snapshot', undefined, repo);
         return updated;
       });
     } catch (error) {
       // A later failed observation must not erase the original bounded submission rejection receipt.
-      if (artifact.cloudProvider === 'tencent_cloud' && !artifact.imageId && readPackedImageDiagnostic(artifact.errorMessage).phase === 'create_image') return artifact;
+      const original = readPackedImageDiagnostic(artifact.errorMessage);
+      if (!artifact.imageId && original.phase === 'create_image' && original.cloudErrorCode !== 'UNKNOWN') return artifact;
       if (artifact.cloudProvider === 'tencent_cloud') return this.updateClaimed(id, token, { errorMessage: encodePackedImageDiagnostic(packedImageDiagnostic(error, phase, diagnosticContext ? [diagnosticContext.accessKeyId, diagnosticContext.accessKeySecret] : [])) });
-      return this.updateClaimed(id, token, { errorMessage: '打包或清理状态验证失败，清理材料已保留，可修复后重试。' });
+      return this.updateClaimed(id, token, { errorMessage: encodePackedImageDiagnostic(packedImageDiagnostic(error, phase, diagnosticContext ? [diagnosticContext.accessKeyId, diagnosticContext.accessKeySecret] : [])) });
     }
   }
 

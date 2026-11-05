@@ -2,6 +2,7 @@ import * as workspaceScope from '../src/auth/cloud-workspace-scope';
 import { randomUUID } from 'node:crypto';
 import { useFastSingleInstanceVerification } from './support/fast-single-instance-verification';
 import { withEcsResponseContract } from './support/ecs-response-contract';
+import * as imageCapacity from '../src/admin/aliyun-image-capacity';
 import { INestApplication } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
 import request from 'supertest';
@@ -64,6 +65,7 @@ describe('single instances', () => {
   let adminToken: string;
 
   beforeEach(async () => {
+    jest.spyOn(imageCapacity, 'readAliyunImageSystemDisk').mockImplementation(async (_account, imageId) => ({ imageId, minimumSystemDiskSize: 20, requestId: 'image-request' }));
     jest.spyOn(workspaceScope, 'requireCurrentCloudWorkspaceId').mockReturnValue('legacy-unbound');
     process.env.ADMIN_USERNAME = 'admin';
     process.env.ADMIN_PASSWORD = 'change-me';
@@ -266,7 +268,7 @@ describe('single instances', () => {
         memory: 4,
         systemDiskSize: 40,
         expiresAt: futureExpiration,
-        ingress: 'TCP 1-65535 from 0.0.0.0/0',
+        ingress: 'All protocols and ports from 0.0.0.0/0',
       },
     });
   });

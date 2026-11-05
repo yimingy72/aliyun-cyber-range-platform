@@ -7,6 +7,7 @@ import type { SessionUserProfile } from './admin-user-auth';
 import { signAliyunRpcQuery } from './image-catalog-rpc-signer';
 import { SystemConfigService } from './system-config.service';
 import { readTencentRangeNetworkDiagnostics } from './tencent-network-diagnostics';
+import { AliyunVpcReadPacingService } from './aliyun-vpc-read-pacing.service';
 
 type Row = Record<string, any>;
 type Context = { regionId: string; accountUid: string; accessKeyId: string; accessKeySecret: string };
@@ -42,7 +43,8 @@ function uid(value: unknown, phase: string): string { if (typeof value === 'numb
 
 @Injectable()
 export class RangeNetworkDiagnosticsService {
-  constructor(private readonly prisma: PrismaService, @Optional() private readonly systemConfigService?: SystemConfigService) {}
+  constructor(private readonly prisma: PrismaService, @Optional() private readonly systemConfigService?: SystemConfigService,
+    @Optional() private readonly vpcPacing?: AliyunVpcReadPacingService) {}
 
   async get(instance: RangeInstanceRecord, user: Pick<SessionUserProfile, 'id' | 'role'>) {
     if (!user || (user.role !== 'admin' && instance.ownerUserId !== user.id)) throw new ForbiddenException('Range instance access denied');
@@ -166,6 +168,7 @@ export class RangeNetworkDiagnosticsService {
   }
 
   private async rpc(context: Context, service: 'ecs' | 'vpc' | 'sts', action: string, parameters: Record<string,string>): Promise<Row> {
+    if(service==='vpc'&&this.vpcPacing)await this.vpcPacing.wait(context.accountUid,action);
     const query = signAliyunRpcQuery({ Action: action, AccessKeyId: context.accessKeyId, Format: 'JSON', ...(service !== 'sts' ? { RegionId: context.regionId } : {}), Version: service === 'ecs' ? '2014-05-26' : service === 'vpc' ? '2016-04-28' : '2015-04-01', SignatureMethod: 'HMAC-SHA1', SignatureNonce: randomUUID(), SignatureVersion: '1.0', Timestamp: new Date().toISOString().replace(/\.\d{3}Z$/, 'Z'), ...parameters }, context.accessKeySecret);
     const endpoint = service === 'sts' ? 'sts.aliyuncs.com' : `${service}.${context.regionId}.aliyuncs.com`;
     let payload: Row;

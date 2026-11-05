@@ -81,7 +81,7 @@ export function buildSingleInstanceBlueprint(input: BuildSingleInstanceBlueprint
           key: 'default-admin',
           name: 'Default Admin Access',
           rules: [
-            { protocol: 'tcp', portRange: '1/65535', sourceCidr: '0.0.0.0/0' },
+            { protocol: 'all', portRange: '1/65535', sourceCidr: '0.0.0.0/0' },
           ],
         },
       ],

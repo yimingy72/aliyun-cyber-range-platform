@@ -4,14 +4,14 @@ import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
 import { Combobox } from '@/components/ui/combobox';
 import { DateTimePicker } from '@/components/ui/date-time-picker';
-import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
+import { DropdownMenuItem } from '@/components/ui/dropdown-menu';
 import { AdminFormField } from './shared/admin-form-field';
 import { ConfirmActionDialog } from './shared/confirm-action-dialog';
 
 import React from 'react';
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
-import { Check, ChevronDown, ChevronRight, Copy, MoreHorizontal, Plus } from 'lucide-react';
+import { Check, ChevronDown, ChevronRight, Copy, Monitor, Package, Plus, RotateCw, Trash2 } from 'lucide-react';
 
 import {
   AdminApiError,
@@ -25,8 +25,13 @@ import {
 } from '../../lib/admin-api';
 import { describeAliyunEcsPasswordFailure, validateAliyunEcsPassword } from '@aliyun-cyber-range/scenario-runtime';
 import { useAdminScreenCache } from '../../lib/admin-screen-cache';
+import { readAdminSession } from '../../lib/admin-auth-storage';
 import { cloudExpiryError, minimumSystemDiskSize, tencentImageError, verifiedTencentInstanceTypes } from '@/lib/cloud-execution-policy';
 import { cloudProviderLabel, useCloudWorkspace } from './cloud-workspace-provider';
+import { PackedImageTasksDialog } from './packed-image-tasks-dialog';
+import { InstancePowerBadge, InstancePowerMenu } from './instance-power-menu';
+import { instancePowerStatus, POWER_STATUS_LABELS } from '@/lib/instance-power-state';
+import { packedImageTaskIdFromError, isPackedImageSubmissionUnconfirmed } from '../../lib/admin-api';
 import type {
   InstanceTypeAvailabilitySnapshot,
   PlatformImageAsset,
@@ -40,7 +45,7 @@ import type {
 } from '../../lib/admin-types';
 import {
   AdminPaginationControls,
-  buildVisiblePages,
+
   getPagination,
   useAdminPageSize,
 } from './admin-pagination';
@@ -57,8 +62,7 @@ import { AdminListToolbar } from './shared/admin-list-toolbar';
 import { AdminDialog, type AdminDialogSize } from './shared/admin-dialog';
 import { AdminPaginatedList } from './shared/admin-paginated-list';
 import { AdminPageHeader } from './shared/admin-page-header';
-import { CloudReleaseStatus } from './shared/cloud-release-status';
-import Link from 'next/link';
+import { AdminActionNotice } from './shared/admin-action-notice';
 import { StatusBadge } from './shared/status-badge';
 import { TableLoadingState } from './shared/table-loading-state';
 import { useAdminSession } from './use-admin-session';
@@ -75,26 +79,26 @@ type ListMode = 'active' | 'history';
 const activeInstanceColumns = [
   { id: 'name', label: '实例 / 批次', priority: 'primary' },
   { id: 'image', label: '镜像', priority: 'secondary' },
-  { id: 'specification', label: '数量 / 规格', priority: 'primary' },
-  { id: 'public-ip', label: '公网 IP', priority: 'primary' },
-  { id: 'status', label: '状态', priority: 'secondary' },
-  { id: 'created-at', label: '创建时间', priority: 'detail' },
-  { id: 'expires-at', label: '到期时间', priority: 'detail' },
-  { id: 'created-by', label: '创建人', priority: 'detail' },
-  { id: 'credentials', label: '账号 / 密码', priority: 'detail' },
+  { id: 'specification', label: '数量 / 规格', priority: 'primary', width: '7rem' },
+  { id: 'public-ip', label: '公网 IP', priority: 'primary', width: '10rem' },
+  { id: 'status', label: '状态', priority: 'secondary', width: '8rem' },
+  { id: 'created-at', label: '创建时间', priority: 'detail', width: '10.5rem' },
+  { id: 'expires-at', label: '到期时间', priority: 'detail', width: '10.5rem' },
+  { id: 'created-by', label: '创建人', priority: 'detail', width: '7rem' },
+  { id: 'credentials', label: '账号 / 密码', priority: 'detail', width: '9rem' },
   { id: 'actions', label: '操作', priority: 'primary', width: '13rem' },
 ] as const satisfies readonly AdminDataColumn[];
 
 const historyInstanceColumns = [
   { id: 'name', label: '实例 / 批次', priority: 'primary' },
   { id: 'image', label: '镜像', priority: 'secondary' },
-  { id: 'summary', label: '数量 / 规格', priority: 'primary' },
-  { id: 'public-ip', label: '公网 IP', priority: 'primary' },
-  { id: 'status', label: '状态', priority: 'secondary' },
-  { id: 'started-at', label: '开启时间', priority: 'detail' },
-  { id: 'ended-at', label: '结束时间', priority: 'secondary' },
-  { id: 'duration', label: '运行时长', priority: 'detail' },
-  { id: 'created-by', label: '创建人', priority: 'detail' },
+  { id: 'summary', label: '数量 / 规格', priority: 'primary', width: '7rem' },
+  { id: 'public-ip', label: '公网 IP', priority: 'primary', width: '10rem' },
+  { id: 'status', label: '状态', priority: 'secondary', width: '8rem' },
+  { id: 'started-at', label: '开启时间', priority: 'detail', width: '10.5rem' },
+  { id: 'ended-at', label: '结束时间', priority: 'secondary', width: '10.5rem' },
+  { id: 'duration', label: '运行时长', priority: 'detail', width: '8rem' },
+  { id: 'created-by', label: '创建人', priority: 'detail', width: '7rem' },
 ] as const satisfies readonly AdminDataColumn[];
 
 type CreateDialogState = {
@@ -380,6 +384,11 @@ function summarizeBatch(instances: RangeInstance[]) {
 }
 
 function formatBatchSummary(instances: RangeInstance[]) {
+  if (instances.some(instance => instancePowerStatus(instance) !== instance.status)) {
+    const counts = new Map<string, number>();
+    for (const instance of instances) { const status = instancePowerStatus(instance); counts.set(status, (counts.get(status) ?? 0) + 1); }
+    return [...counts].map(([status, count]) => `${count} ${POWER_STATUS_LABELS[status] ?? getStatusLabel(status)}`).join(' / ');
+  }
   const summary = summarizeBatch(instances);
   const parts = [
     summary.running ? `${summary.running} 运行中` : null,
@@ -387,7 +396,7 @@ function formatBatchSummary(instances: RangeInstance[]) {
     summary.createFailed ? `${summary.createFailed} 创建失败` : null,
     summary.destroying ? `${summary.destroying} 销毁中` : null,
     summary.destroyFailed ? `${summary.destroyFailed} 销毁失败` : null,
-    summary.destroyed ? `${summary.destroyed} 已关闭` : null,
+    summary.destroyed ? `${summary.destroyed} 已销毁` : null,
   ].filter(Boolean);
 
   return parts.join(' / ') || '暂无';
@@ -431,11 +440,11 @@ function getAvailableActions(status: string): MenuAction[] {
 
 function getActionLabel(action: MenuAction, status: string) {
   if (action === 'destroy') {
-    return '关闭实例';
+    return '销毁实例';
   }
 
   if (action === 'retry') {
-    return status === 'destroy_failed' ? '重试关闭' : '重试创建';
+    return status === 'destroy_failed' ? '重试销毁' : '重试创建';
   }
 
   if (action === 'reboot') {
@@ -447,10 +456,6 @@ function getActionLabel(action: MenuAction, status: string) {
   }
 
   return '打包为镜像';
-}
-
-function isPrimaryInlineAction(action: MenuAction) {
-  return action === 'destroy' || action === 'open-vnc';
 }
 
 function buildPlatformImageOptionLabel(image: PlatformImageAsset) {
@@ -576,8 +581,16 @@ export function SingleInstancesScreen({
   const [instanceTypeAvailability, setInstanceTypeAvailability] = useState<InstanceTypeAvailabilitySnapshot | null>(null);
   const [createFormError, setCreateFormError] = useState<string | null>(null);
   const [packImageDialog, setPackImageDialog] = useState<PackImageDialogState | null>(null);
+  const [packImageError, setPackImageError] = useState<string | null>(null);
+  const [packTasksOpen, setPackTasksOpen] = useState(false);
+  const [packTaskId, setPackTaskId] = useState<string | null>(null);
+  const [packImageUnconfirmed, setPackImageUnconfirmed] = useState(false);
+  const [packSuccessMessage, setPackSuccessMessage] = useState<string | null>(null);
+  useEffect(() => { if (!isPageActive) setPackSuccessMessage(null); }, [isPageActive]);
+  const [packTasksSourceId, setPackTasksSourceId] = useState<string | undefined>();
+  const packPendingRef = useRef<string | null>(null);
+  useEffect(() => { setPackImageDialog(null); setPackImageError(null); setPendingActionInstanceId(null); setPackTasksOpen(false); setPackTaskId(null); setPackTasksSourceId(undefined); setPackImageUnconfirmed(false); setPackSuccessMessage(null); }, [launchScope]);
   const [listPages, setListPages] = useState<Record<ListMode, number>>({ active: 1, history: 1 });
-  const [jumpPageValue, setJumpPageValue] = useState('1');
   const instanceTypeAvailabilityRequestRef = useRef(0);
   const listRequestIdRef = useRef(0);
   const pollPendingRef = useRef(false);
@@ -772,7 +785,7 @@ export function SingleInstancesScreen({
 
   const allListedInstances = [...instances, ...batchGroups.flatMap((group) => group.instances)];
   const hasChangingInstances = allListedInstances.some((instance) =>
-    ['pending_create', 'creating', 'pending_destroy', 'destroying'].includes(instance.status),
+    ['pending_create', 'creating', 'pending_destroy', 'destroying'].includes(instance.status) || Boolean(instance.powerControl?.phase),
   );
   const hasListedInstances = allListedInstances.length > 0;
 
@@ -953,8 +966,8 @@ export function SingleInstancesScreen({
     setCreateForm((current) => ({
       ...current,
       [field]: value,
-      ...(field === 'platformImageQuery' && workspace?.provider === 'tencent_cloud'
-        ? { systemDiskSize: String(Math.max(Number(current.systemDiskSize) || 50, minimumSystemDiskSize(workspace.provider, findPlatformImageAsset(String(value), enabledPlatformImages)))) } : {}),
+      ...(field === 'platformImageQuery'
+        ? { systemDiskSize: String(Math.max(Number(current.systemDiskSize) || (workspace?.provider === 'tencent_cloud' ? 50 : 40), minimumSystemDiskSize(workspace?.provider ?? 'alibaba_cloud', findPlatformImageAsset(String(value), enabledPlatformImages)))) } : {}),
     }));
   }
 
@@ -1092,7 +1105,7 @@ export function SingleInstancesScreen({
       const expiryError = provider === 'tencent_cloud' ? cloudExpiryError(createForm.expiresAt, provider) : null;
       const imageError = provider === 'tencent_cloud' ? tencentImageError(selectedPlatformImage) : null;
       const diskSize = Number(createForm.systemDiskSize);
-      if (expiryError || imageError || provider === 'tencent_cloud' && (!Number.isInteger(diskSize) || diskSize < minimumSystemDiskSize(provider, selectedPlatformImage))) {
+      if (expiryError || imageError || createForm.systemDiskSize.trim() && (!Number.isInteger(diskSize) || diskSize < minimumSystemDiskSize(provider, selectedPlatformImage))) {
         setCreateFormError(expiryError ?? imageError ?? `系统盘至少需要 ${minimumSystemDiskSize(provider, selectedPlatformImage)} G。`);
         return;
       }
@@ -1153,6 +1166,10 @@ export function SingleInstancesScreen({
   }
 
   function openPackImageDialog(instance: RangeInstance) {
+    setPackImageError(null);
+    setPackSuccessMessage(null);
+    setPackImageUnconfirmed(false);
+    setPackTaskId(null);
     setPackImageDialog({
       instanceId: instance.id,
       displayName: readDefaultPackImageName(instance),
@@ -1163,10 +1180,16 @@ export function SingleInstancesScreen({
   }
 
   async function handleConfirmPackImage() {
-    if (!session.token || !packImageDialog) {
+    if (!session.token || !packImageDialog || packImageUnconfirmed) {
       return;
     }
 
+    const generation = readAdminSession()?.sessionGeneration;
+    const packScope = JSON.stringify([launchScope, generation]);
+    if (packPendingRef.current === packScope) return;
+    packPendingRef.current = packScope;
+    const isCurrentPack = () => isCurrentLaunch() && readAdminSession()?.sessionGeneration === generation;
+    setPackImageError(null);
     setErrorMessage(null);
     setPendingActionInstanceId(packImageDialog.instanceId);
 
@@ -1183,13 +1206,17 @@ export function SingleInstancesScreen({
           description: packImageDialog.description,
         },
       );
-      if (!isCurrentLaunch()) return;
-      screenCache?.invalidate(apiBaseUrl, session.token, 'single-instances:');
-      screenCache?.invalidate(apiBaseUrl, session.token, 'platform-images:');
-      screenCache?.invalidate(apiBaseUrl, session.token, 'image-center:');
+      if (!isCurrentPack()) return;
+      const responseToken = readAdminSession()?.token ?? session.token;
+      screenCache?.invalidate(apiBaseUrl, responseToken, 'single-instances:');
+      screenCache?.invalidate(apiBaseUrl, responseToken, 'platform-images:');
+      screenCache?.invalidate(apiBaseUrl, responseToken, 'image-center:');
 
       setPackImageDialog(null);
-      setErrorMessage(
+      setPackTaskId(typeof result.packedImageArtifactId === 'string' ? result.packedImageArtifactId : null);
+      setPackTasksSourceId(packImageDialog.instanceId);
+      setPackTasksOpen(true);
+      setPackSuccessMessage(
         result &&
           typeof result === 'object' &&
           'imageReady' in result &&
@@ -1198,9 +1225,14 @@ export function SingleInstancesScreen({
           : `镜像打包任务已提交，镜像可用后会出现在我的镜像：${packImageDialog.displayName}`,
       );
       try {
-        await refreshSingleInstanceRows(session.token, listMode, true);
+        await refreshSingleInstanceRows(responseToken, listMode, true);
       } catch (error) {
+        if (!isCurrentPack()) return;
         if (isUnauthorizedError(error)) {
+          if (readAdminSession()?.token && readAdminSession()?.token !== responseToken) {
+            setListErrorMessage('镜像打包任务已受理，请使用续期后的会话刷新列表，不要重复打包。');
+            return;
+          }
           session.logout();
           router.replace('/admin/login');
         } else {
@@ -1208,16 +1240,26 @@ export function SingleInstancesScreen({
         }
       }
     } catch (error: unknown) {
-      if (!isCurrentLaunch()) return;
+      if (!isCurrentPack()) return;
       if (isUnauthorizedError(error)) {
+        if (readAdminSession()?.token && readAdminSession()?.token !== session.token) {
+          setPackImageError('登录已续期，原打包结果尚未确认；请先核对我的镜像，不要重复提交。');
+          setPackImageUnconfirmed(true);
+          return;
+        }
         session.logout();
         router.replace('/admin/login');
         return;
       }
 
-      setErrorMessage('镜像打包失败，请稍后重试。');
+      const message = error instanceof AdminApiError ? error.message : '打包结果尚未确认，请先检查我的镜像，不要重复提交。';
+      setPackImageError(message);
+      setErrorMessage(message);
+      setPackTaskId(packedImageTaskIdFromError(error));
+      setPackImageUnconfirmed(isPackedImageSubmissionUnconfirmed(error));
     } finally {
-      if (isCurrentLaunch()) setPendingActionInstanceId(null);
+      if (packPendingRef.current === packScope) packPendingRef.current = null;
+      if (isCurrentPack()) setPendingActionInstanceId(null);
     }
   }
 
@@ -1355,7 +1397,7 @@ export function SingleInstancesScreen({
         return;
       }
 
-      setErrorMessage('批量关闭失败，请稍后重试。');
+      setErrorMessage('批量销毁失败，请稍后重试。');
     }
   }
 
@@ -1407,7 +1449,6 @@ export function SingleInstancesScreen({
 
   const currentItemsCount = hasCurrentViewSnapshot ? visibleBatchGroups.length + visibleInstances.length : 0;
   const activePagination = getPagination(currentItemsCount, listPages[listMode], pageSize);
-  const visiblePages = buildVisiblePages(activePagination.totalPages, activePagination.page);
   const pagedBatchGroups = visibleBatchGroups.slice(activePagination.startIndex, activePagination.endIndex);
   const pagedInstances = visibleInstances.slice(
     Math.max(0, activePagination.startIndex - visibleBatchGroups.length),
@@ -1425,27 +1466,9 @@ export function SingleInstancesScreen({
     }
   }, [activePagination.page, listMode, listPages]);
 
-  useLayoutEffect(() => {
-    setJumpPageValue(String(activePagination.page));
-  }, [activePagination.page, listMode]);
-
   function handlePageSizeChange(nextValue: 20 | 50 | 100) {
     setPageSize(nextValue);
     setListPages({ active: 1, history: 1 });
-  }
-
-  function handleJumpToPage() {
-    const parsedPage = Number.parseInt(jumpPageValue, 10);
-
-    if (Number.isNaN(parsedPage)) {
-      setJumpPageValue(String(activePagination.page));
-      return;
-    }
-
-    setListPages((current) => ({
-      ...current,
-      [listMode]: parsedPage,
-    }));
   }
 
   function renderCredentials(instance: RangeInstance) {
@@ -1481,44 +1504,25 @@ export function SingleInstancesScreen({
 
   function renderInstanceActions(instance: RangeInstance, actions: MenuAction[]) {
     if (workspace?.isReadOnly) return null;
-    const inlineActions = actions.filter(isPrimaryInlineAction);
-    const menuActions = actions.filter((action) => !isPrimaryInlineAction(action));
+    const menuActions = actions.filter(action => action !== 'destroy' && action !== 'open-vnc');
     const isActionPending = pendingActionInstanceId === instance.id;
 
-    if (!actions.length) {
+    if (!actions.length && instance.status !== 'running') {
       return null;
     }
 
     return (
-      <div className="flex flex-wrap items-center justify-start gap-1">
-        {inlineActions.map((action) => (
-          <Button
-            disabled={isActionPending}
-            key={action}
-            onClick={() => void handleAction(instance, action)}
-            size="sm"
-            type="button"
-            variant="outline"
-          >
-            {getActionLabel(action, instance.status)}
-          </Button>
-        ))}
-        {menuActions.length ? (
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild>
-              <Button aria-label="更多操作" disabled={isActionPending} size="icon-sm" type="button" variant="ghost">
-                <MoreHorizontal aria-hidden="true" />
-              </Button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="end">
-              {menuActions.map((action) => (
-                <DropdownMenuItem disabled={isActionPending} key={action} onSelect={() => void handleAction(instance, action)}>
-                  {getActionLabel(action, instance.status)}
-                </DropdownMenuItem>
-              ))}
-            </DropdownMenuContent>
-          </DropdownMenu>
-        ) : null}
+      <div className="inline-flex flex-nowrap! items-center justify-start gap-1 whitespace-nowrap" data-slot="instance-row-actions">
+        {instance.status === 'running' ? <Button disabled={isActionPending || !actions.includes('open-vnc')} onClick={() => void handleAction(instance, 'open-vnc')} size="sm" type="button" variant="outline"><Monitor aria-hidden="true" />打开 VNC</Button> : null}
+        <InstancePowerMenu apiBaseUrl={apiBaseUrl} token={session.token} scopeKey={`${launchScope}:${session.profile?.role}`}
+          target={{ kind: 'single', id: instance.id }} name={instance.name || instance.id} label="更多" sources={[instance]}
+          showPowerActions={instance.status === 'running' && (instance.cloudProvider ?? workspace?.provider) !== 'tencent_cloud'} disabled={isActionPending}
+          onChanged={() => { void refreshSingleInstanceRows(readAdminSession()?.token ?? session.token!, listMode, true, true); }}
+          destructive={actions.includes('destroy') ? <DropdownMenuItem disabled={isActionPending} variant="destructive" onSelect={() => void handleAction(instance, 'destroy')}><Trash2 aria-hidden="true" />销毁实例</DropdownMenuItem> : undefined}>
+          {menuActions.length ? menuActions.map(action => <DropdownMenuItem disabled={isActionPending} key={action} onSelect={() => void handleAction(instance, action)}>
+            {action === 'pack-image' ? <Package aria-hidden="true" /> : <RotateCw aria-hidden="true" />}{getActionLabel(action, instance.status)}
+          </DropdownMenuItem>) : undefined}
+        </InstancePowerMenu>
       </div>
     );
   }
@@ -1528,7 +1532,8 @@ export function SingleInstancesScreen({
     columns: readonly AdminDataColumn[],
     { indented = false, canPackImage = true }: { indented?: boolean; canPackImage?: boolean } = {},
   ) {
-    const actions = getAvailableActions(instance.status).filter((action) => action !== 'pack-image' || canPackImage);
+    const actions = getAvailableActions(instance.status).filter((action) => (action !== 'pack-image' || canPackImage)
+      && !instance.powerControl?.phase && (!instance.powerControl || instance.powerControl.state === 'running' || action === 'destroy'));
 
     return (
       <>
@@ -1539,10 +1544,10 @@ export function SingleInstancesScreen({
         <AdminDataTableCell column={columns[2]}>{getSpecLabel(instance)}</AdminDataTableCell>
         <AdminDataTableCell column={columns[3]}>{getPublicIp(instance)}</AdminDataTableCell>
         <AdminDataTableCell column={columns[4]}>
-          <StatusBadge status={instance.status} />
+          <InstancePowerBadge instance={instance} />
         </AdminDataTableCell>
         <AdminDataTableCell column={columns[5]}>{formatDateTime(instance.createdAt)}</AdminDataTableCell>
-        <AdminDataTableCell column={columns[6]}><span>{formatDateTime(instance.expiresAt)}</span><CloudReleaseStatus deadline={Object.values(instance.resourceSummary?.cloudReleaseDeadlines ?? {})[0] ?? instance.singleInstanceConfig?.cloudReleaseDeadline ?? undefined} /></AdminDataTableCell>
+        <AdminDataTableCell column={columns[6]}><span className="whitespace-nowrap text-xs tabular-nums">{formatDateTime(instance.expiresAt)}</span></AdminDataTableCell>
         <AdminDataTableCell column={columns[7]}>{instance.createdBy?.trim() || '暂无'}</AdminDataTableCell>
         <AdminDataTableCell column={columns[8]}>{renderCredentials(instance)}</AdminDataTableCell>
         <AdminDataTableCell column={columns[9]}>{renderInstanceActions(instance, actions)}</AdminDataTableCell>
@@ -1585,7 +1590,7 @@ export function SingleInstancesScreen({
         <AdminDataTableCell column={columns[1]}>{getImageLabel(instance)}</AdminDataTableCell>
         <AdminDataTableCell column={columns[2]}>{getSpecLabel(instance)}</AdminDataTableCell>
         <AdminDataTableCell column={columns[3]}>{getPublicIp(instance)}</AdminDataTableCell>
-        <AdminDataTableCell column={columns[4]}><StatusBadge status={instance.status} /></AdminDataTableCell>
+        <AdminDataTableCell column={columns[4]}><InstancePowerBadge instance={instance} /></AdminDataTableCell>
         <AdminDataTableCell column={columns[5]}>{formatDateTime(startedAt)}</AdminDataTableCell>
         <AdminDataTableCell column={columns[6]}>{formatDateTime(endedAt)}</AdminDataTableCell>
         <AdminDataTableCell column={columns[7]}>{formatDuration(startedAt, endedAt)}</AdminDataTableCell>
@@ -1616,6 +1621,7 @@ export function SingleInstancesScreen({
 
   return (
     <div className="admin-screen admin-workbench-screen single-instance-screen admin-pagination-screen">
+      {isPageActive ? <AdminActionNotice message={packSuccessMessage} onDismiss={() => setPackSuccessMessage(null)} /> : null}
       {errorMessage ? (
         <p className="mb-3 text-sm text-destructive" role="alert">
           {errorMessage}
@@ -1623,7 +1629,8 @@ export function SingleInstancesScreen({
       ) : null}
 
       <section className="admin-workbench-surface admin-pagination-surface">
-        <AdminPageHeader description="创建并管理训练实例、批次与生命周期。" title="实例管理" action={session.profile?.isPlatformManager ? <Button asChild variant="outline"><Link href="/admin/resource-alerts">资源告警</Link></Button> : undefined} />
+        <AdminPageHeader description="创建并管理训练实例、批次与生命周期。" title="实例管理" action={<Button type="button" variant="outline" onClick={() => { setPackTaskId(null); setPackTasksSourceId(undefined); setPackTasksOpen(true); }}>镜像导出</Button>} />
+        {isPageActive && packTasksOpen ? <PackedImageTasksDialog key={`${session.profile?.id}:${workspace?.id}:${session.token}`} apiBaseUrl={apiBaseUrl} token={session.token} open onOpenChange={setPackTasksOpen} sourceRangeInstanceId={packTasksSourceId} initialTaskId={packTaskId} /> : null}
         {!canProvision && workspace ? <p className="mt-4 text-sm text-muted-foreground">{workspace.isReadOnly ? "当前账号工作空间为只读历史。" : `${cloudProviderLabel(workspace.provider)}实例创建仍在开发。`}</p> : null}
 
         <div className="mt-4 flex min-h-0 flex-1 flex-col gap-4">
@@ -1652,16 +1659,7 @@ export function SingleInstancesScreen({
                 footer={
                   hasVisibleContent ? (
                     <AdminPaginationControls
-                      jumpPageValue={jumpPageValue}
                       label={`${tableLabel} 分页`}
-                      onJumpPage={handleJumpToPage}
-                      onJumpPageValueChange={setJumpPageValue}
-                      onNextPage={() =>
-                        setListPages((current) => ({
-                          ...current,
-                          [listMode]: activePagination.page + 1,
-                        }))
-                      }
                       onPageSelect={(pageNumber) =>
                         setListPages((current) => ({
                           ...current,
@@ -1669,15 +1667,8 @@ export function SingleInstancesScreen({
                         }))
                       }
                       onPageSizeChange={handlePageSizeChange}
-                      onPreviousPage={() =>
-                        setListPages((current) => ({
-                          ...current,
-                          [listMode]: activePagination.page - 1,
-                        }))
-                      }
                       pageSize={pageSize}
                       pagination={activePagination}
-                      visiblePages={visiblePages}
                     />
                   ) : null
                 }
@@ -1734,10 +1725,12 @@ export function SingleInstancesScreen({
                         {pagedBatchGroups.map((group) => {
                           const isExpanded = expandedBatchIds.includes(group.batch.id);
                           const isHistoryGroup = listMode === 'history';
+                          const memberExpiries = [...new Set(group.instances.map(instance => instance.expiresAt ?? null))];
+                          const batchExpiryLabel = memberExpiries.length === 1 ? formatDateTime(memberExpiries[0]) : '分实例回收';
 
                           return (
                             <React.Fragment key={group.batch.id}>
-                              <TableRow className="bg-muted/20 hover:bg-muted/30">
+                              <TableRow className="bg-muted/20 hover:bg-muted/30" data-row-kind="batch">
                                 <AdminDataTableCell column={columns[0]}>
                                   <div className="flex min-w-44 items-center gap-2">
                                     <Button
@@ -1756,7 +1749,7 @@ export function SingleInstancesScreen({
                                       {isExpanded ? <ChevronDown aria-hidden="true" /> : <ChevronRight aria-hidden="true" />}
                                     </Button>
                                     <div className="min-w-0">
-                                      <strong className="block truncate">{group.batch.name}</strong>
+                                      <strong className="block truncate" title={group.batch.name}>{group.batch.name}</strong>
                                     </div>
                                   </div>
                                 </AdminDataTableCell>
@@ -1781,29 +1774,25 @@ export function SingleInstancesScreen({
                                   <>
                                     <AdminDataTableCell column={columns[4]}>{formatBatchSummary(group.instances)}</AdminDataTableCell>
                                     <AdminDataTableCell column={columns[5]}>{formatDateTime(group.batch.createdAt)}</AdminDataTableCell>
-                                    <AdminDataTableCell column={columns[6]}>{formatDateTime(group.batch.expiresAt)}</AdminDataTableCell>
+                                    <AdminDataTableCell column={columns[6]}>{batchExpiryLabel}</AdminDataTableCell>
                                     <AdminDataTableCell column={columns[7]}>{group.batch.createdBy?.trim() || 'admin'}</AdminDataTableCell>
                                     <AdminDataTableCell column={columns[8]}>批次内实例</AdminDataTableCell>
                                     <AdminDataTableCell column={columns[9]}>
-                                      <div className="flex justify-start gap-1">
+                                      <div className="inline-flex flex-nowrap! items-center justify-start gap-1 whitespace-nowrap" data-slot="instance-batch-actions">
                                         <Button onClick={() => handleBatchExport(group)} size="sm" type="button" variant="outline">
                                           导出
                                         </Button>
-                                        <Button
-                                          onClick={() =>
+                                        <InstancePowerMenu apiBaseUrl={apiBaseUrl} token={session.token} scopeKey={`${launchScope}:${session.profile?.role}`} target={{ kind: 'single_batch', id: group.batch.id }} name={group.batch.name || group.batch.id}
+                                          label="更多" sources={group.instances} showPowerActions={workspace?.provider !== 'tencent_cloud'} disabled={workspace?.isReadOnly}
+                                          onChanged={() => { void refreshSingleInstanceRows(readAdminSession()?.token ?? session.token!, listMode, true, true); }}
+                                          destructive={<DropdownMenuItem variant="destructive" disabled={group.instances.some(item => Boolean(item.powerControl?.phase))} onSelect={() =>
                                             setConfirmAction({
                                               kind: 'batch-destroy',
                                               batchId: group.batch.id,
                                               batchName: group.batch.name?.trim() || group.batch.id,
                                               instanceCount: group.instances.filter((item) => !isSingleInstanceHistoryStatus(item.status)).length,
                                             })
-                                          }
-                                          size="sm"
-                                          type="button"
-                                          variant="destructive"
-                                        >
-                                          关闭
-                                        </Button>
+                                          }><Trash2 aria-hidden="true" />销毁整批</DropdownMenuItem>} />
                                       </div>
                                     </AdminDataTableCell>
                                   </>
@@ -1811,12 +1800,12 @@ export function SingleInstancesScreen({
                               </TableRow>
                               {isExpanded
                                 ? group.instances.map((instance) => (
-                                    <TableRow className="bg-muted/10 hover:bg-muted/20" key={instance.id}>
+                                    <TableRow className="bg-muted/10 hover:bg-muted/20" data-row-kind="member" key={instance.id}>
                                       {isHistoryGroup
                                         ? renderHistoryInstanceCells(instance, columns, { indented: true })
                                         : renderActiveInstanceCells(instance, columns, {
                                             indented: true,
-                                            canPackImage: group.batch.quantity <= 1,
+                                            canPackImage: true,
                                           })}
                                     </TableRow>
                                   ))
@@ -1899,7 +1888,7 @@ export function SingleInstancesScreen({
           </form>
         </SingleInstanceDialog>
 
-      {packImageDialog ? (
+      {isPageActive && packImageDialog ? (
         <SingleInstanceDialog
           footer={
             <>
@@ -1907,7 +1896,7 @@ export function SingleInstancesScreen({
                 取消
               </Button>
               <Button
-                disabled={pendingActionInstanceId === packImageDialog.instanceId || packImageDialog.displayName.trim().length === 0}
+                disabled={pendingActionInstanceId === packImageDialog.instanceId || packImageUnconfirmed || packImageDialog.displayName.trim().length === 0}
                 type="button"
                 onClick={() => void handleConfirmPackImage()}
               >
@@ -1920,6 +1909,8 @@ export function SingleInstancesScreen({
           onClose={() => setPackImageDialog(null)}
         >
           <div className="single-instance-dialog-body">
+            {packImageError ? <p className="mb-3 text-sm text-destructive" role="alert">{packImageError}</p> : null}
+            {packImageError ? <Button type="button" variant="outline" disabled={pendingActionInstanceId === packImageDialog.instanceId} onClick={() => { setPackTasksSourceId(packImageDialog.instanceId); setPackImageDialog(null); setPackTasksOpen(true); }}>查看导出记录</Button> : null}
             <div className="single-instance-dialog-grid">
               <div className="single-instance-form-row single-instance-form-row-full">
                 <label className="single-instance-form-label" htmlFor="single-instance-pack-image-name">
@@ -1977,7 +1968,7 @@ export function SingleInstancesScreen({
                   <Input
                     id="single-instance-pack-image-password"
                     aria-label="默认密码"
-                    placeholder="留空则随机生成"
+                    placeholder="留空则沿用原实例密码"
                     value={packImageDialog.defaultPassword}
                     onChange={(event) =>
                       setPackImageDialog((current) =>
@@ -2023,17 +2014,17 @@ export function SingleInstancesScreen({
 
       {confirmAction ? (
         <ConfirmActionDialog
-          confirmLabel={confirmAction.kind === 'batch-destroy' ? '确认全部关闭' : confirmAction.kind === 'retry' ? '确认重试' : '确认关闭'}
+          confirmLabel={confirmAction.kind === 'batch-destroy' ? '确认销毁整批' : confirmAction.kind === 'retry' ? '确认重试' : '确认销毁'}
           description={
             confirmAction.kind === 'batch-destroy'
-              ? `将销毁批次“${confirmAction.batchName}”中 ${confirmAction.instanceCount} 台运行中的实例及随实例磁盘，关闭后无法恢复。`
+              ? `将销毁批次“${confirmAction.batchName}”中 ${confirmAction.instanceCount} 台运行中的实例及随实例磁盘，销毁后无法恢复。`
               : confirmAction.kind === 'retry'
                 ? `将重试销毁“${confirmAction.instance.name?.trim() || confirmAction.instance.id}”的剩余云资源，完成后无法恢复。`
-                : `将销毁“${confirmAction.instance.name?.trim() || confirmAction.instance.id}”的云主机及随实例磁盘，关闭后无法恢复。`
+                : `将销毁“${confirmAction.instance.name?.trim() || confirmAction.instance.id}”的云主机及随实例磁盘，销毁后无法恢复。`
           }
           open
           pending={isConfirmPending}
-          title={confirmAction.kind === 'batch-destroy' ? '关闭全部实例' : confirmAction.kind === 'retry' ? '重试关闭实例' : '关闭实例'}
+          title={confirmAction.kind === 'batch-destroy' ? '销毁整批实例' : confirmAction.kind === 'retry' ? '重试销毁实例' : '销毁实例'}
           onConfirm={() => {
             if (!confirmAction || isConfirmPending) {
               return;

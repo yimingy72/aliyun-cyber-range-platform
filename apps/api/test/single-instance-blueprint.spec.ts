@@ -47,7 +47,7 @@ describe('buildSingleInstanceBlueprint', () => {
       {
         key: 'default-admin',
         name: 'Default Admin Access',
-        rules: [{ protocol: 'tcp', portRange: '1/65535', sourceCidr: '0.0.0.0/0' }],
+        rules: [{ protocol: 'all', portRange: '1/65535', sourceCidr: '0.0.0.0/0' }],
       },
     ]);
   });

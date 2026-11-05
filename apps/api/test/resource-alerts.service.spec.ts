@@ -69,6 +69,29 @@ describe('current-account residual patrol',() => {
     expect(f.store.settingsValue.lastScanError).not.toMatch(/private|credential/);
     expect(f.store.alerts[0].status).toBe('pending');
   });
+  it('records the failed stage and allowlisted validation code without logging arbitrary error text',async()=>{
+    const f=await fixture();
+    const log=jest.fn();(f.service as any).logger.error=log;
+    f.cloud.inspect.mockRejectedValue(new Error('INCOMPLETE_ENI_PAGINATION'));
+    await f.service.scanCurrent();
+    expect(f.store.settingsValue.lastScanError).toContain('INCOMPLETE_ENI_PAGINATION');
+    expect(JSON.parse(log.mock.calls[0][0])).toMatchObject({event:'resource_patrol_failed',stage:'cloud_inventory',region:'cn-hangzhou'});
+    f.cloud.inspect.mockRejectedValue(new TypeError('private signed URL and credentials'));
+    await f.service.scanCurrent();
+    expect(log.mock.calls[1][0]).toContain('TypeError');
+    expect(log.mock.calls[1][0]).not.toMatch(/signed|credentials|private/);
+    expect(f.store.settingsValue.lastScanError).not.toMatch(/signed|credentials|private/);
+  });
+  it('reports throttling distinctly from missing permissions while preserving alerts and instance state',async()=>{
+    const f=await fixture();f.cloud.inspect.mockResolvedValue([cloudRow('ecs','i-real')] as never[]);await f.service.scanCurrent();
+    f.cloud.inspect.mockRejectedValue(new CloudPatrolReadError('DescribeNetworkAcls',400,'Throttling.User','limited-request',undefined,6));
+    await f.service.scanCurrent();
+    expect(f.store.settingsValue.lastScanError).toContain('查询触发限流');
+    expect(f.store.settingsValue.lastScanError).toContain('已尝试 6 次');
+    expect(f.store.settingsValue.lastScanError).not.toContain('检查账号权限');
+    expect(f.store.alerts[0].status).toBe('pending');
+    expect(await runInCloudWorkspace(scope,()=>f.repository.getRangeInstanceById(f.instance.id))).toMatchObject({status:'destroyed',resourceSummary:null});
+  });
   it('merges repeat discoveries and rejects non-manager and cross-workspace access',async () => {
     const f=await fixture(); f.cloud.inspect.mockResolvedValue([cloudRow('ecs','i-real')] as never[]); await f.service.scanCurrent(); await f.service.scanCurrent();
     expect(f.store.alerts).toHaveLength(1);

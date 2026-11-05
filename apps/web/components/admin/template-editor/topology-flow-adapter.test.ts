@@ -68,24 +68,24 @@ describe('topology flow adapter', () => {
     const flowEdges = toFlowEdges(nodes, edges);
 
     expect(flowEcs?.data.targetPorts).toEqual([
-      { id: 'target-edge-switch-a-ecs', offset: 26 },
-      { id: 'target-edge-switch-b-ecs', offset: 74 },
+      { id: 'target-edge-switch-a-ecs', offset: 26, side: 'left' },
+      { id: 'target-edge-switch-b-ecs', offset: 74, side: 'left' },
     ]);
-    expect(flowSwitchA?.data.sourcePorts).toEqual([]);
+    expect(flowSwitchA?.data.sourcePorts).toEqual([{ id: 'source-edge-switch-a-ecs', offset: 50, side: 'right' }]);
     expect(flowEdges).toMatchObject([{
       id: 'edge-switch-a-ecs',
-      type: 'bezier',
-      sourceHandle: 'source-default',
+      type: 'topology-network',
+      sourceHandle: 'source-edge-switch-a-ecs',
       targetHandle: 'target-edge-switch-a-ecs',
     }, {
       id: 'edge-switch-b-ecs',
-      type: 'bezier',
-      sourceHandle: 'source-default',
+      type: 'topology-network',
+      sourceHandle: 'source-edge-switch-b-ecs',
       targetHandle: 'target-edge-switch-b-ecs',
     }]);
   });
 
-  it('同一交换机连到多台 ECS 时共用交换机侧端点', () => {
+  it('同一交换机连到多台 ECS 时按对端顺序分配不同端点', () => {
     const ecsTwo: TemplateNode = {
       ...ecs,
       id: 'ecs-2',
@@ -110,15 +110,18 @@ describe('topology flow adapter', () => {
     const flowSwitch = toFlowNodes(nodes, edges).find((node) => node.id === 'switch-a');
     const flowEdges = toFlowEdges(nodes, edges);
 
-    expect(flowSwitch?.data.sourcePorts).toEqual([]);
+    expect(flowSwitch?.data.sourcePorts).toEqual([
+      { id: 'source-edge-switch-a-ecs-1', offset: 26, side: 'right' },
+      { id: 'source-edge-switch-a-ecs-2', offset: 74, side: 'right' },
+    ]);
     expect(flowEdges).toMatchObject([{
       id: 'edge-switch-a-ecs-1',
-      sourceHandle: 'source-default',
-      targetHandle: 'target-default',
+      sourceHandle: 'source-edge-switch-a-ecs-1',
+      targetHandle: 'target-edge-switch-a-ecs-1',
     }, {
       id: 'edge-switch-a-ecs-2',
-      sourceHandle: 'source-default',
-      targetHandle: 'target-default',
+      sourceHandle: 'source-edge-switch-a-ecs-2',
+      targetHandle: 'target-edge-switch-a-ecs-2',
     }]);
   });
 
@@ -257,10 +260,10 @@ describe('topology flow adapter', () => {
     expect(toFlowEdges(nodes, edges)).toMatchObject([{
       id: 'edge-router-dmz',
       source: 'router-1',
-      sourceHandle: 'source-default',
+      sourceHandle: 'source-edge-router-dmz',
       target: 'switch-dmz',
-      targetHandle: 'target-default',
-      type: 'bezier',
+      targetHandle: 'target-edge-router-dmz',
+      type: 'topology-network',
       selectable: true,
       focusable: true,
       interactionWidth: 24,

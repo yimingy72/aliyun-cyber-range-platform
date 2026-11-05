@@ -18,6 +18,7 @@ import type { PlatformImageView, UpdatePlatformImageDto } from './dto/platform-i
 import type { DeleteCustomImageDto } from './dto/image-catalog.dto';
 import type { CreatePlatformImageTagDto, SetPlatformImageTagsDto } from './dto/platform-image-tag.dto';
 import { imageRpc, cloudItems, cloudPage } from './aliyun-image-rpc';
+import { aliyunImageMinimumSystemDiskSize, readAliyunImageSystemDisk } from './aliyun-image-capacity';
 import { PackedImagesService } from './packed-images.service';
 import { SystemConfigService } from './system-config.service';
 import { deleteTencentImage, describeTencentImages } from './tencent-image-rpc';
@@ -49,6 +50,7 @@ type PlatformImageAssetsPayload = {
       platform?: string | null;
       sourceSnapshotStatus: string | null;
       sourceSnapshotAvailable: boolean | null;
+      minimumSystemDiskSize: number | null;
       canManage: boolean;
       canChangeVisibility: boolean;
     }
@@ -72,8 +74,9 @@ type AliyunImage = {
   Architecture?: string;
   Status?: string;
   Progress?: string;
+  Size?: number;
   DiskDeviceMappings?: {
-    DiskDeviceMapping?: Array<{ SnapshotId?: string }> | { SnapshotId?: string };
+    DiskDeviceMapping?: Array<{ SnapshotId?: string; Type?: string; Size?: string }> | { SnapshotId?: string; Type?: string; Size?: string };
   };
 };
 
@@ -164,6 +167,16 @@ export class ImageCatalogService {
       ),
     );
     const sourceSnapshotsById = new Map(sourceSnapshots);
+    const liveCapacities = new Map<string, number>();
+    if (!historical && accountContext.provider === 'alibaba_cloud' && accountContext.accountUidResolved) {
+      for (const item of items) {
+        const snapshot = item.sourceSnapshotId ? sourceSnapshotsById.get(item.sourceSnapshotId) : null;
+        if (!item.enabled || !snapshot?.isAvailable || snapshot.minimumSystemDiskSize != null
+          || item.accountUid !== accountContext.accountUid || item.regionId !== accountContext.defaultRegion) continue;
+        try { liveCapacities.set(item.imageId, (await readAliyunImageSystemDisk(accountContext, item.imageId)).minimumSystemDiskSize); }
+        catch { /* Keep the catalog readable; launch still requires fresh capacity verification. */ }
+      }
+    }
 
     return {
       items: itemsWithCreatedBy.map((item) => {
@@ -180,7 +193,7 @@ export class ImageCatalogService {
           sourceSnapshotStatus: snapshot?.status ?? null,
           sourceSnapshotAvailable: snapshot?.isAvailable ?? null,
           architecture: snapshot?.architecture ?? null,
-          minimumSystemDiskSize: snapshot?.minimumSystemDiskSize ?? null,
+          minimumSystemDiskSize: liveCapacities.get(item.imageId) ?? snapshot?.minimumSystemDiskSize ?? null,
         };
       }),
     };
@@ -272,7 +285,8 @@ export class ImageCatalogService {
     }
   }
 
-  async collectPlatformAsset(snapshotId: string, displayName: string, currentUser: SessionUserProfile) {
+  async collectPlatformAsset(snapshotId: string, displayName: string, currentUser: SessionUserProfile, visibility: 'private' | 'platform' = 'platform') {
+    if (currentUser.role !== 'admin') throw new ForbiddenException('Admin access required');
     const snapshot = await this.adminRepository.getImageSnapshotById(snapshotId);
 
     if (!snapshot) {
@@ -290,6 +304,7 @@ export class ImageCatalogService {
     if (existing) return this.withCreatorUsername(existing, currentUser);
     const [packed] = await this.adminRepository.listPackedImageArtifacts({ imageId: snapshot.imageId, cloudAccountUid: snapshot.accountUid ?? undefined, regionId: snapshot.regionId });
     if (packed && packed.status !== 'deleted') {
+      if (visibility === 'private') throw new ConflictException('请先按原打包来源恢复镜像资产。');
       if (!this.packedImages) throw new ConflictException('打包来源恢复服务不可用，请稍后重试。');
       const asset = await this.packedImages.restoreAsset(packed.id, snapshotId, displayName);
       return this.withCreatorUsername(asset, currentUser);
@@ -298,8 +313,8 @@ export class ImageCatalogService {
       preserveExisting: true,
       snapshotId,
       displayName,
-      ownerUserId: null,
-      visibility: 'platform',
+      ownerUserId: visibility === 'private' ? currentUser.id : null,
+      visibility,
     });
     // Catalog inclusion is not resource creation and must not claim external image or snapshot costs.
     return this.withCreatorUsername(asset, currentUser);
@@ -869,6 +884,9 @@ export class ImageCatalogService {
           osType: image.OSType ?? null,
           platform: image.Platform ?? null,
           architecture: image.Architecture ?? null,
+          minimumSystemDiskSize: aliyunImageMinimumSystemDiskSize({ ...image, DiskDeviceMappings: {
+            DiskDeviceMapping: Array.isArray(image.DiskDeviceMappings?.DiskDeviceMapping) ? image.DiskDeviceMappings.DiskDeviceMapping : image.DiskDeviceMappings?.DiskDeviceMapping ? [image.DiskDeviceMappings.DiskDeviceMapping] : [],
+          } }),
           status: this.buildSnapshotStatus(image),
           isAvailable: image.Status === 'Available',
           lastSyncedAt,

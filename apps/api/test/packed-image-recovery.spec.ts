@@ -6,6 +6,8 @@ import { encryptPackedImageAssetConfig, readPackedImageAssetConfig } from '../sr
 import { decryptPlatformImageDefaultPassword, encryptPlatformImageDefaultPassword } from '../src/admin/platform-image-password';
 import { buildBillingTags } from '../src/admin/billing-tagging';
 import { createMemoryAdminRepository } from './support/create-memory-admin-repository';
+import { readPackedImageDiagnostic } from '../src/admin/packed-image-diagnostic';
+import { runInCloudWorkspace } from '../src/auth/cloud-workspace-scope';
 
 const context: CloudAccountContextCredentials = { id: 'ctx-owned', provider: 'alibaba_cloud', accountUid: '123456', regionId: 'cn-hangzhou', zoneId: 'cn-hangzhou-h',
   accessKeyId: 'synthetic-ak', accessKeySecret: 'synthetic-sk', imageImportBucket: '', status: 'ready' };
@@ -23,6 +25,8 @@ describe('Packed image submission and restart recovery', () => {
   let cloudImage: any;
   let calls: string[];
   let loseCreateResponse: boolean;
+  let rejectCreate: boolean;
+  let auditRejection: boolean;
   const originalCloudKey = process.env.CLOUD_CREDENTIALS_ENCRYPTION_KEY;
   const originalImageKey = process.env.PLATFORM_IMAGE_SECRET_KEY;
 
@@ -30,7 +34,7 @@ describe('Packed image submission and restart recovery', () => {
     process.env.CLOUD_CREDENTIALS_ENCRYPTION_KEY = '12'.repeat(32);
     process.env.PLATFORM_IMAGE_SECRET_KEY = 'synthetic-image-key';
     repository = createMemoryAdminRepository();
-    calls = []; cloudImage = null; loseCreateResponse = false;
+    calls = []; cloudImage = null; loseCreateResponse = false; rejectCreate = false; auditRejection = false;
     credentials = jest.fn().mockResolvedValue(context);
     service = new PackedImagesService(repository, { getCredentials: credentials } as unknown as CloudAccountContextsService);
     const account = { provider: context.provider, accountUid: context.accountUid, cloudAccountContextId: context.id, accountUidResolved: true,
@@ -49,12 +53,22 @@ describe('Packed image submission and restart recovery', () => {
         const artifact = (await repository.listPackedImageArtifacts())[0];
         expect(artifact.assetConfigCiphertext).toBeTruthy();
         expect(artifact.assetConfigCiphertext).not.toContain(payload.defaultPassword);
+        expect(query.get('ImageName')).toBe(`range-pack-${artifact.id}`);
+        if (rejectCreate) return new Response(JSON.stringify({ Code: 'InvalidImageName.Malformed', RequestId: 'rejected-request' }), { status: 400 });
         cloudImage = { ImageId: 'm-packed', ImageName: 'cloud display changed', Status: 'Available',
           Tags: { Tag: Object.entries(buildBillingTags({ billingScope: 'user', ownerUserId: artifact.ownerUserId, platformPackedImageArtifactId: artifact.id,
             billingStartAt: artifact.createdAt })).map(([TagKey, TagValue]) => ({ TagKey, TagValue })) },
           DiskDeviceMappings: { DiskDeviceMapping: [{ SnapshotId: 's-packed' }] } };
         if (loseCreateResponse) throw new Error('synthetic connection lost after submission');
         body = { ...body, ImageId: cloudImage.ImageId };
+      }
+      if (action === 'LookupEvents') {
+        const artifact = (await repository.listPackedImageArtifacts())[0];
+        body = { ...body, StartTime: query.get('StartTime'), EndTime: query.get('EndTime'), Events: auditRejection ? [{
+          eventId: 'audit-event', eventTime: artifact.createdAt.toISOString().replace(/\.\d{3}Z$/, 'Z'), eventName: 'CreateImage', serviceName: 'Ecs', eventType: 'ApiCall',
+          recipientAccountId: context.accountUid, acsRegion: context.regionId, requestId: 'original-rejected-request', errorCode: 'InvalidImageName.Malformed',
+          requestParameters: { ClientToken: artifact.id, InstanceId: artifact.sourceInstanceId },
+        }] : [] };
       }
       if (action === 'DescribeImages') body = { ...body, TotalCount: cloudImage ? 1 : 0, Images: { Image: cloudImage ? [cloudImage] : [] } };
       if (action === 'DescribeSnapshots') {
@@ -128,6 +142,117 @@ describe('Packed image submission and restart recovery', () => {
     expect(calls.filter(action => action === 'CreateImage')).toHaveLength(1);
   });
 
+  it('keeps a Chinese display name while sending only a stable legal cloud name', async () => {
+    const result = await nodes.run(rangeId, 'host', 'pack-image', { ...payload, displayName: '【亭训营】破茧-GitLab new' }, { id: 'owner', role: 'user' });
+    expect(result).toMatchObject({ platformImageAsset: { displayName: '【亭训营】破茧-GitLab new' } });
+    expect(calls.filter(action => action === 'CreateImage')).toHaveLength(1);
+  });
+
+  it('exposes a credential-free original task and recovers a lost response without another CreateImage', async () => {
+    loseCreateResponse = true;
+    await expect(nodes.run(rangeId, 'host', 'pack-image', payload, { id: 'owner', role: 'user' })).rejects.toThrow('未完整确认');
+    const [task] = await service.listTasks({ id: 'owner', role: 'user' }, rangeId);
+    expect(task).toMatchObject({ state: 'unconfirmed', displayName: payload.displayName, imageId: null, canVerify: true });
+    expect(JSON.stringify(task)).not.toMatch(/defaultPassword|assetConfigCiphertext|leaseToken|accessKey|Synthetic-Password/);
+    expect(await service.verifyTask(task.id, { id: 'owner', role: 'user' })).toMatchObject({ id: task.id, state: 'available', imageId: 'm-packed', canVerify: false });
+    expect((await service.listTasks({ id: 'owner', role: 'user' }))).toHaveLength(1);
+    expect(calls.filter(action => action === 'CreateImage')).toHaveLength(1);
+    expect(calls.some(action => /Delete|Stop|Start|Reboot/.test(action))).toBe(false);
+  });
+
+  it('isolates tasks by owner and workspace before any cloud verification', async () => {
+    await nodes.run(rangeId, 'host', 'pack-image', payload, { id: 'owner', role: 'user' });
+    const [task] = await service.listTasks({ id: 'owner', role: 'user' });
+    const before = calls.length;
+    expect(await service.listTasks({ id: 'other', role: 'user' })).toEqual([]);
+    await expect(service.getTask(task.id, { id: 'other', role: 'user' })).rejects.toThrow('无权访问');
+    await expect(service.verifyTask(task.id, { id: 'other', role: 'user' })).rejects.toThrow('无权访问');
+    await runInCloudWorkspace({ cloudWorkspaceId: 'other-space', provider: 'alibaba_cloud', accountUid: context.accountUid }, async () => {
+      expect(await service.listTasks({ id: 'admin', role: 'admin' })).toEqual([]);
+      await expect(service.verifyTask(task.id, { id: 'admin', role: 'admin' })).rejects.toThrow();
+    });
+    expect(calls).toHaveLength(before);
+  });
+
+  it('makes explicit rejections terminal and never resumes a deletion from the verify entry', async () => {
+    rejectCreate = true;
+    await expect(nodes.run(rangeId, 'host', 'pack-image', payload, { id: 'owner', role: 'user' })).rejects.toThrow('明确拒绝');
+    const [artifact] = await repository.listPackedImageArtifacts();
+    const before = calls.length;
+    expect(await service.verifyTask(artifact.id, { id: 'owner', role: 'user' })).toMatchObject({ state: 'rejected', canVerify: false,
+      diagnostic: { phase: 'create_image', cloudErrorCode: 'InvalidImageName.Malformed', cloudRequestId: 'rejected-request' } });
+    await repository.updatePackedImageArtifact(artifact.id, { status: 'deleting' });
+    expect(await service.verifyTask(artifact.id, { id: 'owner', role: 'user' })).toMatchObject({ state: 'deleting', canVerify: false });
+    expect(calls).toHaveLength(before);
+  });
+
+  it('reports exact post-submission cloud errors and resumes only the original image after permissions recover', async () => {
+    await nodes.run(rangeId, 'host', 'pack-image', payload, { id: 'owner', role: 'user' });
+    const [artifact] = await repository.listPackedImageArtifacts();
+    jest.spyOn(globalThis, 'fetch').mockResolvedValueOnce(new Response(JSON.stringify({ Code: 'Forbidden.RAM', RequestId: 'denied-request' }), { status: 400 }));
+    expect(await service.verifyTask(artifact.id, { id: 'owner', role: 'user' })).toMatchObject({ state: 'blocked', imageId: 'm-packed',
+      diagnostic: { phase: 'describe_image', cloudErrorCode: 'Forbidden.RAM', cloudRequestId: 'denied-request' } });
+    expect(await service.verifyTask(artifact.id, { id: 'owner', role: 'user' })).toMatchObject({ state: 'available', imageId: 'm-packed', diagnostic: null });
+    expect(calls.filter(action => action === 'CreateImage')).toHaveLength(1);
+  });
+
+  it('reports incomplete snapshot bindings and retains the same image for a later verification', async () => {
+    await nodes.run(rangeId, 'host', 'pack-image', payload, { id: 'owner', role: 'user' });
+    const [artifact] = await repository.listPackedImageArtifacts();
+    const mapping = cloudImage.DiskDeviceMappings;
+    cloudImage.DiskDeviceMappings = {};
+    expect(await service.verifyTask(artifact.id, { id: 'owner', role: 'user' })).toMatchObject({ state: 'blocked', diagnostic: { phase: 'snapshot_verify', cloudErrorCode: 'SnapshotBindingsIncomplete' } });
+    cloudImage.DiskDeviceMappings = mapping;
+    expect(await service.verifyTask(artifact.id, { id: 'owner', role: 'user' })).toMatchObject({ state: 'available' });
+    expect(calls.filter(action => action === 'CreateImage')).toHaveLength(1);
+  });
+
+  it('records an explicit official rejection as failed and retains its safe request receipt', async () => {
+    rejectCreate = true;
+    await expect(nodes.run(rangeId, 'host', 'pack-image', payload, { id: 'owner', role: 'user' })).rejects.toThrow('明确拒绝');
+    const [artifact] = await repository.listPackedImageArtifacts();
+    expect(artifact).toMatchObject({ status: 'failed', imageId: null });
+    expect(Number.isFinite(artifact.completedAt?.getTime())).toBe(true);
+    expect(readPackedImageDiagnostic(artifact.errorMessage)).toMatchObject({ phase: 'create_image', cloudErrorCode: 'InvalidImageName.Malformed', cloudRequestId: 'rejected-request' });
+    await service.refresh(artifact.id);
+    expect((await repository.getPackedImageArtifact(artifact.id))?.status).toBe('failed');
+  });
+
+  it('does not release UNKNOWN on an empty image inventory or an empty audit lookup', async () => {
+    loseCreateResponse = true;
+    await expect(nodes.run(rangeId, 'host', 'pack-image', payload, { id: 'owner', role: 'user' })).rejects.toThrow('未完整确认');
+    const [artifact] = await repository.listPackedImageArtifacts();
+    cloudImage = null;
+    await service.refresh(artifact.id);
+    expect((await repository.getPackedImageArtifact(artifact.id))?.status).toBe('creating');
+    await expect(service.begin({ ...source, sourceRangeInstanceId: rangeId }, context)).rejects.toThrow('尚未确认');
+    expect(calls.filter(action => action === 'CreateImage')).toHaveLength(1);
+  });
+
+  it('recovers legacy UNKNOWN only from its exact official failed ClientToken event without creating resources', async () => {
+    loseCreateResponse = true;
+    await expect(nodes.run(rangeId, 'host', 'pack-image', payload, { id: 'owner', role: 'user' })).rejects.toThrow('未完整确认');
+    const [artifact] = await repository.listPackedImageArtifacts();
+    cloudImage = null; auditRejection = true;
+    await service.refresh(artifact.id);
+    const recovered = await repository.getPackedImageArtifact(artifact.id);
+    expect(recovered).toMatchObject({ status: 'failed', imageId: null });
+    expect(readPackedImageDiagnostic(recovered!.errorMessage)).toMatchObject({ cloudErrorCode: 'InvalidImageName.Malformed', cloudRequestId: 'original-rejected-request' });
+    expect(calls.filter(action => action === 'CreateImage')).toHaveLength(1);
+    expect(calls.some(action => action.startsWith('Delete'))).toBe(false);
+  });
+
+  it('inherits the source single-instance credential and leaves an unset hostname unset', async () => {
+    await repository.updateRangeInstance(rangeId, { instanceMode: 'single', singleInstanceConfig: { hostKey: 'host', hostName: null,
+      cloudAccountContextId: context.id, cloudAccountUid: context.accountUid, regionId: context.regionId } as never,
+      runtimeCredentials: { host: { username: 'root', password: 'Original-Synthetic-123!' } } });
+    const result = await nodes.runSingleInstanceAction(rangeId, 'pack-image', { displayName: 'inherited defaults' }, { id: 'owner', role: 'user' });
+    const [asset] = await repository.listPlatformImageAssets();
+    expect(asset.defaultHostName).toBeNull();
+    expect(decryptPlatformImageDefaultPassword(asset.defaultPassword)).toBe('Original-Synthetic-123!');
+    expect(result).toMatchObject({ defaultPassword: 'Original-Synthetic-123!' });
+  });
+
   it('keeps legacy assets without original defaults private and disabled across Creating and Available polls', async () => {
     const artifact = await service.begin({ ...source, sourceRangeInstanceId: rangeId }, context);
     const tags = buildBillingTags({ billingScope: 'user', ownerUserId: 'owner', platformPackedImageArtifactId: artifact.id, billingStartAt: artifact.createdAt });
@@ -140,7 +265,8 @@ describe('Packed image submission and restart recovery', () => {
     expect(await repository.listPlatformImageAssets()).toHaveLength(1);
     expect((await repository.listPlatformImageAssets())[0]).toMatchObject({ displayName: 'legacy name', ownerUserId: 'owner', visibility: 'private',
       enabled: false, defaultPassword: null, defaultHostName: null, description: null });
-    expect(await repository.getPackedImageArtifact(artifact.id)).toMatchObject({ status: 'available', errorMessage: expect.stringContaining('默认密码留空') });
+    expect(await repository.getPackedImageArtifact(artifact.id)).toMatchObject({ status: 'available' });
+    expect(readPackedImageDiagnostic((await repository.getPackedImageArtifact(artifact.id))!.errorMessage)).toMatchObject({ phase: 'persist_asset', cloudErrorCode: 'OriginalDefaultsMissing' });
     expect(calls).not.toContain('CreateImage');
   });
 

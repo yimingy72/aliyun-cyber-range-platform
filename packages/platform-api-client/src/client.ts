@@ -2,6 +2,7 @@ import type { ResourceAlert, ResourceAlertStatus, ResourcePatrol, ResourceReclai
 import type {
   AdminUser,
   BillingAnomaly,
+  BillingEntriesInput,
   BillingGroupInput,
   BillingLaunchGroup,
   BillingLineItem,
@@ -52,6 +53,7 @@ import type {
   RangeAccessPayload,
   RangeInstance,
   RangeInstanceNodeActionPayload,
+  RangeNodeResetPreview,
   RangeTemplate,
   RangeTemplateView,
   ResetAdminUserPasswordInput,
@@ -362,7 +364,7 @@ export class PlatformApiClient implements PlatformApiClientLike {
   runRangeInstanceNodeAction(
     rangeInstanceId: string,
     nodeId: string,
-    action: 'start' | 'stop' | 'reboot' | 'open-vnc' | 'pack-image' | 'verify-dns' | 'apply-dns',
+    action: 'start' | 'stop' | 'reboot' | 'open-vnc' | 'pack-image' | 'verify-dns' | 'apply-dns' | 'reset',
     payload: RangeInstanceNodeActionPayload = {},
     operation?: OperationRequest,
   ) {
@@ -378,7 +380,12 @@ export class PlatformApiClient implements PlatformApiClientLike {
     );
   }
 
+  previewRangeInstanceNodeReset(rangeInstanceId:string,nodeId:string) {
+    return this.request<RangeNodeResetPreview>(`/admin/ranges/${encodeURIComponent(rangeInstanceId)}/nodes/${encodeURIComponent(nodeId)}/reset-preview`);
+  }
+
   listSingleInstanceNetworks() {return this.request<Record<string,unknown>[]>('/admin/instances/networks');}
+  createSingleInstanceNetwork(operation?:OperationRequest) {return this.request<Record<string,unknown>>('/admin/instances/networks/ensure',{method:'POST',body:'{}',operation});}
   registerSingleInstanceNetworkCleanup(id:string,payload:{runId:string;createdAfter:string;ownerUserIds:string[]}) {return this.request<Record<string,unknown>>(`/admin/instances/networks/${encodeURIComponent(id)}/register-cleanup`,{method:'POST',body:JSON.stringify(payload)});}
   destroySingleInstanceNetwork(id:string,cleanupRunId:string,operation?:OperationRequest) {
     return this.request<Record<string,unknown>>(`/admin/instances/networks/${encodeURIComponent(id)}/destroy`,{method:'POST',body:JSON.stringify({cleanupRunId}),operation});
@@ -414,9 +421,12 @@ export class PlatformApiClient implements PlatformApiClientLike {
     return this.request<ProvisionJob[]>(`/admin/provision-jobs${query}`);
   }
 
-  getProvisionJob(id: string, options?: { includeEvidence?: boolean }) {
-    const query = options?.includeEvidence === undefined ? '' : `?includeEvidence=${options.includeEvidence}`;
-    return this.request<ProvisionJob>(`/admin/provision-jobs/${encodeURIComponent(id)}${query}`);
+  getProvisionJob(id: string, options?: { includeEvidence?: boolean; includeCloudEvents?: boolean; cloudResourceIds?: string[] }) {
+    const query = new URLSearchParams();
+    if (options?.includeEvidence !== undefined) query.set('includeEvidence', String(options.includeEvidence));
+    if (options?.includeCloudEvents !== undefined) query.set('includeCloudEvents', String(options.includeCloudEvents));
+    if (options?.cloudResourceIds !== undefined) query.set('cloudResourceIds', options.cloudResourceIds.join(','));
+    return this.request<ProvisionJob>(`/admin/provision-jobs/${encodeURIComponent(id)}${query.size ? '?' + query : ''}`);
   }
 
   fetchCloudConfig() {
@@ -469,6 +479,17 @@ export class PlatformApiClient implements PlatformApiClientLike {
 
   getBillingSummary(input: BillingWindowInput = {}) {
     return this.request<BillingSummary>(this.billingPath('summary', input));
+  }
+  listBillingEntries(input: BillingEntriesInput = {}) {
+    return this.request<Record<string, unknown>>(this.billingPath('entries', input));
+  }
+  getBillingEntryDetail(entryId: string, input: Pick<BillingWindowInput, 'startAt' | 'endAt'> = {}) {
+    return this.request<Record<string, unknown>>(this.billingPath(`entries/${encodeURIComponent(entryId)}`, input));
+  }
+
+  diagnoseBillingMonth(input: { billingCycle: string; ledgerIds: string[] }) {
+    const query = new URLSearchParams({ billingCycle: input.billingCycle, ledgerIds: input.ledgerIds.join(',') });
+    return this.request<Record<string, unknown>>(`/admin/billing/diagnostics/monthly?${query}`);
   }
 
   listBillingUsers(input: BillingWindowInput = {}) {
@@ -652,7 +673,7 @@ export class PlatformApiClient implements PlatformApiClientLike {
     });
   }
 
-  private billingPath(path: string, input: BillingWindowInput | BillingGroupInput) {
+  private billingPath(path: string, input: BillingWindowInput | BillingEntriesInput) {
     const query = new URLSearchParams();
 
     if (input.startAt) {
@@ -673,6 +694,9 @@ export class PlatformApiClient implements PlatformApiClientLike {
 
     if ('userId' in input && input.userId) {
       query.set('userId', input.userId);
+    }
+    for (const key of ['view', 'groupBy', 'billStatus'] as const) if (key in input && (input as BillingEntriesInput)[key]) {
+      query.set(key, (input as BillingEntriesInput)[key]!);
     }
 
     const search = query.toString();

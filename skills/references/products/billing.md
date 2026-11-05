@@ -9,6 +9,9 @@
 | 操作 | MCP 工具 | 必填参数 | 可选参数 | Scope |
 |---|---|---|---|---|
 | 费用概览 | `billing_summary_get` | — | `startAt`、`endAt` | `billing:read` |
+| 页面账目与分类 | `billing_entry_list` | — | `startAt`、`endAt`、`view: user\|platform`、`userId`、`groupBy: batch`、`billStatus`、`page`、`pageSize` | `billing:read` |
+| 账目详情与历史 | `billing_entry_get` | `entryId`（来自账目列表） | `startAt`、`endAt` | `billing:read` |
+| 只读核对资源月账 | `billing_monthly_diagnose` | `billingCycle`（YYYY-MM）、`ledgerIds`（1–100项，不重复） | — | `billing:read` |
 | 用户费用列表 | `billing_user_list` | — | `startAt`、`endAt`、`page`、`pageSize` | `billing:read` |
 | 单个用户概览 | `billing_user_summary_get` | `userId` | `startAt`、`endAt` | `billing:read` |
 | 用户费用分组 | `billing_user_group_list` | — | `userId`、`startAt`、`endAt`、`page`、`pageSize` | `billing:read` |
@@ -26,6 +29,15 @@
 | 导出用户明细 | `billing_export_user_csv` | `userId` | `startAt`、`endAt` | `billing:read` |
 
 ## 操作规则
+
+- 页面账目的“无需出账”仅用于有同实例、同空间、原账号证据证明在计费资源创建前失败的请求；保留失败历史，不伪造零元账单。创建失败但已经创建资源时继续核对其实际费用。历史资源身份缺失或查询失败且没有可确认费用的记录显示“待核验”，不混入“未出账”；仅有空台账、回收成功或账单为空不能证明无需计费。
+- 单实例还可核对原回收任务的 `provision_job_get(includeEvidence=true).creationRejections`：仅投影与原创建任务、账号/地域、冻结镜像及系统盘参数一致的历史拒绝核验，包含当时官方镜像查询 RequestId。该编号不是创建或删除请求编号；不同账号、成功创建回执或不完整历史仍不能按无费用处理。不为补证重新创建或回收资源。
+
+- 月账诊断只接受当前空间已证明平台创建、同一原账号上下文的准确台账，账月须与资源记录的使用区间相交。普通月账按账号完整分页；分账按资源类型限定相关产品，EIP 覆盖 eip、cdt、cbwp，快照为 snapshot，专用桶为 oss。返回各查询完整性、请求ID、账号产品行数及这些资源ID的精确匹配明细。产品行数不是平台费用，引用字段命中不构成归属证明；月账不写入日账、不修改金额或资源释放时间。空明细不等于免费，未完成或身份冲突的查询不能解释为零行。
+- `instanceLifecycle` 独立记录对准确 ECS、云盘、EIP、NAT ID 的只读 `QueryAvailableInstances` 查询，仅返回同原账号/地域的白名单字段。`ReleaseTime` 与 `ExpectedReleaseTime` 分开保留；后者是期望时间，不是实际释放。该接口查询可用实例，未返回历史记录不等于已释放；生命周期查询失败不改写已完成的月账查询完整性，也不自动改写台账时间或金额。
+- EIP 月账诊断还返回 `accountNetworkOverview`：只读 `QueryBillOverview` 核对同账号同月是否存在 EIP/CDT/共享带宽/IP 地址池商品及优惠/抹零金额是否为零，仅提供金额类别，不披露或归入账号聚合金额。它不是平台费用归属证明，查询完整性与月账、实例记录分别标记。
+- `networkBillingDimensions` 对 EIP/CDT/共享带宽另查实例汇总（`IsBillingItem=false`）与 `QueryBill` / `QuerySettleBill` 结算状态及 `QueryAccountBill` 产品汇总，保留零金额、不限定支付或账单类型，并完整核验分页、原账号与产品。仅返回产品行数、官方状态和金额类别；`NoSettle` 为官方免结算状态，`PayUnsettle` 为未结算，不能互换，也不能把账号聚合记录当作某项 EIP 的费用或免收证明。
+- 选择不超过 20 项 ECS/盘/EIP/NAT 时，`configurationTimelines` 只读补查原账号既有配置审计历史；仅输出准确资源、账号、地域校验后的事件类型和采集时间。`REMOVE` 的 `captureTime` 是采集到删除状态的时间，不是原生秒级删除回执；周期订正也不代表当时发生实际变更。权限不足或服务未开通时停止同批补查，不开通服务，不调用 ActionTrail，不据此修改账期。
 
 - 部署配置 `PLATFORM_BILLING_STARTED_AT` 后，概览返回 `platformBillingStartedAt`，当前查询、分组、导出和同步只纳入固定起点后由平台实际创建的资源，以及不早于该起点的已核验阿里云专用桶声明区间。按出生来源或明确专用区间划分，不按出账日期认领：旧资源迟到账不计入当前费用；新快照或动态新增节点仍独立核验其新创建来源。起点不随重启或更新滚动，未配置时保持原有全历史行为。
 - 历史资源台账和已同步账单保留作审计，但不纳入当前范围；当前账单按固定起点隔离同步批次，重刷当天不得覆盖历史分区。账户和地域聚合费用仍须精确归属，不能因为日期较新就认领。
@@ -45,6 +57,7 @@
 - 多币种费用不换算、不相加。`currencyTotals`/`amounts` 按币种返回金额；单币种保留数字汇总并附 `currency`，多币种的总金额为 `null`。用户列表先按币种、再在同币种内按费用排序。CSV 同样按币种分列。
 - 官方资源金额原样保留至 18 位小数，不将合法的 10 位费用或负退款截断为 9 位；金额必须满足现有数字接口的无损往返及绝对值小于 `1e11`（原币）的范围。平台相关金额超出支持范围时保留旧账；无平台归属的外部费用不因存储精度阻塞平台同步。OSS/快照源总额与所有分账金额仍完整核对，不先剔除外部分账凑齐差额。参见 [阿里云金额字段](https://help.aliyun.com/zh/user-center/developer-reference/api-bssopenapi-2017-12-14-describeinstancebill)。
 - CSV 仅在用户明确要求导出时生成；只报告文件名、行数和非敏感摘要。
+- `resourcesWithoutBill` 返回与 `resourcesWithoutBillCount` 同口径的待补齐资源清单，包含资源 ID、类型、所属实例/用户、来源作业、账号/地域、资源计费起止及 `proofFailureReason`，不包含估算金额或原始账单。页面可点击待补齐数量展开清单，也可展开各类对账提示。缺字段或清单数量不完整表示接口尚未提供完整明细，不能解释为无待补齐费用；来源/磁盘映射诊断仍与缺独立明细的数量分开，不重复加入费用。
 
 ## 腾讯云费用明细
 
@@ -59,7 +72,7 @@
 
 ## 当前待核对能力边界
 
-现有工具返回已同步的官方账单和资源归属诊断。它们尚不提供“资源一创建就新建账单行”的生命周期账单模型，也不返回统一的“未出账/部分出账/已出账至某日”资源状态。不要把产品方案写成已实现能力，或因列表暂时为空宣称没有费用。
+`billing_entry_list` / `billing_entry_get` 与页面共用账目模型，按实例请求和资产展示已出账、部分出账、未出账、无需出账或待核验；无需出账不创建零元费用明细，资源创建结果不明时保留待核验。`coveredThrough` 为已核验账期覆盖，不是云端最终结算日期。其余旧费用汇总工具仍按已同步官方账单与资源归属诊断返回，不因列表暂时为空宣称没有费用。
 
 - 新创建及动态新增资源：通过 `provision_job_get` 的同来源库存和 `billingResources` 核对 provider、账号、地域、owner、原生资源 ID、出生作业和释放时间。已有资源的规则变更不新建主机费用，也不把旧资源来源改成更新作业。
 - 删除节点和整套回收后：保留创建与释放台账，核对被删除主机、系统盘及付费网络是否释放；资源释放时间不等于最终出账金额。腾讯云系统盘包含于 CVM 组件时不另算一遍。

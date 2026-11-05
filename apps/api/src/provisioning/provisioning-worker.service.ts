@@ -3,11 +3,16 @@ import { buildRangeChangeApproval, rangeChangeDigest, type RangeChangeApproval }
 import { RangeDnsVerificationService } from '../admin/range-dns-verification.service';
 import { ResourceAlertsService } from '../admin/resource-alerts.service';
 import { ResourceAlertReclaimer } from '../admin/resource-alert-reclaimer';
+import { RangeNodeResetService } from '../admin/range-node-reset.service';
+import { InstancePowerService } from '../admin/instance-power.service';
+import { isPowerJob } from '../admin/instance-power-types';
+import { InstanceExpiryService } from '../admin/instance-expiry.service';
+import { verifiedExpiryEdit } from '../admin/instance-expiry-types';
 import { randomUUID } from 'node:crypto';
 import { runInSystemCloudWorkspaceScope } from '../auth/cloud-workspace-scope';
 import { listExecutionCloudWorkspaces, runInExecutionCloudWorkspace } from '../auth/background-cloud-workspace';
 
-import { BadRequestException, Inject, Injectable, Logger, Optional } from '@nestjs/common';
+import { BadRequestException, ConflictException, Inject, Injectable, Logger, Optional } from '@nestjs/common';
 
 import {
   ADMIN_REPOSITORY,
@@ -50,7 +55,7 @@ import {
 const DEFAULT_WORKER_POLL_INTERVAL_MS = 1_000;
 const SINGLE_INSTANCE_REFRESH_DELAY_MS = 2_000;
 const DEFAULT_INTERRUPTED_JOB_STALE_AFTER_MS = 5 * 60 * 1_000;
-const DEFAULT_PLATFORM_RESOURCE_RECONCILIATION_INTERVAL_MS = 5 * 60 * 1_000;
+const DEFAULT_PLATFORM_RESOURCE_RECONCILIATION_INTERVAL_MS = 60 * 60 * 1_000;
 const ALICLOUD_ECS_API_VERSION = '2014-05-26';
 const ALICLOUD_VPC_API_VERSION = '2016-04-28';
 const ALICLOUD_SIGNATURE_METHOD = 'HMAC-SHA1';
@@ -103,6 +108,9 @@ export class ProvisioningWorkerService {
     @Optional() private readonly dnsVerification?: RangeDnsVerificationService,
     @Optional() private readonly resourceAlerts?: ResourceAlertsService,
     @Optional() private readonly resourceAlertReclaimer?: ResourceAlertReclaimer,
+    @Optional() private readonly nodeReset?: RangeNodeResetService,
+    @Optional() private readonly instancePower?: InstancePowerService,
+    @Optional() private readonly instanceExpiry?: InstanceExpiryService,
   ) {
     this.singleInstanceBatchExecutionService =
       singleInstanceBatchExecutionService ??
@@ -130,6 +138,7 @@ export class ProvisioningWorkerService {
       const now = new Date();
       await this.recoverInterruptedJobs(now);
       await this.processExpiredInstances(now);
+      await this.instancePower?.processSchedules(now).catch(() => this.logger.error('预约停机检查未完成，原预约记录保留。'));
       const started = await this.startEligiblePendingJobs();
       this.reconcilePlatformResourcesIfDue(now);
 
@@ -258,7 +267,7 @@ export class ProvisioningWorkerService {
     if (instance.instanceMode === 'range') {
       await this.adminRepository.queueRangeInstanceJob({
         rangeInstanceId: instance.id, jobType: 'destroy', triggeredBy: 'system:auto-expire',
-        expectedStatus: instance.status, expectedOwnerUserId: instance.ownerUserId, nextStatus: 'pending_destroy',
+        expectedStatus: instance.status, expectedOwnerUserId: instance.ownerUserId, expectedUpdatedAt: instance.updatedAt, nextStatus: 'pending_destroy',
       });
       return;
     }
@@ -329,7 +338,7 @@ export class ProvisioningWorkerService {
       throw new Error('Provision job and target instance belong to different cloud workspaces');
     }
     if (instance?.instanceMode === 'single' && instance.singleInstanceConfig?.executionBackend === 'opentofu'
-      && pendingJob?.jobType !== 'refresh_status') {
+      && pendingJob?.jobType !== 'refresh_status' && pendingJob?.jobType !== 'change_expiry' && !isPowerJob(pendingJob)) {
       const batchId = instance.singleInstanceBatchId;
       if (!batchId) throw new Error('OpenTofu single-instance job has no batch identity');
       const result = await this.adminRepository.tryWithSingleInstanceBatchProvisionLock(batchId, async lease => {
@@ -401,6 +410,54 @@ export class ProvisioningWorkerService {
       await this.updateRangeForClaim(job, { errorSummary: null });
     }
     const reportStep = this.createStepReporter(job.id);
+    if (job.jobType === 'change_expiry') {
+      const assertClaim = async () => {
+        signal?.throwIfAborted();
+        if (!await this.ownsProvisionJobClaim(job)) throw new Error('EXPIRY_CLAIM_LOST');
+      };
+      try {
+        if (!this.instanceExpiry) throw new Error('EXPIRY_EXECUTOR_UNAVAILABLE');
+        await this.instanceExpiry.execute(job, assertClaim);
+      } catch (error) {
+        await assertClaim();
+        if (this.instanceExpiry) await this.instanceExpiry.fail(job, error);
+        else await this.adminRepository.updateProvisionJob(job.id, { status: 'failed', finishedAt: new Date(), errorSummary: '回收时间执行器不可用，未修改云端时间。' });
+      }
+      return;
+    }
+    if (isPowerJob(job)) {
+      const assertPowerClaim = async () => {
+        signal?.throwIfAborted();
+        if (!await this.ownsProvisionJobClaim(job)) throw new Error('POWER_CLAIM_LOST');
+        const current = await this.adminRepository.getRangeInstanceById(job.rangeInstanceId);
+        if (!current || current.lastJobId !== job.id || current.status !== 'running' || current.powerControl?.jobId !== job.id) throw new Error('POWER_SOURCE_CHANGED');
+      };
+      try {
+        if (!this.instancePower) throw new Error('POWER_EXECUTOR_UNAVAILABLE');
+        await this.instancePower.execute(job, assertPowerClaim, job.topologySnapshot?.powerObserveOnly === true);
+      } catch (error) {
+        if (this.instancePower) await this.instancePower.fail(job, error, () => this.ownsProvisionJobClaim(job).then(owned => { if (!owned) throw new Error('POWER_CLAIM_LOST'); }));
+        else await this.adminRepository.updateProvisionJob(job.id, { status: 'failed', finishedAt: new Date(), errorSummary: '节省停机执行器不可用，未执行任何云端电源操作。' });
+      }
+      return;
+    }
+    if(job.jobType==='reset') {
+      try {
+        if(!this.nodeReset||instance.instanceMode!=='range') throw new Error('Node reset executor is unavailable');
+        await this.nodeReset.execute(job,async()=>{signal?.throwIfAborted();if(!await this.ownsProvisionJobClaim(job)) throw new Error('Node reset claim was lost');});
+        if(!await this.ownsProvisionJobClaim(job)) return;
+        await this.updateRangeForClaim(job,{errorSummary:null});
+        if(await this.adminRepository.updateRangeProvisionJob(job.id,job.startedAt!,{status:'succeeded',finishedAt:new Date(),errorSummary:null}))
+          await this.finalizeDispatchedOperation(job,'succeeded');
+      } catch(error) {
+        if(!await this.ownsProvisionJobClaim(job)) return;
+        const message=error instanceof ConflictException?error.message:'节点重置未完成或结果待核验；不会重建实例或自动再次恢复系统盘。';
+        await this.updateRangeForClaim(job,{errorSummary:message});
+        if(await this.adminRepository.updateRangeProvisionJob(job.id,job.startedAt!,{status:'failed',finishedAt:new Date(),errorSummary:message}))
+          await this.finalizeDispatchedOperation(job,'failed','NODE_RESET_FAILED');
+      }
+      return;
+    }
     let rangeApplyStarted = false;
     let failedCreateCleanupInput: RangeProvisionDestroyInput | null = null;
     let failedCreateCleanupContext: { id: string; accountUid: string; regionId: string } | null = null;
@@ -422,7 +479,7 @@ export class ProvisioningWorkerService {
         } else if(!await this.adminRepository.commitSingleInstanceClaim(job,{status:'destroyed',resourceSummary:summary,accessEntry:null,errorSummary:null,
           singleInstanceConfig: instance.singleInstanceConfig ? { ...instance.singleInstanceConfig, opentofuCreateJobId: null } : null},
           {status:'succeeded',finishedAt:new Date(),errorSummary:null})) return;
-        await this.finalizeDispatchedOperation(job,'succeeded');this.nextResourceReconciliationAt=0;return;
+        await this.finalizeDispatchedOperation(job,'succeeded');return;
       }
       const rangeContext = instance.instanceMode === 'range' ? { ...await this.resolveRangeAccountContext(instance, job) } : null;
       const runtimeConfig = rangeContext!;
@@ -448,7 +505,6 @@ export class ProvisioningWorkerService {
           reportStep,
           batchLease,
         });
-        this.nextResourceReconciliationAt = 0;
         return;
       }
 
@@ -477,7 +533,6 @@ export class ProvisioningWorkerService {
         }))) return;
         await this.finalizeDispatchedOperation(job, 'succeeded');
         this.scheduleGuestDnsVerification(instance, job);
-        this.nextResourceReconciliationAt = 0;
         return;
       }
 
@@ -656,7 +711,6 @@ export class ProvisioningWorkerService {
       }))) return;
       await this.finalizeDispatchedOperation(job, 'succeeded');
       this.scheduleGuestDnsVerification(instance, job);
-      this.nextResourceReconciliationAt = 0;
     } catch (error) {
       if (!(await this.ownsProvisionJobClaim(job))) {
         return;
@@ -748,7 +802,6 @@ export class ProvisioningWorkerService {
       status: 'succeeded', finishedAt: new Date(), errorSummary: null,
     }))) return;
     await this.finalizeDispatchedOperation(job, 'succeeded');
-    this.nextResourceReconciliationAt = 0;
   }
 
   private async processRangeInstanceUpdateJob(input: {
@@ -776,6 +829,7 @@ export class ProvisioningWorkerService {
     const beforeUpdate = await this.adminRepository.getRangeInstanceById(input.instance.id);
     if (!beforeUpdate) throw new Error('Range instance disappeared before topology update');
     if (beforeUpdate.expiresAt && beforeUpdate.expiresAt <= new Date()) throw new Error('Range expired before runtime topology update');
+    await verifiedExpiryEdit(this.adminRepository, beforeUpdate);
     const approval = (topologySnapshot as ProvisionJobTopologySnapshot & { changeApproval?: RangeChangeApproval }).changeApproval;
     assertExistingHostBootstrapUnchanged(beforeUpdate, topologySnapshot.topologyGraph);
     if (this.rangeProvisioner.mode === 'opentofu' && !approval) throw new Error('Runtime topology update requires its confirmed preview');
@@ -1471,6 +1525,8 @@ export class ProvisioningWorkerService {
   }
 
   private resolveEffectiveJobType(job: ProvisionJobRecord, instance: RangeInstanceRecord) {
+    if (job.jobType === 'economical_stop' || job.jobType === 'resume' || job.jobType === 'change_expiry') throw new Error('Instance control cannot enter resource creation or destruction');
+    if(job.jobType==='reset') throw new Error('Node reset cannot enter the create/update/destroy executor');
     if (job.jobType === 'retry') {
       if (job.topologySnapshot?.operation === 'create') return 'create' as const;
       if (job.topologySnapshot?.operation === 'destroy') return 'destroy' as const;
@@ -1863,9 +1919,30 @@ export class ProvisioningWorkerService {
       || !['create','retry','update'].includes(source.jobType) || !source.startedAt
       || !Number.isFinite(submittedAt) || !originalApply
       || source.jobType === 'update' && source.topologySnapshot?.operation !== 'update'
-      || !intent.hostKeys.length || new Set(intent.hostKeys).size !== intent.hostKeys.length
-      || intent.hostKeys.some(key => !summary.hostIds?.[key] || summary.diskInventoryHostIds?.[key] !== summary.hostIds[key] || !summary.systemDiskIds?.[key]))
+      || !intent.hostKeys.length || new Set(intent.hostKeys).size !== intent.hostKeys.length)
       throw new Error('Alibaba unknown apply absence requires the original job, frozen account and complete host/disk inventory');
+    const missing = intent.hostKeys.filter(key => !summary.hostIds?.[key] || summary.diskInventoryHostIds?.[key] !== summary.hostIds[key] || !summary.systemDiskIds?.[key]);
+    if (missing.length) {
+      const logs = await this.adminRepository.listProvisionJobStepLogs(source.id);
+      const rejectedCloudInit = source.jobType === 'create' && source.status === 'failed' && (source.retryCount ?? 0) === 0
+        && logs.some(log => log.jobId === source.id && log.cloudWorkspaceId === source.cloudWorkspaceId && log.stepName === 'tofu_apply' && log.status === 'failed'
+          && /\bCode:\s*ImageNotSupportCloudInit(?:\\n|\s|$)/.test(log.stdoutExcerpt ?? ''));
+      const hosts = source.topologySnapshot?.compiledProvisionSpec?.hosts;
+      if (!rejectedCloudInit || !Array.isArray(hosts)) throw new Error('Alibaba missing hosts have no definitive creation rejection evidence');
+      for (const key of missing) {
+        const frozen = hosts.filter((host: any) => host?.key === key);
+        if (summary.hostIds?.[key] || summary.systemDiskIds?.[key] || frozen.length !== 1 || !frozen[0].dns || typeof frozen[0].imageId !== 'string')
+          throw new Error('Alibaba missing host has incomplete physical inventory or frozen DNS image identity');
+        const response = await this.performAliyunRpcRequest<Record<string, any>>({ endpoint: `ecs.${account.defaultRegion}.aliyuncs.com`, version: ALICLOUD_ECS_API_VERSION, action: 'DescribeImages',
+          accessKeyId: account.accessKeyId, accessKeySecret: account.accessKeySecret,
+          parameters: { RegionId: account.defaultRegion, ImageId: frozen[0].imageId, Status: 'ALL', PageNumber: '1', PageSize: '100' } });
+        const images = this.readVerificationPage(response, response.Images?.Image, 'ImageId', [frozen[0].imageId]) as Record<string, unknown>[];
+        // Immutable image capability proves that the frozen DNS userdata request could not create this host.
+        if (response.TotalCount !== 1 || images.length !== 1
+          || images[0].ImageId !== frozen[0].imageId || images[0].Status !== 'Available' || images[0].IsSupportCloudinit !== false)
+          throw new Error('Alibaba original image does not prove its userdata creation request was rejected');
+      }
+    }
     if (Object.values(summary.unverifiedDiskIds ?? {}).length
       || inventoryDiskIds(summary).some(id => !summary.diskOwnershipProofs?.[id]))
       throw new Error('Alibaba unknown apply disk ownership evidence is incomplete');

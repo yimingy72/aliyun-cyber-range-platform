@@ -24,6 +24,15 @@ describe('Image catalog preservation and collection', () => {
     fetchMock = jest.spyOn(globalThis, 'fetch');
   });
   afterEach(() => jest.restoreAllMocks());
+  it('reads legacy Alibaba image capacity without overwriting its existing OS metadata', async () => {
+    await repository.setPlatformImageAssetEnabled(assetId, true);
+    const liveService = new ImageCatalogService(repository, { getAccountContext: jest.fn().mockResolvedValue({ ...account, accountUidResolved: true }) } as unknown as SystemConfigService);
+    const before = await repository.getImageSnapshotById(sourceId);
+    fetchMock.mockResolvedValue(new Response(JSON.stringify({ RequestId: 'image-request', TotalCount: 1,
+      Images: { Image: [{ ImageId: 'm-existing', Status: 'Available', Size: 64 }] } })));
+    expect((await liveService.listPlatformAssets(owner, 'mine')).items[0].minimumSystemDiskSize).toBe(64);
+    expect(await repository.getImageSnapshotById(sourceId)).toEqual(before);
+  });
   it('keeps image-only deletions visible for explicit later snapshot cleanup, then removes the fully reclaimed row', async () => {
     const artifact = await repository.createPackedImageArtifact({ cloudAccountContextId: 'ctx', cloudAccountUid: account.accountUid, regionId: account.defaultRegion, ownerUserId: owner.id, sourceRangeInstanceId: 'range', sourceHostKey: 'host', sourceInstanceId: 'i-owned', sourceDiskIds: ['d-one', 'd-two'] });
     await repository.updatePackedImageArtifact(artifact.id, { imageId: 'm-existing', sourceSnapshotId: sourceId, status: 'available', backingSnapshotIds: ['s-one', 's-two'] });

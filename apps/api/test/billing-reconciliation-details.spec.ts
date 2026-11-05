@@ -17,6 +17,30 @@ function fixture() {
   return { ledgers,proof,repository,service:new BillingService(repository as never) };
 }
 afterEach(()=>jest.restoreAllMocks());
+it('lists exactly the missing-bill resources in the selected window and actor scope without inventing money', async () => {
+  const s = fixture();
+  for (const ledger of s.ledgers) s.proof.createdLedgerIds.add(ledger.id);
+  s.proof.unverifiedSourceLedgerIds.clear();
+  const original = s.ledgers[0];
+  for (const extra of [
+    { ...original, id: 'foreign', cloudWorkspaceId: 'workspace-b', cloudResourceId: 'ins-foreign' },
+    { ...original, id: 'other-owner', ownerUserId: 'owner-b', cloudResourceId: 'ins-other-owner' },
+    { ...original, id: 'old', releasedAt: new Date('2026-09-20'), cloudResourceId: 'ins-old' },
+    { ...original, id: 'snat', cloudResourceType: 'snat_entry', cloudResourceId: 'snat-no-independent-bill' },
+  ]) { s.proof.ledgers.push(extra); s.proof.createdLedgerIds.add(extra.id); }
+  const result = await runInCloudWorkspace(scope, () => s.service.getSummary(window));
+  expect(result.resourcesWithoutBillCount).toBe(9);
+  expect(result.resourcesWithoutBill).toHaveLength(9);
+  expect(result.resourcesWithoutBill.map(row => row.cloudResourceId)).toEqual(Array.from({ length: 9 }, (_, index) => `ins-owned${index}`));
+  expect(result.resourcesWithoutBill[0]).toMatchObject({ rangeInstanceId: 'range-a', ownerUserId: 'owner-a',
+    sourceProvisionJobId: 'old-create', releasedAt: '2026-09-30T00:00:00.000Z', proofFailureReason: 'BILL_DETAILS_PENDING' });
+  expect(result.totalPretaxAmount).toBe(0);
+  expect(JSON.stringify(result.resourcesWithoutBill)).not.toMatch(/fixture-secret|tagsSnapshot|pretaxAmount|ins-foreign|ins-other-owner|ins-old|snat-no-independent-bill/);
+  expect(s.repository.updateBillingLedgerResource).not.toHaveBeenCalled();
+  const anonymous = await runInCloudWorkspace({ ...scope, actorUserId: undefined }, () => s.service.getSummary(window));
+  expect(anonymous.resourcesWithoutBillCount).toBe(0);
+  expect(anonymous.resourcesWithoutBill).toEqual([]);
+});
 it('applies actor visibility to anomaly rows as well as summary evidence', async () => {
   const s = fixture();
   s.proof.ledgers.push({ ...s.ledgers[0], id: 'other-ledger', ownerUserId: 'owner-b', cloudResourceId: 'ins-b' });
@@ -49,7 +73,11 @@ it.each(['missing-resource','conflicting-proof','wrong-job-type','missing-uid','
   if(reason==='wrong-job-type')s.repository.getProvisionJobById.mockResolvedValue({id:'old-create',cloudWorkspaceId:scope.cloudWorkspaceId,rangeInstanceId:'range-a',jobType:'destroy'} as never);
   if(reason==='missing-uid')s.ledgers[0].cloudAccountUid=null as never;
   if(reason==='snapshot')s.ledgers[0].cloudResourceType='snapshot';
-  const result=await runInCloudWorkspace(scope,()=>s.service.getSummary(window));
+  const result=await runInCloudWorkspace(reason==='snapshot'?{...scope,isPlatformManager:true}:scope,()=>s.service.getSummary(window));
+  if(reason==='snapshot'){
+    const user=await runInCloudWorkspace(scope,()=>s.service.getSummary(window));
+    expect(user.reconciliationIssues.flatMap(issue=>issue.resources).some(row=>row.cloudResourceType==='snapshot')).toBe(false);
+  }
   const expected={ 'missing-resource':'SOURCE_RESOURCE_NOT_IN_CREATION_INVENTORY','conflicting-proof':'SOURCE_CREATION_PROOF_CONFLICT','wrong-job-type':'SOURCE_JOB_NOT_CREATION','missing-uid':'ACCOUNT_UID_MISSING','snapshot':'IMAGE_OR_STORAGE_SOURCE_PROOF_INCOMPLETE' };
   expect(result.reconciliationIssues[0].resources[0].proofFailureReason).toBe(expected[reason as keyof typeof expected]);
   expect(JSON.stringify(result)).not.toContain('receipt-secret');

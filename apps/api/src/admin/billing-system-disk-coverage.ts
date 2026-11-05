@@ -47,7 +47,7 @@ function diskRelation(summary: unknown, diskId: string, depth = 0): { systemHost
 }
 
 // A host bill proves its system-disk component was billed, not which historical disk it covered.
-export async function systemDiskBillingCoverage(repository: AdminRepository, disks: BillingLedgerResourceRecord[],
+export async function systemDiskBillingCoverage(repository: Pick<AdminRepository, 'listRangeInstances' | 'listProvisionJobs' | 'listProvisionJobStepLogs'>, disks: BillingLedgerResourceRecord[],
   ledgers: BillingLedgerResourceRecord[], items: BillingLineItemRecord[]) {
   const components = items.filter(systemDiskComponent);
   const billedHostIds = new Set(components.map(item => item.matchedLedgerId));
@@ -55,8 +55,8 @@ export async function systemDiskBillingCoverage(repository: AdminRepository, dis
   const billedParent = (disk: BillingLedgerResourceRecord, host: BillingLedgerResourceRecord) => sameCreation(disk, host)
     && components.some(item => item.matchedLedgerId === host.id && ledgerBillingDateMatches(disk, item.billingDate.toISOString().slice(0, 10)));
   const candidates = disks.filter(disk => hosts.some(host => billedParent(disk, host)));
-  const covered = new Set<string>(), mappingPending = new Set<string>();
-  if (!candidates.length) return { covered, mappingPending };
+  const covered = new Set<string>(), mappingPending = new Set<string>(),parents=new Map<string,string>();
+  if (!candidates.length) return { covered, mappingPending,parents };
   const [instances, jobs] = await Promise.all([repository.listRangeInstances(), repository.listProvisionJobs()]);
   const summaries = new Map<string, Array<{ resources: unknown; executionContext: unknown }>>();
   const scopedInstances = instances.filter(instance => candidates.some(disk => instance.id === disk.rangeInstanceId
@@ -97,8 +97,9 @@ export async function systemDiskBillingCoverage(repository: AdminRepository, dis
       for (const id of relation.systemHosts) systemHosts.add(id);
       isDataDisk ||= relation.isDataDisk;
     }
-    if (!isDataDisk && systemHosts.size === 1 && hosts.some(host => billedParent(disk, host) && systemHosts.has(host.cloudResourceId))) covered.add(disk.id);
+    const parent=hosts.find(host=>billedParent(disk,host)&&systemHosts.has(host.cloudResourceId));
+    if (!isDataDisk && systemHosts.size === 1 && parent) {covered.add(disk.id);parents.set(disk.id,parent.id);}
     else if (!isDataDisk || systemHosts.size) mappingPending.add(disk.id);
   }
-  return { covered, mappingPending };
+  return { covered, mappingPending,parents };
 }

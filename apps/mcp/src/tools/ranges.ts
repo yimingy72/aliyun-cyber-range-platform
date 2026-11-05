@@ -13,6 +13,8 @@ import {
   rangeLaunchInputSchema,
   rangeListInputSchema,
   rangeNodeActionInputSchema,
+  rangeNodeResetInputSchema,
+  rangeNodeResetPreviewInputSchema,
   rangeNodePackImageInputSchema,
   rangeNodeVerifyDnsInputSchema,
   rangeNodeOpenVncInputSchema,
@@ -27,6 +29,7 @@ import {
 import {
   actionOutputSchema,
   rangeInstanceDetailOutputSchema,
+  rangeNodeResetPreviewOutputSchema,
   resourceListOutputSchema,
   resourceOutputSchema,
   resultOutputSchema,
@@ -202,6 +205,23 @@ export const rangeTools: ToolDefinition[] = [
   nodeActionTool('range_instance_node_start', '开机编排节点', 'start', '对应实例详情中 ECS 节点“开机”。向实例绑定的云厂商提交开机指令，调用前必须取得用户确认。'),
   nodeActionTool('range_instance_node_stop', '关机编排节点', 'stop', '对应实例详情中 ECS 节点“关机”。向实例绑定的云厂商提交强制关机指令，调用前必须取得用户确认。'),
   nodeActionTool('range_instance_node_reboot', '重启编排节点', 'reboot', '对应实例详情中 ECS 节点“重启”。向实例绑定的云厂商提交强制重启指令，调用前必须取得用户确认。'),
+  {
+    name:'range_instance_node_reset_preview',title:'核验编排节点系统盘重置',
+    description:'只读核验阿里云节点的原账号、创建来源、系统盘、镜像、电源及需保留的磁盘和网络，返回 planDigest。不会关机或恢复磁盘；数据盘清单仅用于保留核验，不授予创建或费用归属。',
+    requiredScopes:['ranges:read'],readOnlyHint:true,inputSchema:rangeNodeResetPreviewInputSchema,outputSchema:rangeNodeResetPreviewOutputSchema,
+    call(context,args) {
+      if(!context.client.previewRangeInstanceNodeReset) throw new Error('节点重置核验接口不可用。');
+      return context.client.previewRangeInstanceNodeReset(args.rangeInstanceId as string,args.nodeId as string);
+    },
+  },
+  {
+    name:'range_instance_node_reset',title:'重置编排节点系统盘',
+    description:'危险操作：正常停机，将准确原系统盘恢复至该盘原镜像初始状态，现有系统盘数据会丢失。只作用于选定阿里云 ECS，不重建主机/网络、不重置数据盘、不延长到期时间；完成后恢复原电源，配置了 DNS 时可能短暂启动恢复并核验。必须先读取重置预览并取得用户明确授权，传回同一 planDigest 与准确确认名称，按服务端二阶段确认重放同一幂等键。返回 jobId 仅表示受理；未知结果不得自动重发，需查原任务。',
+    requiredScopes:['ranges:control'],annotations:{destructiveHint:true,idempotentHint:true},
+    inputSchema:rangeNodeResetInputSchema,outputSchema:actionOutputSchema,
+    call(context,args) {return context.client.runRangeInstanceNodeAction(args.rangeInstanceId as string,args.nodeId as string,'reset',
+      {planDigest:args.planDigest as string,confirmedNodeName:args.confirmedNodeName as string},operation(args));},
+  },
   {
     name: 'range_instance_node_verify_dns',
     title: '核验编排节点 DNS',

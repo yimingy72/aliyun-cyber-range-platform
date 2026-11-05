@@ -23,6 +23,10 @@ export class CollectPlatformImageDto {
   @IsString()
   @IsNotEmpty()
   displayName!: string;
+
+  @IsOptional()
+  @IsIn(['private'])
+  visibility?: 'private';
 }
 
 export class UpdatePlatformImageDto {

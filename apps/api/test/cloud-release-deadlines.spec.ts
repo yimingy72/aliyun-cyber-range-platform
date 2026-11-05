@@ -93,6 +93,22 @@ describe('host network staging safety', () => {
     expect(() => networkPreparationTargets({resource_changes:[{...resource('alicloud_vpc'),address:'module.foreign.alicloud_vpc.range'}]})).toThrow('foreign');
     expect(() => assertNetworkPreparationPlan({resource_changes:[resource('alicloud_vswitch',['update'])]},{resource_changes:[]})).toThrow('unapproved');
   });
+  it('adopts an authorized same-creation expiry edit but never a changed source identity', async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'edited-release-deadlines-'));
+    const provisioner = new OpenTofuRangeProvisioner({ env: {} }) as any;
+    const old = deadline(60), expiresAt = new Date(Date.now() + 120 * 60_000).toISOString();
+    const changed = { ...old, platformExpiresAt: expiresAt, cloudReleaseAt: new Date(Date.parse(expiresAt) + 5 * 60_000).toISOString(),
+      status: 'verified', instanceId: 'i-original' };
+    const input = { expiresAt, runtimeConfig: account, billingTags: { PlatformCreateJobId: 'new-host-job' },
+      knownResourceSummary: { expiryChangeJobId: 'verified-edit-job', hostIds: { old: 'i-original' }, cloudReleaseDeadlines: { old: changed } } };
+    try {
+      await fs.writeFile(path.join(dir, 'host-cloud-release-deadlines.json'), JSON.stringify({ old }));
+      expect((await provisioner.freezeHostDeadlines(input, { workspaceDir: dir }, [])).old).toEqual(changed);
+      await fs.writeFile(path.join(dir, 'host-cloud-release-deadlines.json'), JSON.stringify({ old }));
+      await expect(provisioner.freezeHostDeadlines({ ...input, knownResourceSummary: { ...input.knownResourceSummary,
+        cloudReleaseDeadlines: { old: { ...changed, sourceProvisionJobId: 'foreign-job' } } } }, { workspaceDir: dir }, [])).rejects.toThrow('conflicts');
+    } finally { await fs.rm(dir, { recursive: true, force: true }); }
+  });
   it('persists host-phase absolute deadlines once and preserves old nodes when dynamically adding another', async () => {
     const dir=await fs.mkdtemp(path.join(os.tmpdir(),'release-deadlines-'));
     const provisioner=new OpenTofuRangeProvisioner({env:{}}) as any;

@@ -60,6 +60,11 @@ describe('delegated API permission boundary', () => {
     expect(() => check('GET', '/admin/billing/oss-binding', ['billing:read'])).not.toThrow();
     expect(() => check('GET', '/admin/billing/oss-binding', ['settings:write'])).toThrow();
   });
+  it('requires settings write and instance create together for explicit shared network creation', () => {
+    expect(() => check('POST', '/admin/instances/networks/ensure', ['settings:write'])).toThrow();
+    expect(() => check('POST', '/admin/instances/networks/ensure', ['instances:create'])).toThrow();
+    expect(() => check('POST', '/admin/instances/networks/ensure', ['settings:write','instances:create'])).not.toThrow();
+  });
   it.each(['mcp-gateway', 'platform-web'])('enforces verified scoped JWT for %s before controller side effects', async azp => {
     const guard = new AdminAuthGuard({ verifyAccessToken: async () => ({ issuer: 'https://issuer', subject: 's1', authorizedParty: azp, scopes: ['ranges:read'] }) } as never,
       { resolve: async () => ({ id: 'u1', username: 'reader', role: 'admin', isPlatformManager: true }) } as never);

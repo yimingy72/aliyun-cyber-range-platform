@@ -7,6 +7,7 @@ type HostRequest = {
   preferredInstanceTypes: string[];
   strictPreferredInstanceTypes?: boolean;
   networkInterfaceCount?: number;
+  exactResources?: boolean;
 };
 
 type InstanceTypeMetadata = {
@@ -62,13 +63,13 @@ export async function selectZoneAndHostInstanceTypes(input: {
       .filter((item) => isX86Architecture(item.architecture))
       .map((item) => [item.instanceTypeId, item]),
   );
-  const defaultZoneRequiresMultiNicPricing = input.hostRequests.some(requiresMultiNicInstanceType);
+  const defaultZoneRequiresPricing = input.hostRequests.some(host => requiresMultiNicInstanceType(host) || host.exactResources);
 
   const defaultZoneEvaluation = await evaluateZone({
     ...input,
     zoneId: input.defaultZoneId,
     x86InstanceTypesById,
-    includePrice: defaultZoneRequiresMultiNicPricing,
+    includePrice: defaultZoneRequiresPricing,
     readPrice,
   });
 
@@ -150,7 +151,9 @@ async function evaluateZone(input: {
         zoneId: input.zoneId,
         canCreateAllHosts: false,
         estimatedTotalPrice: null,
-        reason: requiresMultiNicInstanceType(host)
+        reason: host.exactResources
+          ? `Host ${host.hostKey} has no exact saleable X86 on-demand match for ${host.cpu} vCPU / ${host.memoryGiB} GiB and ${requiredNetworkInterfaceCount(host)} network interfaces`
+          : requiresMultiNicInstanceType(host)
           ? `Host ${host.hostKey} has no saleable X86 on-demand candidate with ${requiredNetworkInterfaceCount(host)} network interfaces`
           : `Host ${host.hostKey} has no saleable X86 on-demand candidate`,
         hostInstanceTypes: {},
@@ -233,6 +236,19 @@ function resolveSaleableHostInstanceTypeCandidates(input: {
   const preferredInstanceTypeIds = new Set(
     input.host.preferredInstanceTypes.map((item) => item.trim()).filter(Boolean),
   );
+
+  if (input.host.exactResources) {
+    const { cpu, memoryGiB } = input.host;
+    if (typeof cpu !== 'number' || !Number.isSafeInteger(cpu) || cpu <= 0 ||
+      typeof memoryGiB !== 'number' || !Number.isSafeInteger(memoryGiB) || memoryGiB <= 0) return [];
+    return [...input.x86InstanceTypesById.values()]
+      .filter(type => input.saleableInstanceTypeIds.has(type.instanceTypeId))
+      .filter(type => type.cpu === input.host.cpu && type.memoryGiB === input.host.memoryGiB)
+      .filter(type => type.eniQuantity >= requiredNetworkInterfaceCount(input.host))
+      .filter(type => !input.host.strictPreferredInstanceTypes || preferredInstanceTypeIds.has(type.instanceTypeId))
+      .sort((left, right) => left.instanceTypeId.localeCompare(right.instanceTypeId))
+      .map(type => type.instanceTypeId);
+  }
 
   if (requiresMultiNicInstanceType(input.host)) {
     const minimumCpu = input.host.cpu ?? 0;
@@ -421,8 +437,8 @@ async function describeInstanceTypes(input: {
   account: { accessKeyId: string; accessKeySecret: string };
 }) {
   const items: InstanceTypeMetadata[] = [];
-  let pageNumber = 1;
-  let totalCount = 0;
+  let nextToken: string | undefined;
+  const seenTokens = new Set<string>();
 
   do {
     const payload = await performAliyunRpcRequest({
@@ -431,8 +447,8 @@ async function describeInstanceTypes(input: {
       regionId: input.regionId,
       action: 'DescribeInstanceTypes',
       parameters: {
-        PageNumber: String(pageNumber),
-        PageSize: String(ALICLOUD_PAGE_SIZE),
+        MaxResults: String(ALICLOUD_PAGE_SIZE),
+        ...(nextToken ? { NextToken: nextToken } : {}),
       },
     });
 
@@ -478,9 +494,14 @@ async function describeInstanceTypes(input: {
         .filter((item): item is InstanceTypeMetadata => item !== null),
     );
 
-    totalCount = toNumber((payload as { TotalCount?: number | string }).TotalCount);
-    pageNumber += 1;
-  } while ((pageNumber - 1) * ALICLOUD_PAGE_SIZE < totalCount);
+    const token = (payload as { NextToken?: unknown }).NextToken;
+    if (token !== undefined && token !== null && typeof token !== 'string') {
+      throw new Error('Invalid ECS instance-type pagination token');
+    }
+    nextToken = typeof token === 'string' ? token.trim() || undefined : undefined;
+    if (nextToken && seenTokens.has(nextToken)) throw new Error('Repeated ECS instance-type pagination token');
+    if (nextToken) seenTokens.add(nextToken);
+  } while (nextToken);
 
   return items;
 }

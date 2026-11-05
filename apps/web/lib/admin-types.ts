@@ -2,6 +2,7 @@ import type { CompiledProvisionSpec } from './compiled-provision-spec';
 import type { ScenarioTemplateSpec } from './scenario-template-spec';
 import type { HostDnsConfig } from '@aliyun-cyber-range/scenario-runtime';
 import type { RangeNodeDnsVerification } from '../components/admin/range-instance-node-directory';
+export type { RangeNodeResetPreview } from '@aliyun-cyber-range/platform-api-client';
 
 export type AdminProfile = {
   id: string;
@@ -252,6 +253,10 @@ export type RangeRecoverySummary = {
 };
 
 export type RangeInstance = {
+  powerControl?: InstancePowerControl | null;
+  launchBatch?: { id: string; name: string; index: number; quantity: number } | null;
+  ownerUserId?: string | null;
+  dnatPublicIp?: string | null;
   cloudProvider?: 'alibaba_cloud' | 'tencent_cloud';
   id: string;
   name?: string | null;
@@ -287,6 +292,26 @@ export type RangeInstance = {
   resourceSummary?: RangeResourceSummary | null;
   allocatedCidr?: string | null;
   recoverySummary?: RangeRecoverySummary | null;
+};
+
+export type InstancePowerTarget = { kind: 'single' | 'single_batch' | 'range' | 'range_batch'; id: string };
+export type InstancePowerAction = 'economical_stop' | 'resume';
+export type InstancePowerControl = {
+  version: 1; state: 'running' | 'economical_stopped' | 'stopped_standard' | 'partial' | 'unknown';
+  phase?: 'stopping' | 'starting'; jobId?: string; checkedAt?: string; error?: string | null;
+  hosts?: Record<string, { instanceId: string; status: string; stoppedMode: string | null; publicIp: string | null; checkedAt: string }>;
+  schedule?: { id: string; revision: number; at: string; status: 'scheduled' | 'queued' | 'succeeded' | 'failed' | 'cancelled'; jobId?: string; message?: string; createdAt: string; updatedAt: string } | null;
+};
+export type InstancePowerPreview = {
+  target: InstancePowerTarget; action: InstancePowerAction; scheduledAt: string | null; planDigest: string;
+  plans: Array<{ instanceId: string; instanceName: string; expiresAt: string | null; hosts: Array<{ nodeId: string; name: string; instanceId: string; originalStatus: string; originalStoppedMode: string | null }> }>;
+  skipped: Array<{ id: string; name: string; reason: string }>; warnings: string[]; replacingSchedule: boolean;
+};
+export type InstancePowerView = {
+  instances: Array<{ id: string; name: string; status: string; powerControl: InstancePowerControl | null }>;
+  jobs: Array<{ id: string; rangeInstanceId: string; action: InstancePowerAction; status: string; error: string | null; createdAt: string; startedAt: string | null; finishedAt: string | null;
+    steps: Array<{ name: string; status: string; message: string | null; createdAt: string }> }>;
+  warnings: string[];
 };
 
 export type RangeInstanceCreateInput = {
@@ -426,6 +451,7 @@ export type BillingSummary = {
     resources?: import('../../../packages/platform-api-client/src/types').BillingReconciliationResource[] }>;
   unallocatedCurrencyTotals?: Array<{ currency: string; pretaxAmount: number }>;
   resourcesWithoutBillCount?: number;
+  resourcesWithoutBill?: import('../../../packages/platform-api-client/src/types').BillingReconciliationResource[];
   totalPretaxAmount: number | null;
   platformPretaxAmount: number | null;
   anomalyCount: number;
@@ -738,7 +764,9 @@ export type ImageImportUploadSession = {
 
 export type RangeInstanceNodeActionResult = {
   status: string;
-  action: 'start' | 'stop' | 'reboot' | 'open-vnc' | 'pack-image' | 'verify-dns';
+  packedImageArtifactId?: string;
+  action: 'start' | 'stop' | 'reboot' | 'open-vnc' | 'pack-image' | 'verify-dns' | 'reset';
+  jobId?: string;
   dnsVerification?: RangeNodeDnsVerification;
   vncUrl?: string | null;
   webTerminalUrl?: string | null;
@@ -748,6 +776,34 @@ export type RangeInstanceNodeActionResult = {
   defaultPassword?: string | null;
   description?: string | null;
   platformImageAsset?: PlatformImageAsset | null;
+};
+
+export type PackedImageTask = {
+  id: string;
+  status: string;
+  state: 'pending' | 'creating' | 'unconfirmed' | 'blocked' | 'rejected' | 'failed' | 'available' | 'needs_review' | 'deleting' | 'deleted';
+  displayName: string;
+  sourceRangeInstanceId: string;
+  sourceHostKey: string;
+  sourceInstanceId: string;
+  sourceName: string;
+  instanceMode: 'range' | 'single' | null;
+  cloudProvider: string;
+  regionId: string;
+  imageId: string | null;
+  sourceSnapshotId: string | null;
+  platformImageAssetId: string | null;
+  cloudImageStatus: string | null;
+  backingSnapshotIds: string[];
+  deletedSnapshotIds: string[];
+  createdAt: string;
+  updatedAt: string;
+  lastPolledAt: string | null;
+  completedAt: string | null;
+  diagnostic: { phase: string; cloudErrorCode: string; cloudRequestId?: string; verificationCheck?: string; failedResourceCodes?: string[] } | null;
+  message: string;
+  nextStep: string;
+  canVerify: boolean;
 };
 
 export type CollectImageCatalogItemInput = {

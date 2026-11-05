@@ -38,10 +38,26 @@ function isSnapshotResourceId(value: string) {
   return /^s-[a-z0-9-]+$/i.test(value);
 }
 
+export function cdtBillingIdentity(value: string) {
+  const parts = value.split(';');
+  if (!/^(?:eip|i)-[a-z0-9-]+$/i.test(parts[0])) return null;
+  if (parts.length === 1) return { resourceId: parts[0], regionId: null };
+  if (parts.length !== 4 || !/^(cn|ap|eu|us|na|me|af|sa)-[a-z0-9-]+$/.test(parts[1])
+    || !/^[A-Za-z][A-Za-z0-9_.-]{0,63}$/.test(parts[2]) || !/^(?:0|[1-9]\d{0,2})$/.test(parts[3])) return null;
+  return { resourceId: parts[0], regionId: parts[1] };
+}
+
 export function classifyBillLine(line: RawBillLine): BillLineClassification {
   const productCode = normalizeText(line.ProductCode).toLowerCase();
   const billingItem = normalizeText(line.BillingItem);
   const instanceId = normalizeText(line.InstanceID);
+  if (['yundisk', 'disk'].includes(productCode) && /^d-[a-z0-9-]+$/i.test(instanceId))
+    return { kind: 'direct', cloudResourceId: instanceId, cloudResourceType: 'disk' };
+  const cdt = productCode === 'cdt' ? cdtBillingIdentity(instanceId) : null;
+  if (cdt)
+    return { kind: 'direct', cloudResourceId: cdt.resourceId, cloudResourceType: cdt.resourceId.startsWith('eip-') ? 'eip' : 'ecs' };
+  if (productCode === 'cbwp')
+    return { kind: 'aggregated', cloudResourceId: instanceId, cloudResourceType: 'eip' };
 
   if (productCode === 'ecs') {
     return {

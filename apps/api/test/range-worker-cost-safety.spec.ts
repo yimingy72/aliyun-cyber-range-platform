@@ -41,6 +41,15 @@ async function fixture(kind: 'create' | 'destroy' = 'create', dnsVerification?: 
 }
 
 describe('range worker durable cost safety', () => {
+  it.each(['create', 'destroy'] as const)('does not trigger an extra inventory patrol after %s', async kind => {
+    const f = await fixture(kind);
+    const nextScan = Date.now() + 3_600_000;
+    (f.worker as any).nextResourceReconciliationAt = nextScan;
+    await f.worker.process(f.job.id);
+    expect(await f.repository.getProvisionJobById(f.job.id)).toMatchObject({ status: 'succeeded' });
+    expect((f.worker as any).nextResourceReconciliationAt).toBe(nextScan);
+  });
+
   it('guest verification failure cannot destroy or recreate successful cloud resources', async () => {
     const dns = { scheduleAll: jest.fn().mockImplementation(() => { throw new Error('DNS verification unavailable'); }) };
     const f = await fixture('create', dns);

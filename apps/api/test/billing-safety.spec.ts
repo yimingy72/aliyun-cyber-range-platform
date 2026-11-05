@@ -72,7 +72,7 @@ describe('billing safety', () => {
     const service = new BillingService(f.repository);
     expect((await f.repository.listBillingLineItems())[0]).toMatchObject({ pretaxAmount: Number(amount), rawPayload: { PretaxAmount: amount } });
     expect((await service.getSummary({ startAt: DAY, endAt: DAY })).totalPretaxAmount).toBe(Number(amount));
-    expect(await service.exportPlatformCsv({ startAt: DAY, endAt: DAY })).toContain(`totalPretaxAmount,${Number(amount)}\n`);
+    expect(await service.exportPlatformCsv({ startAt: DAY, endAt: DAY })).toContain(`totalPretaxAmount,${amount === '1e-18' ? '0.000000000000000001' : Number(amount)}\n`);
   });
 
   it('does not lose tiny charges while adding and refunding a large amount', async () => {

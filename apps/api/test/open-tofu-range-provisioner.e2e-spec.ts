@@ -10,6 +10,7 @@ import {
 import { DryRunRangeProvisioner } from '../src/provisioning/dry-run-range-provisioner';
 import { resolvePreferredInstanceTypes } from '../src/provisioning/instance-type-catalog';
 import type { RangeProvisionStepEvent } from '../src/provisioning/provisioning.types';
+import * as imageCapacity from '../src/admin/aliyun-image-capacity';
 
 const testRuntimeCredentials = new Proxy<Record<string, { username: string; password: string }>>(
   {},
@@ -19,11 +20,13 @@ const testRuntimeCredentials = new Proxy<Record<string, { username: string; pass
 );
 
 describe('OpenTofuRangeProvisioner', () => {
+  beforeEach(() => jest.spyOn(imageCapacity, 'readAliyunImageSystemDisk').mockImplementation(async (_account, imageId) => ({ imageId, minimumSystemDiskSize: 20, requestId: 'image-request' })));
   afterEach(() => {
     jest.restoreAllMocks();
   });
 
   it('uses explicit runtime config when environment cloud settings are absent', async () => {
+    jest.mocked(imageCapacity.readAliyunImageSystemDisk).mockImplementation(async (_account, imageId) => ({ imageId, minimumSystemDiskSize: 64, requestId: 'image-request' }));
     const tempRootDir = await fs.mkdtemp(path.join(os.tmpdir(), 'open-tofu-provisioner-runtime-'));
     const moduleDir = path.join(tempRootDir, 'infra', 'module');
     const workspacesRootDir = path.join(tempRootDir, 'workspaces');
@@ -109,6 +112,8 @@ describe('OpenTofuRangeProvisioner', () => {
 
     const workspaceDir = path.join(workspacesRootDir, 'range-instance-runtime');
     const varsFilePath = path.join(workspaceDir, 'range.auto.tfvars.json');
+
+    expect(JSON.parse(await fs.readFile(varsFilePath, 'utf8')).hosts[0].system_disk_size).toBe(64);
 
     expect(JSON.parse(await fs.readFile(varsFilePath, 'utf8'))).toEqual(
       expect.objectContaining({
@@ -1944,7 +1949,7 @@ describe('OpenTofuRangeProvisioner', () => {
     );
   });
 
-  it('uses fetch-based Aliyun compatibility resolvers for legacy templates without final execution values', async () => {
+  it('keeps exact resources while resolving legacy templates without final execution values', async () => {
     const tempRootDir = await fs.mkdtemp(path.join(os.tmpdir(), 'open-tofu-provisioner-legacy-fetch-'));
     const moduleDir = path.join(tempRootDir, 'infra', 'module');
     const workspacesRootDir = path.join(tempRootDir, 'workspaces');
@@ -1955,7 +1960,7 @@ describe('OpenTofuRangeProvisioner', () => {
         json: async () => ({
           TotalCount: 1,
           InstanceTypes: {
-            InstanceType: [{ InstanceTypeId: 'ecs.u1-c1m2.large', CpuArchitecture: 'x86_64' }],
+            InstanceType: [{ InstanceTypeId: 'ecs.fixture-1c2g', CpuArchitecture: 'x86_64', CpuCoreCount: 1, MemorySize: 2, EniQuantity: 2 }],
           },
         }),
       } as Response)
@@ -1970,7 +1975,7 @@ describe('OpenTofuRangeProvisioner', () => {
                     {
                       Type: 'InstanceType',
                       SupportedResources: {
-                        SupportedResource: [{ Value: 'ecs.u1-c1m2.large', Status: 'Available' }],
+                        SupportedResource: [{ Value: 'ecs.fixture-1c2g', Status: 'Available' }],
                       },
                     },
                   ],
@@ -1979,6 +1984,10 @@ describe('OpenTofuRangeProvisioner', () => {
             ],
           },
         }),
+      } as Response)
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ PriceInfo: { Price: { TradePrice: 0.1 } } }),
       } as Response)
       .mockResolvedValueOnce({
         ok: true,
@@ -2099,16 +2108,17 @@ describe('OpenTofuRangeProvisioner', () => {
       const varsFilePath = path.join(workspacesRootDir, 'range-instance-legacy-fetch', 'range.auto.tfvars.json');
       const renderedVariables = JSON.parse(await fs.readFile(varsFilePath, 'utf8'));
 
-      expect(fetchMock).toHaveBeenCalledTimes(3);
+      expect(fetchMock).toHaveBeenCalledTimes(4);
       expect(String(fetchMock.mock.calls[0]?.[0])).toContain('Action=DescribeInstanceTypes');
       expect(String(fetchMock.mock.calls[1]?.[0])).toContain('Action=DescribeAvailableResource');
-      expect(String(fetchMock.mock.calls[2]?.[0])).toContain('Action=DescribeImages');
+      expect(String(fetchMock.mock.calls[2]?.[0])).toContain('Action=DescribePrice');
+      expect(String(fetchMock.mock.calls[3]?.[0])).toContain('Action=DescribeImages');
       expect(renderedVariables.image_id).toBe('ubuntu_22_04_x64_20G_alibase_20260615.vhd');
       expect(renderedVariables.hosts).toEqual(
         expect.arrayContaining([
           expect.objectContaining({
             key: 'ecs-1',
-            instance_type: 'ecs.u1-c1m2.large',
+            instance_type: 'ecs.fixture-1c2g',
           }),
         ]),
       );

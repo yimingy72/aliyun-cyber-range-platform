@@ -21,13 +21,13 @@ database('resource patrol PostgreSQL atomicity',()=>{
   afterAll(async()=>{await prisma.$disconnect();});
   it('backfills only same-provider bound workspace UID without granting old candidates creation proof',async()=>{
     await runInSystemCloudWorkspaceScope(async()=>{
-      const unbound=`unbound-${randomUUID()}`;
-      await prisma.cloudWorkspace.create({data:{id:unbound,provider:scope.provider,accountUid:null,displayName:'unbound fixture'}});
+      const unbound='legacy-unbound';
+      expect(await prisma.cloudWorkspace.findUnique({where:{id:unbound}})).toMatchObject({accountUid:null,isReadOnly:true});
       const create=(cloudWorkspaceId:string,cloudProvider:'alibaba_cloud'|'tencent_cloud',resourceId:string,accountUid:string|null=null)=>
         prisma.cloudResourceDrift.create({data:{cloudWorkspaceId,cloudProvider,cloudResourceId:resourceId,cloudResourceType:'snapshot',regionId:'cn-hangzhou',
           accountUid,reason:'old candidate',lastSeenAt:new Date()}});
       const same=await create(workspace,scope.provider,'s-old'),mismatch=await create(workspace,'tencent_cloud','s-foreign-provider'),
-        unknown=await create(unbound,scope.provider,'s-unbound'),existing=await create(workspace,scope.provider,'s-previous-uid','previous-uid');
+        unknown=await create(unbound,scope.provider,`s-unbound-${randomUUID()}`),existing=await create(workspace,scope.provider,'s-previous-uid','previous-uid');
       const sql=readFileSync(resolve(__dirname,'../../../packages/database/prisma/migrations/20261013020000_resource_patrol_legacy_identity/migration.sql'),'utf8');
       await prisma.$executeRawUnsafe(sql);await prisma.$executeRawUnsafe(sql);
       expect(await prisma.cloudResourceDrift.findUnique({where:{id:same.id}})).toMatchObject({accountUid:scope.accountUid,patrolStatus:'unverified',sourceEvidence:{},resolvedAt:null});

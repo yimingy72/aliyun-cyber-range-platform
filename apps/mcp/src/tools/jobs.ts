@@ -6,14 +6,14 @@ export const jobTools: ToolDefinition[] = [
   {
     name: 'provision_job_get',
     title: '查询开通任务',
-    description: '查询异步开通、更新、销毁或打包任务的状态与失败摘要。includeEvidence=true 可读取同来源资源 ID 库存、固定阶段状态、相关作业和计费台账释放时间；仅为平台记录，不是独立云 API 回执或最终账单。证据不返回原始日志、命令、状态文件或凭据。',
+    description: '查询异步开通、更新、销毁或打包任务。includeEvidence=true 返回同来源库存、阶段、相关作业和计费台账；这些是平台记录。includeCloudEvents=true 另按原生资源 ID、冻结账号和使用区间只读查询云审计事件，可用 cloudResourceIds 选择最多20项原创建资源。查询为空或删除请求成功均不单独证明实际释放；不修改云资源和计费时间，不返回原始日志、审计正文或凭据。',
     requiredScopes: ['jobs:read'],
     readOnlyHint: true,
     inputSchema: provisionJobGetInputSchema,
     outputSchema: resourceOutputSchema,
     call(context, args) {
-      const input = args as { provisionJobId: string; includeEvidence?: boolean };
-      return context.client.getProvisionJob(input.provisionJobId, input.includeEvidence === undefined ? undefined : { includeEvidence: input.includeEvidence });
+      const { provisionJobId, ...options } = args as { provisionJobId: string; includeEvidence?: boolean; includeCloudEvents?: boolean; cloudResourceIds?: string[] };
+      return context.client.getProvisionJob(provisionJobId, Object.keys(options).length ? options : undefined);
     },
   },
 ];

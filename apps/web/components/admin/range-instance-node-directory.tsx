@@ -8,10 +8,8 @@ import { Button } from '@/components/ui/button';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
 import { TableRow } from '@/components/ui/table';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
-import { AdminDataTable, AdminDataTableCell, AdminDataTableState, type AdminDataColumn } from './shared/admin-data-table';
+import { AdminDataTable, AdminDataTableCell, AdminDataTableState, AdminDataTableText, type AdminDataColumn } from './shared/admin-data-table';
 import { TableLoadingState } from './shared/table-loading-state';
-import { CloudReleaseStatus } from './shared/cloud-release-status';
-import type { HostCloudReleaseDeadline } from '@aliyun-cyber-range/platform-api-client';
 
 type NodeActionName = 'start' | 'stop' | 'reboot' | 'open-vnc' | 'reset' | 'pack-image' | 'verify-dns';
 
@@ -36,11 +34,11 @@ type RangeInstanceWorkbenchNode = {
   cloudStatus?: string;
   publicEntry?: { address: string; ports: string[] };
   subnetCidrs?: string[];
+  ipAddresses?: string[];
   account?: string;
   password?: string;
   imageName?: string;
   expiresAt?: string;
-  cloudReleaseDeadline?: HostCloudReleaseDeadline;
   createdAt?: string;
   dns?: { servers: string[]; nicIds: string[]; domain?: string };
   dnsVerification?: RangeNodeDnsVerification;
@@ -50,19 +48,20 @@ type RangeInstanceNodeDirectoryProps = {
   nodes: RangeInstanceWorkbenchNode[];
   onNodeAction?: (nodeId: string, action: NodeActionName) => void;
   allowActions?: boolean;
+  allowReset?: boolean;
   pendingAction?: { nodeId: string; action: NodeActionName } | null;
   isLoading?: boolean;
   isRefreshing?: boolean;
 };
 
 const COLUMNS: readonly AdminDataColumn[] = [
-  { id: 'name', label: '实例名', priority: 'primary', width: '9rem' },
-  { id: 'status', label: '状态', priority: 'primary', width: '7.5rem' },
-  { id: 'image', label: '镜像信息', priority: 'primary', width: '11rem' },
-  { id: 'address', label: 'IP 地址 / 网段', priority: 'primary', width: '12rem' },
-  { id: 'account', label: '账号信息', priority: 'primary', width: '9rem' },
-  { id: 'expiry', label: '有效期', priority: 'primary', width: '10rem' },
-  { id: 'created', label: '创建时间', priority: 'primary', width: '10rem' },
+  { id: 'name', label: '实例名', priority: 'primary', width: '13rem' },
+  { id: 'status', label: '状态', priority: 'primary', width: '6.5rem' },
+  { id: 'image', label: '镜像信息', priority: 'primary', minWidth: '14rem' },
+  { id: 'address', label: 'IP 地址', priority: 'primary', width: '13rem' },
+  { id: 'account', label: '账号信息', priority: 'primary', width: '10.5rem' },
+  { id: 'expiry', label: '有效期', priority: 'primary', width: '11.5rem' },
+  { id: 'created', label: '创建时间', priority: 'primary', width: '11.5rem' },
   { id: 'actions', label: '操作', priority: 'primary', width: '9rem' },
 ];
 
@@ -95,12 +94,15 @@ function DnsVerificationStatus({ node }: { node: RangeInstanceWorkbenchNode }) {
 }
 
 export function RangeInstanceNodeDirectory({
-  nodes, onNodeAction, allowActions = true, pendingAction = null, isLoading = false, isRefreshing = false,
+  nodes, onNodeAction, allowActions = true, allowReset = true, pendingAction = null, isLoading = false, isRefreshing = false,
 }: RangeInstanceNodeDirectoryProps) {
   const [copiedPasswordNodeId, setCopiedPasswordNodeId] = useState<string | null>(null);
   const copiedPasswordTimerRef = useRef<number | null>(null);
   const directoryRef = useRef<HTMLDivElement | null>(null);
   const hostNodes = nodes.filter((node) => node.kind === 'ecs');
+  const columns = COLUMNS.map(column => column.id === 'actions'
+    ? { ...column, width: !allowActions ? '5rem' : hostNodes.some(node => node.dns) ? '15rem' : '9rem' }
+    : column);
 
   useEffect(() => () => {
     if (copiedPasswordTimerRef.current !== null) window.clearTimeout(copiedPasswordTimerRef.current);
@@ -131,7 +133,7 @@ export function RangeInstanceNodeDirectory({
 
   return (
     <div className="range-instance-directory-table" ref={directoryRef}>
-      <AdminDataTable columns={COLUMNS} label="实例节点目录" isRefreshing={isRefreshing}
+      <AdminDataTable columns={columns} label="实例节点目录" isRefreshing={isRefreshing}
         contentVersion={hostNodes.length}>
         {(columns) => isLoading ? (
           <TableLoadingState columnCount={columns.length} rowCount={2} label="正在获取节点目录" />
@@ -142,15 +144,16 @@ export function RangeInstanceNodeDirectory({
           const isStopped = node.cloudStatus === 'Stopped';
           return (
             <TableRow className="range-instance-directory-row" key={node.id}>
-              <AdminDataTableCell column={columns[0]!}><strong className="block min-w-0 truncate">{node.label}</strong></AdminDataTableCell>
+              <AdminDataTableCell column={columns[0]!}><strong className="block min-w-0 truncate" title={node.label}>{node.label}</strong></AdminDataTableCell>
               <AdminDataTableCell column={columns[1]!}><span className="block">{node.statusLabel ?? '未知状态'}</span><DnsVerificationStatus node={node} /></AdminDataTableCell>
-              <AdminDataTableCell column={columns[2]!}>{node.imageName || '暂无'}</AdminDataTableCell>
+              <AdminDataTableCell column={columns[2]!}><AdminDataTableText>{node.imageName || '暂无'}</AdminDataTableText></AdminDataTableCell>
               <AdminDataTableCell column={columns[3]!}>
                 <div className="range-instance-address-cell">
                   {node.publicEntry ? <>
                     <span className="font-medium text-foreground">{node.publicEntry.address}</span>
                     {node.publicEntry.ports.map((port) => <span key={port}>{port}</span>)}
-                  </> : node.subnetCidrs?.length ? node.subnetCidrs.map((cidr) => <span key={cidr}>{cidr}</span>) : <span>暂无关联网段</span>}
+                  </> : null}
+                  {node.ipAddresses?.length ? node.ipAddresses.map((ip) => <span key={ip}>私网 · {ip}</span>) : <span>暂无私网 IP</span>}
                 </div>
               </AdminDataTableCell>
               <AdminDataTableCell column={columns[4]!}>
@@ -167,8 +170,8 @@ export function RangeInstanceNodeDirectory({
                   </Button>
                 </div>
               </AdminDataTableCell>
-              <AdminDataTableCell column={columns[5]!}><span>{node.expiresAt || '暂无'}</span><CloudReleaseStatus deadline={node.cloudReleaseDeadline} /></AdminDataTableCell>
-              <AdminDataTableCell column={columns[6]!}>{node.createdAt || '暂无'}</AdminDataTableCell>
+              <AdminDataTableCell column={columns[5]!}><span className="whitespace-nowrap text-xs tabular-nums">{node.expiresAt || '暂无'}</span></AdminDataTableCell>
+              <AdminDataTableCell column={columns[6]!}><span className="whitespace-nowrap text-xs tabular-nums">{node.createdAt || '暂无'}</span></AdminDataTableCell>
               <AdminDataTableCell column={columns[7]!}>
                 {allowActions ? <div className="flex flex-wrap items-center justify-start gap-1">
                   {node.dns ? <Button size="sm" variant="outline" disabled={isPending || node.cloudStatus !== 'Running'} onClick={() => onNodeAction?.(node.id, 'verify-dns')}>
@@ -186,7 +189,7 @@ export function RangeInstanceNodeDirectory({
                         <DropdownMenuItem onSelect={() => onNodeAction?.(node.id, 'stop')}>关机</DropdownMenuItem>
                         <DropdownMenuItem onSelect={() => onNodeAction?.(node.id, 'reboot')}>重启</DropdownMenuItem>
                       </>}
-                      <DropdownMenuItem onSelect={() => onNodeAction?.(node.id, 'reset')}>重置</DropdownMenuItem>
+                      <DropdownMenuItem disabled={!allowReset} onSelect={() => onNodeAction?.(node.id, 'reset')}>重置系统盘</DropdownMenuItem>
                       <DropdownMenuItem onSelect={() => onNodeAction?.(node.id, 'pack-image')}>二次打包镜像</DropdownMenuItem>
                     </DropdownMenuContent>
                   </DropdownMenu>

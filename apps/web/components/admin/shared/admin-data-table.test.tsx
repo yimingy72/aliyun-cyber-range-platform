@@ -181,8 +181,8 @@ describe('AdminDataTable', () => {
 
     expect(frame?.className).toContain('rounded');
     expect(frame?.className).toContain('border');
-    expect(frame?.className).toContain('bg-background');
-    expect(table.querySelector('thead')?.className).toContain('bg-muted/60');
+    expect(frame?.className).toContain('bg-card');
+    expect(table.querySelector('thead')?.className).toContain('bg-muted');
   });
 
   it('applies responsive priority and action alignment to feature-owned columns', () => {
@@ -252,6 +252,32 @@ describe('AdminDataTable', () => {
     expect(source).toContain("'hidden md:table-column'");
     expect(source).toContain("'hidden lg:table-column'");
     expect(source).toContain("'hidden xl:table-column'");
+  });
+
+  it('reserves readable space only for columns visible at each breakpoint', () => {
+    const columns = [
+      { id: 'name', label: '名称', priority: 'primary' as const, minWidth: '18rem' },
+      { id: 'creator', label: '创建人', priority: 'secondary' as const, width: '7rem' },
+      { id: 'created', label: '创建时间', priority: 'detail' as const, width: '10.5rem' },
+      { id: 'actions', label: '操作', priority: 'primary' as const, width: '12rem' },
+    ];
+    render(<AdminDataTable columns={columns} label="列宽验证">{() => null}</AdminDataTable>);
+    const frame = screen.getByRole('table').closest('[data-slot="admin-data-table-frame"]') as HTMLElement;
+    expect(frame.style.getPropertyValue('--admin-table-min-primary')).toBe('calc(18rem + 12rem)');
+    expect(frame.style.getPropertyValue('--admin-table-min-secondary')).toBe('calc(18rem + 7rem + 12rem)');
+    expect(frame.style.getPropertyValue('--admin-table-min-tertiary')).toBe('calc(18rem + 7rem + 12rem)');
+    expect(frame.style.getPropertyValue('--admin-table-min-detail')).toBe('calc(18rem + 7rem + 10.5rem + 12rem)');
+  });
+
+  it('remeasures truncated text when a value changes without resizing its column', async () => {
+    const columns = [{ id: 'name', label: '名称', priority: 'primary' as const }];
+    const view = (name: string) => <AdminDataTable columns={columns} label="名称列表">{cols => <TableRow><AdminDataTableCell column={cols[0]}>{name}</AdminDataTableCell></TableRow>}</AdminDataTable>;
+    const { rerender } = render(view('admin'));
+    const value = screen.getByText('admin');
+    Object.defineProperties(value, { clientWidth: { configurable: true, value: 80 }, scrollWidth: { configurable: true, value: 320 } });
+    rerender(view('这是更新后的完整长名称'));
+    fireEvent.pointerMove(screen.getByText('这是更新后的完整长名称'));
+    expect((await screen.findByRole('tooltip')).textContent).toContain('这是更新后的完整长名称');
   });
 
   it('applies the shared column contract to feature-owned body cells', () => {

@@ -5,9 +5,13 @@ import { sanitizeAliyunErrorCode } from './aliyun-error-code';
 
 export type ImageCredentials = { provider?: string; accessKeyId: string; accessKeySecret: string; regionId: string };
 export class AliyunImageRpcError extends BadGatewayException {
-  constructor(action: string, readonly cloudCode: string | null, status: number) {
-    super(`Aliyun ${action} failed: ${cloudCode ?? status}`);
+  constructor(readonly action: string, readonly cloudCode: string | null, readonly cloudStatus: number, readonly requestId?: string) {
+    super(`Aliyun ${action} failed: ${cloudCode ?? cloudStatus}`);
   }
+}
+// Only parameter/authentication rejections known to precede resource creation are terminal.
+export function isAliyunImageSubmissionRejection(code: string | null | undefined) {
+  return /^(InvalidImageName\.(Malformed|Duplicated)|InvalidDescription\.Malformed|IncorrectInstanceStatus|InvalidInstanceId\.(NotFound|Malformed)|Forbidden\.RAM|InvalidAccessKeyId\.NotFound|SignatureDoesNotMatch|MissingParameter|InvalidParameter)$/.test(code ?? '');
 }
 export async function imageRpc<T>(credentials: ImageCredentials, action: string, parameters: Record<string, string> = {}): Promise<T> {
   if (credentials.provider !== undefined && credentials.provider !== 'alibaba_cloud') {
@@ -22,7 +26,10 @@ export async function imageRpc<T>(credentials: ImageCredentials, action: string,
   let body: Record<string, unknown>;
   try { body = await response.json() as Record<string, unknown>; } catch { throw new BadGatewayException(`Aliyun ${action} returned invalid JSON`); }
   if (!body || typeof body !== 'object' || Array.isArray(body) || !response.ok || (body.Success !== undefined && body.Success !== true) || (body.Code !== undefined && body.Code !== 'Success')) {
-    throw new AliyunImageRpcError(action, sanitizeAliyunErrorCode(body?.Code, [credentials.accessKeyId, credentials.accessKeySecret]), response.status);
+    const id = body?.RequestId;
+    const requestId = typeof id === 'string' && /^[A-Za-z0-9][A-Za-z0-9-]{0,127}$/.test(id)
+      && ![credentials.accessKeyId, credentials.accessKeySecret].filter(Boolean).some(secret => id.includes(secret)) ? id : undefined;
+    throw new AliyunImageRpcError(action, sanitizeAliyunErrorCode(body?.Code, [credentials.accessKeyId, credentials.accessKeySecret]), response.status, requestId);
   }
   return body as T;
 }

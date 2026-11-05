@@ -25,8 +25,19 @@ import { ImageImportsService } from './admin/image-imports.service';
 import { TencentCosManagedBucketService, TENCENT_COS_BUCKETS } from './admin/tencent-cos-managed-bucket.service';
 import { ImageImportsWorkerService } from './admin/image-imports-worker.service';
 import { PackedImagesService } from './admin/packed-images.service';
+import { PackedImagesController } from './admin/packed-images.controller';
+import { InstancePowerController } from './admin/instance-power.controller';
+import { InstancePowerService } from './admin/instance-power.service';
+import { InstancePowerCloudClient } from './admin/instance-power-cloud';
+import { InstanceExpiryController } from './admin/instance-expiry.controller';
+import { InstanceExpiryService } from './admin/instance-expiry.service';
+import { BillingLifecycleController } from './admin/billing-lifecycle.controller';
+import { BillingLifecycleService } from './admin/billing-lifecycle.service';
+import { BillingReconciliationRepository } from './admin/billing-reconciliation.repository';
+import { BillingReconciliationService } from './admin/billing-reconciliation.service';
 import { PackedImagesWorkerService } from './admin/packed-images-worker.service';
 import { BillingBssClient } from './admin/billing-bss-client';
+import { BillingDiagnosticsService } from './admin/billing-diagnostics.service';
 import { BillingController } from './admin/billing.controller';
 import { BillingService } from './admin/billing.service';
 import { TencentBillingClient } from './admin/tencent-billing-client';
@@ -38,6 +49,7 @@ import { ResourceAlertsController } from './admin/resource-alerts.controller';
 import { ResourceAlertsService } from './admin/resource-alerts.service';
 import { ResourcePatrolRepository } from './admin/resource-patrol.repository';
 import { ResourcePatrolCloudClient } from './admin/resource-patrol-cloud-client';
+import { AliyunVpcReadPacingService } from './admin/aliyun-vpc-read-pacing.service';
 import { ResourceAlertReclaimer } from './admin/resource-alert-reclaimer';
 import { PlatformImagesController } from './admin/platform-images.controller';
 import { PlatformImageTagsController } from './admin/platform-image-tags.controller';
@@ -49,6 +61,8 @@ import { OidcPrincipalResolver } from './admin/oidc-principal-resolver';
 import { RangeInstancesService } from './admin/range-instances.service';
 import { RangeNetworkDiagnosticsService } from './admin/range-network-diagnostics.service';
 import { RangeInstanceNodeActionsService } from './admin/range-instance-node-actions.service';
+import { RangeNodeResetService } from './admin/range-node-reset.service';
+import { RangeNodeResetCloudClient } from './admin/range-node-reset-cloud.client';
 import { RangesController } from './admin/ranges.controller';
 import { RangeTemplatesService } from './admin/range-templates.service';
 import { ScenariosController } from './admin/scenarios.controller';
@@ -111,6 +125,10 @@ function resolveProjectRootDir() {
     PlatformContainerImagesController,
     TencentCloudCatalogController,
     ImageImportsController,
+    PackedImagesController,
+    InstancePowerController,
+    InstanceExpiryController,
+    BillingLifecycleController,
     BillingController,
     BillingOssBindingController,
     ResourceAlertsController,
@@ -121,6 +139,7 @@ function resolveProjectRootDir() {
   providers: [
     AdminAuthGuard,
     BillingBssClient,
+    BillingDiagnosticsService,
     ImageCatalogService,
     AcrCatalogService,
     PlatformContainerImagesService,
@@ -134,6 +153,12 @@ function resolveProjectRootDir() {
     { provide: TENCENT_COS_BUCKETS, useExisting: TencentCosManagedBucketService },
     ImageImportsWorkerService,
     PackedImagesService,
+    InstancePowerService,
+    InstanceExpiryService,
+    BillingLifecycleService,
+    BillingReconciliationRepository,
+    BillingReconciliationService,
+    InstancePowerCloudClient,
     PackedImagesWorkerService,
     BillingService,
     BillingSyncService,
@@ -142,6 +167,7 @@ function resolveProjectRootDir() {
     ResourceAlertsService,
     ResourcePatrolRepository,
     ResourcePatrolCloudClient,
+    AliyunVpcReadPacingService,
     ResourceAlertReclaimer,
     TencentBillingClient,
     AdminUsersService,
@@ -152,6 +178,8 @@ function resolveProjectRootDir() {
     RangeInstancesService,
     RangeNetworkDiagnosticsService,
     RangeInstanceNodeActionsService,
+    RangeNodeResetService,
+    RangeNodeResetCloudClient,
     RangeDnsVerificationService,
     SingleInstanceBatchExecutionService,
     {

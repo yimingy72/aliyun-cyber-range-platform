@@ -1,0 +1,17 @@
+# Reuse the locally verified dependency image; builds and checks need no external network.
+ARG DEPENDENCY_IMAGE=cyber-range-instance-expiry:test
+FROM ${DEPENDENCY_IMAGE} AS test
+WORKDIR /app
+COPY apps/web/ apps/web/
+COPY packages/scenario-runtime/ packages/scenario-runtime/
+COPY packages/platform-api-client/ packages/platform-api-client/
+RUN pnpm --filter @aliyun-cyber-range/scenario-runtime build \
+    && pnpm --filter @aliyun-cyber-range/platform-api-client build
+CMD ["pnpm", "--filter", "@aliyun-cyber-range/web", "test", "components/admin/billing-lifecycle-screen.test.tsx", "components/admin/billing-screen.test.tsx", "components/admin/billing-pending-resources.test.tsx", "lib/billing-lifecycle-api.test.ts"]
+
+FROM test AS production
+ENV NEXT_TELEMETRY_DISABLED=1
+RUN pnpm --filter @aliyun-cyber-range/web build
+ENV NODE_ENV=production
+EXPOSE 3000
+CMD ["pnpm", "--filter", "@aliyun-cyber-range/web", "start"]

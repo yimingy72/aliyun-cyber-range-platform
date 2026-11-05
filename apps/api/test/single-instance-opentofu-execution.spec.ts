@@ -9,11 +9,13 @@ import { SingleInstanceOpenTofuExecutionService, SingleInstanceOpenTofuLeaseLost
 import * as tencentRpc from '../src/admin/tencent-cloud-client';
 import { SystemConfigService } from '../src/admin/system-config.service';
 import * as deadlines from '../src/provisioning/cloud-release-deadlines';
+import * as imageCapacity from '../src/admin/aliyun-image-capacity';
 
 describe('single-instance OpenTofu batch execution', () => {
   let root: string;
   beforeEach(async () => {
     root = await fs.mkdtemp(path.join(os.tmpdir(), 'single-tofu-test-'));
+    jest.spyOn(imageCapacity, 'readAliyunImageSystemDisk').mockImplementation(async (_account, imageId) => ({ imageId, minimumSystemDiskSize: 20, requestId: 'image-request' }));
     jest.spyOn(deadlines, 'verifyCloudReleaseDeadlines').mockImplementation(async input => Object.fromEntries(
       Object.entries(input.deadlines).map(([key, record]) => [key, { ...record, status: 'unverified' as const, reason: 'native_timer_check_failed' }])));
   });
@@ -707,6 +709,50 @@ describe('single-instance OpenTofu batch execution', () => {
     expect(test.runner.apply).toHaveBeenCalledTimes(1);
   });
 
+  it('preserves JSON provider diagnostics without exposing passwords or cloud credentials', async () => {
+    const test = fixture(1);
+    test.onApply = async () => {
+      throw Object.assign(new Error('Command failed: tofu apply -json'), {
+        stdout: ['progress', JSON.stringify({ type: 'diagnostic', diagnostic: { severity: 'error',
+          summary: 'Creating Alibaba ECS failed', detail: 'InvalidSystemDiskSize.LessThanImageSize test-Passw0rd-1! test-access-key test-secret-key' } }),
+          JSON.stringify({ type: 'outputs', outputs: { password: 'do-not-project' } })].join('\n'),
+      });
+    };
+    await test.service.executeCreateBatch(test.items, test.lease);
+    expect(test.instances[0].errorSummary).toContain('InvalidSystemDiskSize.LessThanImageSize');
+    expect(test.instances[0].errorSummary).not.toMatch(/test-Passw0rd|test-access-key|test-secret-key|do-not-project/);
+    expect(test.instances[0].status).toBe('destroy_failed');
+  });
+
+  it('rejects an undersized frozen Alibaba disk before any apply or durable create submission', async () => {
+    const test = fixture(1);
+    jest.mocked(imageCapacity.readAliyunImageSystemDisk).mockResolvedValue({ imageId: 'm-test', minimumSystemDiskSize: 64, requestId: 'image-request' });
+    await test.service.executeCreateBatch(test.items, test.lease);
+    expect(test.runner.apply).not.toHaveBeenCalled();
+    expect(test.instances[0]).toMatchObject({ status: 'create_failed', errorSummary: expect.stringContaining('64 GiB') });
+    expect(test.instances[0].singleInstanceConfig?.opentofuCreateJobId).toBeNull();
+  });
+
+  it.each([false, true])('recovers an old too-small disk rejection from its exact frozen image and original marker, legacy timestamp lost=%s', async legacy => {
+    const test = fixture(1);
+    test.onApply = async () => { throw new Error('original provider error output lost'); };
+    await test.service.executeCreateBatch(test.items, test.lease);
+    expect(test.instances[0].status).toBe('destroy_failed');
+    if (legacy) {
+      const file = path.join(test.workspace, 'single-batch-manifest.json');
+      const manifest = JSON.parse(await fs.readFile(file, 'utf8')); delete manifest.pending.submittedAt;
+      await fs.writeFile(file, JSON.stringify(manifest));
+    }
+    jest.mocked(imageCapacity.readAliyunImageSystemDisk).mockResolvedValue({ imageId: 'm-test', minimumSystemDiskSize: 64, requestId: 'verified-image-request' });
+    const destroy = test.queueDestroy(0);
+    await test.service.executeDestroyBatch([destroy], test.lease);
+    expect(test.instances[0].status).toBe('destroyed');
+    expect(test.runner.apply).toHaveBeenCalledTimes(1);
+    expect(test.native.deleteOwnedUntrackedOpenTofuInstances).not.toHaveBeenCalled();
+    expect(test.stepLogs.find(log => log.stepName === 'single_instance_create_rejection')?.message).toContain('verified-image-request');
+    await expect(fs.stat(path.join(test.workspace, '.single-batch-apply-started'))).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
   it('uses the database create intent to block a second apply after the entire workspace is lost', async () => {
     const test = fixture(1);
     test.onApply = async options => {
@@ -1014,6 +1060,35 @@ describe('single-instance OpenTofu batch execution', () => {
     expect(test.instances[0].singleInstanceConfig!.autoReleaseTime).toBe(absolute);
     expect(test.instances[0].singleInstanceConfig!.cloudReleaseDeadline).toBeUndefined();
     expect(test.runner.apply).toHaveBeenCalledTimes(1);expect(test.cloud.size).toBe(1);
+  });
+
+  it.each(['succeeded', 'failed', 'legacy'] as const)('can destroy a member after an authorized expiry edit (%s), without changing its frozen identity', async variant => {
+    const test = fixture(1);
+    await test.service.executeCreateBatch(test.items, test.lease);
+    const status = variant === 'legacy' ? 'succeeded' : variant;
+    const instance = test.instances[0], original = structuredClone(instance.singleInstanceConfig!.cloudReleaseDeadline!);
+    if (variant === 'legacy') {
+      const filename = path.join(test.workspace, 'single-batch-manifest.json');
+      const manifest = JSON.parse(await fs.readFile(filename, 'utf8'));
+      delete manifest.members[instance.id].cloudReleaseDeadline;
+      await fs.writeFile(filename, JSON.stringify(manifest));
+    }
+    const id = instance.resourceSummary!.hostIds!['host-1'];
+    const at = new Date(Date.now() + (status === 'succeeded' ? 120 : 40) * 60_000).toISOString();
+    const cloudReleaseAt = new Date(Date.parse(at) + 5 * 60_000).toISOString();
+    const expiryJob = { ...test.jobs.get('job-1')!, id: 'expiry-edit', jobType: 'change_expiry', status,
+      topologySnapshot: { expiryPlan: { version: 1, instanceId: instance.id, cloudWorkspaceId: instance.cloudWorkspaceId, ownerUserId: instance.ownerUserId,
+        cloudAccountContextId: 'ctx-a', accountUid: 'uid-a', regionId: 'cn-hangzhou', effectiveExpiresAt: at, requestedExpiresAt: at, cloudReleaseAt,
+        hosts: [{ nodeId: 'host-1', instanceId: id, sourceJobId: original.sourceProvisionJobId }] } } } as ProvisionJobRecord;
+    test.jobs.set(expiryJob.id, expiryJob); instance.expiresAt = new Date(at); instance.resourceSummary!.expiryChangeJobId = expiryJob.id;
+    if (status === 'succeeded') {
+      instance.singleInstanceConfig!.cloudReleaseDeadline = { ...original, instanceId: id, platformExpiresAt: at, cloudReleaseAt, status: 'verified' };
+      instance.singleInstanceConfig!.autoReleaseTime = cloudReleaseAt;
+      instance.resourceSummary!.cloudReleaseDeadlines!['host-1'] = instance.singleInstanceConfig!.cloudReleaseDeadline;
+    }
+    await test.service.executeDestroyBatch([test.queueDestroy(0)], test.lease);
+    expect(instance.status).toBe('destroyed'); expect(test.cloud.size).toBe(0);
+    expect(test.runner.apply).toHaveBeenCalledTimes(2);
   });
 
   it('does not reuse verified status or an old native ID when a cleaned member is explicitly retried', async () => {

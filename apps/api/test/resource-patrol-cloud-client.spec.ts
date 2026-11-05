@@ -1,14 +1,81 @@
 import { ResourcePatrolCloudClient } from '../src/admin/resource-patrol-cloud-client';
+import { setTimeout as sleep } from 'node:timers/promises';
+import { AliyunVpcReadPacingService } from '../src/admin/aliyun-vpc-read-pacing.service';
+jest.mock('node:timers/promises',()=>({setTimeout:jest.fn(async()=>undefined)}));
 
 const account = { provider:'alibaba_cloud' as const,cloudAccountContextId:'ctx-a',accountUid:'1000001',accountUidResolved:true,
   defaultRegion:'cn-hangzhou',defaultZoneId:'cn-hangzhou-j',accessKeyId:'fixture-ak',accessKeySecret:'fixture-sk',imageImportBucket:'' };
 const response=(value: unknown,status=200)=>({ok:status===200,status,json:async()=>value}) as Response;
 describe('resource patrol bounded cloud reads',()=>{
   const original=global.fetch;
+  beforeEach(()=>jest.mocked(sleep).mockReset().mockResolvedValue(undefined));
   afterEach(()=>{global.fetch=original;});
   it('rejects a cloud identity mismatch before any deletion can be admitted',async()=>{
     global.fetch=jest.fn(async()=>response({AccountId:'1000002',RequestId:'identity'}));
     await expect(new ResourcePatrolCloudClient().verifyAccount(account)).rejects.toThrow('IDENTITY_MISMATCH');
+  });
+  it('backs off throttled reads with fresh request nonces while preserving the exact filter',async()=>{
+    global.fetch=jest.fn()
+      .mockResolvedValueOnce(response({Code:'Throttling.User',RequestId:'limited'},400))
+      .mockResolvedValueOnce(response({RequestId:'acl-success',TotalCount:0,NetworkAcls:{NetworkAcl:[]}}));
+    await expect((new ResourcePatrolCloudClient() as any).list(account,'network_acl',['acl-original'])).resolves.toEqual([]);
+    const queries=(global.fetch as jest.Mock).mock.calls.map(([url])=>new URL(String(url)).searchParams);
+    expect(queries).toHaveLength(2);
+    expect(queries.every(query=>query.get('NetworkAclId')==='acl-original')).toBe(true);
+    expect(queries[0].get('SignatureNonce')).not.toBe(queries[1].get('SignatureNonce'));
+  });
+  it('bounds persistent read throttling and retains failure instead of reporting absence',async()=>{
+    global.fetch=jest.fn(async()=>response({Code:'Throttling.User',RequestId:'limited'},400));
+    await expect((new ResourcePatrolCloudClient() as any).list(account,'network_acl',['acl-original'])).rejects.toMatchObject({code:'Throttling.User'});
+    expect(global.fetch).toHaveBeenCalledTimes(6);
+  },15000);
+  it('paces consecutive exact ACL reads without removing the original ID filters',async()=>{
+    global.fetch=jest.fn(async()=>response({RequestId:'paced-acl',TotalCount:0,NetworkAcls:{NetworkAcl:[]}}));
+    await expect((new ResourcePatrolCloudClient() as any).list(account,'network_acl',['acl-one','acl-two'])).resolves.toEqual([]);
+    expect(jest.mocked(sleep).mock.calls.some(([ms])=>Number(ms)>1000&&Number(ms)<=3000)).toBe(true);
+    expect((global.fetch as jest.Mock).mock.calls.map(([url])=>new URL(String(url)).searchParams.get('NetworkAclId'))).toEqual(['acl-one','acl-two']);
+  });
+  it('shares the VPC read budget across different Describe APIs for the same account',async()=>{
+    const cloud:any=new ResourcePatrolCloudClient();
+    global.fetch=jest.fn(async(url:any)=>response({RequestId:'shared-read',TotalCount:0,...(new URL(String(url)).searchParams.get('Action')==='DescribeVpcs'?{Vpcs:{Vpc:[]}}:{NetworkAcls:{NetworkAcl:[]}})}));
+    await cloud.list(account,'vpc',['vpc-original']);
+    await cloud.list(account,'network_acl',['acl-original']);
+    expect(jest.mocked(sleep).mock.calls.some(([ms])=>Number(ms)>0)).toBe(true);
+  });
+  it('never automatically retries a throttled deletion',async()=>{
+    global.fetch=jest.fn(async()=>response({Code:'Throttling.User',RequestId:'limited-write'},400));
+    await expect(new ResourcePatrolCloudClient().mutate(account,'vpc','DeleteNetworkAcl',{NetworkAclId:'acl-original'})).rejects.toMatchObject({code:'Throttling.User'});
+    expect(global.fetch).toHaveBeenCalledTimes(1);
+  });
+  it('shares provider Retry-After cooldown without changing the original filters or retrying permissions',async()=>{
+    const pacing={wait:jest.fn(async()=>undefined),cooldown:jest.fn(async()=>undefined)};
+    const cloud:any=new ResourcePatrolCloudClient(pacing as unknown as AliyunVpcReadPacingService);
+    global.fetch=jest.fn().mockResolvedValueOnce({...response({Code:'Throttling.User',RequestId:'limited'},400),headers:new Headers({'retry-after':'12'})})
+      .mockResolvedValueOnce(response({RequestId:'read-ok',TotalCount:0,NetworkAcls:{NetworkAcl:[]}}));
+    await cloud.list(account,'network_acl',['acl-original']);
+    expect(pacing.cooldown).toHaveBeenCalledWith(account.accountUid,12000);
+    expect(pacing.wait).toHaveBeenCalledTimes(2);
+    global.fetch=jest.fn(async()=>response({Code:'Forbidden.RAM',RequestId:'denied'},403));
+    await expect(cloud.list(account,'network_acl',['acl-original'])).rejects.toMatchObject({code:'Forbidden.RAM'});
+    expect(global.fetch).toHaveBeenCalledTimes(1);
+  });
+  it('does not sleep beyond the total retry budget or retry a throttle without an official receipt',async()=>{
+    global.fetch=jest.fn(async()=>({...response({Code:'Throttling.User',RequestId:'limited'},400),headers:new Headers({'retry-after':'180'})}));
+    await expect((new ResourcePatrolCloudClient() as any).list(account,'network_acl',['acl-original'])).rejects.toMatchObject({attempts:1});
+    expect(global.fetch).toHaveBeenCalledTimes(1);
+    global.fetch=jest.fn(async()=>response({Code:'Throttling.User'},400));
+    await expect((new ResourcePatrolCloudClient() as any).list(account,'network_acl',['acl-original'])).rejects.toThrow();
+    expect(global.fetch).toHaveBeenCalledTimes(1);
+  });
+  it.each([true,false])('deduplicates shared VPCs and skips only ACLs already present in complete parent inventory: %s',async present=>{
+    const cloud:any=new ResourcePatrolCloudClient();
+    const vpc={type:'vpc',id:'vpc-shared',tags:{},parentId:null,attachedInstanceId:null,systemDisk:false,raw:{}};
+    const acl={...vpc,type:'network_acl',id:'acl-present',parentId:'vpc-shared'};
+    const list=jest.spyOn(cloud,'list').mockImplementation(async(_account:any,type:any,ids:any)=>type==='vpc'&&ids?.length?[vpc]:[]);
+    const ali=jest.spyOn(cloud,'aliList').mockImplementation(async(_account:any,type:any,parameters:any)=>type==='network_acl'&&parameters.VpcId&&present?[acl]:[]);
+    await cloud.inspect(account,[{type:'vpc',id:'vpc-shared'},{type:'vpc',id:'vpc-shared'},{type:'network_acl',id:'acl-present'},{type:'network_acl',id:'acl-missing'}]);
+    expect(ali.mock.calls.filter((args:any)=>args[1]==='network_acl')).toHaveLength(1);
+    expect(list.mock.calls.filter((args:any)=>args[1]==='network_acl').map((args:any)=>args[2])).toEqual([present?['acl-missing']:['acl-present','acl-missing']]);
   });
   it('reads exact IDs independently of tags, accepts identified documented absence and never accepts permission failure',async()=>{
     const service=new ResourcePatrolCloudClient();
@@ -30,12 +97,20 @@ describe('resource patrol bounded cloud reads',()=>{
     });
   });
   it.each([
-    {TotalCount:2,RequestId:'page',Instances:{Instance:[]}},
+    {TotalCount:2,RequestId:'page',Instances:{Instance:null}},
     {TotalCount:0,RequestId:'page',NextToken:'next',Instances:{Instance:[]}},
     {TotalCount:1,RequestId:'page',Instances:{Instance:[{InstanceId:'i-unrequested'}]}},
   ])('rejects incomplete pagination and unrequested identities: %j',async payload=>{
     global.fetch=jest.fn(async()=>response(payload));
     await expect((new ResourcePatrolCloudClient() as any).list(account,'ecs',['i-original'])).rejects.toThrow();
+  });
+  it('retains the failing API receipt and safe pagination shape, not the raw response',async()=>{
+    global.fetch=jest.fn(async()=>response({RequestId:'safe-page',TotalCount:1,NextToken:'private-cursor',
+      Instances:{Instance:[]},Message:'private vendor text'}));
+    await expect((new ResourcePatrolCloudClient() as any).aliList(account,'ecs',{})).rejects.toMatchObject({
+      action:'DescribeInstances',status:200,code:'INCOMPLETE_RESOURCE_PAGINATION',requestId:'safe-page',
+      pagination:{page:1,totalCount:1,rowCount:0,hasNextToken:true},
+    });
   });
   it('rejects duplicate tags rather than letting a copied marker prove ownership',async()=>{
     global.fetch=jest.fn(async()=>response({TotalCount:1,RequestId:'page',Instances:{Instance:[{InstanceId:'i-original',Tags:{Tag:[
@@ -43,15 +118,43 @@ describe('resource patrol bounded cloud reads',()=>{
     ]}}]}}));
     await expect((new ResourcePatrolCloudClient() as any).list(account,'ecs',['i-original'])).rejects.toThrow('TAG');
   });
-  it('respects security-group page size 50 and reads every page',async()=>{
+  it('uses security-group cursor pagination and reads even a short page with a next token',async()=>{
     global.fetch=jest.fn(async(url:any)=>{
       const params=new URL(String(url)).searchParams;
-      expect(params.get('PageSize')).toBe('50');
-      const page=Number(params.get('PageNumber'));
-      return response({RequestId:'sg-page',TotalCount:51,SecurityGroups:{SecurityGroup:Array.from({length:page===1?50:1},(_,index)=>({SecurityGroupId:`sg-${page}-${index}`}))}});
+      expect(params.get('MaxResults')).toBe('100');
+      expect(params.has('PageSize')).toBe(false);
+      expect(params.has('PageNumber')).toBe(false);
+      const page=params.has('NextToken')?2:1;
+      return response({RequestId:'sg-page',NextToken:page===1?'sg-next':'',SecurityGroups:{SecurityGroup:Array.from({length:page===1?50:1},(_,index)=>({SecurityGroupId:`sg-${page}-${index}`}))}});
     });
     expect(await (new ResourcePatrolCloudClient() as any).aliList(account,'security_group',{})).toHaveLength(51);
     expect(global.fetch).toHaveBeenCalledTimes(2);
+  });
+  it.each([
+    ['ecs','DescribeInstances','Instances','Instance','InstanceId'],
+    ['disk','DescribeDisks','Disks','Disk','DiskId'],
+  ])('reads every %s cursor page despite meaningless or changing totals',async(type,action,container,setKey,idKey)=>{
+    global.fetch=jest.fn(async(url:any)=>{
+      const params=new URL(String(url)).searchParams,second=params.has('NextToken');
+      expect(params.get('Action')).toBe(action);expect(params.get('MaxResults')).toBe('100');
+      expect(params.has('PageNumber')).toBe(false);expect(params.has('PageSize')).toBe(false);
+      if(second)expect(params.get('NextToken')).toBe('private-next-cursor');
+      return response({RequestId:'cursor-page',TotalCount:second?0:96,NextToken:second?'':'private-next-cursor',
+        [container]:{[setKey]:Array.from({length:second?46:50},(_,i)=>({[idKey]:`${type}-${second?i+50:i}`,Type:'system'}))}});
+    });
+    expect(await (new ResourcePatrolCloudClient() as any).aliList(account,type,{})).toHaveLength(96);
+    expect(global.fetch).toHaveBeenCalledTimes(2);
+  });
+  it.each(['repeated-id','repeated-token','empty-middle','bad-token','missing-set','missing-request-id','bound'])('fails closed for invalid ECS cursor reads: %s',async mode=>{
+    let page=0;
+    global.fetch=jest.fn(async()=>{
+      page++;
+      return response({RequestId:mode==='missing-request-id'?undefined:'cursor-page',TotalCount:0,
+        NextToken:mode==='bad-token'?123:mode==='repeated-token'?'same':`next-${page}`,
+        Instances:mode==='missing-set'?{}:{Instance:mode==='empty-middle'?[]:[{InstanceId:mode==='repeated-id'?'i-same':`i-${page}`}]}});
+    });
+    await expect((new ResourcePatrolCloudClient() as any).aliList(account,'ecs',{})).rejects.toThrow();
+    expect(global.fetch).toHaveBeenCalledTimes(mode==='bound'?100:['repeated-id','repeated-token'].includes(mode)?2:1);
   });
   it('accepts documented decimal-string ACL counts without weakening completeness checks',async()=>{
     global.fetch=jest.fn(async(url:any)=>{
@@ -151,5 +254,45 @@ describe('resource patrol bounded cloud reads',()=>{
     expect(await (service as any).aliList(account,'eni',{})).toHaveLength(2);
     global.fetch=jest.fn(async()=>response({RequestId:'eni',NextToken:'same',NetworkInterfaceSets:{NetworkInterfaceSet:[{NetworkInterfaceId:'eni-repeat'}]}}));
     await expect((service as any).aliList(account,'eni',{})).rejects.toThrow();
+  });
+  it.each([0,'0',99])('ignores the documented meaningless ENI TotalCount %j in token pagination',async total=>{
+    global.fetch=jest.fn(async(url:any)=>{
+      const params=new URL(String(url)).searchParams;
+      expect(params.get('MaxResults')).toBe('100');
+      expect(params.has('PageNumber')).toBe(false);
+      return response({RequestId:'eni-token-page',TotalCount:total,NextToken:'',
+        NetworkInterfaceSets:{NetworkInterfaceSet:[{NetworkInterfaceId:'eni-original'}]}});
+    });
+    await expect((new ResourcePatrolCloudClient() as any).list(account,'eni',['eni-original'])).resolves.toEqual([
+      expect.objectContaining({type:'eni',id:'eni-original'}),
+    ]);
+  });
+  it('finishes every ENI token page even when legacy totals change between pages',async()=>{
+    global.fetch=jest.fn(async(url:any)=>{
+      const next=new URL(String(url)).searchParams.get('NextToken');
+      return response({RequestId:'eni-token-page',TotalCount:next?0:1000,NextToken:next?'':'next',
+        NetworkInterfaceSets:{NetworkInterfaceSet:[{NetworkInterfaceId:next?'eni-last':'eni-first'}]}});
+    });
+    const rows=await (new ResourcePatrolCloudClient() as any).aliList(account,'eni',{});
+    expect(rows.map((row:any)=>row.id)).toEqual(['eni-first','eni-last']);
+    expect(global.fetch).toHaveBeenCalledTimes(2);
+  });
+  it.each([
+    {},
+    {NetworkInterfaceSets:{NetworkInterfaceSet:[]},NextToken:'next'},
+    {NetworkInterfaceSets:{NetworkInterfaceSet:[{NetworkInterfaceId:'eni-first'}]},NextToken:123},
+    {NetworkInterfaceSets:{NetworkInterfaceSet:[{NetworkInterfaceId:'eni-first'},{NetworkInterfaceId:'eni-first'}]}},
+    {NetworkInterfaceSets:{NetworkInterfaceSet:[{NetworkInterfaceId:' '}]}},
+    {NetworkInterfaceSets:{NetworkInterfaceSet:Array.from({length:101},(_,i)=>({NetworkInterfaceId:`eni-${i}`}))}},
+  ])('still rejects incomplete or malformed ENI token pages: %j',async payload=>{
+    global.fetch=jest.fn(async()=>response({RequestId:'eni-invalid-page',TotalCount:0,...payload}));
+    await expect((new ResourcePatrolCloudClient() as any).aliList(account,'eni',{})).rejects.toMatchObject({action:'DescribeNetworkInterfaces'});
+  });
+  it('retains the ENI page bound when every cursor is different',async()=>{
+    let page=0;
+    global.fetch=jest.fn(async()=>response({RequestId:'eni-bound',TotalCount:0,NextToken:`next-${++page}`,
+      NetworkInterfaceSets:{NetworkInterfaceSet:[{NetworkInterfaceId:`eni-${page}`}]}}));
+    await expect((new ResourcePatrolCloudClient() as any).aliList(account,'eni',{})).rejects.toThrow('ENI_PAGINATION_LIMIT');
+    expect(global.fetch).toHaveBeenCalledTimes(100);
   });
 });
