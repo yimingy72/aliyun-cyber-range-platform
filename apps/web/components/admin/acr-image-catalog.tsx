@@ -98,8 +98,8 @@ export function AcrImageCatalogView({ apiBaseUrl, token, search, actionHost, rea
         onPageSelect={setPage} onPageSizeChange={value => { setPageSize(value); setPage(1); }} />
     ) : null}>
       {actionHost ? createPortal(
-        <Button disabled={readOnly || syncing} onClick={() => void sync()} size="sm" type="button" variant="outline">
-          <RefreshCw aria-hidden="true" />{syncing ? '同步中…' : '同步 ACR 镜像'}
+        <Button aria-label={syncing ? '正在同步 ACR 镜像' : '同步 ACR 镜像'} disabled={readOnly || syncing} onClick={() => void sync()} size="sm" type="button" variant="outline">
+          <RefreshCw aria-hidden="true" />{syncing ? '同步中…' : '同步 ACR'}
         </Button>, actionHost) : null}
       {failure && catalog?.syncedAt ? <p role="alert" className="mb-3 text-sm text-destructive">{failure} 当前仍显示上次成功同步的目录。</p> : null}
       {catalog?.syncedAt ? <p className="mb-2 text-xs text-muted-foreground">

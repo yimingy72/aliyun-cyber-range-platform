@@ -2068,8 +2068,8 @@ function CloudImageCenterScreen({
                 setActiveMainView(view);
               }
             }}
-            searchLabel="筛选镜像名"
-            searchPlaceholder="搜索镜像名或镜像 ID"
+            searchLabel={showAcr ? '筛选 ACR 镜像' : '筛选镜像名'}
+            searchPlaceholder={showAcr ? '搜索仓库、标签或地域' : '搜索镜像名或镜像 ID'}
             searchValue={searchName}
             views={[
               { label: '平台镜像', value: 'platform' },
