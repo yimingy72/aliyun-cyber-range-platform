@@ -43,6 +43,7 @@ import type {
   PlatformApiClientOptions,
   PlatformImageAsset,
   PlatformContainerImage,
+  AcrImageCatalog,
   MogongContainerPreview,
   MogongContainerCollectResult,
   PlatformImageTag,
@@ -78,6 +79,16 @@ export class PlatformApiError extends Error {
 export class PlatformApiClient implements PlatformApiClientLike {
   async listPlatformContainerImages() {
     return (await this.request<{ items: PlatformContainerImage[] }>('/admin/platform-container-images')).items;
+  }
+  listAcrImageCatalog(filters: { page?: number; pageSize?: 20 | 50 | 100; search?: string } = {}) {
+    const query = new URLSearchParams();
+    if (filters.page !== undefined) query.set('page', String(filters.page));
+    if (filters.pageSize !== undefined) query.set('pageSize', String(filters.pageSize));
+    if (filters.search) query.set('search', filters.search);
+    return this.request<AcrImageCatalog>(`/admin/image-catalog/acr${query.size ? '?' + query : ''}`);
+  }
+  syncAcrImageCatalog() {
+    return this.request<{ state: 'running' }>('/admin/image-catalog/acr/sync', { method: 'POST' });
   }
   previewMogongContainers() {
     return this.request<MogongContainerPreview>('/admin/image-catalog/mogong/containers/preview');

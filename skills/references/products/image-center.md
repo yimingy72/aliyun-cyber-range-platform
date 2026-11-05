@@ -24,6 +24,8 @@
 | 取消平台发布 | `platform_image_unpublish` | `platformImageAssetId` | 操作元数据 | `images:write`，仅管理员 |
 | 删除平台镜像资产 | `platform_image_remove` | `platformImageAssetId` | 操作元数据 | `images:write` |
 | 查询镜像目录 | `image_catalog_list` | `scope: public\|custom` | — | `images:read` |
+| 查询 ACR 容器镜像目录 | `acr_image_catalog_list` | — | `page`、`pageSize: 20\|50\|100`、`search` | `images:read`，仅管理员 |
+| 同步 ACR 容器镜像目录 | `acr_image_catalog_sync` | — | — | `images:read`，仅管理员 |
 | 查询腾讯云镜像目录 | `tencent_cloud_image_list` | `cloudAccountContextId`、`scope` | `offset`、`limit` | `settings:read`、`images:read`，仅管理员 |
 | 同步镜像目录 | `image_catalog_sync` | `scope: public\|custom` | — | `images:read` |
 | 删除自定义云镜像 | `image_catalog_custom_delete` | `snapshotId` | `deleteOwnedSnapshots`（默认 `false`）、操作元数据 | `images:write` |
@@ -34,6 +36,8 @@
 
 - “可用镜像、我的镜像、选镜像”使用 `platform_image_list`。默认 `view: platform` 只包含平台可见资产，使用自有私有镜像时显式 `view: mine`；两个视图按资产 ID 去重，名称重复时不能猜选。独立实例使用资产 `id`（`platformImageAssetId`）；模板转换必须同时写入资产 `id`（`platformImageAssetId`）和其云镜像 `imageId`。
 - 容器镜像单独使用 `platform_container_image_list`，不属于 ECS 镜像，当前不能创建容器实例。批量收录先运行 `mogong_container_collect_preview`，再用其 `digest` 调用 `mogong_container_collect_all`，确认摘要与用户授权一致后完成服务端确认；同一请求保持幂等键。该操作只保存来源仓库引用，不复制镜像或创建云资源；停用、废弃和未成功的来源不会收录。引用待核验的资产不得用于未来实例创建，仓库镜像被删除后引用也可能失效。
+- ACR 目录按当前已核验阿里云主账号查询企业版地域、实例、仓库和标签，且只读取云元数据。同步先返回 `running`，查询结果为 `ready` 才表示本次同步成功；失败保留上次目录。目录缓存随 API 重启清空。权限至少包括 `cr:ListInstance`、`cr:ListInstanceEndpoint`、`cr:ListRepository`、`cr:ListRepositoryTag`；地域发现使用 `ListInstanceRegion`。不包含个人版或其他主账号仓库。
+- ACR 匹配使用实例的官方入口域名、完整仓库路径以及精确标签或摘要。缺域名的唯一候选仅提示人工确认，多候选和格式错误不绑定；匹配结果不会改写墨攻原始资产，也不表示仓库已经授权拉取。
 - 业务镜像名必须精确匹配一个当前可见、已启用的资产。无匹配、重名或停用时停止；转换后将资产的 `displayName` 写入 ECS `image`/`imageName`，将资产 `id` 写入 `platformImageAssetId`，将云镜像 ID 写入 `imageId` 与 `imageStrategy.imageId`。
 - “收录快照”先用 `image_catalog_list({ scope: 'custom' })` 或 `image_catalog_sync` 确认 `snapshotId`，由管理员再经确认调用 `platform_image_collect`。
 - 收录只建立平台目录，不代表该云镜像或快照由平台创建，不写入平台创建标签、不接管其费用。平台打包/导入已有的费用账本保留原来源、owner 和回收时间，重新收录只更新目录关联。

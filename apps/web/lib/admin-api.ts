@@ -45,7 +45,7 @@ import type {
 import type { SaveTencentCloudAccountInput, TencentCloudImagesInput, TencentCloudImagesPayload, TencentCloudRegionsInput, TencentCloudRegionsPayload } from './admin-types';
 import type { CloudWorkspaceView, DeleteCloudAccountResult, RangeInstanceChangePreview, RangeInstanceTemplateCopy, SaveCloudAccountInput } from './admin-types';
 import { readCloudWorkspaceSelection } from './cloud-workspace-selection';
-import type { ResourceAlert, ResourceAlertStatus, ResourcePatrol, ResourceReclaimPreview, ResourceReclaimResult } from '@aliyun-cyber-range/platform-api-client';
+import type { AcrImageCatalog, ResourceAlert, ResourceAlertStatus, ResourcePatrol, ResourceReclaimPreview, ResourceReclaimResult } from '@aliyun-cyber-range/platform-api-client';
 
 export async function fetchResourcePatrol(apiBaseUrl: string, token: string) {
   return readJson<ResourcePatrol>(await fetch(`${apiBaseUrl}/admin/resource-alerts/patrol`, { headers: createAdminHeaders(token) }));
@@ -64,6 +64,17 @@ export async function fetchMogongImageCatalog(apiBaseUrl: string, token: string)
 
 export async function collectMogongImage(apiBaseUrl: string, token: string, id: number) {
   return readJson<PlatformImageAsset | PlatformContainerImage>(await fetch(`${apiBaseUrl}/admin/image-catalog/mogong/${id}/collect`, {
+    method: 'POST', headers: createAdminHeaders(token),
+  }));
+}
+
+export async function fetchAcrImageCatalog(apiBaseUrl: string, token: string, page: number, pageSize: number, search: string) {
+  const query = new URLSearchParams({ page: String(page), pageSize: String(pageSize), search: search.slice(0, 253) });
+  return readJson<AcrImageCatalog>(await fetch(`${apiBaseUrl}/admin/image-catalog/acr?${query}`, { headers: createAdminHeaders(token) }));
+}
+
+export async function syncAcrImageCatalog(apiBaseUrl: string, token: string) {
+  return readJson<{ state: 'running' }>(await fetch(`${apiBaseUrl}/admin/image-catalog/acr/sync`, {
     method: 'POST', headers: createAdminHeaders(token),
   }));
 }

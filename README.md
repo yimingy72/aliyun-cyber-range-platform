@@ -157,6 +157,12 @@ MCP_PUBLIC_URL=https://203.0.113.10/mcp
 
 收录后的虚拟机资产关联当前工作空间的阿里云镜像记录；容器资产独立保存来源仓库引用，暂不支持创建实例，也不会复制镜像内容。删除墨攻目录快照或入口不会删除已收录资产；原云镜像或容器仓库中的镜像仍须存在，才能在未来使用。
 
+### ACR 容器镜像
+
+阿里云管理员可在「镜像中心 → 云上镜像来源 → ACR 容器镜像」同步当前账号的企业版实例、仓库和标签。查询访问 `ListInstanceRegion`、`ListInstance`、`ListInstanceEndpoint`、`ListRepository` 和 `ListRepoTag`，对应的 RAM 权限见[镜像中心操作说明](skills/references/products/image-center.md)。同步失败时会显示原因并保留上次完整目录，API 重启后需重新同步。
+
+平台镜像可按虚拟机、容器筛选。容器按 ACR 域名、仓库和标签或摘要对照；缺仓库域名的唯一候选仍需核对。同步只读取镜像目录，不拉取镜像或改写既有资产。
+
 ## MCP 连接
 
 MCP 服务使用 Streamable HTTP：`POST /mcp`，健康检查为 `GET /healthz`。生产接入使用 OIDC Bearer access token；Gateway 会验证 token，并为下游平台 API 执行 token exchange。静态 Bearer Token 只应用于受控的本地 stub / smoke 场景。

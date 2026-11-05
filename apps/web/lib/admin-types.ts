@@ -595,6 +595,7 @@ export type PlatformImageAssetListPayload = {
 };
 
 export type PlatformContainerImage = {
+  acrMatch?: import('@aliyun-cyber-range/platform-api-client').AcrMatch;
   id: string;
   sourceId: number;
   displayName: string;

@@ -35,7 +35,33 @@ const operation = (args: { idempotencyKey?: string; confirmationId?: string }) =
   confirmationId: args.confirmationId,
 });
 
+const acrListInput = z.strictObject({
+  page: z.number().int().min(1).max(999999).optional(),
+  pageSize: z.union([z.literal(20), z.literal(50), z.literal(100)]).optional(),
+  search: z.string().max(253).optional(),
+});
+const acrListOutput = resultOutputSchema(z.object({
+  state: z.enum(['idle', 'running', 'ready', 'failed']), error: z.string().nullable(), syncedAt: z.string().nullable(),
+  regionCount: z.number(), instanceCount: z.number(), repositoryCount: z.number(), imageCount: z.number(),
+  page: z.number(), pageSize: z.number(), total: z.number(),
+  items: z.array(z.object({ id: z.string(), region: z.string(), instance: z.string(), repository: z.string(), tag: z.string(),
+    digest: z.string().nullable(), domains: z.array(z.string()), status: z.string(), updatedAt: z.string().nullable() })),
+}));
+
 export const imageTools: ToolDefinition[] = [
+  {
+    name: 'acr_image_catalog_list', title: '查询 ACR 容器镜像',
+    description: '仅管理员查询当前阿里云工作空间上次同步的 ACR 企业版镜像版本，包含同步状态和分页。',
+    requiredScopes: ['images:read'], adminOnly: true, readOnlyHint: true, inputSchema: acrListInput, outputSchema: acrListOutput,
+    call(context, args) { return context.client.listAcrImageCatalog(args as z.infer<typeof acrListInput>); },
+  },
+  {
+    name: 'acr_image_catalog_sync', title: '同步 ACR 容器镜像',
+    description: '仅管理员发起当前阿里云工作空间的企业版实例、仓库、标签目录同步，不修改 ACR 镜像。用 acr_image_catalog_list 查看结果。',
+    requiredScopes: ['images:read'], adminOnly: true, annotations: { destructiveHint: false, idempotentHint: true },
+    inputSchema: z.strictObject({}), outputSchema: resultOutputSchema(z.object({ state: z.literal('running') })),
+    call(context) { return context.client.syncAcrImageCatalog(); },
+  },
   {
     name: 'platform_container_image_list', title: '查询平台容器镜像',
     description: '查询当前工作空间已收录的容器镜像资产；暂不支持创建容器实例，也不返回仓库凭据或镜像引用。',

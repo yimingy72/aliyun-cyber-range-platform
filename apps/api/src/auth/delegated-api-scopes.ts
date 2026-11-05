@@ -56,6 +56,8 @@ const rules: ScopeRule[] = [
   { method: 'PATCH', path: /^\/admin\/platform-images\/[^/]+$/, all: ['images:write'] },
   { method: 'PUT', path: /^\/admin\/platform-images\/[^/]+\/tags$/, all: ['images:write'] },
   { method: 'DELETE', path: /^\/admin\/platform-images\/[^/]+$/, all: ['images:write'] },
+  { method: 'GET', path: /^\/admin\/image-catalog\/acr$/, all: ['images:read'] },
+  { method: 'POST', path: /^\/admin\/image-catalog\/acr\/sync$/, all: ['images:read'] },
   { method: 'GET', path: /^\/admin\/image-catalog\/(?:public|custom)$/, all: ['images:read'] },
   { method: 'GET', path: /^\/admin\/image-catalog\/mogong\/containers\/preview$/, all: ['images:read'] },
   { method: 'POST', path: /^\/admin\/image-catalog\/mogong\/containers\/collect-all$/, all: ['images:write'] },
