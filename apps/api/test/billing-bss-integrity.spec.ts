@@ -1,5 +1,6 @@
 import { BillingBssClient } from '../src/admin/billing-bss-client';
 import { BillingSyncService } from '../src/admin/billing-sync.service';
+import { BillingService } from '../src/admin/billing.service';
 import type { SystemCloudAccountContext, SystemConfigService } from '../src/admin/system-config.service';
 import { createProvenBillingLedger } from './support/create-billing-fixture';
 import { createMemoryAdminRepository } from './support/create-memory-admin-repository';
@@ -27,6 +28,71 @@ async function existingDay() {
 }
 
 describe('daily BSS revision completeness', () => {
+  it('diagnoses missing EIP receipts without logging raw rows, amounts, credentials or external IDs',async()=>{
+    const repository=createMemoryAdminRepository();
+    for(const id of ['eip-billed','eip-missing']) await createProvenBillingLedger(repository,{
+      cloudAccountUid:context.accountUid,regionId:'cn-hangzhou',cloudResourceId:id,cloudResourceType:'eip',
+      billingScope:'platform',billingStartAt:new Date('2026-01-01')});
+    global.fetch=jest.fn().mockResolvedValue(response({TotalCount:2,Items:[
+      {...row,ProductCode:'eip',InstanceID:'eip-billed',PretaxAmount:0,Message:context.accessKeySecret},
+      {...row,ProductCode:'cdt',InstanceID:'unrelated-account-aggregate',PretaxAmount:99,Message:context.accessKeyId},
+    ]}));
+    const service=new BillingSyncService(repository,new BillingBssClient(config),config);
+    const log=jest.fn();(service as any).logger.log=log;
+    await service.syncRange({startAt:DAY,endAt:DAY});
+    expect(JSON.parse(log.mock.calls[0][0])).toMatchObject({event:'billing_sync_eip_receipts',billingDate:DAY,
+      sourceLineCount:2,products:{eip:1,cdt:1},resources:expect.arrayContaining([
+        {resourceId:'eip-billed',exactProducts:{eip:1},relatedLineCount:1,matchedFields:['InstanceID']},
+        {resourceId:'eip-missing',exactProducts:{},relatedLineCount:0,matchedFields:[]},
+      ])});
+    expect(log.mock.calls[0][0]).not.toMatch(/fixture-key|fixture-secret|unrelated-account-aggregate|PretaxAmount|Message/);
+    expect(await repository.listBillingLineItems()).toHaveLength(1);
+  });
+  it('retains safe alternate network product codes and matching field names without adopting an unsupported bill',async()=>{
+    const repository=createMemoryAdminRepository();
+    await createProvenBillingLedger(repository,{cloudAccountUid:context.accountUid,regionId:'cn-hangzhou',
+      cloudResourceId:'eip-original',cloudResourceType:'eip',billingScope:'platform',billingStartAt:new Date('2026-01-01')});
+    global.fetch=jest.fn().mockResolvedValue(response({TotalCount:2,Items:[
+      {...row,ProductCode:'alternate_network_v2',ProductName:'弹性公网IP',InstanceID:'198.51.100.42',SplitItemID:'eip-original',
+        PipCode:'network_public',CommodityCode:'network_commodity',BillingItemCode:'ip_fee'},
+      {...row,ProductCode:context.accessKeySecret,ProductName:'弹性公网IP',InstanceID:'external-private'},
+    ]}));
+    const service=new BillingSyncService(repository,new BillingBssClient(config),config);
+    const log=jest.fn();(service as any).logger.log=log;
+    await service.syncRange({startAt:DAY,endAt:DAY});
+    expect(JSON.parse(log.mock.calls[0][0])).toMatchObject({products:{alternate_network_v2:1,other:1},
+      networkProducts:expect.arrayContaining([expect.objectContaining({ProductCode:'alternate_network_v2',instanceIdShape:'ipv4',count:1})]),
+      resources:[expect.objectContaining({resourceId:'eip-original',matchedFields:['SplitItemID']})]});
+    expect(log.mock.calls[0][0]).not.toMatch(/fixture-key|fixture-secret|198\.51\.100\.42|external-private/);
+    expect(await repository.listBillingLineItems()).toHaveLength(0);
+  });
+  it('retains official zero charges and fully discounted rows without substituting gross prices or inventing unbilled rows', async () => {
+    const repository = createMemoryAdminRepository();
+    for (const id of ['i-free', 'i-discounted', 'i-paid', 'i-not-billed']) {
+      await createProvenBillingLedger(repository, { cloudAccountUid: context.accountUid, regionId: 'cn-hangzhou',
+        cloudResourceId: id, cloudResourceType: 'ecs', billingScope: 'platform', billingStartAt: new Date('2026-01-01') });
+    }
+    const official = [
+      { ...row, InstanceID: 'i-free', PretaxGrossAmount: '0', PretaxAmount: '0' },
+      { ...row, InstanceID: 'i-discounted', PretaxGrossAmount: '10', PretaxAmount: '0' },
+      { ...row, InstanceID: 'i-paid', PretaxGrossAmount: '2', PretaxAmount: '0.25' },
+    ];
+    global.fetch = jest.fn().mockResolvedValue(response({ Items: official, TotalCount: 3 }));
+    const sync = new BillingSyncService(repository, new BillingBssClient(config), config);
+    await expect(sync.syncRange({ startAt: DAY, endAt: DAY })).resolves.toMatchObject({ importedLineItems: 3 });
+    await sync.syncRange({ startAt: DAY, endAt: DAY });
+    const saved = await repository.listBillingLineItems();
+    expect(saved).toHaveLength(3);
+    expect(saved.map(item => item.pretaxAmount).sort()).toEqual([0, 0, 0.25]);
+    expect(saved.some(item => item.cloudResourceId === 'i-not-billed')).toBe(false);
+    const billing = new BillingService(repository);
+    await expect(billing.getSummary({ startAt: DAY, endAt: DAY })).resolves.toMatchObject({
+      totalPretaxAmount: 0.25, platformPretaxAmount: 0.25, resourcesWithoutBillCount: 1,
+    });
+    await expect(billing.listPlatformItems({ startAt: DAY, endAt: DAY })).resolves.toHaveLength(3);
+    for (const [url] of (global.fetch as jest.Mock).mock.calls) expect(new URL(url).searchParams.get('IsHideZeroCharge')).toBe('false');
+  });
+
   it.each([
     { Items: [] },
     { Items: [row] },

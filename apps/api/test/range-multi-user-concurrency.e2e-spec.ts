@@ -1,3 +1,4 @@
+import { runInCloudWorkspace } from '../src/auth/cloud-workspace-scope';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -110,6 +111,9 @@ describeWithDatabase('PostgreSQL multi-user range lifecycle isolation', () => {
     jest.spyOn(globalThis, 'fetch').mockImplementation(async url => {
       const query = new URL(String(url)).searchParams;
       cloudCalls.push({ action: query.get('Action')!, instanceId: query.get('InstanceId') });
+      if (query.get('Action') === 'DescribeImages') {
+        return new Response(JSON.stringify({ RequestId: 'capacity-receipt', TotalCount: 1, Images: { Image: [{ ImageId: query.get('ImageId'), Status: 'Available', Size: 40 }] } }), { status: 200 });
+      }
       if (query.get('Action') === 'DescribeVpcAttribute') {
         // This fixture models cloud absence after its mocked destroy. A get API
         // reports a missing exact ID via a receipt, not an empty list payload.
@@ -267,7 +271,9 @@ describeWithDatabase('PostgreSQL multi-user range lifecycle isolation', () => {
     expect(cloudCalls.filter(call => call.action === 'DescribeInstances')).toHaveLength(describeCount + 1);
     expect(actualFacts.nodeBillingTags!['dmz-entry']).toMatchObject({ PlatformUserId: alice.id, RangeInstanceId: a.id, PlatformScope: 'user' });
     expect(JSON.stringify(actualFacts.nodeBillingTags).includes('ignored-secret-tag')).toBe(false);
-    const aliceRows = await service.list(alice); const bobRows = await service.list(bob);
+    const workspaceScope = { cloudWorkspaceId: a.cloudWorkspaceId!, provider: 'alibaba_cloud' as const, accountUid: a.resourceSummary?.executionContext?.cloudAccountUid ?? null };
+    const aliceRows = await runInCloudWorkspace(workspaceScope, () => service.list(alice));
+    const bobRows = await runInCloudWorkspace(workspaceScope, () => service.list(bob));
     expect(aliceRows.map(row => row.id)).toContain(a.id); expect(aliceRows.map(row => row.id)).not.toContain(b.id);
     expect(bobRows.map(row => row.id)).toContain(b.id); expect(bobRows.map(row => row.id)).not.toContain(a.id);
     await expect(service.getById(a.id, bob)).rejects.toMatchObject({ status: 403 });

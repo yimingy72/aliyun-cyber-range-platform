@@ -27,6 +27,7 @@ describe('split billing source contract', () => {
     expect(parameters[0].get('BillingDate')).toBe(DAY);
     expect(parameters[0].get('MaxResults')).toBe('300');
     expect(parameters[0].has('IsBillingItem')).toBe(false);
+    expect(parameters.every(parameters => parameters.get('IsHideZeroCharge') === 'false')).toBe(true);
     expect(parameters[1].get('NextToken')).toBe('page-2');
   });
 
@@ -34,6 +35,13 @@ describe('split billing source contract', () => {
     global.fetch = jest.fn().mockResolvedValueOnce(response(payload([]))).mockResolvedValueOnce(response(payload([row({ ProductCode: 'oss', SplitItemID: 'test-bucket', BillingDate: 'unsupported-value' })])));
     expect(await client().listDailySplitBillingItems(query)).toEqual([]);
     expect(await client().listDailySplitBillingItems({ billingDate: DAY, productCode: 'oss' })).toEqual([row({ ProductCode: 'oss', SplitItemID: 'test-bucket', BillingDate: 'unsupported-value' })]);
+  });
+
+  it.each(['snapshot', 'oss'] as const)('includes official zero-charge %s split rows', async productCode => {
+    const official = row({ ProductCode: productCode, PretaxGrossAmount: '0', PretaxAmount: '0' });
+    global.fetch = jest.fn().mockResolvedValue(response(payload([official])));
+    await expect(client().listDailySplitBillingItems({ billingDate: DAY, productCode })).resolves.toEqual([official]);
+    expect(new URL((global.fetch as jest.Mock).mock.calls[0][0]).searchParams.get('IsHideZeroCharge')).toBe('false');
   });
 
   it.each([

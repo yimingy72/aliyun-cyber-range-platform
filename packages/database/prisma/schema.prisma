@@ -83,6 +83,10 @@ enum ProvisionJobType {
   destroy
   retry
   refresh_status
+  reset
+  economical_stop
+  resume
+  change_expiry
 }
 
 enum ProvisionJobStatus {
@@ -147,6 +151,12 @@ model CloudWorkspace {
   isReadOnly                 Boolean       @default(false)
   activeCloudAccountContextId String?
   archivedAt                 DateTime?
+  billingReconciliationMode String @default("legacy")
+  billingWriterGeneration Int @default(0)
+  billingNextRequestAt DateTime?
+  billingCoverageRows BillingCoverageUnit[]
+  billingReconcileRows BillingReconcileTask[]
+  billingAttemptRows BillingQueryAttempt[]
   createdAt                  DateTime      @default(now())
   updatedAt                  DateTime      @updatedAt
 
@@ -678,6 +688,7 @@ model RangeInstance {
   cloudProvider                CloudProvider       @default(alibaba_cloud)
   accessEntry                  Json?
   resourceSummary              Json?
+  powerControl                 Json?
   errorSummary                 String?             @db.Text
   expiresAt                    DateTime?
   lastJobId                    String?             @unique
@@ -813,6 +824,13 @@ model CloudResourceDrift {
 
 }
 
+// Shared by API/worker and by workspaces using the same cloud account; contains no credentials.
+model CloudApiReadBudget {
+  key       String   @id
+  nextAt    DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt DateTime @default(now()) @updatedAt @db.Timestamptz(3)
+}
+
 // The designated manager's persisted default selection is the only patrol target.
 model ResourcePatrolSettings {
   id              String   @id
@@ -877,6 +895,8 @@ model BillingLineItem {
   ownerUserId       String?
   matchedLedgerId   String?
   rawPayload        Json                      @default("{}")
+  financialGroupKey String?
+  revisionId        String?
   createdAt         DateTime                  @default(now())
   updatedAt         DateTime                  @updatedAt
 
@@ -884,6 +904,7 @@ model BillingLineItem {
   @@index([cloudWorkspaceId, cloudProvider, cloudAccountUid, billingDate], map: "BillingLineItem_workspace_provider_account_date_idx")
   @@index([ownerUserId, billingDate])
   @@index([matchedLedgerId])
+  @@index([cloudWorkspaceId, financialGroupKey])
   @@index([cloudResourceId, cloudResourceType])
   @@index([cloudWorkspaceId])
   @@unique([cloudWorkspaceId, cloudProvider, sourceFingerprint], map: "BillingLineItem_workspace_provider_fingerprint_key")
@@ -906,6 +927,8 @@ model BillingAnomaly {
   currency          String
   reason            String
   rawPayload        Json                      @default("{}")
+  financialGroupKey String?
+  revisionId        String?
   createdAt         DateTime                  @default(now())
   updatedAt         DateTime                  @updatedAt
 
@@ -916,6 +939,85 @@ model BillingAnomaly {
   @@unique([cloudWorkspaceId, cloudProvider, sourceFingerprint], map: "BillingAnomaly_workspace_provider_fingerprint_key")
   cloudWorkspace CloudWorkspace @relation(fields: [cloudWorkspaceId], references: [id], onDelete: Restrict)
 
+}
+
+model BillingCoverageUnit {
+  id String @id @default(cuid())
+  cloudWorkspaceId String
+  ledgerId String
+  category String
+  billingDate DateTime @db.Date
+  ruleVersion Int @default(1)
+  state String @default("awaiting_query")
+  reasonCode String?
+  reasonMessage String?
+  queryTaskId String?
+  adoptedAttemptId String?
+  lastAttemptId String?
+  parentBillingResourceId String?
+  lastQueriedAt DateTime?
+  lastVerifiedAt DateTime?
+  supersededAt DateTime?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  cloudWorkspace CloudWorkspace @relation(fields:[cloudWorkspaceId], references:[id], onDelete:Restrict)
+  @@unique([cloudWorkspaceId, ledgerId, category, billingDate, ruleVersion])
+  @@index([cloudWorkspaceId, state, billingDate])
+  @@index([cloudWorkspaceId, queryTaskId])
+}
+
+model BillingReconcileTask {
+  id String @id @default(cuid())
+  cloudWorkspaceId String
+  cloudProvider CloudProvider
+  cloudAccountUid String
+  cloudAccountContextId String
+  regionId String
+  billingDate DateTime @db.Date
+  groupKey String
+  kind String
+  instanceId String?
+  splitItemId String?
+  productCode String?
+  targetLedgerIds String[]
+  status String @default("pending")
+  availableAt DateTime @default(now())
+  leaseToken String?
+  leaseExpiresAt DateTime?
+  writerGeneration Int
+  attemptCount Int @default(0)
+  currentRevisionId String?
+  lastQueriedAt DateTime?
+  lastVerifiedAt DateTime?
+  lastErrorCode String?
+  lastErrorMessage String?
+  queryPlan Json @default("{}")
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  cloudWorkspace CloudWorkspace @relation(fields:[cloudWorkspaceId], references:[id], onDelete:Restrict)
+  @@unique([cloudWorkspaceId, groupKey])
+  @@index([cloudWorkspaceId, status, availableAt])
+  @@index([leaseExpiresAt])
+}
+
+model BillingQueryAttempt {
+  id String @id @default(cuid())
+  cloudWorkspaceId String
+  taskId String
+  startedAt DateTime @default(now())
+  finishedAt DateTime?
+  outcome String @default("running")
+  querySnapshot Json @default("{}")
+  requestIds Json @default("[]")
+  pageCount Int @default(0)
+  rowCount Int @default(0)
+  complete Boolean @default(false)
+  errorCode String?
+  errorMessage String?
+  datasetDigest String?
+  evidence Json @default("{}")
+  cloudWorkspace CloudWorkspace @relation(fields:[cloudWorkspaceId], references:[id], onDelete:Restrict)
+  @@index([cloudWorkspaceId, taskId, startedAt])
 }
 
 model CloudImageImportBucket {

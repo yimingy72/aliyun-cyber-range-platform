@@ -200,7 +200,7 @@ describe('SingleInstancesScreen list states', () => {
     expect(batchCells).toHaveLength(headers.length);
     expect(cellFor('数量 / 规格')).toBe('1 台');
     expect(cellFor('公网 IP')).toBe('47.1.2.3');
-    expect(cellFor('状态')).toBe('1 已关闭');
+    expect(cellFor('状态')).toBe('1 已销毁');
     expect(cellFor('开启时间')).toContain('2026-07-28');
     expect(cellFor('结束时间')).toContain('2026-07-28');
     expect(cellFor('运行时长')).toContain('3 小时');
@@ -218,7 +218,7 @@ describe('SingleInstancesScreen list states', () => {
     const table = screen.getByRole('table', { name: '实例列表' });
 
     expect(table).toBeTruthy();
-    expect(Array.from(table.querySelectorAll('col')).at(-1)?.getAttribute('style') ?? '').toContain('width: 13rem');
+    expect(Array.from(table.querySelectorAll('col')).at(-1)?.getAttribute('style') ?? '').toContain('width: 11rem');
     fireEvent.click(screen.getByRole('button', { name: '重试加载' }));
 
     expect(await screen.findByText('web-lab-01')).toBeTruthy();

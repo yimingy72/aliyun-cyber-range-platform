@@ -23,7 +23,7 @@ export type RangeInstanceStatus =
   | 'destroying'
   | 'destroy_failed'
   | 'destroyed';
-export type ProvisionJobType = 'create' | 'update' | 'destroy' | 'retry' | 'refresh_status';
+export type ProvisionJobType = 'create' | 'update' | 'destroy' | 'retry' | 'refresh_status' | 'reset' | 'economical_stop' | 'resume' | 'change_expiry';
 export type ProvisionJobStatus = 'pending' | 'running' | 'succeeded' | 'failed' | 'cancelled';
 export type ProvisionJobStepStatus = 'pending' | 'running' | 'succeeded' | 'failed';
 export type CloudImageScope = 'public' | 'custom';
@@ -170,6 +170,7 @@ export type HostCloudReleaseDeadline = {
 };
 
 export type RangeResourceSummary = {
+  expiryChangeJobId?: string;
   cloudReleaseDeadlines?: Record<string, HostCloudReleaseDeadline>;
   retiredResources?: RangeResourceSummary | null;
   creationAttempted?: boolean;
@@ -328,6 +329,7 @@ export type RangeInstanceRecord = {
   expiresAt: Date | null;
   lastJobId: string | null;
   nodeStatuses?: Record<string, string> | null;
+  powerControl?: import('./instance-power-types').InstancePowerControl | null;
   createdAt: Date;
   updatedAt: Date;
 };
@@ -341,7 +343,12 @@ export type ProvisionJobTopologySnapshot = {
   compiledSpec: Record<string, unknown>;
   templateModulePath: string;
   runtimeCredentials?: RangeRuntimeCredentials | null;
-  operation?: 'create' | 'update' | 'destroy';
+  operation?: 'create' | 'update' | 'destroy' | 'reset';
+  nodeReset?: import('./range-node-reset.service').RangeNodeResetTarget;
+  powerPlan?: import('./instance-power-types').PowerPlan;
+  powerObserveOnly?: boolean;
+  expiryPlan?: import('./instance-expiry-types').ExpiryPlan;
+  expiryObserveOnly?: boolean;
   changeApproval?: import('./range-draft-change-policy').RangeChangeApproval;
 };
 
@@ -360,6 +367,13 @@ export type ProvisionJobRecord = {
   createdAt: Date;
   availableAt?: Date;
   updatedAt: Date;
+};
+
+export type BillingSourceInstance = Pick<RangeInstanceRecord, 'id' | 'name' | 'cloudWorkspaceId' | 'cloudProvider' | 'ownerUserId' | 'instanceMode'
+  | 'singleInstanceBatchId' | 'singleInstanceConfig' | 'templateId' | 'status' | 'expiresAt' | 'lastJobId' | 'resourceSummary' | 'createdAt'>;
+export type BillingSourceJob = Pick<ProvisionJobRecord, 'id' | 'cloudWorkspaceId' | 'rangeInstanceId' | 'jobType' | 'status'
+  | 'createdAt' | 'startedAt' | 'finishedAt' | 'retryCount'> & {
+  topologySnapshot: Partial<Pick<ProvisionJobTopologySnapshot, 'operation' | 'expiryPlan' | 'compiledProvisionSpec'>> | null;
 };
 
 export type ProvisionJobStepLogRecord = {
@@ -420,6 +434,13 @@ export type IdempotentOperationRecord = {
   errorCode: string | null;
   createdAt: Date;
   updatedAt: Date;
+};
+
+export type RangeLaunchReceipt = {
+  cloudWorkspaceId: string;
+  actorUserId: string;
+  idempotencyKey: string;
+  rangeInstanceId: string;
 };
 
 export type OperationAuditEventInput = {
@@ -762,6 +783,8 @@ export type RepairBillingLedgerOriginInput = {
   expected: BillingLedgerResourceRecord;
   sourceProvisionJobId: string;
   auditMessage: string;
+  cloudAccountUid?: string;
+  cloudAccountContextId?: string;
 };
 
 export type CreateBillingLineItemInput = {
@@ -793,6 +816,7 @@ export type ListBillingLineItemsFilter = Partial<{
   ownerUserId: string | null;
   billingScope: BillingScope;
   matchedLedgerId: string | null;
+  matchedLedgerIds: string[];
 }>;
 
 export type CreateBillingAnomalyInput = {
@@ -1056,6 +1080,7 @@ export type UpdateRangeInstanceInput = Partial<{
   errorSummary: string | null;
   expiresAt: Date | null;
   lastJobId: string | null;
+  powerControl: import('./instance-power-types').InstancePowerControl | null;
 }>;
 
 export type SaveRangeInstanceDraftInput = Pick<
@@ -1097,7 +1122,8 @@ export type ApplyRangeInstanceDraftInput = {
 export type QueueRangeInstanceJobInput = CreateProvisionJobInput & {
   expectedStatus: RangeInstanceStatus;
   expectedOwnerUserId: string | null;
-  nextStatus: 'pending_create' | 'pending_destroy';
+  nextStatus: 'pending_create' | 'pending_destroy' | 'running';
+  expectedUpdatedAt?: Date;
   allocatedCidr?: string | null;
   intakeOperation?: CreateIdempotentOperationInput;
 };
@@ -1156,6 +1182,8 @@ export class RangeInstanceDraftRevisionConflictError extends Error {
 }
 
 export type UpdateProvisionJobInput = Partial<{
+  availableAt: Date;
+  topologySnapshot: ProvisionJobTopologySnapshot;
   status: ProvisionJobStatus;
   startedAt: Date | null;
   finishedAt: Date | null;
@@ -1227,8 +1255,12 @@ export interface AdminRepository {
   createSingleInstanceBatch(input: CreateSingleInstanceBatchInput): Promise<SingleInstanceBatchRecord>;
   getSingleInstanceBatchById(id: string): Promise<SingleInstanceBatchRecord | null>;
   getSingleInstanceBatchWithInstancesById(id: string): Promise<SingleInstanceBatchWithInstancesRecord | null>;
+  listSingleInstanceBatchNames(ids: string[]): Promise<Pick<SingleInstanceBatchRecord, 'id' | 'name'>[]>;
   listSingleInstanceBatchesWithInstances(): Promise<SingleInstanceBatchWithInstancesRecord[]>;
   listRangeInstances(): Promise<RangeInstanceRecord[]>;
+  listBillingSourceInstances?(): Promise<BillingSourceInstance[]>;
+  listBillingSourceJobs?(): Promise<BillingSourceJob[]>;
+  listRangeLaunchReceipts(instanceIds: string[]): Promise<RangeLaunchReceipt[]>;
   listProvisioningInstancesByIds(ids: string[]): Promise<RangeInstanceSchedulingRecord[]>;
   listExpiredRangeInstances(now: Date): Promise<RangeInstanceSchedulingRecord[]>;
   archiveDestroyedRangeInstancesForDeletedTemplate(template: RangeTemplateRecord): Promise<void>;
@@ -1237,6 +1269,11 @@ export interface AdminRepository {
   }): Promise<RangeInstanceRecord>;
   getRangeInstanceById(id: string): Promise<RangeInstanceRecord | null>;
   updateRangeInstance(id: string, input: UpdateRangeInstanceInput): Promise<RangeInstanceRecord>;
+  saveInstancePowerControl(id: string, expectedUpdatedAt: Date, control: import('./instance-power-types').InstancePowerControl, job?: CreateProvisionJobInput): Promise<{ instance: RangeInstanceRecord; job: ProvisionJobRecord | null } | null>;
+  queueInstanceExpiryJob(id: string, expectedUpdatedAt: Date, job: CreateProvisionJobInput, effectiveExpiresAt: Date): Promise<ProvisionJobRecord | null>;
+  requeueInstanceExpiryJob(jobId: string, expectedInstanceUpdatedAt: Date, expectedJobUpdatedAt: Date): Promise<boolean>;
+  listDuePowerSchedules(now: Date): Promise<RangeInstanceRecord[]>;
+  updateInstancePowerForClaim(id: string, startedAt: Date, input: UpdateRangeInstanceInput, jobInput: UpdateProvisionJobInput): Promise<boolean>;
   updateRangeInstanceDnsState(id: string, hostKey: string, nativeId: string, expectedClaim: string | null, entry: RangeDnsVerification): Promise<boolean>;
   saveRangeInstanceDraft(
     id: string,

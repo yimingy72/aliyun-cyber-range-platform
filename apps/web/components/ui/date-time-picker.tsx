@@ -99,10 +99,12 @@ export function DateTimePicker({ value, onValueChange, includeTime = true, class
       </PopoverAnchor>
       <PopoverContent
         aria-label={`选择${label}`}
+        className="flex flex-col overflow-hidden p-0"
         onOpenAutoFocus={(event) => event.preventDefault()}
         onCloseAutoFocus={(event) => event.preventDefault()}
         onInteractOutside={(event) => { if (anchorRef.current?.contains(event.target as Node)) event.preventDefault(); }}
       >
+        <div className="min-h-0 overflow-y-auto overscroll-contain p-3" data-slot="date-time-picker-scroll">
         <Calendar
           mode="single"
           month={month}
@@ -126,7 +128,8 @@ export function DateTimePicker({ value, onValueChange, includeTime = true, class
             </div>
           </div>
         ) : null}
-        <div className="mt-3 flex items-center justify-between gap-2 border-t border-border pt-3">
+        </div>
+        <div className="flex shrink-0 items-center justify-between gap-2 border-t border-border bg-popover p-3">
           <Button disabled={props.required} size="sm" type="button" variant="ghost" onClick={() => commit('')}>清空</Button>
           <Button disabled={!selected} size="sm" type="button" onClick={() => commit(draft)}>确定</Button>
         </div>

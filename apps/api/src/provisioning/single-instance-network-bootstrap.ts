@@ -2,7 +2,7 @@ import { existsSync } from 'node:fs';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
-import { APPLY_PENDING_FILE, fileExists, readWorkspaceState, recordApplyPlan, completeApply, hasUnresolvedApply, assertDestroyComplete, assertWorkspaceCanApply } from './opentofu-state-evidence';
+import { APPLY_PENDING_FILE, fileExists, readWorkspaceState, readPendingApplyEvidence, recordApplyPlan, completeApply, hasUnresolvedApply, assertDestroyComplete, assertWorkspaceCanApply } from './opentofu-state-evidence';
 import { prepareOpenTofuProviderEnv, migrateAliCloudWorkspaceProvider } from './provider-mirror-publication';
 import { OpenTofuRunner, type OpenTofuInitOptions, type OpenTofuApplyOptions, type OpenTofuDestroyOptions, type OpenTofuCommandResult, type OpenTofuPlanOptions, type OpenTofuValidateOptions, type OpenTofuWorkspaceCommandOptions, type OpenTofuShowPlanOptions, } from '@aliyun-cyber-range/iac-runner';
 import { Injectable } from '@nestjs/common';
@@ -226,6 +226,51 @@ export class SingleInstanceNetworkBootstrapService {
       throw new Error('Network recovery state conflicts with its persisted profile');
     return { ...profile, vpcId: vpcIds[0], securityGroupId: groupIds[0], vswitchIds,
       vswitchCidrs: config.vswitchCidrs };
+  }
+  async destroyVerifiedUnknownEmptyProfile(profile: SingleInstanceNetworkProfileRecord, runtimeConfig: ResolvedProvisioningRuntimeConfig,
+    assertCloudAbsent: () => Promise<void>, onCleanupVerified: () => Promise<void>) {
+    const validate = async () => {
+      const accountUid = profile.cloudAccountUid, contextId = profile.cloudAccountContextId, workspaceKey = profile.workspaceKey;
+      if (profile.provider !== 'alibaba_cloud' || profile.status !== 'destroying' || !profile.managedByPlatform
+        || !accountUid || !contextId || !workspaceKey || profile.vpcId || profile.securityGroupId || profile.vswitchIds.length
+        || runtimeConfig.provider !== profile.provider || runtimeConfig.accountUid !== accountUid
+        || runtimeConfig.cloudAccountContextId !== contextId || runtimeConfig.defaultRegion !== profile.regionId
+        || runtimeConfig.defaultZoneId !== profile.zoneId
+        || workspaceKey !== singleNetworkWorkspaceKey(accountUid, profile.regionId, profile.zoneId, profile.provider, contextId))
+        throw new Error('Unknown network cleanup requires its exact empty Alibaba profile identity');
+      const dir = path.join(this.workspacesRootDir, workspaceKey);
+      const identity = JSON.parse(await fs.readFile(path.join(dir, 'single-network-identity.json'), 'utf8')) as Record<string, unknown>;
+      const expectedIdentity = { provider: profile.provider, cloudAccountUid: accountUid,
+        cloudAccountContextId: contextId, regionId: profile.regionId, zoneId: profile.zoneId };
+      if (Object.entries(expectedIdentity).some(([key,value]) => identity[key] !== value)
+        || identity.creationIntentId !== createHash('sha256').update(JSON.stringify(expectedIdentity)).digest('hex').slice(0,32))
+        throw new Error('Unknown network cleanup workspace differs from its frozen creation identity');
+      const state = await readWorkspaceState(dir, true);
+      const evidence = await readPendingApplyEvidence(dir);
+      const expectedAddresses = ['module.network.alicloud_security_group.default','module.network.alicloud_security_group_rule.open_all_ingress',
+        'module.network.alicloud_vpc.default', ...[0,1,2].map(index => `module.network.alicloud_vswitch.default[${index}]`)].sort();
+      if (state!.instances.length || await fileExists(path.join(dir,'.range-apply-complete.json')) || !evidence
+        || evidence.priorLineage !== null || evidence.priorSerial != null || Object.keys(evidence.priorIds).length
+        || JSON.stringify([...evidence.addresses].sort()) !== JSON.stringify(expectedAddresses)
+        || JSON.stringify([...evidence.createAddresses].sort()) !== JSON.stringify(expectedAddresses)
+        || !evidence.submittedAt || !Number.isFinite(Date.parse(evidence.submittedAt)) || Date.parse(evidence.submittedAt) > Date.now() - 60_000)
+        throw new Error('Unknown network cleanup evidence does not prove an old empty first-generation apply');
+      const variables = JSON.parse(await fs.readFile(path.join(dir,'terraform.tfvars.json'),'utf8')) as Record<string,unknown>;
+      const tags = variables.tags as Record<string,unknown> | undefined;
+      if (variables.resource_name_prefix !== `single-default-${sanitizeName(accountUid)}-${sanitizeName(profile.regionId)}-${sanitizeName(profile.zoneId)}`
+        || variables.zone_id !== profile.zoneId || variables.vpc_cidr !== profile.vpcCidr
+        || JSON.stringify(variables.vswitch_cidrs) !== JSON.stringify(profile.vswitchCidrs)
+        || !tags || tags.CloudAccountUid !== accountUid || tags.CloudAccountContextId !== contextId
+        || tags.CreatedBy !== 'cyber-range-platform' || tags.PlatformManaged !== 'true'
+        || tags.PlatformResourceType !== 'single_instance_network' || tags.PlatformNetworkProfileKey !== `${profile.regionId}:${profile.zoneId}`)
+        throw new Error('Unknown network cleanup variables differ from the persisted profile');
+      return dir;
+    };
+    const dir = await validate();
+    await assertCloudAbsent();
+    await validate();
+    await onCleanupVerified();
+    await fs.rm(dir, { recursive: true, force: true });
   }
   async destroyDefaultProfile(profile: SingleInstanceNetworkProfileRecord, runtimeConfig: ResolvedProvisioningRuntimeConfig, onCleanupVerified?: () => Promise<void>) {
     if (!profile.managedByPlatform || !profile.cloudAccountUid || profile.workspaceKey !== singleNetworkWorkspaceKey(profile.cloudAccountUid, profile.regionId, profile.zoneId, profile.provider, profile.cloudAccountContextId ?? undefined))

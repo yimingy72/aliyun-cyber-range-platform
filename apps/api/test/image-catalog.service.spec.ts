@@ -127,6 +127,21 @@ describe('ImageCatalogService import operation guard', () => {
     expect(adminRepositoryMock.updateBillingLedgerResource).not.toHaveBeenCalled();
   });
 
+  it('keeps migration image dependencies private and owned by the collecting administrator', async () => {
+    const { service, adminRepositoryMock, snapshot } = createService();
+    snapshot.status = 'Available';
+    snapshot.isAvailable = true;
+    adminRepositoryMock.hasActiveImageImportForArtifact.mockResolvedValue(false);
+
+    await expect(service.collectPlatformAsset('snapshot-1', 'Source VM', OWNER, 'private')).rejects.toThrow('Admin access required');
+    await service.collectPlatformAsset('snapshot-1', 'Source VM', ADMIN, 'private');
+
+    expect(adminRepositoryMock.collectPlatformImageAsset).toHaveBeenCalledTimes(1);
+    expect(adminRepositoryMock.collectPlatformImageAsset).toHaveBeenCalledWith({
+      preserveExisting: true, snapshotId: 'snapshot-1', displayName: 'Source VM', ownerUserId: ADMIN.id, visibility: 'private',
+    });
+  });
+
   it('keeps existing import billing ownership and release evidence when recollecting', async () => {
     const { service, adminRepositoryMock, snapshot } = createService();
     snapshot.status = 'Available'; snapshot.isAvailable = true;

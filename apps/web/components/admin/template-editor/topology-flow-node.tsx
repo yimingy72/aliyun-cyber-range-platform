@@ -5,6 +5,11 @@ import { Handle, Position, type NodeProps, useUpdateNodeInternals } from '@xyflo
 
 import type { TopologyFlowNode as TopologyFlowNodeModel } from './topology-flow-types';
 import type { TemplateNode } from '../../../lib/scenario-graph';
+import { networkRows } from './topology-network-model';
+import type { PortSide } from './topology-edge-routing';
+
+const portPositions = { top: Position.Top, right: Position.Right, bottom: Position.Bottom, left: Position.Left };
+const portStyle = (side: PortSide | undefined, offset: number) => side === 'top' || side === 'bottom' ? { left: `${offset}%` } : { top: `${offset}%` };
 
 function readNodeIcon(kind: TemplateNode['kind']) {
   switch (kind) {
@@ -61,12 +66,16 @@ export const TopologyFlowNode = React.memo(function TopologyFlowNode({
     connectMode,
     sourcePorts = [],
     targetPorts = [],
+    networks = [],
   } = data;
+  const showNetworks = networks.length > 1 || networks.reduce((sum, network) => sum + network.nics.length, 0) > 1;
+  const nicCount = networks.reduce((sum, network) => sum + network.nics.length, 0);
   const updateNodeInternals = useUpdateNodeInternals();
   const portSignature = [
     connectMode ? 'connect' : 'select',
-    ...sourcePorts.map((port) => `source:${port.id}:${port.offset}`),
-    ...targetPorts.map((port) => `target:${port.id}:${port.offset}`),
+    ...sourcePorts.map((port) => `source:${port.id}:${port.side}:${port.offset}`),
+    ...targetPorts.map((port) => `target:${port.id}:${port.side}:${port.offset}`),
+    ...networks.map(network => `${network.switchId}:${network.nics.length}`),
   ].join('|');
   const previousPortSignature = React.useRef(portSignature);
 
@@ -85,6 +94,7 @@ export const TopologyFlowNode = React.memo(function TopologyFlowNode({
       data-has-multiple-sources={sourcePorts.length > 1 ? 'true' : 'false'}
       data-has-multiple-targets={targetPorts.length > 1 ? 'true' : 'false'}
       data-kind={topologyNode.kind}
+      data-multi-network={networks.length > 1 ? 'true' : 'false'}
       data-selected={selected ? 'true' : 'false'}
       data-testid="topology-flow-node"
     >
@@ -104,8 +114,8 @@ export const TopologyFlowNode = React.memo(function TopologyFlowNode({
           id={port.id}
           isConnectable={connectMode && isConnectable}
           key={port.id}
-          position={Position.Left}
-          style={{ top: `${port.offset}%` }}
+          position={portPositions[port.side ?? 'left']}
+          style={portStyle(port.side, port.offset)}
           type="target"
         />
       ))}
@@ -117,9 +127,16 @@ export const TopologyFlowNode = React.memo(function TopologyFlowNode({
         src={readNodeIcon(topologyNode.kind)}
       />
       <span className="topology-flow-node-copy">
-        <strong>{topologyNode.label}</strong>
-        <span>{readNodeMeta(topologyNode)}</span>
+        <strong title={topologyNode.label}>{topologyNode.label}</strong>
+        <span>{showNetworks ? `${nicCount ? `${nicCount} 张网卡 · ` : '连接 '}${networks.length} 个网络区域` : readNodeMeta(topologyNode)}</span>
       </span>
+      {showNetworks ? <div className="topology-flow-network-memberships" aria-label="网卡与网络区域">
+        {networkRows(networks).map(row => <div className="topology-flow-network-row" key={`${row.switchId}:${row.id}`}
+          title={`${row.ordinal ? `网卡 ${row.ordinal} · ` : ''}${row.label} · ${row.cidr}${row.connected ? '' : ' · 待连线'}`}>
+          <i aria-hidden="true" style={{ backgroundColor: row.color }} />
+          <span>{row.ordinal ? `网卡 ${row.ordinal}` : '接入'} · {row.label}</span><small>{row.privateIp || row.cidr}</small>
+        </div>)}
+      </div> : null}
       {sourcePorts.map((port) => (
         <Handle
           className="topology-flow-node-assigned-handle topology-flow-node-source-port"
@@ -128,8 +145,8 @@ export const TopologyFlowNode = React.memo(function TopologyFlowNode({
           id={port.id}
           isConnectable={connectMode && isConnectable}
           key={port.id}
-          position={Position.Right}
-          style={{ top: `${port.offset}%` }}
+          position={portPositions[port.side ?? 'right']}
+          style={portStyle(port.side, port.offset)}
           type="source"
         />
       ))}

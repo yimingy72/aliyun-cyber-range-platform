@@ -22,9 +22,9 @@ import { ConfirmActionDialog } from '../shared/confirm-action-dialog';
 import { AdminDialog } from '../shared/admin-dialog';
 
 const columns: readonly AdminDataColumn[] = [
-  { id: 'account', label: '云账号', priority: 'primary', width: '42%' },
-  { id: 'region', label: '默认地域 / 可用区', priority: 'secondary', width: '28%' },
-  { id: 'actions', label: '操作', priority: 'primary', align: 'right', width: '30%' },
+  { id: 'account', label: '云账号', priority: 'primary' },
+  { id: 'region', label: '默认地域 / 可用区', priority: 'secondary', width: '14rem' },
+  { id: 'actions', label: '操作', priority: 'primary', width: '8.5rem' },
 ];
 const emptyForm = { displayName: '', regionId: '', zoneId: '', accessKeyId: '', accessKeySecret: '', imageImportBucket: '' };
 
@@ -145,7 +145,7 @@ export function SettingsScreen({ apiBaseUrl = 'http://localhost:3001' }: { apiBa
   const isBusy = isSaving || isDeleting || current?.isSwitching === true;
 
   return <div className="admin-screen"><section className="admin-workbench-surface">
-    <AdminPageHeader title="基础配置" action={<Button asChild variant="outline"><a href="/admin/resource-alerts">资源巡检与告警</a></Button>} />
+    <AdminPageHeader title="基础配置" />
     <div className="mt-4 flex flex-wrap items-center justify-between gap-3">
       <Tabs value={provider} onValueChange={changeProvider}><TabsList aria-label="云厂商" variant="line"><TabsTrigger disabled={isBusy} value="alibaba_cloud">阿里云</TabsTrigger><TabsTrigger disabled={isBusy} value="tencent_cloud">腾讯云</TabsTrigger></TabsList></Tabs>
       <div className="flex flex-wrap items-center gap-2">
@@ -165,7 +165,7 @@ export function SettingsScreen({ apiBaseUrl = 'http://localhost:3001' }: { apiBa
             <span className="break-all text-xs text-muted-foreground">{workspace.accountUid ?? '历史来源未确认'}</span>
             {context ? <span className="break-words text-xs text-muted-foreground md:hidden">{context.regionId} · {context.zoneId}</span> : null}
             {workspace.isReadOnly ? <span className="text-xs text-muted-foreground">只读历史</span> : context?.status !== 'ready' ? <span className="text-xs text-amber-700">待配置</span> : null}
-          </div> : column.id === 'region' ? <div className="grid gap-1 text-xs"><AdminDataTableText>{context?.regionId ?? '—'}</AdminDataTableText><AdminDataTableText className="text-muted-foreground">{context?.zoneId ?? '—'}</AdminDataTableText></div> : <div className="flex items-center justify-end gap-1">
+          </div> : column.id === 'region' ? <div className="grid gap-1 text-xs"><AdminDataTableText>{context?.regionId ?? '—'}</AdminDataTableText><AdminDataTableText className="text-muted-foreground">{context?.zoneId ?? '—'}</AdminDataTableText></div> : <div className="flex items-center justify-start gap-1">
             {!selected ? <Button aria-label={`切换到此账号：${workspace.displayName}`} disabled={isBusy} size="sm" variant="outline" onClick={() => void select(workspace)}>切换</Button> : null}
             {canBind && workspace.accountUid && !workspace.isReadOnly ? <DropdownMenu>
               <DropdownMenuTrigger asChild><Button aria-label={`账号“${workspace.displayName}”的更多操作`} disabled={isBusy} size="icon-sm" variant="ghost"><MoreHorizontal aria-hidden="true" /></Button></DropdownMenuTrigger>

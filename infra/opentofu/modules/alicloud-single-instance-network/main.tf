@@ -41,10 +41,10 @@ resource "alicloud_security_group" "default" {
 
 resource "alicloud_security_group_rule" "open_all_ingress" {
   type              = "ingress"
-  ip_protocol       = "tcp"
+  ip_protocol       = "all"
   nic_type          = "intranet"
   policy            = "accept"
-  port_range        = "1/65535"
+  port_range        = "-1/-1"
   priority          = 1
   security_group_id = alicloud_security_group.default.id
   cidr_ip           = "0.0.0.0/0"

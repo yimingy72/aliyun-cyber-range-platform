@@ -30,7 +30,8 @@ describe('platform-only split reconciliation', () => {
     await f.service([line()], [line({ SplitItemID: 's-owned', PretaxAmount: 1 }), line({ SplitItemID: 's-external', PretaxAmount: 2 })]).syncRange({ startAt: DAY, endAt: DAY });
     const bills = await f.repository.listBillingLineItems();
     expect(bills).toHaveLength(1);
-    expect(bills[0]).toMatchObject({ cloudResourceId: 's-owned', pretaxAmount: 1, ownerUserId: 'user-1', rawPayload: { InstanceID: 'cn-hangzhou', SplitItemID: 's-owned' } });
+    expect(bills[0]).toMatchObject({ cloudResourceId: 's-owned', pretaxAmount: 1, billingScope: 'platform', ownerUserId: null, rawPayload: { InstanceID: 'cn-hangzhou', SplitItemID: 's-owned' } });
+    expect((await f.repository.listBillingLedgerResources())[0].ownerUserId).toBe('user-1');
     expect(await f.repository.listBillingAnomalies()).toEqual([]);
   });
 

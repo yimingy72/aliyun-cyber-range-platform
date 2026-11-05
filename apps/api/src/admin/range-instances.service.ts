@@ -5,6 +5,7 @@ import { SaveRangeInstanceAsTemplateDto } from './dto/range-instance-template-co
 import { assertExistingHostBootstrapUnchanged } from './range-host-bootstrap-policy';
 export { assertExistingHostBootstrapUnchanged } from './range-host-bootstrap-policy';
 import { publicDnsVerification } from './range-dns-types';
+import { publicPowerControl, type InstancePowerControl } from './instance-power-types';
 import { rangePackedImageArtifactSummaries } from './packed-image-diagnostic';
 import { readPackedImageSourceSnapshots } from './packed-image-source-observation';
 import { assertTencentOwnedInstance, describeTencentInstances } from './tencent-cloud-resources';
@@ -44,6 +45,7 @@ import { CidrPoolService } from '../provisioning/cidr-pool.service';
 import { ProvisioningWorkerService } from '../provisioning/provisioning-worker.service';
 import { assertPlatformExpirationSupportsCloudDeadline } from '../provisioning/cloud-release-deadlines';
 import { RangeNetworkDiagnosticsService } from './range-network-diagnostics.service';
+import { rangeLaunchBatches } from './range-launch-batches';
 
 const ALICLOUD_ECS_API_VERSION = '2014-05-26';
 const ALICLOUD_SIGNATURE_METHOD = 'HMAC-SHA1';
@@ -71,6 +73,9 @@ export class RangeInstancesService {
     const templateNameById = new Map(
       templates.map((template) => [template.id, template.name?.trim() || template.slug]),
     );
+    const rangeInstances = scopedInstances.filter(instance => instance.instanceMode === 'range');
+    const batches = rangeLaunchBatches(rangeInstances,
+      await this.adminRepository.listRangeLaunchReceipts(rangeInstances.map(instance => instance.id)));
 
     const hydratedInstances = await Promise.all(
       scopedInstances
@@ -80,7 +85,7 @@ export class RangeInstancesService {
 
     const listItems = hydratedInstances
       .filter((instance): instance is NonNullable<typeof instance> => Boolean(instance))
-      .map((instance) => toRangeInstanceListItem(instance, templateNameById))
+      .map((instance) => ({ ...toRangeInstanceListItem(instance, templateNameById), launchBatch: batches.get(instance.id) ?? null }))
       .filter((instance) =>
         view === 'history' ? isRangeInstanceHistoryStatus(instance.status) : !isRangeInstanceHistoryStatus(instance.status),
       );
@@ -127,6 +132,7 @@ export class RangeInstancesService {
 
     return {
       ...hydrated,
+      powerControl: publicPowerControl(hydrated.powerControl),
       resourceSummary: hydrated.resourceSummary ? { ...hydrated.resourceSummary, dnsVerification: undefined } : hydrated.resourceSummary,
       dnsVerification: publicDnsVerification(hydrated.resourceSummary?.dnsVerification),
       ...nodeFacts,
@@ -134,7 +140,7 @@ export class RangeInstancesService {
       packedImageArtifacts, packSourceSnapshots,
       ...(networkDiagnostics ? { networkDiagnostics } : {}),
       runtimeTopologySpec: (await this.adminRepository.listProvisionJobs()).find(job => job.rangeInstanceId === id
-        && job.status === 'succeeded' && job.topologySnapshot && job.jobType !== 'destroy')?.topologySnapshot?.topologySpec ?? null,
+        && job.status === 'succeeded' && job.topologySnapshot && ['create','retry','update'].includes(job.jobType))?.topologySnapshot?.topologySpec ?? null,
     };
   }
 
@@ -1535,7 +1541,10 @@ function toRangeInstanceListItem(
     templateNameSnapshot?: string | null;
     createdAt: Date;
     lastJobId: string | null;
+    powerControl?: InstancePowerControl | null;
     errorSummary?: string | null;
+    accessEntry?: { publicIp?: string | null } | null;
+    expiresAt?: Date | null;
   },
   templateNameById: Map<string, string>,
 ) {
@@ -1550,8 +1559,11 @@ function toRangeInstanceListItem(
       instance.templateNameSnapshot?.trim() ||
       (instance.templateId ? templateNameById.get(instance.templateId) ?? null : null),
     createdAt: instance.createdAt,
+    expiresAt: instance.expiresAt ?? null,
     lastJobId: instance.lastJobId,
+    powerControl: publicPowerControl(instance.powerControl),
     errorSummary: instance.errorSummary ?? null,
+    dnatPublicIp: instance.accessEntry?.publicIp?.trim() || null,
   };
 }
 

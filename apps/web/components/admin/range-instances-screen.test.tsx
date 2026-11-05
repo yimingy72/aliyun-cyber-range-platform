@@ -1,4 +1,18 @@
 import React from 'react';
+
+async function rangeActionItem(name: string, batch = false) {
+  const existing = screen.queryByRole('menuitem', { name });
+  if (existing) return existing;
+  for (const trigger of await screen.findAllByRole('button', { name: batch ? '更多批次操作' : '更多操作' })) {
+    fireEvent.keyDown(trigger, { key: 'Enter' });
+    const item = screen.queryByRole('menuitem', { name });
+    if (item) return item;
+    fireEvent.keyDown(screen.getByRole('menu'), { key: 'Escape' });
+    await waitFor(() => expect(screen.queryByRole('menu')).toBeNull());
+  }
+  throw new Error('Missing menu action: ' + name);
+}
+
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { readRangeRecoveryIntent } from '../../lib/range-recovery-intent';
@@ -90,18 +104,50 @@ describe('RangeInstancesScreen', () => {
     fetchAdminBootstrapMock.mockResolvedValue(recoveryListFixture());
     triggerRangeActionMock.mockRejectedValue(new Error('response lost'));
     const view = render(<RangeInstancesScreen />);
-    fireEvent.click(await screen.findByRole('button', { name: '关闭' }));
-    fireEvent.click(await screen.findByRole('button', { name: '确认关闭' }));
-    await screen.findByText('恢复操作结果未确认，请进入实例详情继续确认原请求。');
+    fireEvent.click(await rangeActionItem('销毁实例'));
+    fireEvent.click(await screen.findByRole('button', { name: '确认销毁' }));
+    await screen.findByText('回收请求结果尚未确认，请进入实例详情查询原请求。');
     const scope = { apiBaseUrl: 'http://localhost:3001', userId: 'admin', workspaceId: '', rangeId: 'range-1' };
     const original = readRangeRecoveryIntent(scope)!;
     expect(triggerRangeActionMock).toHaveBeenCalledWith(scope.apiBaseUrl, 'dev-admin-token', scope.rangeId, 'destroy', original.key);
     view.unmount();
     render(<RangeInstancesScreen />);
-    fireEvent.click(await screen.findByRole('button', { name: '继续确认恢复操作' }));
+    const continuation = await rangeActionItem('确认回收状态');
+    expect(continuation.getAttribute('data-variant')).toBe('default');
+    fireEvent.click(continuation);
     expect(pushMock).toHaveBeenCalledWith('/admin/ranges/range-1');
     expect(readRangeRecoveryIntent(scope)).toEqual(original);
     expect(triggerRangeActionMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('shows a read-only progress action after a close request is accepted without discarding its original key', async () => {
+    fetchAdminBootstrapMock.mockResolvedValue(recoveryListFixture());
+    triggerRangeActionMock.mockResolvedValue({ id: 'destroy-job', rangeInstanceId: 'range-1', jobType: 'destroy', status: 'pending' });
+    render(<RangeInstancesScreen />);
+    fireEvent.click(await rangeActionItem('销毁实例'));
+    fireEvent.click(await screen.findByRole('button', { name: '确认销毁' }));
+    const progress = await rangeActionItem('查看回收进度');
+    const scope = { apiBaseUrl: 'http://localhost:3001', userId: 'admin', workspaceId: '', rangeId: 'range-1' };
+    const original = readRangeRecoveryIntent(scope)!;
+    expect(original).toBeTruthy();
+    expect(progress.getAttribute('data-variant')).toBe('default');
+    expect(screen.queryByRole('button', { name: '确认回收状态' })).toBeNull();
+    expect(screen.queryByText('继续确认恢复操作')).toBeNull();
+    fireEvent.click(progress);
+    expect(pushMock).toHaveBeenCalledWith('/admin/ranges/range-1');
+    expect(readRangeRecoveryIntent(scope)).toEqual(original);
+    expect(triggerRangeActionMock).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(['pending_destroy', 'destroying'])('offers progress for a server-confirmed %s instance without resubmitting a close request', async status => {
+    const snapshot = recoveryListFixture();
+    snapshot.rangeInstances[0].status = status;
+    fetchAdminBootstrapMock.mockResolvedValue(snapshot);
+    render(<RangeInstancesScreen />);
+    fireEvent.click(await rangeActionItem('查看回收进度'));
+    expect(pushMock).toHaveBeenCalledWith('/admin/ranges/range-1');
+    expect(screen.queryByRole('button', { name: '关闭' })).toBeNull();
+    expect(triggerRangeActionMock).not.toHaveBeenCalled();
   });
 
   it.each(['user', 'unmount'] as const)('recovery-intake: a delayed list response after %s cannot change the current screen or discard the intent', async change => {
@@ -109,8 +155,8 @@ describe('RangeInstancesScreen', () => {
     let rejectAction!: (error: Error) => void;
     triggerRangeActionMock.mockReturnValue(new Promise((_resolve, reject) => { rejectAction = reject; }));
     const view = render(<RangeInstancesScreen />);
-    fireEvent.click(await screen.findByRole('button', { name: '关闭' }));
-    fireEvent.click(await screen.findByRole('button', { name: '确认关闭' }));
+    fireEvent.click(await rangeActionItem('销毁实例'));
+    fireEvent.click(await screen.findByRole('button', { name: '确认销毁' }));
     await waitFor(() => expect(triggerRangeActionMock).toHaveBeenCalledTimes(1));
     const scope = { apiBaseUrl: 'http://localhost:3001', userId: 'admin', workspaceId: '', rangeId: 'range-1' };
     const original = readRangeRecoveryIntent(scope)!;
@@ -121,7 +167,7 @@ describe('RangeInstancesScreen', () => {
     }
     await act(async () => rejectAction(new Error('late old action failure')));
     expect(readRangeRecoveryIntent(scope)).toEqual(original);
-    expect(screen.queryByText('恢复操作结果未确认，请进入实例详情继续确认原请求。')).toBeNull();
+    expect(screen.queryByText('回收请求结果尚未确认，请进入实例详情查询原请求。')).toBeNull();
     expect(replaceMock).not.toHaveBeenCalled();
   });
 
@@ -210,7 +256,7 @@ describe('RangeInstancesScreen', () => {
     expect(screen.queryByText('1 条记录')).toBeNull();
     expect(screen.queryByText('运行期管理')).toBeNull();
     expect(screen.queryByText('管理由靶场编排生成的运行实例，重点关注状态、创建时间和实例生命周期动作。')).toBeNull();
-    expect(screen.getAllByText('实例名称').length).toBeGreaterThan(0);
+    expect(screen.getAllByText('实例 / 批次').length).toBeGreaterThan(0);
     expect(screen.getByText('创建人')).toBeTruthy();
     expect(screen.getAllByText('所属靶场').length).toBeGreaterThan(0);
     expect(screen.getByText('状态')).toBeTruthy();
@@ -228,13 +274,15 @@ describe('RangeInstancesScreen', () => {
     expect(screen.queryByText('运行时长')).toBeNull();
     expect(screen.queryByRole('heading', { name: '实例详情' })).toBeNull();
     expect(screen.getByRole('button', { name: '查看详情' })).toBeTruthy();
-    expect(screen.getByRole('button', { name: '关闭' })).toBeTruthy();
+    expect(await rangeActionItem('销毁实例')).toBeTruthy();
+    fireEvent.keyDown(screen.getByRole('menu'), { key: 'Escape' });
+    await waitFor(() => expect(screen.queryByRole('menu')).toBeNull());
     expect(screen.getByRole('button', { name: '创建实例' })).toBeTruthy();
     expect(screen.queryByText('筛选条件')).toBeNull();
 
     const activeTable = screen.getByRole('table', { name: '编排实例列表' });
-    expect(activeTable.querySelectorAll('thead th')).toHaveLength(6);
-    expect(screen.getByText('蓝队靶场 01').closest('tr')?.querySelectorAll('td')).toHaveLength(6);
+    expect(activeTable.querySelectorAll('thead th')).toHaveLength(7);
+    expect(screen.getByText('蓝队靶场 01').closest('tr')?.querySelectorAll('td')).toHaveLength(7);
     expect(activeTable.querySelector('tbody')?.className).toContain('admin-data-table-body-enter');
 
     fireEvent.change(screen.getByLabelText('筛选实例名'), { target: { value: '蓝队' } });
@@ -255,9 +303,9 @@ describe('RangeInstancesScreen', () => {
     expect(screen.getAllByRole('button', { name: '查看详情' })).toHaveLength(2);
 
     const historyTable = screen.getByRole('table', { name: '编排实例历史' });
-    expect(historyTable.querySelectorAll('thead th')).toHaveLength(8);
+    expect(historyTable.querySelectorAll('thead th')).toHaveLength(9);
     expect(Array.from(historyTable.querySelectorAll('thead th')).map((cell) => cell.textContent)).toContain('状态');
-    expect(screen.getByText('红队靶场 02').closest('tr')?.querySelectorAll('td')).toHaveLength(8);
+    expect(screen.getByText('红队靶场 02').closest('tr')?.querySelectorAll('td')).toHaveLength(9);
   });
 
   it('navigates to the standalone detail workbench when clicking 查看详情', async () => {
@@ -404,14 +452,14 @@ describe('RangeInstancesScreen', () => {
 
     render(<RangeInstancesScreen apiBaseUrl="http://localhost:3001" />);
 
-    fireEvent.click(await screen.findByRole('button', { name: '关闭' }));
+    fireEvent.click(await rangeActionItem('销毁实例'));
     expect(triggerRangeActionMock).not.toHaveBeenCalled();
     fireEvent.click(await screen.findByRole('button', { name: '取消' }));
-    expect(screen.queryByRole('button', { name: '确认关闭' })).toBeNull();
+    expect(screen.queryByRole('button', { name: '确认销毁' })).toBeNull();
     expect(triggerRangeActionMock).not.toHaveBeenCalled();
 
-    fireEvent.click(screen.getByRole('button', { name: '关闭' }));
-    fireEvent.click(await screen.findByRole('button', { name: '确认关闭' }));
+    fireEvent.click(await rangeActionItem('销毁实例'));
+    fireEvent.click(await screen.findByRole('button', { name: '确认销毁' }));
 
     await waitFor(() => {
       expect(triggerRangeActionMock).toHaveBeenCalledWith(
@@ -469,7 +517,7 @@ describe('RangeInstancesScreen', () => {
 
     expect(await screen.findByText('销毁失败实例')).toBeTruthy();
     expect(screen.getByText('销毁失败')).toBeTruthy();
-    expect(screen.getByRole('button', { name: '销毁' })).toBeTruthy();
+    expect(await rangeActionItem('销毁')).toBeTruthy();
     expect(screen.queryByRole('button', { name: '删除' })).toBeNull();
   });
 

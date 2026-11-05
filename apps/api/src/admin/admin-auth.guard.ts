@@ -26,6 +26,9 @@ export class AdminAuthGuard implements CanActivate {
     '/admin/ranges',
     '/admin/instances',
     '/admin/provision-jobs',
+    '/admin/packed-images',
+    '/admin/instance-power',
+    '/admin/instance-expiry',
   ] as const;
 
   constructor(

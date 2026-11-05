@@ -3,6 +3,16 @@ import { IsDateString, IsIn, IsInt, IsOptional, IsString, Min } from 'class-vali
 
 export class BillingWindowDto {
   @IsOptional()
+  @IsIn(['batch'])
+  groupBy?: 'batch';
+
+  @IsOptional()
+  @IsIn(['issued','partial','unissued','not_applicable','pending'])
+  billStatus?: 'issued' | 'partial' | 'unissued' | 'not_applicable' | 'pending';
+  @IsOptional()
+  @IsIn(['user','platform'])
+  view?: 'user' | 'platform';
+  @IsOptional()
   @IsDateString()
   startAt?: string;
 

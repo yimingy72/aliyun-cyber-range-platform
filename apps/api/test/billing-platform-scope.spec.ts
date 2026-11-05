@@ -120,8 +120,8 @@ describe('platform-created billing scope', () => {
     await repository.updateBillingLedgerResource(ledger.id, { billingScope: 'platform', ownerUserId: null, rangeInstanceId: null, releasedAt: new Date('2026-09-30') });
     jest.setSystemTime(new Date('2026-10-09'));
     await sync(repository, [bill({ ProductCode: 'snapshot', InstanceID: 's-owned' })]);
-    expect(await repository.listBillingLineItems()).toEqual([expect.objectContaining({ ownerUserId: 'user-1', billingScope: 'user' })]);
-    expect((await repository.listBillingLedgerResources())[0].releasedAt).toEqual(new Date('2026-09-30'));
+    expect(await repository.listBillingLineItems()).toEqual([expect.objectContaining({ ownerUserId: null, billingScope: 'platform' })]);
+    expect((await repository.listBillingLedgerResources())[0]).toMatchObject({ ownerUserId: 'user-1', billingScope: 'user', releasedAt: new Date('2026-09-30') });
   });
 
   it('rejects contradictory region fields without losing the known platform-resource investigation', async () => {

@@ -32,6 +32,17 @@ export class SingleInstancesController {
   @Get('networks')
   listNetworks(@Req() request:AuthenticatedAdminRequest) {return this.networks.list(request.adminUser);}
 
+  @Post('networks/ensure')
+  ensureNetwork(@Req() request:AuthenticatedAdminRequest,@Body() _body:Record<string,never>) {
+    if(request.authContext.source==='mcp') return this.operationControlService.executeConfirmed({
+      context:request.authContext,metadata:readOperationRequestMetadata(request),toolName:'single_instance_network_create',
+      arguments:{},targetType:'single_instance_network',resolveConfirmation:()=>this.networks.prepareEnsure(request.adminUser),
+      execute:async()=>{const profile=await this.networks.ensure(request.adminUser);return {networkProfileId:profile.id,status:profile.status,
+        vpcId:profile.vpcId,vswitchIds:profile.vswitchIds,securityGroupId:profile.securityGroupId};},
+    });
+    return this.networks.ensure(request.adminUser);
+  }
+
   @Post('networks/:id/register-cleanup')
   registerNetworkCleanup(@Req() request:AuthenticatedAdminRequest,@Param('id') id:string,@Body() body:{runId:string;createdAfter:string;ownerUserIds:string[]}) {
     return this.networks.registerCleanup(id,body.runId,body.createdAfter,body.ownerUserIds,request.adminUser);

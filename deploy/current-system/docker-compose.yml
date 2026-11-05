@@ -84,7 +84,7 @@ services:
 
   api:
     platform: linux/amd64
-    build:
+    build: &api-build
       context: ../..
       dockerfile: deploy/current-system/apps/api/Dockerfile
       args:
@@ -99,7 +99,7 @@ services:
         condition: service_healthy
       keycloak-bootstrap:
         condition: service_completed_successfully
-    environment:
+    environment: &api-environment
       NODE_ENV: ${NODE_ENV:-development}
       API_PORT: 3001
       ADMIN_USERNAME: ${ADMIN_USERNAME:-admin}
@@ -161,7 +161,7 @@ services:
     ports:
       - "${API_BIND_ADDRESS:-127.0.0.1}:${API_PORT:-3001}:3001"
     volumes:
-      - ${MOGONG_CATALOG_HOST_PATH:-../../.local/mogong}:/var/lib/cyber-range/mogong:ro
+      - ${MOGONG_CATALOG_HOST_PATH:-../../.local/mogong}:/var/lib/cyber-range/mogong
       - opentofu-workspaces:/var/lib/cyber-range/workspaces
       - ${OPENTOFU_PROVIDER_MIRROR_HOST_PATH:-../../.local/provider-fast-wait/mirror}:/var/lib/cyber-range/provider-mirror:ro
       - ${TENCENTCLOUD_PROVIDER_MIRROR_HOST_PATH:-../../.local/tencentcloud-idempotency/mirror}:/var/lib/cyber-range/tencentcloud-provider-mirror:ro
@@ -238,6 +238,19 @@ services:
       - opentofu-workspaces:/var/lib/cyber-range/workspaces
       - ${OPENTOFU_PROVIDER_MIRROR_HOST_PATH:-../../.local/provider-fast-wait/mirror}:/var/lib/cyber-range/provider-mirror:ro
       - ${TENCENTCLOUD_PROVIDER_MIRROR_HOST_PATH:-../../.local/tencentcloud-idempotency/mirror}:/var/lib/cyber-range/tencentcloud-provider-mirror:ro
+
+  billing-worker:
+    platform: linux/amd64
+    build: *api-build
+    restart: unless-stopped
+    depends_on:
+      api:
+        condition: service_healthy
+    entrypoint: ["node"]
+    command: ["apps/api/dist/apps/api/src/billing-worker-main.js"]
+    environment:
+      <<: *api-environment
+      BILLING_SYNC_INTERVAL_MS: "0"
 
   web:
     build:

@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import { ConflictException } from '@nestjs/common';
 import type { ProvisionJobTopologySnapshot, RangeInstanceRecord, RangeResourceSummary } from './admin.repository';
+import { assertPowerAllowsMutation } from './instance-power-types';
 
 const mapKeys = ['hostIds', 'systemDiskIds', 'dataDiskIds', 'subnetIds', 'networkAclIds', 'securityGroupIds', 'secondaryNetworkInterfaceIds', 'natGatewayIds', 'snatEntryIds', 'dnatEntryIds', 'eipAllocationIds', 'routeTableIds'] as const;
 function normalize(value: unknown): unknown {
@@ -33,6 +34,7 @@ export function rangeTopologyDigest(snapshot: ProvisionJobTopologySnapshot) {
 export type RangeChangeApproval = { version: 1; addedHostKeys: string[]; deletedHostKeys: string[]; runtimeIdentityDigest: string; topologyDigest: string; allowDnatRemoval: boolean; allowSnatRemoval: boolean };
 const keys = (spec: Record<string, any> | null | undefined, field: string) => (Array.isArray(spec?.[field]) ? spec![field] : []).map((entry: any) => entry.key as string);
 export function buildRangeChangeApproval(instance: RangeInstanceRecord, snapshot: ProvisionJobTopologySnapshot): RangeChangeApproval {
+ assertPowerAllowsMutation(instance);
  const before = nodes(instance.runtimeTopologyGraph); const after = nodes(snapshot.topologyGraph);
  const beforeIds = before.filter(node => node.kind === 'ecs').map(node => node.id as string);
  const afterIds = after.filter(node => node.kind === 'ecs').map(node => node.id as string);

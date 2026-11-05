@@ -1,7 +1,7 @@
 import { buildEnterpriseProvisionPlan } from '../src/provisioning/enterprise-provision-plan';
 
 describe('buildEnterpriseProvisionPlan', () => {
-  it('backfills platform SSH and HTTP rules for every ECS in a legacy template with no security-group rule intent', () => {
+  it('backfills a platform allow-all rule for every ECS in a legacy template with no security-group rule intent', () => {
     const plan = buildEnterpriseProvisionPlan({
       rangeInstanceId: 'range-instance-legacy-defaults',
       templateModulePath: 'infra/opentofu/modules/alicloud-enterprise-range',
@@ -38,46 +38,24 @@ describe('buildEnterpriseProvisionPlan', () => {
 
     expect(plan.securityGroupRules).toEqual([
       {
-        key: 'ecs-entry-default-ssh',
-        name: 'ecs-entry default SSH',
+        key: 'ecs-entry-default-all',
+        name: 'ecs-entry default all ingress',
         targetHostKey: 'ecs-entry',
         direction: 'ingress',
         policy: 'accept',
-        protocol: 'tcp',
-        portRange: '22/22',
+        protocol: 'all',
+        portRange: '-1/-1',
         sourceCidr: '0.0.0.0/0',
         priority: 1,
       },
       {
-        key: 'ecs-entry-default-http',
-        name: 'ecs-entry default HTTP',
-        targetHostKey: 'ecs-entry',
-        direction: 'ingress',
-        policy: 'accept',
-        protocol: 'tcp',
-        portRange: '80/80',
-        sourceCidr: '0.0.0.0/0',
-        priority: 1,
-      },
-      {
-        key: 'ecs-app-default-ssh',
-        name: 'ecs-app default SSH',
+        key: 'ecs-app-default-all',
+        name: 'ecs-app default all ingress',
         targetHostKey: 'ecs-app',
         direction: 'ingress',
         policy: 'accept',
-        protocol: 'tcp',
-        portRange: '22/22',
-        sourceCidr: '0.0.0.0/0',
-        priority: 1,
-      },
-      {
-        key: 'ecs-app-default-http',
-        name: 'ecs-app default HTTP',
-        targetHostKey: 'ecs-app',
-        direction: 'ingress',
-        policy: 'accept',
-        protocol: 'tcp',
-        portRange: '80/80',
+        protocol: 'all',
+        portRange: '-1/-1',
         sourceCidr: '0.0.0.0/0',
         priority: 1,
       },

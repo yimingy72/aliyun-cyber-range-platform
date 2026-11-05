@@ -151,9 +151,15 @@ MCP_PUBLIC_URL=https://203.0.113.10/mcp
 
 ### 墨攻镜像中心
 
-管理员可在阿里云工作空间的镜像中心查看墨攻目录快照，按名称或云镜像 ID 搜索。设置 `MOGONG_CATALOG_WORKSPACE_ID` 后，仅绑定的工作空间可浏览完整墨攻目录及收录容器镜像；其他工作空间仍仅显示与自身云镜像匹配的记录。停用、名称标注废弃或弃用、未完成处理的镜像不能收录；虚拟机仍需匹配当前账号和地域的可用云镜像。
+管理员可在阿里云工作空间的镜像中心查看墨攻目录快照，按名称或云镜像 ID 搜索，也可按镜像类型和创建人筛选。设置 `MOGONG_CATALOG_WORKSPACE_ID` 后，绑定的工作空间可浏览全部启用的来源条目及收录容器镜像；其他工作空间仅显示与自身云镜像匹配的启用条目。停用条目不进入列表；名称标注废弃或弃用、未完成处理的镜像不能收录。虚拟机须匹配当前账号和地域的可用云镜像，必要时在「云上镜像来源」同步阿里云自定义镜像。
 
-目录是独立的私有快照，并非实时同步。更新时在已登录墨攻的 OpenCLI 浏览器会话中设置 `OPENCLI_PROFILE`，执行 `scripts/dev/snapshot-mogong-images.sh`；默认写入 `.local/mogong/image-catalog.json`，也可用 `MOGONG_IMAGE_CATALOG_OUTPUT` 指定路径。Compose 将该目录只读挂载到 API，替换快照后无需重建镜像；部署到其他主机时须将快照安全传到该主机的挂载目录，或用 `MOGONG_CATALOG_HOST_PATH` 指定目录。快照不提交到公开仓库，只保存目录 ID、名称、创建人、类型、状态、云镜像 ID 和容器仓库引用，不保存墨攻凭据、密码或备注。
+「同步墨攻镜像」从已登录墨攻的 Chrome 读取当前启用目录。同步电脑须保持在线，并运行以下连接命令；第三个参数可指定现有 SSH 私钥。服务器上的 socket 需位于 API 的 `MOGONG_CATALOG_HOST_PATH` 目录，与快照文件同级。Compose 仅将该目录挂载给 API；SSH 转发使用 Unix socket，无需开放额外端口。如果连接结束后留下旧 socket，确认没有其他同步连接后再清理该 socket 并重启连接命令。
+
+```sh
+OPENCLI_PROFILE=<已登录的profile> node scripts/dev/mogong-sync-connector.mjs user@host /path/to/mogong/sync.sock
+```
+
+也可运行 `scripts/dev/snapshot-mogong-images.sh` 单独导出启用目录，默认写入 `.local/mogong/image-catalog.json`，可用 `MOGONG_IMAGE_CATALOG_OUTPUT` 指定路径。同步收到完整目录后才替换旧快照。快照不提交到公开仓库，只保存目录 ID、名称、创建人、类型、状态、云镜像 ID 和容器仓库引用；墨攻登录留在本机浏览器。
 
 收录后的虚拟机资产关联当前工作空间的阿里云镜像记录；容器资产独立保存来源仓库引用，暂不支持创建实例，也不会复制镜像内容。删除墨攻目录快照或入口不会删除已收录资产；原云镜像或容器仓库中的镜像仍须存在，才能在未来使用。
 

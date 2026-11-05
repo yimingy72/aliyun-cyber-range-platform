@@ -2,6 +2,7 @@ import { Prisma } from '@aliyun-cyber-range/database/generated/client';
 
 import { Inject, Injectable } from '@nestjs/common';
 import { BillingDecimal } from './billing-amount';
+import { billingExpenseScope } from './billing-expense-scope';
 
 import {
   ADMIN_REPOSITORY,
@@ -64,8 +65,11 @@ function toIsoDate(value: Date) {
   return value.toISOString().slice(0, 10);
 }
 
+function sumExact(items: Array<{ pretaxAmount: number }>) {
+  return items.reduce((total, item) => total.plus(item.pretaxAmount), new BillingDecimal(0));
+}
 function sumPretax(items: Array<{ pretaxAmount: number }>) {
-  return items.reduce((total, item) => total.plus(item.pretaxAmount), new BillingDecimal(0)).toNumber();
+  return sumExact(items).toNumber();
 }
 
 function currencyAmounts(items: Array<{ currency: string; pretaxAmount: number }>) {
@@ -92,13 +96,18 @@ function snapshotIdsCoveredOnBillingDay(item: BillingLineItemRecord, proof: Plat
   }) : null;
 }
 
-function platformBillingItems(items: BillingLineItemRecord[], proof: PlatformBillingProof) {
+export function platformBillingItems(items: BillingLineItemRecord[], proof: PlatformBillingProof) {
   const ledgers = new Map(proof.ledgers.map(ledger => [ledger.id, ledger]));
+  const scope = getCurrentCloudWorkspaceScope();
   return items.flatMap(item => {
+    if (scope && !('system' in scope) && ((item.cloudProvider ?? 'alibaba_cloud') !== scope.provider
+      || scope.accountUid && item.cloudAccountUid != null && item.cloudAccountUid !== scope.accountUid)) return [];
     const snapshotScope = item.productCode === 'snapshot' && item.cloudResourceType === 'ecs' && item.cloudAccountUid
       ? readAliyunSnapshotEcsScope(item.rawPayload, proof, toIsoDate(item.billingDate), item.cloudAccountUid) : null;
+    if(snapshotScope&&!snapshotScope.snapshotLedgerIds.some(id=>ledgers.has(id)))return [];
     const ledger = item.matchedLedgerId ? ledgers.get(item.matchedLedgerId)
       ?? (snapshotScope?.sourceLedgerId === item.matchedLedgerId ? proof.snapshotParentProof?.ledgers.find(row => row.id === item.matchedLedgerId) : null) : null;
+    if (scope && !('system' in scope) && scope.accountUid && ledger?.cloudAccountUid !== scope.accountUid) return [];
     if (!ledger || !isPlatformCreatedLedger(ledger, proof) && !snapshotScope
       || (item.cloudWorkspaceId ?? 'legacy-unbound') !== (ledger.cloudWorkspaceId ?? 'legacy-unbound')
       || (item.cloudProvider ?? 'alibaba_cloud') !== ledger.cloudProvider
@@ -116,8 +125,8 @@ function platformBillingItems(items: BillingLineItemRecord[], proof: PlatformBil
           || item.rawPayload.SplitItemID !== ledger.cloudResourceId || !readAliyunOssDedicatedBilling(ledger)
           || !aliyunOssBindingCoversBillingDay(readAliyunOssDedicatedBilling(ledger)!, toIsoDate(item.billingDate)))
       || toIsoDate(item.billingDate) < billingDayText(ledger.billingStartAt)) return [];
-    // Historical catalog collection could overwrite attribution; use the verified creation ledger.
-    return [{ ...item, cloudAccountUid: ledger.cloudAccountUid, billingScope: ledger.billingScope, ownerUserId: ledger.ownerUserId }];
+    // Validate the original creator/source first, then apply the current expense responsibility.
+    return [{ ...item, cloudAccountUid: ledger.cloudAccountUid, ...billingExpenseScope(ledger, item.productCode) }];
   });
 }
 
@@ -163,15 +172,15 @@ function paginate<T>(items: T[], input: BillingWindowInput): PaginatedResult<T> 
   };
 }
 
-function escapeCsvCell(value: string | number | null | undefined) {
-  const text = value == null ? '' : String(value);
+function escapeCsvCell(value: string | number | Prisma.Decimal | null | undefined) {
+  const text = value == null ? '' : value instanceof BillingDecimal ? value.toFixed() : String(value);
   // Prefix only string metadata; real numeric charges and refunds remain numbers.
   const safeText = typeof value === 'string' && /^[\s\u0000-\u001f]*[=+@-]/.test(text) ? `'${text}` : text;
   const escaped = safeText.replaceAll('"', '""');
   return /[",\r\n]/.test(escaped) ? `"${escaped}"` : escaped;
 }
 
-function toCsv(rows: Array<Array<string | number | null | undefined>>) {
+function toCsv(rows: Array<Array<string | number | Prisma.Decimal | null | undefined>>) {
   return `${rows.map((row) => row.map(escapeCsvCell).join(',')).join('\n')}\n`;
 }
 
@@ -190,6 +199,10 @@ export class BillingService {
   }
 
   async getSummary(input: BillingWindowInput) {
+    return (await this.summaryData(input)).summary;
+  }
+
+  private async summaryData(input: BillingWindowInput) {
     const window = resolveBillingWindow(input);
     const [allLineItems, allAnomalies, fullProof] = await Promise.all([
       this.adminRepository.listBillingLineItems({
@@ -303,9 +316,10 @@ export class BillingService {
         ? `本次分账未核实，暂保留上次已核验金额，等待完整账单后更新。${reasons[resourceType]}` : reasons[resourceType],
       resources: await this.reconciliationResourceDetails(ids, proof, deferredProducts.has(resourceType), resourceType === 'disk'),
     })));
-    const resourcesWithoutBillCount = resourcesWithoutBill.filter(item => !diskCoverage.covered.has(item.id) && !diskCoverage.mappingPending.has(item.id)).length;
+    const missingBillResources = resourcesWithoutBill.filter(item => !diskCoverage.covered.has(item.id) && !diskCoverage.mappingPending.has(item.id));
+    const resourcesWithoutBillCount = missingBillResources.length;
 
-    return {
+    return { items: trackedLineItems, unallocatedItems, summary: {
       startAt: window.startAtText,
       endAt: window.endAtText,
       billingScope: 'platform_resources' as const,
@@ -318,10 +332,11 @@ export class BillingService {
       billingStatus: 'provisional' as const,
       unallocatedCurrencyTotals: currencyAmounts(unallocatedItems),
       resourcesWithoutBillCount,
+      resourcesWithoutBill: await this.reconciliationResourceDetails(new Set(missingBillResources.map(item => `ledger:${item.id}`)), proof, false),
       reconciliationIssues,
       resourceTypeTotals,
       dailyTotals,
-    };
+    } };
   }
 
   async listUsers(input: BillingWindowInput) {
@@ -331,8 +346,9 @@ export class BillingService {
   private readableProof(fullProof: PlatformBillingProof): PlatformBillingProof {
     const scope = getCurrentCloudWorkspaceScope();
     if (!scope && process.env.NODE_ENV === 'test') return currentPlatformBillingProof(fullProof, this.platformBillingStartedAt);
-    const visible = (record: { cloudWorkspaceId?: string; ownerUserId?: string | null }) => scope && !('system' in scope)
-      && record.cloudWorkspaceId === scope.cloudWorkspaceId && (scope.isPlatformManager === true || Boolean(scope.actorUserId) && record.ownerUserId === scope.actorUserId);
+    const visible = (record: { cloudWorkspaceId?: string; ownerUserId?: string | null; cloudResourceType?: string }) => scope && !('system' in scope)
+      && record.cloudWorkspaceId === scope.cloudWorkspaceId && (scope.isPlatformManager === true || Boolean(scope.actorUserId) && record.ownerUserId === scope.actorUserId
+        && !['snapshot','image'].includes(record.cloudResourceType ?? ''));
     const ledgers = fullProof.ledgers.filter(visible), ids = new Set(ledgers.map(row => row.id));
     return currentPlatformBillingProof({ ...fullProof, ledgers, imageImports: fullProof.imageImports.filter(visible), packedImages: fullProof.packedImages.filter(visible),
       cosBuckets: scope && !('system' in scope) && scope.isPlatformManager === true ? fullProof.cosBuckets.filter(row => row.cloudWorkspaceId === scope.cloudWorkspaceId) : [],
@@ -346,8 +362,9 @@ export class BillingService {
       ? record.cloudWorkspaceId === scope.cloudWorkspaceId : false;
     const jobs = new Map<string, Promise<ProvisionJobRecord | null>>();
     const logs = new Map<string, ReturnType<AdminRepository['listProvisionJobStepLogs']>>();
+    const ledgersByKey = new Map(proof.ledgers.filter(inWorkspace).map(row => [`ledger:${row.id}`, row]));
     return (await Promise.all([...keys].sort().map(async resourceKey => {
-      const ledger = proof.ledgers.find(row => resourceKey === `ledger:${row.id}` && inWorkspace(row));
+      const ledger = ledgersByKey.get(resourceKey);
       if (ledger) {
         let proofFailureReason = diskMappingPending ? 'SYSTEM_DISK_MAPPING_UNVERIFIED' : deferred ? 'BILL_SYNC_DEFERRED' : 'BILL_DETAILS_PENDING';
         if (!proof.createdLedgerIds.has(ledger.id)) {
@@ -516,42 +533,52 @@ export class BillingService {
   }
 
   async exportPlatformCsv(input: BillingWindowInput) {
-    const summary = await this.getSummary(input);
+    const { summary, items, unallocatedItems } = await this.summaryData(input);
+    const currencies = [...new Set(items.map(item => item.currency))].sort();
+    const byType = (item: BillingLineItemRecord) => item.productCode === 'snapshot' ? 'snapshot' : item.cloudResourceType;
 
     return toCsv([
       ['startAt', summary.startAt],
       ['endAt', summary.endAt],
       ['billingScope', summary.billingScope],
-      ['totalPretaxAmount', summary.totalPretaxAmount],
-      ['platformPretaxAmount', summary.platformPretaxAmount],
+      ['totalPretaxAmount', currencies.length <= 1 ? sumExact(items) : null],
+      ['platformPretaxAmount', currencies.length <= 1 ? sumExact(items.filter(item => item.billingScope === 'platform')) : null],
       ['currency', summary.currency ?? 'MULTIPLE'],
       ['anomalyCount', summary.anomalyCount],
       ['billingStatus', summary.billingStatus],
       ['resourcesWithoutBillCount', summary.resourcesWithoutBillCount],
       [],
       ['unallocatedCurrency', 'unallocatedPretaxAmount'],
-      ...summary.unallocatedCurrencyTotals.map(item => [item.currency, item.pretaxAmount]),
+      ...summary.unallocatedCurrencyTotals.map(item => [item.currency, sumExact(unallocatedItems.filter(row => row.currency === item.currency))]),
       [],
       ['reconciliationResourceType', 'resourceCount', 'reason'],
       ...summary.reconciliationIssues.map(item => [item.resourceType, item.resourceCount, item.reason]),
       [],
       ['currency', 'totalPretaxAmount', 'platformPretaxAmount'],
-      ...summary.currencyTotals.map(item => [item.currency, item.totalPretaxAmount, item.platformPretaxAmount]),
+      ...currencies.map(currency => [currency, sumExact(items.filter(item => item.currency === currency)), sumExact(items.filter(item => item.currency === currency && item.billingScope === 'platform'))]),
       [],
       ['resourceType', 'currency', 'pretaxAmount'],
-      ...summary.resourceTypeTotals.map((item) => [item.resourceType, item.currency, item.pretaxAmount]),
+      ...summary.resourceTypeTotals.map((item) => [item.resourceType, item.currency, sumExact(items.filter(row => byType(row) === item.resourceType && row.currency === item.currency))]),
       [],
       ['billingDate', 'currency', 'pretaxAmount'],
-      ...summary.dailyTotals.map((item) => [item.billingDate, item.currency, item.pretaxAmount]),
+      ...summary.dailyTotals.map((item) => [item.billingDate, item.currency, sumExact(items.filter(row => toIsoDate(row.billingDate) === item.billingDate && row.currency === item.currency))]),
     ]);
   }
 
   async exportUsersCsv(input: BillingWindowInput) {
-    const users = await this.listUserSummaries(input);
+    const [platformUsers, allItems] = await Promise.all([this.adminRepository.listPlatformUsers(), this.readPlatformItems(input)]);
+    const items = allItems.filter(item => item.billingScope === 'user');
+    const usernames = new Map(platformUsers.map(user => [user.id, user.username]));
+    for (const item of items) if (item.ownerUserId && !usernames.has(item.ownerUserId)) usernames.set(item.ownerUserId, item.ownerUserId);
+    const users = [...usernames].map(([userId, username]) => {
+      const rows = items.filter(item => item.ownerUserId === userId);
+      return { userId, username, itemCount: rows.length, ...moneySummary(rows) };
+    }).sort((left, right) => (left.currency ?? '').localeCompare(right.currency ?? '') || (right.pretaxAmount ?? 0) - (left.pretaxAmount ?? 0) || left.username.localeCompare(right.username));
 
     return toCsv([
       ['userId', 'username', 'currency', 'pretaxAmount', 'itemCount'],
-      ...users.flatMap(user => (user.amounts.length ? user.amounts : [{ currency: user.currency ?? 'CNY', pretaxAmount: 0 }]).map(amount => [user.userId, user.username, amount.currency, amount.pretaxAmount, user.itemCount])),
+      ...users.flatMap(user => (user.amounts.length ? user.amounts : [{ currency: user.currency ?? 'CNY', pretaxAmount: 0 }]).map(amount => [user.userId, user.username, amount.currency,
+        sumExact(items.filter(item => item.ownerUserId === user.userId && item.currency === amount.currency)), user.itemCount])),
     ]);
   }
 

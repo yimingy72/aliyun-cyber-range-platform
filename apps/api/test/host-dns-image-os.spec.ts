@@ -33,6 +33,21 @@ it.each([
   jest.spyOn(global,'fetch').mockResolvedValue({ ok: true, json: async () => ({ TotalCount: 1, Images: { Image: [{ ...windows.Images.Image[0], ...fields }] } }) } as Response);
   return expect(resolveAliyunWindowsDnsHostImages(input)).rejects.toThrow('officially identified Windows');
 });
+it('temporarily permits incorrect OS metadata only with the explicit Alibaba DNS override', async () => {
+  jest.spyOn(global, 'fetch').mockResolvedValue({ ok: true, json: async () => ({ TotalCount: 1,
+    Images: { Image: [{ ...windows.Images.Image[0], OSType: 'linux', Platform: 'Customized Linux' }] } }) } as Response);
+  await expect(resolveAliyunWindowsDnsHostImages({ ...input, skipImageOsCheck: true })).resolves.toEqual({ 'member-a': true, 'member-b': true });
+  await expect(resolveAliyunWindowsDnsHostImages({ ...input, skipImageOsCheck: false })).rejects.toThrow('officially identified Windows');
+});
+it.each([
+  { TotalCount: 0, Images: { Image: [] } },
+  { TotalCount: 1, Images: { Image: [{ ...windows.Images.Image[0], Status: 'Unavailable' }] } },
+  { TotalCount: 1, Images: { Image: [{ ...windows.Images.Image[0], ImageId: 'm-other' }] } },
+  { ...windows, TotalCount: 2 },
+])('retains image availability and exact identity checks with the temporary override: %j', payload => {
+  jest.spyOn(global, 'fetch').mockResolvedValue({ ok: true, json: async () => payload } as Response);
+  return expect(resolveAliyunWindowsDnsHostImages({ ...input, skipImageOsCheck: true })).rejects.toThrow('available image');
+});
 it.each([null, {}, { TotalCount: 0, Images: { Image: [] } }, { ...windows, TotalCount: 2 }, { TotalCount: 1, Images: { Image: windows.Images.Image.concat(windows.Images.Image) } }])('rejects incomplete Alibaba DescribeImages metadata: %j', payload => {
   jest.spyOn(global,'fetch').mockResolvedValue({ ok: true, json: async () => payload } as Response);
   return expect(resolveAliyunWindowsDnsHostImages(input)).rejects.toThrow(payload === null ? 'returned an invalid response' : 'officially identified Windows');

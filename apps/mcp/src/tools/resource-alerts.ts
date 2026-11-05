@@ -27,7 +27,7 @@ export const resourceAlertTools: ToolDefinition[] = [
     requiredScopes: ['settings:read'], inputSchema: z.strictObject({}), outputSchema: resultOutputSchema(patrol),
     async call(context) { return patrol.parse(await context.client.getResourcePatrol()); } },
   { name: 'resource_patrol_manager_set', title: '指定后台巡检跟随的超管', adminOnly: true,
-    description: '指定准确平台超管用户 ID，省略时使用当前经过认证的超管。后台每5分钟只扫描其持久化的当前工作账号及平台实际用过的地域。不修改云资源、期限或已受理作业。账号切换后旧扫描结果不算新账号检查结果。',
+    description: '指定准确平台超管用户 ID，省略时使用当前经过认证的超管。后台默认每1小时只扫描其持久化的当前工作账号及平台实际用过的地域。不修改云资源、期限或已受理作业。账号切换后旧扫描结果不算新账号检查结果。',
     requiredScopes: ['settings:write'], annotations: { idempotentHint: true }, inputSchema: z.strictObject({ managerUserId: id.optional() }),
     outputSchema: resultOutputSchema(patrol),
     async call(context, args) { return patrol.parse(await context.client.setResourcePatrolManager(args.managerUserId as string | undefined)); } },

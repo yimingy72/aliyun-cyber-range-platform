@@ -8,10 +8,12 @@ ARG ALPINE_REPOSITORY=https://mirrors.aliyun.com/alpine
 ARG PNPM_FETCH_RETRIES=10
 ARG PNPM_FETCH_RETRY_MIN_TIMEOUT=2000
 ARG PNPM_FETCH_RETRY_MAX_TIMEOUT=30000
+ARG PRISMA_ENGINES_MIRROR=https://registry.npmmirror.com/-/binary/prisma
 
 ENV PNPM_HOME="/pnpm"
 ENV PATH="$PNPM_HOME:$PATH"
 ENV NEXT_TELEMETRY_DISABLED=1
+ENV PRISMA_ENGINES_MIRROR=$PRISMA_ENGINES_MIRROR
 ENV COREPACK_NPM_REGISTRY=$PNPM_REGISTRY
 ENV npm_config_registry=$PNPM_REGISTRY
 ENV npm_config_fetch_retries=$PNPM_FETCH_RETRIES
@@ -31,6 +33,7 @@ COPY apps/api/package.json apps/api/package.json
 COPY apps/web/package.json apps/web/package.json
 COPY packages/database/package.json packages/database/package.json
 COPY packages/iac-runner/package.json packages/iac-runner/package.json
+COPY packages/scenario-runtime/package.json packages/scenario-runtime/package.json
 
 RUN pnpm install --frozen-lockfile
 

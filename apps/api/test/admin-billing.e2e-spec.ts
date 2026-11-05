@@ -15,6 +15,15 @@ describe('Admin billing', () => {
   let app: INestApplication;
   let repository: AdminRepository;
 
+  it('permits an authenticated browser to bypass only the billing display cache', async () => {
+    const response = await request(app.getHttpServer()).options('/admin/billing/entries')
+      .set('Origin', 'https://billing-ui.example')
+      .set('Access-Control-Request-Method', 'GET')
+      .set('Access-Control-Request-Headers', 'authorization,cache-control,x-cloud-workspace-id')
+      .expect(204);
+    expect(response.headers['access-control-allow-headers']).toContain('cache-control');
+  });
+
   beforeAll(async () => {
     process.env.ADMIN_USERNAME = 'admin';
     process.env.ADMIN_PASSWORD = 'change-me';
@@ -164,6 +173,7 @@ describe('Admin billing', () => {
         billingStatus: 'provisional',
         unallocatedCurrencyTotals: [],
         resourcesWithoutBillCount: 0,
+        resourcesWithoutBill: [],
         resourceTypeTotals: [
           { resourceType: 'ecs', currency: 'CNY', pretaxAmount: 1.25 },
           { resourceType: 'eip', currency: 'CNY', pretaxAmount: 0.5 },

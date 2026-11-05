@@ -1,5 +1,5 @@
 import { expiredSingleDestroyDecision } from '../provisioning/automatic-destroy-policy';
-import { getCurrentCloudWorkspaceId, getCurrentCloudWorkspaceScope, runInSystemCloudWorkspaceScope } from '../auth/cloud-workspace-scope';
+import { getCurrentCloudWorkspaceId, getCurrentCloudWorkspaceScope, requireCurrentCloudWorkspaceId, runInSystemCloudWorkspaceScope } from '../auth/cloud-workspace-scope';
 import { rangeDraftSourceDigest } from '../admin/range-draft-change-policy';
 import type { RangeDnsVerification } from '../admin/range-dns-types';
 import { ConflictException, ForbiddenException, Injectable } from '@nestjs/common';
@@ -59,6 +59,7 @@ import {
   ProvisionJobStepLogRecord,
   ReconcileImageSnapshotsInput,
   RangeInstanceRecord,
+  RangeLaunchReceipt,
   RangeResourceSummary,
   RangeInstanceSchedulingRecord,
   RangeInstanceDraftRevisionConflictError,
@@ -997,6 +998,10 @@ export class PrismaAdminRepository implements AdminRepository {
     }) as Promise<SingleInstanceBatchRecord | null>;
   }
 
+  async listSingleInstanceBatchNames(ids: string[]) {
+    return ids.length ? this.prisma.singleInstanceBatch.findMany({ where: { id: { in: ids } }, select: { id: true, name: true } }) : [];
+  }
+
   async listSingleInstanceBatchesWithInstances(): Promise<SingleInstanceBatchWithInstancesRecord[]> {
     const batches = await this.prisma.singleInstanceBatch.findMany({
       include: {
@@ -1031,6 +1036,37 @@ export class PrismaAdminRepository implements AdminRepository {
         createdAt: 'desc',
       },
     }) as Promise<RangeInstanceRecord[]>;
+  }
+
+  async listBillingSourceInstances(): Promise<import('../admin/admin.repository').BillingSourceInstance[]> {
+    return this.prisma.rangeInstance.findMany({ orderBy: { createdAt: 'desc' }, select: {
+      id: true, name: true, cloudWorkspaceId: true, cloudProvider: true, ownerUserId: true, instanceMode: true,
+      singleInstanceBatchId: true, singleInstanceConfig: true, templateId: true, status: true, expiresAt: true,
+      lastJobId: true, resourceSummary: true, createdAt: true,
+    } }) as Promise<import('../admin/admin.repository').BillingSourceInstance[]>;
+  }
+
+  async listBillingSourceJobs() {
+    const workspace = requireCurrentCloudWorkspaceId();
+    // Keep the two display fields without transferring graphs, scripts or historical credentials.
+    return this.prisma.$queryRaw<import('../admin/admin.repository').BillingSourceJob[]>`
+      SELECT id, "cloudWorkspaceId", "rangeInstanceId", "jobType"::text AS "jobType", status::text AS status,
+             "createdAt", "startedAt", "finishedAt", "retryCount",
+             CASE WHEN "topologySnapshot" IS NOT NULL THEN jsonb_build_object('operation', "topologySnapshot"->'operation',
+                 'expiryPlan', "topologySnapshot"->'expiryPlan') END AS "topologySnapshot"
+      FROM "ProvisionJob" WHERE "cloudWorkspaceId" = ${workspace} ORDER BY "createdAt" DESC`;
+  }
+
+  async listRangeLaunchReceipts(instanceIds: string[]): Promise<RangeLaunchReceipt[]> {
+    if (!instanceIds.length) return [];
+    const workspaceId = requireCurrentCloudWorkspaceId();
+    // Project only the public identity, not the large (and potentially sensitive) saved response.
+    return this.prisma.$queryRaw<RangeLaunchReceipt[]>(Prisma.sql`
+      SELECT "cloudWorkspaceId", "actorUserId", "idempotencyKey", "result"->>'id' AS "rangeInstanceId"
+      FROM "IdempotentOperation"
+      WHERE "cloudWorkspaceId" = ${workspaceId} AND "toolName" = 'web_range_instance_launch'
+        AND "status" = 'succeeded' AND "result"->>'id' IN (${Prisma.join([...new Set(instanceIds)])})
+    `);
   }
 
   async listProvisioningInstancesByIds(ids: string[]): Promise<RangeInstanceSchedulingRecord[]> {
@@ -1146,6 +1182,90 @@ export class PrismaAdminRepository implements AdminRepository {
     return this.prisma.rangeInstance.update({ where: { id }, data: this.rangeInstanceUpdateData(input) }) as Promise<RangeInstanceRecord>;
   }
 
+  async saveInstancePowerControl(id: string, expectedUpdatedAt: Date, control: import('../admin/instance-power-types').InstancePowerControl, jobInput?: CreateProvisionJobInput) {
+    return this.powerTransaction(async tx => {
+      const locked = await tx.rangeInstance.updateMany({ where: { id, updatedAt: expectedUpdatedAt,
+        ...(jobInput ? { status: 'running' as const } : {}) }, data: { draftRevision: { increment: 0 } } });
+      if (locked.count !== 1) return null;
+      if (jobInput && (jobInput.rangeInstanceId !== id || !['economical_stop', 'resume'].includes(jobInput.jobType)
+        || await tx.provisionJob.count({ where: { rangeInstanceId: id, status: { in: ['pending', 'running'] } } }))) throw new ConflictException('实例存在活动任务，未提交电源操作。');
+      const job = jobInput ? await tx.provisionJob.create({ data: { rangeInstanceId: id, jobType: jobInput.jobType, triggeredBy: jobInput.triggeredBy,
+        topologySnapshot: jobInput.topologySnapshot as Prisma.InputJsonValue } }) : null;
+      const updatedControl = job ? { ...control, jobId: job.id, ...(control.schedule?.status === 'queued' ? { schedule: { ...control.schedule, jobId: job.id } } : {}) } : control;
+      const instance = await tx.rangeInstance.update({ where: { id }, data: { powerControl: updatedControl as unknown as Prisma.InputJsonValue,
+        ...(job ? { lastJobId: job.id } : {}) } });
+      return { instance: instance as unknown as RangeInstanceRecord, job: job as ProvisionJobRecord | null };
+    });
+  }
+
+  async queueInstanceExpiryJob(id: string, expectedUpdatedAt: Date, job: CreateProvisionJobInput, effectiveExpiresAt: Date) {
+    return this.powerTransaction(async tx => {
+      const locked = await tx.rangeInstance.updateMany({ where: { id, status: 'running', updatedAt: expectedUpdatedAt,
+        expiresAt: { gt: new Date(Date.now() + 5 * 60_000) } }, data: { draftRevision: { increment: 0 } } });
+      if (locked.count !== 1) return null;
+      if (job.rangeInstanceId !== id || job.jobType !== 'change_expiry' || !job.topologySnapshot?.expiryPlan
+        || await tx.provisionJob.count({ where: { rangeInstanceId: id, status: { in: ['pending', 'running'] } } }))
+        throw new ConflictException('实例存在活动任务，未提交回收时间修改。');
+      const accepted = await tx.provisionJob.create({ data: { rangeInstanceId: id, jobType: 'change_expiry', triggeredBy: job.triggeredBy,
+        topologySnapshot: job.topologySnapshot as Prisma.InputJsonValue } });
+      // Shortening takes effect immediately; extension waits for all native timers to be verified.
+      const source = await tx.rangeInstance.findUniqueOrThrow({ where: { id } });
+      await tx.rangeInstance.update({ where: { id }, data: { expiresAt: effectiveExpiresAt, lastJobId: accepted.id,
+        resourceSummary: { ...(source.resourceSummary as Record<string, Prisma.InputJsonValue>), expiryChangeJobId: accepted.id } } });
+      return accepted as ProvisionJobRecord;
+    });
+  }
+
+  async requeueInstanceExpiryJob(jobId: string, expectedInstanceUpdatedAt: Date, expectedJobUpdatedAt: Date) {
+    return this.powerTransaction(async tx => {
+      const job = await tx.provisionJob.findUnique({ where: { id: jobId } });
+      if (!job || job.jobType !== 'change_expiry') return false;
+      const locked = await tx.rangeInstance.updateMany({ where: { id: job.rangeInstanceId, status: 'running',
+        lastJobId: job.id, updatedAt: expectedInstanceUpdatedAt }, data: { draftRevision: { increment: 0 } } });
+      if (locked.count !== 1 || await tx.provisionJob.count({ where: { rangeInstanceId: job.rangeInstanceId, status: { in: ['pending', 'running'] } } })) return false;
+      const changed = await tx.provisionJob.updateMany({ where: { id: job.id, status: 'failed', updatedAt: expectedJobUpdatedAt },
+        data: { status: 'pending', startedAt: null, finishedAt: null, availableAt: new Date(),
+          topologySnapshot: { ...(job.topologySnapshot as Record<string, Prisma.InputJsonValue>), expiryObserveOnly: true } } });
+      return changed.count === 1;
+    });
+  }
+
+  private powerTransaction<T>(work: (tx: Prisma.TransactionClient) => Promise<T>): Promise<T> {
+    return typeof this.prisma.$transaction === 'function' ? this.prisma.$transaction(work) : work(this.prisma as unknown as Prisma.TransactionClient);
+  }
+
+  async listDuePowerSchedules(now: Date): Promise<RangeInstanceRecord[]> {
+    return this.prisma.rangeInstance.findMany({ where: { AND: [
+      { powerControl: { path: ['schedule', 'status'], equals: 'scheduled' } },
+      { OR: [{ status: { not: 'running' } }, { powerControl: { path: ['schedule', 'at'], lte: now.toISOString() } }] },
+    ] }, orderBy: [{ createdAt: 'asc' }, { id: 'asc' }] }) as unknown as Promise<RangeInstanceRecord[]>;
+  }
+
+  async updateInstancePowerForClaim(id: string, startedAt: Date, input: UpdateRangeInstanceInput, jobInput: UpdateProvisionJobInput) {
+    return this.prisma.$transaction(async tx => {
+      const job = await tx.provisionJob.findUnique({ where: { id } });
+      if (!job || !['economical_stop', 'resume', 'change_expiry'].includes(job.jobType)) return false;
+      const source = await tx.rangeInstance.findUnique({ where: { id: job.rangeInstanceId } });
+      // Singles share the job -> instance order with expiry and access refresh.
+      // Range intake uses instance -> job; keep its existing ordering.
+      if (source?.instanceMode === 'single') await tx.$queryRaw`SELECT id FROM "ProvisionJob" WHERE id = ${id}
+        AND "cloudWorkspaceId" = ${job.cloudWorkspaceId} FOR UPDATE`;
+      const locked = await tx.rangeInstance.updateMany({ where: { id: job.rangeInstanceId, lastJobId: id, status: 'running' }, data: { draftRevision: { increment: 0 } } });
+      if (locked.count !== 1) {
+        await tx.provisionJob.updateMany({ where: { id, status: 'running', startedAt }, data: {
+          status: 'cancelled', finishedAt: new Date(), errorSummary: '原实例已进入其他操作；旧电源任务未继续执行。',
+        } });
+        return false;
+      }
+      const { topologySnapshot, ...jobData } = jobInput;
+      const changed = await tx.provisionJob.updateMany({ where: { id, status: 'running', startedAt }, data: { ...jobData,
+        ...(topologySnapshot ? { topologySnapshot: topologySnapshot as Prisma.InputJsonValue } : {}) } });
+      if (changed.count !== 1) return false;
+      await tx.rangeInstance.update({ where: { id: job.rangeInstanceId }, data: this.rangeInstanceUpdateData(input) });
+      return true;
+    });
+  }
+
   async updateRangeInstanceDnsState(id: string, hostKey: string, nativeId: string, expectedClaim: string | null, entry: RangeDnsVerification): Promise<boolean> {
     const scope = getCurrentCloudWorkspaceScope();
     if (!scope || 'system' in scope) throw new ForbiddenException('Cloud workspace scope is required');
@@ -1257,6 +1377,7 @@ export class PrismaAdminRepository implements AdminRepository {
             }
           : {}),
         ...(input.errorSummary !== undefined ? { errorSummary: input.errorSummary } : {}),
+        ...(input.powerControl !== undefined ? { powerControl: input.powerControl === null ? Prisma.DbNull : input.powerControl as unknown as Prisma.InputJsonValue } : {}),
         ...(input.expiresAt !== undefined ? { expiresAt: input.expiresAt } : {}),
         ...(input.lastJobId !== undefined ? { lastJobId: input.lastJobId } : {}),
       };
@@ -1476,7 +1597,8 @@ export class PrismaAdminRepository implements AdminRepository {
             ? transaction.provisionJob.findFirst({ where: { id: previous.result.id, rangeInstanceId: input.rangeInstanceId } }) as Promise<ProvisionJobRecord | null> : null;
         }
         const locked = await transaction.rangeInstance.updateMany({
-          where: { id: input.rangeInstanceId, instanceMode: 'range', status: input.expectedStatus, ownerUserId: input.expectedOwnerUserId },
+          where: { id: input.rangeInstanceId, instanceMode: 'range', status: input.expectedStatus, ownerUserId: input.expectedOwnerUserId,
+            ...(input.expectedUpdatedAt ? {updatedAt:input.expectedUpdatedAt} : {}) },
           data: { draftRevision: { increment: 0 } },
         });
         if (locked.count !== 1 || await transaction.provisionJob.count({ where: {
@@ -1582,7 +1704,7 @@ export class PrismaAdminRepository implements AdminRepository {
         } });
         return null;
       }
-      if (candidate.jobType === 'update' && instance.status !== 'running'
+      if (['update','reset'].includes(candidate.jobType) && instance.status !== 'running'
         || (candidate.jobType === 'create' || candidate.topologySnapshot && (candidate.topologySnapshot as Record<string, unknown>).operation === 'create')
           && ['pending_destroy', 'destroying', 'destroy_failed', 'destroyed'].includes(instance.status)) {
         await transaction.provisionJob.updateMany({ where: { id, status: 'pending' }, data: {
@@ -1637,9 +1759,10 @@ export class PrismaAdminRepository implements AdminRepository {
   }
 
   async updateRangeProvisionJob(id: string, startedAt: Date, input: UpdateProvisionJobInput): Promise<boolean> {
+    const { topologySnapshot, ...data } = input;
     const changed = await this.prisma.provisionJob.updateMany({ where: {
       id, status: 'running', startedAt, rangeInstance: { instanceMode: 'range', lastJobId: id },
-    }, data: input });
+    }, data: { ...data, ...(topologySnapshot ? { topologySnapshot: topologySnapshot as Prisma.InputJsonValue } : {}) } });
     return changed.count === 1;
   }
 
@@ -1762,6 +1885,8 @@ export class PrismaAdminRepository implements AdminRepository {
       data: {
         ...(input.status ? { status: input.status } : {}),
         ...(input.startedAt !== undefined ? { startedAt: input.startedAt } : {}),
+        ...(input.availableAt !== undefined ? { availableAt: input.availableAt } : {}),
+        ...(input.topologySnapshot !== undefined ? { topologySnapshot: input.topologySnapshot as Prisma.InputJsonValue } : {}),
         ...(input.finishedAt !== undefined ? { finishedAt: input.finishedAt } : {}),
         ...(input.retryCount !== undefined ? { retryCount: input.retryCount } : {}),
         ...(input.errorSummary !== undefined ? { errorSummary: input.errorSummary } : {}),
@@ -2277,7 +2402,11 @@ export class PrismaAdminRepository implements AdminRepository {
       const jsonFields = new Set(['accessEntry', 'resourceSummary', 'singleInstanceConfig', 'runtimeTopologyGraph', 'runtimeScenarioTemplateSpec', 'runtimeCompiledProvisionSpec']);
       const data = Object.fromEntries(Object.entries(instancePatch).map(([key, value]) => [key, jsonFields.has(key) && value === null ? Prisma.DbNull : value]));
       await tx.rangeInstance.update({ where: { id: instance.id }, data: data as Prisma.RangeInstanceUncheckedUpdateInput });
-      if (jobPatch) await tx.provisionJob.update({ where: { id: job.id }, data: jobPatch });
+      if (jobPatch) {
+        const { topologySnapshot, ...data } = jobPatch;
+        await tx.provisionJob.update({ where: { id: job.id }, data: { ...data,
+          ...(topologySnapshot ? { topologySnapshot: topologySnapshot as Prisma.InputJsonValue } : {}) } });
+      }
       return true;
     });
   }
@@ -2487,17 +2616,24 @@ export class PrismaAdminRepository implements AdminRepository {
     const ledger = input.expected;
     const cloudWorkspaceId = getCurrentCloudWorkspaceId() ?? 'legacy-unbound';
     const rangeInstanceId = ledger.rangeInstanceId;
-    if (ledger.sourceProvisionJobId !== null || !rangeInstanceId || (ledger.cloudWorkspaceId ?? 'legacy-unbound') !== cloudWorkspaceId) return false;
+    if (!rangeInstanceId || (ledger.cloudWorkspaceId ?? 'legacy-unbound') !== cloudWorkspaceId
+      || ledger.sourceProvisionJobId !== null && (!input.cloudAccountUid || ledger.sourceProvisionJobId !== input.sourceProvisionJobId)) return false;
+    const scope = getCurrentCloudWorkspaceScope();
+    if (input.cloudAccountUid && (!scope || 'system' in scope || scope.provider !== ledger.cloudProvider || scope.accountUid !== input.cloudAccountUid
+      || ledger.cloudAccountUid && ledger.cloudAccountUid !== input.cloudAccountUid)) return false;
     return this.prisma.$transaction(async tx => {
       const source = await tx.provisionJob.findFirst({ where: { id: input.sourceProvisionJobId, cloudWorkspaceId,
-        rangeInstanceId, jobType: { in: ['create', 'retry'] } } });
+        rangeInstanceId, jobType: { in: ['create', 'retry', ...(input.cloudAccountUid ? ['update' as const] : [])] } } });
       if (!source) return false;
+      const operation = (source.topologySnapshot as { operation?: string } | null)?.operation;
+      if (operation === 'destroy' || source.jobType === 'update' && operation !== 'update') return false;
       const updated = await tx.billingLedgerResource.updateMany({ where: { id: ledger.id, cloudWorkspaceId,
         cloudProvider: ledger.cloudProvider, cloudAccountUid: ledger.cloudAccountUid, regionId: ledger.regionId,
         cloudResourceId: ledger.cloudResourceId, cloudResourceType: ledger.cloudResourceType,
         rangeInstanceId: ledger.rangeInstanceId, ownerUserId: ledger.ownerUserId, singleInstanceBatchId: ledger.singleInstanceBatchId,
-        billingScope: ledger.billingScope, billingStartAt: ledger.billingStartAt, releasedAt: ledger.releasedAt, sourceProvisionJobId: null },
-        data: { sourceProvisionJobId: input.sourceProvisionJobId } });
+        billingScope: ledger.billingScope, billingStartAt: ledger.billingStartAt, releasedAt: ledger.releasedAt, sourceProvisionJobId: ledger.sourceProvisionJobId, updatedAt: ledger.updatedAt },
+        data: { sourceProvisionJobId: input.sourceProvisionJobId, ...(input.cloudAccountUid ? { cloudAccountUid: input.cloudAccountUid } : {}),
+          ...(input.cloudAccountContextId ? { tagsSnapshot: { ...ledger.tagsSnapshot, CloudAccountContextId: input.cloudAccountContextId } as Prisma.InputJsonValue } : {}) } });
       if (updated.count !== 1) return false;
       const now = new Date();
       await tx.provisionJobStepLog.create({ data: { cloudWorkspaceId, jobId: input.sourceProvisionJobId,
@@ -2535,6 +2671,12 @@ export class PrismaAdminRepository implements AdminRepository {
     }
     await this.prisma.$transaction(async tx => {
       await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${`billing:${cloudWorkspaceId}:${cloudProvider}:${input.cloudAccountUid}:${input.billingDate}`}, 0))`;
+      // The workspace lock also fences a legacy query that began before a mode switch.
+      if (typeof tx.cloudWorkspace?.findUnique === 'function') {
+        await tx.$executeRaw`SELECT id FROM "CloudWorkspace" WHERE id = ${cloudWorkspaceId} FOR NO KEY UPDATE`;
+        const space = await tx.cloudWorkspace.findUnique({ where: { id: cloudWorkspaceId } });
+        if (space?.billingReconciliationMode === 'resource') throw new Error('BILLING_LEGACY_WRITER_FENCED');
+      }
       if (!input.replacementSyncBatchId) await tx.$executeRaw`UPDATE "BillingLineItem" b SET "cloudAccountUid" = ${input.cloudAccountUid}
         FROM "BillingLedgerResource" l WHERE b."cloudAccountUid" IS NULL
         AND b."matchedLedgerId" = l."id" AND l."cloudAccountUid" = ${input.cloudAccountUid}
@@ -2542,8 +2684,11 @@ export class PrismaAdminRepository implements AdminRepository {
         AND l."cloudResourceId" = b."cloudResourceId" AND l."cloudResourceType" = b."cloudResourceType"
         AND b."billingDate" = ${billingDate} AND b."cloudWorkspaceId" = ${cloudWorkspaceId}
         AND l."cloudWorkspaceId" = b."cloudWorkspaceId"`;
+      const offset=input.replacementSyncBatchId?.indexOf(':billing-sync:')??-1;
+      const prefix=offset>=0?input.replacementSyncBatchId!.slice(0,offset):null;
       const where = { cloudWorkspaceId, cloudProvider, cloudAccountUid: input.cloudAccountUid, billingDate,
-        ...(input.replacementSyncBatchId ? { syncBatchId: input.replacementSyncBatchId } : {}) };
+        ...(input.replacementSyncBatchId ? { OR:[{syncBatchId:input.replacementSyncBatchId},
+          ...(prefix?[{financialGroupKey:{not:null},syncBatchId:{startsWith:prefix+':'}}]:[])] } : {}) };
       await tx.billingLineItem.deleteMany({ where });
       await tx.billingAnomaly.deleteMany({ where });
       if (input.lineItems.length) {
@@ -2641,6 +2786,7 @@ export class PrismaAdminRepository implements AdminRepository {
       ...(filter.ownerUserId !== undefined ? { ownerUserId: filter.ownerUserId } : {}),
       ...(filter.billingScope !== undefined ? { billingScope: filter.billingScope } : {}),
       ...(filter.matchedLedgerId !== undefined ? { matchedLedgerId: filter.matchedLedgerId } : {}),
+      ...(filter.matchedLedgerIds !== undefined ? { matchedLedgerId: { in: filter.matchedLedgerIds.filter(id => filter.matchedLedgerId === undefined || id === filter.matchedLedgerId) } } : {}),
     };
 
     const records = await this.prisma.billingLineItem.findMany({

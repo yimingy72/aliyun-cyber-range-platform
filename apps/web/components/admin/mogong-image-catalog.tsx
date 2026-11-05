@@ -1,32 +1,33 @@
 'use client';
 
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { RefreshCw } from 'lucide-react';
 
-import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { TableRow } from '@/components/ui/table';
-import { collectMogongImage, fetchCustomImageCatalogScope, fetchMogongImageCatalog, fetchPlatformContainerImages, fetchPlatformImages, syncCustomImages, type MogongImageCatalog } from '../../lib/admin-api';
+import { collectMogongImage, fetchCustomImageCatalogScope, fetchMogongImageCatalog, fetchPlatformContainerImages, fetchPlatformImages, syncMogongImages, type MogongImageCatalog } from '../../lib/admin-api';
 import { isUnauthorizedAdminError } from '../../lib/admin-screen';
 import { useAdminScreenCache } from '../../lib/admin-screen-cache';
 import type { ImageCatalogScopePayload, ImageSnapshot, PlatformContainerImage, PlatformImageAsset } from '../../lib/admin-types';
-import { AdminPaginationControls, buildVisiblePages, getPagination, useAdminPageSize } from './admin-pagination';
-import { AdminDataTable, AdminDataTableCell, AdminDataTableState, AdminDataTableText, type AdminDataColumn } from './shared/admin-data-table';
+import { AdminPaginationControls, getPagination, useAdminPageSize } from './admin-pagination';
+import { ADMIN_TABLE_WIDTHS, AdminDataTable, AdminDataTableCell, AdminDataTableState, AdminDataTableText, type AdminDataColumn } from './shared/admin-data-table';
 import { AdminPaginatedList } from './shared/admin-paginated-list';
+import { AdminSelectField } from './shared/admin-select-field';
 import { TableLoadingState } from './shared/table-loading-state';
 
 const columns: readonly AdminDataColumn[] = [
   { id: 'name', label: '镜像名', priority: 'primary' },
-  { id: 'type', label: '镜像类型', priority: 'primary' },
-  { id: 'imageId', label: '阿里云镜像 ID', priority: 'secondary' },
-  { id: 'status', label: '状态', priority: 'primary' },
-  { id: 'creator', label: '创建人', priority: 'primary' },
-  { id: 'actions', label: '操作', priority: 'primary', width: '11rem' },
+  { id: 'type', label: '镜像类型', priority: 'primary', width: '6rem' },
+  { id: 'imageId', label: '阿里云镜像 ID', priority: 'secondary', width: ADMIN_TABLE_WIDTHS.identifier },
+  { id: 'creator', label: '创建人', priority: 'tertiary', width: ADMIN_TABLE_WIDTHS.creator },
+  { id: 'actions', label: '操作', priority: 'primary', width: ADMIN_TABLE_WIDTHS.actions },
 ];
 
 type MogongImage = MogongImageCatalog['items'][number];
 type MogongCache = { catalog: MogongImageCatalog; cloud: ImageCatalogScopePayload; platform: PlatformImageAsset[]; mine: PlatformImageAsset[]; containers: PlatformContainerImage[] };
+const imageTypes = [{ label: '容器', value: 'docker' }, { label: '虚拟机', value: 'vm' }];
+const creatorKey = (creator: string | null) => creator ? `creator:${creator}` : 'missing';
 
 function imageStatus(image: MogongImage, snapshot: ImageSnapshot | undefined, collected: boolean, privateAsset: boolean, containersCollectable: boolean) {
   if (!image.active) return '墨攻已停用';
@@ -44,9 +45,10 @@ function imageStatus(image: MogongImage, snapshot: ImageSnapshot | undefined, co
   return collected ? '已收录' : privateAsset ? '私有镜像待发布' : '可收录';
 }
 
-export function MogongImageCatalogView({ apiBaseUrl, actionHost, token, search, readOnly, refreshRevision, logout, onCollected, onContainerCollected, onCloudSynced }: {
+export function MogongImageCatalogView({ apiBaseUrl, actionHost, filterHost, token, search, readOnly, refreshRevision, logout, onCollected, onContainerCollected }: {
   apiBaseUrl: string;
   actionHost: HTMLElement | null;
+  filterHost?: HTMLElement | null;
   token: string;
   search: string;
   readOnly: boolean;
@@ -54,7 +56,6 @@ export function MogongImageCatalogView({ apiBaseUrl, actionHost, token, search, 
   logout: () => void;
   onCollected: (asset: PlatformImageAsset) => void;
   onContainerCollected: (asset: PlatformContainerImage) => void;
-  onCloudSynced: (scope: ImageCatalogScopePayload) => void;
 }) {
   const screenCache = useAdminScreenCache();
   const cached = screenCache?.read<MogongCache>(apiBaseUrl, token, 'image-center:mogong');
@@ -64,11 +65,13 @@ export function MogongImageCatalogView({ apiBaseUrl, actionHost, token, search, 
   const [privateIds, setPrivateIds] = useState<Set<string>>(() => new Set(cached?.data.mine.filter(asset => asset.visibility === 'private').map(asset => asset.imageId) ?? []));
   const [collectedContainerIds, setCollectedContainerIds] = useState<Set<number>>(() => new Set(cached?.data.containers.map(asset => asset.sourceId) ?? []));
   const [error, setError] = useState('');
+  const [syncNotice, setSyncNotice] = useState('');
   const [loading, setLoading] = useState(!cached);
   const [pending, setPending] = useState<string | null>(null);
   const [attempt, setAttempt] = useState(0);
   const [page, setPage] = useState(1);
-  const [jumpPage, setJumpPage] = useState('1');
+  const [typeFilter, setTypeFilter] = useState('');
+  const [creatorFilter, setCreatorFilter] = useState('');
   const requestVersion = useRef(0);
   const { pageSize, setPageSize } = useAdminPageSize();
 
@@ -103,21 +106,22 @@ export function MogongImageCatalogView({ apiBaseUrl, actionHost, token, search, 
     return () => { active = false; };
   }, [apiBaseUrl, token, attempt, screenCache, refreshRevision]);
 
-  useEffect(() => { setPage(1); }, [search]);
+  useEffect(() => { setPage(1); }, [search, typeFilter, creatorFilter]);
 
-  async function handleSyncCloud() {
+  async function handleSync() {
     requestVersion.current += 1;
     screenCache?.invalidate(apiBaseUrl, token, 'image-center:mogong');
     setPending('sync');
     setError('');
+    setSyncNotice('');
     try {
-      const next = await syncCustomImages(apiBaseUrl, token);
-      setCloud(next);
-      onCloudSynced(next);
-      setCatalog(await fetchMogongImageCatalog(apiBaseUrl, token));
+      const next = await syncMogongImages(apiBaseUrl, token);
+      if (cloud) setCatalog(await fetchMogongImageCatalog(apiBaseUrl, token));
+      else setAttempt((value) => value + 1);
+      setSyncNotice(`已同步 ${next.total.toLocaleString('zh-CN')} 条墨攻镜像。`);
     } catch (err) {
       if (isUnauthorizedAdminError(err)) logout();
-      else setError(err instanceof Error ? err.message : '同步云镜像失败');
+      else setError(err instanceof Error ? err.message : '同步墨攻镜像失败');
     } finally {
       setPending(null);
     }
@@ -151,62 +155,69 @@ export function MogongImageCatalogView({ apiBaseUrl, actionHost, token, search, 
   }
 
   const normalizedSearch = search.trim().toLowerCase();
+  const creatorOptions = useMemo(() => [...new Set(catalog?.items.map((item) => item.creator))]
+    .sort((a, b) => (a ?? '').localeCompare(b ?? '', 'zh-CN'))
+    .map((creator) => ({ value: creatorKey(creator), label: creator || '未记录创建人' })), [catalog]);
   const items = (catalog?.items ?? []).filter((item) =>
-    !normalizedSearch || [item.name, item.imageId ?? ''].some((value) => value.toLowerCase().includes(normalizedSearch)),
+    (!typeFilter || item.type === typeFilter) &&
+    (!creatorFilter || creatorKey(item.creator) === creatorFilter) &&
+    (!normalizedSearch || [item.name, item.imageId ?? ''].some((value) => value.toLowerCase().includes(normalizedSearch))),
   );
   const pagination = getPagination(items.length, page, pageSize);
   const snapshots = new Map((cloud?.snapshots ?? []).filter((snapshot) => snapshot.provider === 'alibaba_cloud').map((snapshot) => [snapshot.imageId, snapshot]));
-
-  useEffect(() => { setJumpPage(String(pagination.page)); }, [pagination.page]);
 
   return (
     <AdminPaginatedList
       className="mt-4"
       footer={!loading && items.length ? (
         <AdminPaginationControls
-          jumpPageValue={jumpPage}
           label="墨攻镜像中心分页"
           pageSize={pageSize}
           pagination={pagination}
-          visiblePages={buildVisiblePages(pagination.totalPages, pagination.page)}
-          onJumpPage={() => setPage(Number.parseInt(jumpPage, 10) || pagination.page)}
-          onJumpPageValueChange={setJumpPage}
-          onNextPage={() => setPage(pagination.page + 1)}
           onPageSelect={setPage}
           onPageSizeChange={(value) => { setPageSize(value); setPage(1); }}
-          onPreviousPage={() => setPage(pagination.page - 1)}
         />
       ) : undefined}
     >
       {actionHost ? createPortal(
-        <Button disabled={readOnly || pending !== null || loading} onClick={() => void handleSyncCloud()} size="sm" type="button" variant="outline">
-          <RefreshCw aria-hidden="true" />同步云镜像
+        <Button disabled={readOnly || catalog?.syncAllowed === false || pending !== null || loading} onClick={() => void handleSync()} size="sm" type="button" variant="outline">
+          <RefreshCw aria-hidden="true" />{pending === 'sync' ? '同步中…' : '同步墨攻镜像'}
         </Button>,
         actionHost,
       ) : null}
+      {filterHost ? createPortal(
+        <div className="grid w-full grid-cols-2 gap-2">
+          <AdminSelectField ariaLabel="按镜像类型筛选" emptyOptionLabel="全部类型" onValueChange={setTypeFilter} options={imageTypes} value={typeFilter} />
+          <AdminSelectField ariaLabel="按创建人筛选" emptyOptionLabel="全部创建人" onValueChange={setCreatorFilter} options={creatorOptions} value={creatorFilter} />
+        </div>,
+        filterHost,
+      ) : null}
       {error && catalog ? <p className="mb-3 text-sm text-destructive" role="alert">{error}</p> : null}
+      {syncNotice ? <p className="mb-3 text-sm text-muted-foreground" role="status">{syncNotice}</p> : null}
       <AdminDataTable columns={columns} label="墨攻镜像中心">
         {(visibleColumns) => {
           if (loading) return <TableLoadingState columnCount={visibleColumns.length} label="正在加载墨攻镜像" rowCount={5} />;
           if (!catalog || !cloud) return <AdminDataTableState columns={visibleColumns} description={error} onRetry={() => setAttempt((value) => value + 1)} title="无法加载墨攻镜像" variant="error" />;
-          if (!items.length) return <AdminDataTableState columns={visibleColumns} description="请同步云镜像，或调整名称和镜像 ID 筛选条件。" title="没有匹配的墨攻镜像" variant="empty" />;
+          if (!items.length) return <AdminDataTableState columns={visibleColumns} description={normalizedSearch || typeFilter || creatorFilter ? '请调整搜索词、镜像类型或创建人。' : '同步墨攻镜像后重试。'} title="没有匹配的墨攻镜像" variant="empty" />;
           return items.slice(pagination.startIndex, pagination.endIndex).map((item) => {
             const snapshot = item.imageId ? snapshots.get(item.imageId) : undefined;
             const isCollected = item.type === 'docker' ? collectedContainerIds.has(item.id) : Boolean(item.imageId && collectedIds.has(item.imageId));
             const status = imageStatus(item, snapshot, isCollected, Boolean(item.imageId && privateIds.has(item.imageId)), catalog.containersCollectable);
             const canCollect = status === '可收录' || status === '引用待核验';
-            const [nameColumn, typeColumn, imageIdColumn, statusColumn, creatorColumn, actionColumn] = visibleColumns;
+            const [nameColumn, typeColumn, imageIdColumn, creatorColumn, actionColumn] = visibleColumns;
             return (
               <TableRow key={item.id}>
                 <AdminDataTableCell column={nameColumn!}><AdminDataTableText>{item.name}</AdminDataTableText></AdminDataTableCell>
                 <AdminDataTableCell column={typeColumn!}>{item.type === 'docker' ? '容器' : item.type === 'vm' ? '虚拟机' : '其他'}</AdminDataTableCell>
                 <AdminDataTableCell className="font-mono text-xs text-muted-foreground" column={imageIdColumn!}>{item.imageId || '—'}</AdminDataTableCell>
-                <AdminDataTableCell column={statusColumn!}><Badge variant={status === '可收录' || status === '已收录' ? 'default' : 'secondary'}>{status}</Badge></AdminDataTableCell>
                 <AdminDataTableCell column={creatorColumn!}>{item.creator || '—'}</AdminDataTableCell>
                 <AdminDataTableCell column={actionColumn!}>
-                  <Button aria-label={`${status === '已收录' ? '已收录' : '收录到平台'} ${item.name}`} disabled={readOnly || pending !== null || !canCollect} onClick={() => void handleCollect(item)} size="sm" type="button" variant="outline">
-                    {status === '已收录' ? '已收录' : '收录到平台'}
-                  </Button>
+                  {canCollect || status === '已收录' ? (
+                    <Button aria-label={`${status === '已收录' ? '已收录' : '收录到平台'} ${item.name}`} disabled={readOnly || pending !== null || !canCollect}
+                      onClick={() => void handleCollect(item)} size="sm" type="button" variant="outline" title={status === '引用待核验' ? status : undefined}>
+                      {status === '已收录' ? '已收录' : '收录到平台'}
+                    </Button>
+                  ) : <span className="text-xs text-muted-foreground">{status}</span>}
                 </AdminDataTableCell>
               </TableRow>
             );

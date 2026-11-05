@@ -1,4 +1,4 @@
-import { BadRequestException, Body, ConflictException, Controller, Delete, Get, HttpCode, NotFoundException, Param, Post, Query, Req, UseGuards } from '@nestjs/common';
+import { BadRequestException, Body, ConflictException, Controller, Delete, ForbiddenException, Get, HttpCode, NotFoundException, Param, Post, Query, Req, UseGuards } from '@nestjs/common';
 
 import { AdminAuthGuard } from './admin-auth.guard';
 import { CollectImageCatalogDto, DeleteCustomImageDto } from './dto/image-catalog.dto';
@@ -8,6 +8,7 @@ import { OperationControlService, readOperationRequestMetadata } from '../operat
 import { CollectMogongContainersDto } from './dto/mogong-container.dto';
 import { containerReferenceStatus, isBoundMogongWorkspace, isCollectableMogongImage, readMogongImageCatalog } from './mogong-image-catalog';
 import { PlatformContainerImagesService } from './platform-container-images.service';
+import { syncMogongImageCatalog } from './mogong-catalog-sync';
 
 export { isCollectableMogongImage } from './mogong-image-catalog';
 
@@ -33,10 +34,17 @@ export class ImageCatalogController {
     const { snapshots } = await this.imageCatalogService.listCustom();
     const imageIds = new Set(snapshots.filter((item) => item.provider === 'alibaba_cloud').map((item) => item.imageId));
     const bound = isBoundMogongWorkspace();
-    const items = catalog.items.filter((item) => bound || item.imageId && imageIds.has(item.imageId)).map(({ containerReference, ...item }) => ({
+    const items = catalog.items.filter((item) => item.active && (bound || item.imageId && imageIds.has(item.imageId))).map(({ containerReference, ...item }) => ({
       ...item, containerReferenceStatus: item.type === 'docker' ? containerReferenceStatus(containerReference) : null,
     }));
-    return { capturedAt: catalog.capturedAt, total: items.length, containersCollectable: bound && catalog.version === 2, items };
+    return { capturedAt: catalog.capturedAt, total: items.length, containersCollectable: bound && catalog.version === 2, syncAllowed: bound, items };
+  }
+
+  @Post('mogong/sync')
+  @HttpCode(200)
+  syncMogong() {
+    if (!isBoundMogongWorkspace()) throw new ForbiddenException('当前工作空间未绑定墨攻镜像目录。');
+    return syncMogongImageCatalog();
   }
 
   @Get('mogong/containers/preview')

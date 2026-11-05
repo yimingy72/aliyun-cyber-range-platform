@@ -1,5 +1,7 @@
 # 编排实例
 
+`provision_job_get` 的 `includeEvidence=true` 包含实际 `destroy` 阶段及白名单销毁输出摘要。`destroyCommands.completedBy` 是该阶段结束时间上界，`completedResourceIds` 仅包含同一输出片段中准确 ID 的开始与完成配对；它们不是云端原生删除时间，也不自动改写费用台账。`eipAllocationIntents` 仅来自原创建作业冻结的 EIP 绑定意图和同作业原始库存，不代表之后未变更配置。
+
 管理由模板启动的一整套综合靶场环境。基于平台镜像、CPU、内存和数量创建独立训练主机时，路由到 [实例管理](./instance-management.md)。
 
 ## MCP 工具与参数
@@ -26,6 +28,8 @@
 | ECS 开机 | `range_instance_node_start` | `rangeInstanceId`、`nodeId` | 操作元数据 | `ranges:control` |
 | ECS 关机 | `range_instance_node_stop` | `rangeInstanceId`、`nodeId` | 操作元数据 | `ranges:control` |
 | ECS 重启 | `range_instance_node_reboot` | `rangeInstanceId`、`nodeId` | 操作元数据 | `ranges:control` |
+| ECS 重置预览（只读） | `range_instance_node_reset_preview` | `rangeInstanceId`、`nodeId` | — | `ranges:read` |
+| ECS 系统盘重置（危险） | `range_instance_node_reset` | `rangeInstanceId`、`nodeId`、`planDigest`、`confirmedNodeName` | 操作元数据 | `ranges:control` |
 | ECS DNS 核验 | `range_instance_node_verify_dns` | `rangeInstanceId`、`nodeId` | 操作元数据 | `ranges:control` |
 | ECS DNS 重新下发 | `range_instance_node_apply_dns` | `rangeInstanceId`、`nodeId` | 操作元数据 | `ranges:control` |
 | ECS VNC | `range_instance_node_open_vnc` | `rangeInstanceId`、`nodeId` | — | `ranges:read`、`instances:credentials:read` |
@@ -77,6 +81,7 @@
 - 用 `range_instance_node_verify_dns` 对准确实例/节点重新核验，只调用平台固定只读脚本，不接受任意脚本、云资源 ID 或 DNS 配置参数。它不改变 DNS，不创建或重建云实例；`failed`/`unverified` 时应检查网卡、初始化工具、DNS 服务及域控 SRV 记录，不调用创建重试来修复 DNS。该动作需 `ranges:control`，并沿用平台二阶段确认。
 - 需要修复客体 DNS 漂移时，明确确认准确实例/节点后调用 `range_instance_node_apply_dns`。平台只向原实例选定网卡下发已部署拓扑的 DNS，再独立读取 DNS 和已配置的域控 SRV；不接受任意脚本、新 DNS、云 ID 或草稿参数，不调用 OpenTofu 或重建资源。未选网卡保持证明不足、客体设置失败或请求结果未知时仅记录 DNS 失败/未核验，不自动重复下发。该动作需 `ranges:control` 和二阶段确认，客户端等待至少 240 秒；超时先读取当前 DNS 状态。
 - 实测前可用 `provision_job_get({ provisionJobId, includeEvidence: true })` 保存同来源资源 ID 库存。证据只投影固定阶段状态、同实例/工作空间相关作业、计费台账及释放时间，不返回原始日志、命令、状态文件或凭据。DNS 核验失败前后对比 `range_instance_get` 的物理资源 ID、`lastJobId` 与证据中的相关作业；不能把一个核验失败解释为需要重新创建。销毁后的 `verify_destroy=succeeded` 是平台核验步骤记录，不是独立云 API 回执或所有资源均不存在的公开证明；`releasedAt` 也不表示官方账单已最终结清。
+- 核实历史销毁或 EIP 绑定时，可在 `provision_job_get` 启用 `includeCloudEvents: true`，同时返回平台证据。可用 `cloudResourceIds` 选择原创建库存中最多 20 项 ECS、磁盘、EIP 或 NAT；仅查询冻结账号、地域和使用区间内的云端审计事件，不修改资源或计费时间。事件查询为空、计划释放时间、成功删除请求均不能单独作为实际释放证明；需结合原生删除事件、后续不存在核验及实际费用区间判断。
 - 核验包含云 API 与客体执行等待，客户端应为该工具保留至少 180 秒的调用等待时间。客户端超时或断线后先读取当前 `dnsVerification`，不要重复提交，更不能重试创建实例。
 - 排查网络时，可用 `range_instance_get({ rangeInstanceId, includeNetworkDiagnostics: true })` 在原详情中读取 `networkDiagnostics`。默认查询不发起云网络诊断；诊断只读取该实例启动时绑定账号/地域的 ECS、网卡主辅 IP、安全组、ACL、NAT 和路由白名单事实，由服务端校验 owner/admin 权限，不接受任意云资源 ID，不返回凭据或原始 provider 响应，也不会创建、改变或销毁云资源。诊断状态与业务实例状态分别读取，不能将缺失/失败的诊断当作网络通过。
 - 开机、关机、重启只接受准确 `rangeInstanceId`、主机 `nodeId` 和操作元数据，不接受打包镜像字段；按照已有节点操作授权和平台二阶段确认执行。
@@ -84,6 +89,13 @@
 - 打包镜像可提供 `displayName`、`defaultHostName`、`defaultPassword`、`description`。密码仅在用户明确指定时传入，响应按敏感数据处理。
 - 腾讯云正式打包前可用 `range_instance_node_pack_image_validate` 调用官方 `CreateImage` 的 `DryRun=true`，完整核验相同名称、描述、来源标签、原数据盘和电源参数；不创建镜像、快照或平台打包记录。只允许当前 running 且无活动作业的同来源节点，原来源已有 UNKNOWN/进行中打包时拒绝。`validated` 仅表示参数核验成功，正式创建仍须确认；`rejected`/`unverified` 不触发自动创建。
 - `range_instance_get` 的 `packedImageArtifacts` 只返回同 owner、工作空间、冻结账号和原 source job 库存证明的打包摘要；源实例销毁后保留历史来源。`packSourceSnapshots` 按每个原源盘只读查询全部分页并返回官方 RequestId 和厂商原始 CreateTime；结果 `ownership=unconfirmed` 不能作为接管、重提交或全部费用已回收的证明。UNKNOWN 记录保持隔离，候选为空不擅自终结原提交。
+
+### ECS 系统盘重置
+
+- 目前仅支持阿里云编排实例的 ECS 节点，不适用于镜像单实例或腾讯 CVM。先读 `range_instance_node_reset_preview`；它只读核验冻结账号、原创建来源、准确主机/系统盘、原镜像可用性和电源状态，不关机。
+- 这是清空系统盘的危险操作，必须有准确节点和数据丢失范围的用户授权。提交预览的 `planDigest` 与原样 `nodeName` 作为 `confirmedNodeName`，按二阶段流程重放相同业务参数、幂等键和服务端确认 ID。不接受自选磁盘/云主机 ID、密码、脚本或强制标志；目标变化后重新核验和确认。
+- 任务正常关机后，仅将原系统盘恢复为该盘原镜像初始状态，保留 ECS、系统盘 ID、网络、IP、数据盘和原有效期，不重建整套环境，也不改变费用归属。数据盘清单只是保留核验，不授予创建或归属证明。配置了 DNS 时恢复并核验已部署 DNS，再恢复原电源状态；原为关机时可能短暂启动。
+- 返回 `jobId` 仅表示受理，用 `provision_job_get` 跟踪 `reset` 任务及固定阶段。重置失败保持原实例库存，不触发创建失败的自动销毁。记录恢复意图却没有回执时，结果未知，禁止自动重发或换键再次重置；先核对原任务和云端状态。任务失败或 DNS 未核验不能宣称数据已恢复或 DNS 生效。
 
 ### 失败与回收
 

@@ -38,6 +38,7 @@ export const imageTagsSetInputSchema = operationSchema.extend({
   tagIds: z.array(identifier).refine(ids => new Set(ids).size === ids.length, 'tagIds不得重复').describe('完整的目标标签ID集合；空数组清空该资产的全部关联。'),
 }).strict();
 export const imageCollectInputSchema = operationSchema.extend({
+  visibility: z.literal('private').optional().describe('仅收录到当前管理员的私有镜像；省略时沿用平台收录。'),
   snapshotId: identifier.describe('镜像目录返回的快照 ID。'),
   displayName: identifier.describe('收录后显示给平台用户的镜像名称。'),
 });
@@ -82,6 +83,9 @@ const billingPageFields = {
 const billingListWindowSchema = billingWindowSchema.extend(billingPageFields);
 export const billingSummaryInputSchema = billingWindowSchema.refine(billingWindowValid, billingWindowError);
 export const billingUsersInputSchema = billingListWindowSchema.refine(billingWindowValid, billingWindowError);
+export const billingEntriesInputSchema = billingListWindowSchema.extend({ view: z.enum(['user','platform']).optional(), userId: identifier.optional(),
+  groupBy: z.literal('batch').optional(), billStatus: z.enum(['issued','partial','unissued','not_applicable','pending']).optional() }).refine(billingWindowValid, billingWindowError);
+export const billingEntryDetailInputSchema = billingWindowSchema.extend({ entryId: identifier }).refine(billingWindowValid, billingWindowError);
 export const billingUserSummaryInputSchema = billingWindowSchema.extend({ userId: identifier.describe('要查看费用汇总的平台用户 ID。') }).refine(billingWindowValid, billingWindowError);
 export const billingUserGroupsInputSchema = billingListWindowSchema.extend({ userId: identifier.optional().describe('仅查看指定平台用户的启动费用分组。') }).refine(billingWindowValid, billingWindowError);
 export const billingPlatformGroupsInputSchema = billingListWindowSchema.refine(billingWindowValid, billingWindowError);
@@ -140,6 +144,10 @@ const rangeNodeActionFields = {
   description: z.string().optional(),
 };
 export const rangeNodeActionInputSchema = operationSchema.extend({ rangeInstanceId: identifier, nodeId: identifier });
+export const rangeNodeResetPreviewInputSchema = z.strictObject({rangeInstanceId:identifier,nodeId:identifier});
+export const rangeNodeResetInputSchema = operationSchema.extend({rangeInstanceId:identifier,nodeId:identifier,
+  planDigest:z.string().regex(/^[a-f0-9]{64}$/).describe('刚读取的系统盘重置预览摘要。'),
+  confirmedNodeName:z.string().min(1).max(256).describe('用户明确确认的准确节点名称；重置会清除该节点系统盘内容。')}).strict();
 export const rangeNodePackImageInputSchema = operationSchema.extend(rangeNodeActionFields);
 export const rangeNodeVerifyDnsInputSchema = operationSchema.extend({
   rangeInstanceId: identifier,
@@ -197,4 +205,8 @@ export const cloudConfigUpdateInputSchema = operationSchema.extend({
   'at least one cloud configuration field is required',
 );
 
-export const provisionJobGetInputSchema = z.strictObject({ provisionJobId: identifier, includeEvidence: z.boolean().optional() });
+export const provisionJobGetInputSchema = z.strictObject({ provisionJobId: identifier, includeEvidence: z.boolean().optional(),
+  includeCloudEvents: z.boolean().optional().describe('只读查询原创建库存中资源的云端审计事件，同时返回平台证据。不会修改云资源或计费时间。'),
+  cloudResourceIds: z.array(z.string().regex(/^(i|d|ngw|eip)-[a-z0-9]+$/i)).min(1).max(20).optional()
+    .describe('仅从原作业证据中选择 1–20 个原生资源 ID；须同时启用 includeCloudEvents。'),
+}).refine(input => !input.cloudResourceIds || input.includeCloudEvents === true, 'cloudResourceIds requires includeCloudEvents');

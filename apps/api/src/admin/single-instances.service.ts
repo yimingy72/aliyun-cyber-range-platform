@@ -25,12 +25,14 @@ import { SingleInstanceNetworkService } from './single-instance-network.service'
 import { assertTencentImagesAvailable } from '../provisioning/tencent-cloud-zone-instance-scheduler';
 import { assertPlatformExpirationSupportsCloudDeadline } from '../provisioning/cloud-release-deadlines';
 import { SystemConfigService, type InstanceTypeAvailabilitySnapshot, type SystemCloudAccountContext } from './system-config.service';
+import { isPowerJob, publicPowerControl } from './instance-power-types';
 import type { LaunchSingleInstanceDto } from './dto/single-instance.dto';
 import { ProvisioningWorkerService } from '../provisioning/provisioning-worker.service';
 import { buildSingleInstanceBlueprint } from './single-instance-blueprint';
 import { readTencentSingleRecordedResourceStatus } from './single-instance-recorded-resource-status';
 import { packedImageArtifactSummaries } from './packed-image-diagnostic';
 import { readPackedImageSourceSnapshots } from './packed-image-source-observation';
+import { readAliyunImageSystemDisk } from './aliyun-image-capacity';
 
 const SINGLE_INSTANCE_ACTION_ALLOWLIST = new Set(['reboot', 'open-vnc', 'pack-image']);
 
@@ -154,8 +156,10 @@ export class SingleInstancesService {
 
   async prepareLaunchConfirmation(input: LaunchSingleInstanceDto & { expiresAt: string }, currentUserId: string) {
     const image = await this.requireEnabledPlatformImage(input.platformImageAssetId, currentUserId);
-    const systemDiskSize = input.systemDiskSize ?? (image.provider === 'tencent_cloud' ? 50 : 40);
-    const ingress = 'TCP 1-65535 from 0.0.0.0/0';
+    const systemDiskSize = image.provider === 'alibaba_cloud'
+      ? await this.resolveAliyunSystemDiskSize(input.systemDiskSize, image.imageId, await this.systemConfigService.getExecutionAccountContext())
+      : input.systemDiskSize ?? 50;
+    const ingress = 'All protocols and ports from 0.0.0.0/0';
     return {
       targetId: image.id,
       targetSnapshot: {
@@ -246,12 +250,13 @@ export class SingleInstancesService {
   private async launchLocked(input: LaunchSingleInstanceDto & { expiresAt: string }, currentUserId: string,
     accountContext: SystemCloudAccountContext, availability: InstanceTypeAvailabilitySnapshot) {
     this.assertFutureInstanceExpiration(input.expiresAt);
-    const systemDiskSize = input.systemDiskSize ?? (accountContext.provider === 'tencent_cloud' ? 50 : 40);
+    let systemDiskSize = input.systemDiskSize ?? (accountContext.provider === 'tencent_cloud' ? 50 : 40);
     if (accountContext.provider === 'tencent_cloud' && availability.matches[0]?.architecture !== 'X86_64') throw new ConflictException('腾讯云实例需要已核验的 x86_64 可售机型。');
 
     if (accountContextFingerprint(accountContext) !== accountContextFingerprint(await this.systemConfigService.getExecutionAccountContext()))
       throw new ConflictException('云账号配置在规格检查期间发生变化，请重新提交。');
-    await this.requireEnabledPlatformImage(input.platformImageAssetId, currentUserId, accountContext);
+    const selectedImageForCapacity = await this.requireEnabledPlatformImage(input.platformImageAssetId, currentUserId, accountContext);
+    if (accountContext.provider === 'alibaba_cloud') systemDiskSize = await this.resolveAliyunSystemDiskSize(input.systemDiskSize, selectedImageForCapacity.imageId, accountContext);
     if (accountContext.provider === 'tencent_cloud') {
       const selectedImage = await this.requireEnabledPlatformImage(input.platformImageAssetId,currentUserId,accountContext);
       const metadata = await assertTencentImagesAvailable(accountContext,[selectedImage.imageId]);
@@ -415,6 +420,8 @@ export class SingleInstancesService {
 
   private async destroyLocked(id: string, currentUser: SessionUserProfile) {
     const instance = await this.requireSingleInstance(id, currentUser);
+    const power = instance.lastJobId ? await this.adminRepository.getProvisionJobById(instance.lastJobId) : null;
+    if (isPowerJob(power) && power && ['pending', 'running'].includes(power.status)) throw new ConflictException('电源任务正在执行或核验，请等待结束后销毁。');
     if (instance.singleInstanceConfig?.executionBackend === 'opentofu' && instance.singleInstanceBatchId) {
       const group = await this.adminRepository.getSingleInstanceBatchWithInstancesById(instance.singleInstanceBatchId);
       if (!group) throw new ConflictException('OpenTofu 批次记录缺失，暂不能销毁。');
@@ -517,6 +524,13 @@ export class SingleInstancesService {
     if (!validation.valid && validation.code) {
       throw new BadRequestException(`密码不符合阿里云 ECS 要求：${describeAliyunEcsPasswordFailure(validation.code)}。`);
     }
+  }
+
+  private async resolveAliyunSystemDiskSize(requested: number | undefined, imageId: string, account: SystemCloudAccountContext) {
+    const { minimumSystemDiskSize } = await readAliyunImageSystemDisk(account, imageId);
+    if (requested !== undefined && requested < minimumSystemDiskSize)
+      throw new ConflictException(`阿里云镜像至少需要 ${minimumSystemDiskSize} GiB 系统盘，当前设置为 ${requested} GiB。`);
+    return requested ?? Math.max(40, minimumSystemDiskSize);
   }
 
   private assertFutureInstanceExpiration(expiresAt: string) {
@@ -674,6 +688,7 @@ function toSingleInstanceListItem(instance: RangeInstanceRecord) {
         }
       : null,
     lastJobId: instance.lastJobId ?? null,
+    powerControl: publicPowerControl(instance.powerControl),
     errorSummary: instance.errorSummary ?? null,
   };
 }

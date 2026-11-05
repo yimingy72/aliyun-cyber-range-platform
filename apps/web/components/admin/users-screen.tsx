@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { MoreHorizontal, Plus } from 'lucide-react';
 
@@ -28,7 +28,7 @@ import { formatAdminDateTime, isUnauthorizedAdminError } from '../../lib/admin-s
 import type { AdminUser, CreateAdminUserInput } from '../../lib/admin-types';
 import {
   AdminPaginationControls,
-  buildVisiblePages,
+
   getPagination,
   useAdminPageSize,
 } from './admin-pagination';
@@ -40,6 +40,7 @@ import {
   AdminDataTableCell,
   AdminDataTableRevalidationNotice,
   AdminDataTableState,
+  ADMIN_TABLE_WIDTHS,
   type AdminDataColumn,
 } from './shared/admin-data-table';
 import { AdminListToolbar } from './shared/admin-list-toolbar';
@@ -65,12 +66,12 @@ const EMPTY_CREATE_USER_DRAFT: CreateAdminUserInput = {
   role: 'user',
 };
 const USER_COLUMNS: readonly AdminDataColumn[] = [
-  { id: 'username', label: '用户名', priority: 'primary' },
-  { id: 'role', label: '角色', priority: 'secondary' },
-  { id: 'createdAt', label: '创建时间', priority: 'tertiary' },
-  { id: 'updatedAt', label: '更新时间', priority: 'detail' },
-  { id: 'status', label: '状态', priority: 'primary' },
-  { id: 'actions', label: '操作', priority: 'primary', width: '11rem' },
+  { id: 'username', label: '用户名', priority: 'primary', minWidth: '16rem' },
+  { id: 'role', label: '角色', priority: 'secondary', width: '7rem' },
+  { id: 'status', label: '状态', priority: 'primary', width: ADMIN_TABLE_WIDTHS.status },
+  { id: 'createdAt', label: '创建时间', priority: 'tertiary', width: ADMIN_TABLE_WIDTHS.dateTime },
+  { id: 'updatedAt', label: '更新时间', priority: 'detail', width: ADMIN_TABLE_WIDTHS.dateTime },
+  { id: 'actions', label: '操作', priority: 'primary', width: ADMIN_TABLE_WIDTHS.actions },
 ];
 
 function getUserRoleLabel(role: AdminUser['role']) {
@@ -122,7 +123,6 @@ export function UsersScreen({
   const [createDraft, setCreateDraft] = useState<CreateAdminUserInput>(EMPTY_CREATE_USER_DRAFT);
   const [resetPasswordState, setResetPasswordState] = useState<ResetPasswordState>(null);
   const [page, setPage] = useState(1);
-  const [jumpPageValue, setJumpPageValue] = useState('1');
   const [searchName, setSearchName] = useState('');
   const createUserNameRef = useRef<HTMLInputElement>(null);
   const resetPasswordRef = useRef<HTMLInputElement>(null);
@@ -270,7 +270,6 @@ export function UsersScreen({
   }, [normalizedSearchName]);
 
   const pagination = getPagination(filteredUsers.length, page, pageSize);
-  const visiblePages = buildVisiblePages(pagination.totalPages, pagination.page);
   const pagedUsers = filteredUsers.slice(pagination.startIndex, pagination.endIndex);
 
   useEffect(() => {
@@ -279,24 +278,9 @@ export function UsersScreen({
     }
   }, [page, pagination.page]);
 
-  useLayoutEffect(() => {
-    setJumpPageValue(String(pagination.page));
-  }, [pagination.page]);
-
   function handlePageSizeChange(nextValue: 20 | 50 | 100) {
     setPageSize(nextValue);
     setPage(1);
-  }
-
-  function handleJumpToPage() {
-    const parsedPage = Number.parseInt(jumpPageValue, 10);
-
-    if (Number.isNaN(parsedPage)) {
-      setJumpPageValue(String(pagination.page));
-      return;
-    }
-
-    setPage(parsedPage);
   }
 
   const closeCreateDialog = () => {
@@ -551,24 +535,18 @@ export function UsersScreen({
               footer={
                 hasVisibleUsers ? (
                   <AdminPaginationControls
-                    jumpPageValue={jumpPageValue}
                     label="用户列表分页"
-                    onJumpPage={handleJumpToPage}
-                    onJumpPageValueChange={setJumpPageValue}
-                    onNextPage={() => setPage(pagination.page + 1)}
                     onPageSelect={setPage}
                     onPageSizeChange={handlePageSizeChange}
-                    onPreviousPage={() => setPage(pagination.page - 1)}
                     pageSize={pageSize}
                     pagination={pagination}
-                    visiblePages={visiblePages}
                   />
                 ) : null
               }
             >
               <AdminDataTable columns={USER_COLUMNS} isRefreshing={isRefreshing} label="用户列表">
                 {(columns) => {
-                  const [usernameColumn, roleColumn, createdAtColumn, updatedAtColumn, statusColumn, actionsColumn] = columns;
+                  const [usernameColumn, roleColumn, statusColumn, createdAtColumn, updatedAtColumn, actionsColumn] = columns;
 
                   if (isBootstrapLoading) {
                     return <TableLoadingState columnCount={columns.length} label="正在加载用户列表" rowCount={5} />;
@@ -619,14 +597,14 @@ export function UsersScreen({
                     return (
                       <TableRow key={user.id}>
                         <AdminDataTableCell className="font-medium" column={usernameColumn!}>
-                          <div className="grid min-w-0 gap-1"><span>{user.username}</span>{user.loginUsername && user.loginUsername !== user.username ? <span className="break-all text-xs font-normal text-muted-foreground">登录账号：{user.loginUsername}</span> : null}</div>
+                          <div className="grid min-w-0 gap-1"><span className="truncate" title={user.username}>{user.username}</span>{user.loginUsername && user.loginUsername !== user.username ? <span className="break-all text-xs font-normal text-muted-foreground">登录账号：{user.loginUsername}</span> : null}</div>
                         </AdminDataTableCell>
                         <AdminDataTableCell column={roleColumn!}>{getUserRoleLabel(user.role)}</AdminDataTableCell>
-                        <AdminDataTableCell column={createdAtColumn!}>{formatAdminDateTime(user.createdAt)}</AdminDataTableCell>
-                        <AdminDataTableCell column={updatedAtColumn!}>{formatAdminDateTime(user.updatedAt)}</AdminDataTableCell>
                         <AdminDataTableCell column={statusColumn!}>
                           <StatusBadge status={user.status === 'active' ? 'enabled' : user.status} />
                         </AdminDataTableCell>
+                        <AdminDataTableCell className="text-xs tabular-nums" column={createdAtColumn!}>{formatAdminDateTime(user.createdAt)}</AdminDataTableCell>
+                        <AdminDataTableCell className="text-xs tabular-nums" column={updatedAtColumn!}>{formatAdminDateTime(user.updatedAt)}</AdminDataTableCell>
                         <AdminDataTableCell column={actionsColumn!}>
                           <div className="flex justify-start gap-1">
                             <Button

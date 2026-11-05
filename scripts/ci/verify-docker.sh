@@ -97,7 +97,8 @@ docker run --rm --network none "${CI_PROVIDER_MIRROR_ARGS[@]}" \
 docker network create --internal "$CI_NETWORK" >/dev/null
 docker run -d --name "$CI_DB" --network "$CI_NETWORK" --network-alias postgres \
   --network-alias billing-test-postgres --network-alias cos-test-postgres \
-  --network-alias oss-binding-test-postgres \
+  --network-alias oss-binding-test-postgres --network-alias billing-v2-postgres \
+  --network-alias eco-stop-db --network-alias expiry-postgres \
   --tmpfs /var/lib/postgresql/data \
   -e POSTGRES_DB=cyber_range -e POSTGRES_USER=postgres -e POSTGRES_PASSWORD=postgres \
   --health-cmd 'pg_isready -h 127.0.0.1 -U postgres -d cyber_range' --health-interval 1s --health-retries 30 \
@@ -154,9 +155,17 @@ docker exec "$CI_DB" psql -U postgres -d postgres -v ON_ERROR_STOP=1 \
 docker exec "$CI_DB" psql -U postgres -d postgres -v ON_ERROR_STOP=1 \
   -c 'CREATE DATABASE cyber_range_runtime_topology_test' >/dev/null
 
+docker exec "$CI_DB" psql -U postgres -d postgres -v ON_ERROR_STOP=1 \
+  -c "CREATE DATABASE billing_v2_test" -c "CREATE DATABASE power_test" \
+  -c "CREATE DATABASE expiry_test" -c "CREATE DATABASE node_reset_test" >/dev/null
+
 docker run --rm --network "$CI_NETWORK" \
   "${CI_PROVIDER_MIRROR_ARGS[@]}" \
   -e DATABASE_URL='postgresql://postgres:postgres@postgres:5432/cyber_range?schema=public' \
+  -e BILLING_V2_TEST_DATABASE_URL='postgresql://postgres:postgres@billing-v2-postgres:5432/billing_v2_test?schema=public' \
+  -e POWER_TEST_DATABASE_URL='postgresql://postgres:postgres@eco-stop-db:5432/power_test?schema=public' \
+  -e EXPIRY_TEST_DATABASE_URL='postgresql://postgres:postgres@expiry-postgres:5432/expiry_test?schema=public' \
+  -e NODE_RESET_TEST_DATABASE_URL='postgresql://postgres:postgres@postgres:5432/node_reset_test?schema=public' \
   -e SETTINGS_SWITCH_TEST_DATABASE_URL='postgresql://postgres:postgres@postgres:5432/cyber_range_settings_test?schema=public' \
   -e BILLING_TEST_DATABASE_URL='postgresql://postgres:postgres@postgres:5432/billing_test?schema=public' \
   -e TENCENT_BILLING_TEST_DATABASE_URL='postgresql://postgres:postgres@billing-test-postgres:5432/billing_test?schema=public' \
@@ -194,6 +203,9 @@ docker run --rm --network "$CI_NETWORK" \
     DATABASE_URL="$PACKED_IMAGE_TEST_DATABASE_URL" pnpm --filter @aliyun-cyber-range/database prisma:migrate:deploy
     DATABASE_URL="$IMAGE_TAG_TEST_DATABASE_URL" pnpm --filter @aliyun-cyber-range/database prisma:migrate:deploy
     DATABASE_URL="$WORKER_TRANSACTION_TEST_DATABASE_URL" pnpm --filter @aliyun-cyber-range/database prisma:migrate:deploy
+    for fixture_db_url in "$BILLING_V2_TEST_DATABASE_URL" "$POWER_TEST_DATABASE_URL" "$EXPIRY_TEST_DATABASE_URL" "$NODE_RESET_TEST_DATABASE_URL"; do
+      DATABASE_URL="$fixture_db_url" pnpm --filter @aliyun-cyber-range/database prisma:migrate:deploy
+    done
     pnpm --filter @aliyun-cyber-range/api build
     pnpm test
     NODE_ENV=production pnpm build

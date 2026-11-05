@@ -1,4 +1,4 @@
-import { Body, Controller, Delete, Get, HttpCode, Param, Patch, Post, Query, Req, UseGuards } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Header, HttpCode, NotFoundException, ParseIntPipe, Param, Patch, Post, Query, Req, UseGuards } from '@nestjs/common';
 
 import { AdminAuthGuard } from './admin-auth.guard';
 import {
@@ -9,6 +9,7 @@ import {
 } from './dto/range-template.dto';
 import type { AuthenticatedPlatformRequest } from '../auth/request-auth-context';
 import { RangeTemplatesService } from './range-templates.service';
+import { readMogongScenarioArchive } from './mogong-scenario-archive';
 import { OperationControlService, readOperationRequestMetadata } from '../operations/operation-control.service';
 
 type AuthenticatedAdminRequest = AuthenticatedPlatformRequest;
@@ -24,6 +25,22 @@ export class ScenariosController {
   @Get()
   list(@Req() request: AuthenticatedAdminRequest, @Query('view') view?: string) {
     return this.rangeTemplatesService.list(request.adminUser, view);
+  }
+
+  @Get('mogong-archive')
+  @Header('Cache-Control', 'private, no-store')
+  async listMogongArchive(@Req() request: AuthenticatedAdminRequest) {
+    const archive = await readMogongScenarioArchive(request.adminUser, request.authContext.cloudWorkspaceId);
+    return { capturedAt: archive.capturedAt, items: archive.items.map((item) => item.summary) };
+  }
+
+  @Get('mogong-archive/:sourceId')
+  @Header('Cache-Control', 'private, no-store')
+  async getMogongArchiveItem(@Req() request: AuthenticatedAdminRequest, @Param('sourceId', ParseIntPipe) sourceId: number) {
+    const archive = await readMogongScenarioArchive(request.adminUser, request.authContext.cloudWorkspaceId);
+    const item = archive.items.find((entry) => entry.summary.id === sourceId);
+    if (!item) throw new NotFoundException('未找到墨攻场景。');
+    return item.source;
   }
 
   @Get(':id')

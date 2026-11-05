@@ -45,7 +45,7 @@ describe('design system CSS transition contract', () => {
     expect(outer).toContain('max-width: 100%');
     expect(outer).not.toContain('overflow-x: auto');
     expect(getRuleBlock(stylesheet, ".range-instance-directory-table [data-slot='admin-data-table-frame']")).toContain('min-width: 0');
-    expect(getRuleBlock(stylesheet, ".range-instance-directory-table [data-slot='table']")).toContain('min-width: 1200px');
+    expect(getRuleBlock(stylesheet, "[data-slot='admin-data-table-frame'] [data-slot='table']")).toContain('min-width: var(--admin-table-min-width)');
     const grid = getRuleBlock(stylesheet, '.range-instance-topology-grid');
     expect(grid).toContain('max-width: 100%');
     expect(grid).toContain('min-width: 0');
@@ -190,6 +190,41 @@ describe('design system CSS transition contract', () => {
 
 describe('admin page scroll ownership', () => {
   const stylesheet = fs.readFileSync(path.resolve(__dirname, 'globals.css'), 'utf8');
+
+  it('lets expanded billing proofs grow the page while keeping the details workspace usable', () => {
+    const expanded = '.billing-screen:has(#billing-pending-resources, details[open])';
+    expect(getRuleBlock(stylesheet, expanded)).toContain('height: auto');
+    expect(getRuleBlock(stylesheet, expanded + ' .billing-detail-workspace')).toContain('height: max(24rem, 60dvh)');
+    expect(getRuleBlock(stylesheet, '.billing-pending-list .admin-paginated-list-body')).toContain('max-height: min(20rem, 45dvh)');
+    const shortDesktop = getAtRuleBlock(stylesheet, '@media (min-width: 1024px) and (max-height: 720px)');
+    expect(getRuleBlock(shortDesktop, '.billing-screen')).toContain('height: auto');
+    expect(getRuleBlock(shortDesktop, '.billing-detail-workspace')).toContain('height: max(24rem, 60dvh)');
+  });
+
+  it('keeps shared table headers opaque and sticky below dialogs and popovers', () => {
+    const header = getRuleBlock(stylesheet, "[data-slot='admin-data-table-frame'] [data-slot='table-header']");
+    expect(header).toContain('position: sticky');
+    expect(header).toContain('top: 0');
+    expect(header).toContain('z-index: var(--layer-sticky)');
+    expect(header).toContain('background: var(--muted)');
+    expect(header).toContain('box-shadow: inset 0 -1px 0 var(--border)');
+    expect(stylesheet).toContain('--layer-sticky: 20');
+  });
+
+  it('uses only the paginated body as the shared tables scroll owner, including nested image tabs', () => {
+    const body = getRuleBlock(stylesheet, '.admin-paginated-list-body');
+    expect(body).toContain('overflow: auto');
+    expect(getRuleBlock(stylesheet, ".admin-paginated-list-body [data-slot='admin-data-table-frame']")).toContain('overflow: visible');
+    const inner = getRuleBlock(stylesheet, ".admin-paginated-list-body [data-slot='admin-data-table-frame'] > [data-slot='table-container']");
+    expect(inner).toContain('overflow: visible');
+    expect(inner).toContain('max-height: none');
+  });
+
+  it('gives non-paginated tables one bounded two-axis scroll container', () => {
+    const inner = getRuleBlock(stylesheet, "[data-slot='admin-data-table-frame'] > [data-slot='table-container']");
+    expect(inner).toContain('overflow: auto');
+    expect(inner).toContain('max-height: 70dvh');
+  });
 
   it('defines one compact surface and responsive inset for admin list workbenches', () => {
     const surface = getRuleBlock(stylesheet, '.admin-workbench-surface');

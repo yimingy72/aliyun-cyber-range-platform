@@ -1,4 +1,4 @@
-import { BadRequestException, Body, Controller, Delete, Get, Param, Patch, Post, Query, Req, UseGuards } from '@nestjs/common';
+import { BadRequestException, Body, Controller, Delete, Get, Optional, Param, Patch, Post, Query, Req, ServiceUnavailableException, UseGuards } from '@nestjs/common';
 
 import { AdminAuthGuard } from './admin-auth.guard';
 import type { AuthenticatedPlatformRequest } from '../auth/request-auth-context';
@@ -17,6 +17,7 @@ import { RangeInstancesService } from './range-instances.service';
 import { RangeNetworkDiagnosticsQueryDto } from './dto/range-network-diagnostics-query.dto';
 import { OperationControlService, readOperationRequestMetadata } from '../operations/operation-control.service';
 import { redactMcpMetadata } from '../auth/mcp-response.interceptor';
+import { RangeNodeResetService } from './range-node-reset.service';
 
 type AuthenticatedAdminRequest = AuthenticatedPlatformRequest;
 
@@ -27,6 +28,7 @@ export class RangesController {
     private readonly rangeInstancesService: RangeInstancesService,
     private readonly rangeInstanceNodeActionsService: RangeInstanceNodeActionsService,
     private readonly operationControlService: OperationControlService,
+    @Optional() private readonly nodeReset?: RangeNodeResetService,
   ) {}
 
   @Get()
@@ -223,6 +225,7 @@ export class RangesController {
     @Param('action') action: string,
     @Body() body: Record<string, unknown>,
   ) {
+    if(action==='reset') return this.resetNode(request,id,nodeId,body);
     const dnsAction = action === 'verify-dns' || action === 'apply-dns';
     if (dnsAction && body && Object.keys(body).length) throw new BadRequestException('DNS 操作不接受自定义参数。');
     const payload = dnsAction ? {} : {
@@ -264,6 +267,31 @@ export class RangesController {
     }
 
     return this.rangeInstanceNodeActionsService.run(id, nodeId, action, payload, request.adminUser);
+  }
+
+  private async resetNode(request:AuthenticatedAdminRequest,id:string,nodeId:string,body:Record<string,unknown>) {
+    if(!this.nodeReset) throw new ServiceUnavailableException('节点重置执行器未配置。');
+    const reset:RangeNodeResetService=this.nodeReset;
+    reset.validateInput(body);
+    const input=body;
+    await this.nodeReset.assertAccess(id,nodeId,request.adminUser);
+    const result=await this.operationControlService.executeConfirmed({context:request.authContext,
+      metadata:readOperationRequestMetadata(request),toolName:'range_instance_node_reset',
+      arguments:{rangeInstanceId:id,nodeId,...input},targetType:'range_instance_node',targetId:`${id}:${nodeId}`,
+      resolveConfirmation:async()=>{
+        const preview=await this.nodeReset!.preview(id,nodeId,request.adminUser);
+        if(preview.planDigest!==input.planDigest||preview.nodeName!==input.confirmedNodeName)
+          throw new BadRequestException('重置目标已变化或名称不符，请重新核验。');
+        return {targetId:`${id}:${nodeId}`,targetSnapshot:preview,summary:{...preview,systemDiskDataWillBeLost:true,dataDisksReset:false}};
+      },execute:()=>this.nodeReset!.enqueue(id,nodeId,input,request.adminUser)});
+    return 'result' in result&&result.result&&typeof result.result==='object'
+      ? {...result.result,operationId:result.operationId} : result;
+  }
+
+  @Get(':id/nodes/:nodeId/reset-preview')
+  resetPreview(@Req() request:AuthenticatedAdminRequest,@Param('id') id:string,@Param('nodeId') nodeId:string) {
+    if(!this.nodeReset) throw new ServiceUnavailableException('节点重置执行器未配置。');
+    return this.nodeReset.preview(id,nodeId,request.adminUser);
   }
 
   @Post(':id/nodes/:nodeId/pack-image-validation')

@@ -1,0 +1,9 @@
+# Temporary compatibility for Windows images imported as Linux. Explicitly opt in with -f.
+# Restore strict image OS validation by recreating these services with the base Compose file only.
+services:
+  api:
+    environment:
+      ALICLOUD_DNS_SKIP_IMAGE_OS_CHECK: "true"
+  provisioner-worker:
+    environment:
+      ALICLOUD_DNS_SKIP_IMAGE_OS_CHECK: "true"

@@ -19,9 +19,14 @@ export class ProvisionJobsController {
   }
 
   @Get(':id')
-  getById(@Req() request: AuthenticatedAdminRequest, @Param('id') id: string, @Query('includeEvidence') includeEvidence?: string) {
+  getById(@Req() request: AuthenticatedAdminRequest, @Param('id') id: string, @Query('includeEvidence') includeEvidence?: string,
+    @Query('includeCloudEvents') includeCloudEvents?: string, @Query('cloudResourceIds') cloudResourceIds?: string) {
     if (includeEvidence !== undefined && includeEvidence !== 'true' && includeEvidence !== 'false') throw new BadRequestException('includeEvidence must be true or false');
-    return this.provisionJobsService.getById(id, request.adminUser, includeEvidence === 'true');
+    if (includeCloudEvents !== undefined && includeCloudEvents !== 'true' && includeCloudEvents !== 'false') throw new BadRequestException('includeCloudEvents must be true or false');
+    const ids = typeof cloudResourceIds === 'string' ? cloudResourceIds.split(',') : undefined;
+    if (cloudResourceIds !== undefined && (!ids || !ids.length || ids.length > 20 || ids.some(value => !/^(i|d|ngw|eip)-[a-z0-9]+$/i.test(value))
+      || new Set(ids).size !== ids.length || includeCloudEvents !== 'true')) throw new BadRequestException('Select 1 to 20 native resource IDs with includeCloudEvents');
+    return this.provisionJobsService.getById(id, request.adminUser, includeEvidence === 'true', includeCloudEvents === 'true', ids);
   }
 
   @Get(':id/steps')

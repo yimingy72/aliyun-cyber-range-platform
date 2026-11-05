@@ -109,6 +109,75 @@ describe('selectZoneAndHostInstanceTypes', () => {
     }
   });
 
+  it.each([[1, 2], [4, 4]])('matches %i vCPU / %i GiB without replacing the source specification', async (cpu, memoryGiB) => {
+    const candidates = [
+      { InstanceTypeId: 'ecs.exact-a', CpuArchitecture: 'x86_64', CpuCoreCount: cpu, MemorySize: memoryGiB, EniQuantity: 2 },
+      { InstanceTypeId: 'ecs.exact-b', CpuArchitecture: 'x86_64', CpuCoreCount: cpu, MemorySize: memoryGiB, EniQuantity: 2 },
+      { InstanceTypeId: 'ecs.larger', CpuArchitecture: 'x86_64', CpuCoreCount: cpu * 2, MemorySize: memoryGiB * 2, EniQuantity: 3 },
+      { InstanceTypeId: 'ecs.arm', CpuArchitecture: 'arm64', CpuCoreCount: cpu, MemorySize: memoryGiB, EniQuantity: 3 },
+      { InstanceTypeId: 'ecs.nic-short', CpuArchitecture: 'x86_64', CpuCoreCount: cpu, MemorySize: memoryGiB, EniQuantity: 1 },
+      { InstanceTypeId: 'ecs.unavailable', CpuArchitecture: 'x86_64', CpuCoreCount: cpu, MemorySize: memoryGiB, EniQuantity: 2 },
+    ];
+    const quotes: string[] = [];
+    jest.spyOn(global, 'fetch').mockImplementation(async value => {
+      const params = new URL(String(value)).searchParams;
+      const action = params.get('Action');
+      if (action === 'DescribeInstanceTypes') return { ok: true, json: async () => ({ TotalCount: candidates.length, InstanceTypes: { InstanceType: candidates } }) } as Response;
+      if (action === 'DescribeAvailableResource') return { ok: true, json: async () => ({ AvailableZones: { AvailableZone: { AvailableResources: { AvailableResource: {
+        Type: 'InstanceType', SupportedResources: { SupportedResource: candidates.filter(t => t.InstanceTypeId !== 'ecs.unavailable').map(t => ({ Value: t.InstanceTypeId, Status: 'Available' })) },
+      } } } } }) } as Response;
+      if (action === 'DescribeZones') return { ok: true, json: async () => ({ Zones: { Zone: [] } }) } as Response;
+      if (action === 'DescribePrice') {
+        const id = params.get('InstanceType')!;
+        quotes.push(id);
+        return { ok: true, json: async () => ({ PriceInfo: { Price: { TradePrice: id === 'ecs.exact-b' ? 0.1 : 0.2 } } }) } as Response;
+      }
+      throw new Error('Unexpected scheduling request');
+    });
+    const input = { regionId: 'cn-test', defaultZoneId: 'zone', account: { accessKeyId: 'test', accessKeySecret: 'test' },
+      hostRequests: [{ hostKey: 'source', cpu, memoryGiB, exactResources: true, preferredInstanceTypes: ['ecs.larger'], networkInterfaceCount: 2 }] };
+    expect((await selectZoneAndHostInstanceTypes(input)).hostInstanceTypes).toEqual({ source: 'ecs.exact-b' });
+    expect(quotes).toEqual(['ecs.exact-a', 'ecs.exact-b']);
+    input.hostRequests[0].networkInterfaceCount = 3;
+    await expect(selectZoneAndHostInstanceTypes(input)).rejects.toThrow('no exact saleable X86 on-demand match');
+  });
+
+  it('finds an exact instance type beyond the first page using the official token pagination', async () => {
+    const requests: URLSearchParams[] = [];
+    jest.spyOn(global, 'fetch').mockImplementation(async value => {
+      const params = new URL(String(value)).searchParams;
+      if (params.get('Action') === 'DescribeInstanceTypes') {
+        requests.push(params);
+        return { ok: true, json: async () => params.get('NextToken') ? {
+          InstanceTypes: { InstanceType: [{ InstanceTypeId: 'ecs.exact', CpuArchitecture: 'x86_64', CpuCoreCount: 1, MemorySize: 2, EniQuantity: 2 }] },
+        } : { InstanceTypes: { InstanceType: [] }, NextToken: 'page-two' } } as Response;
+      }
+      if (params.get('Action') === 'DescribeAvailableResource') return { ok: true, json: async () => ({
+        AvailableZones: { AvailableZone: { AvailableResources: { AvailableResource: { Type: 'InstanceType',
+          SupportedResources: { SupportedResource: [{ Value: 'ecs.exact', Status: 'Available' }] } } } } },
+      }) } as Response;
+      if (params.get('Action') === 'DescribePrice') return { ok: true, json: async () => ({ PriceInfo: { Price: { TradePrice: 0.1 } } }) } as Response;
+      throw new Error('Unexpected scheduling request');
+    });
+    const result = await selectZoneAndHostInstanceTypes({
+      regionId: 'test', defaultZoneId: 'test-zone', account: { accessKeyId: 'test', accessKeySecret: 'test' },
+      hostRequests: [{ hostKey: 'host', cpu: 1, memoryGiB: 2, exactResources: true, preferredInstanceTypes: [] }],
+    });
+    expect(result.hostInstanceTypes).toEqual({ host: 'ecs.exact' });
+    expect(requests).toHaveLength(2);
+    expect(requests[0].get('MaxResults')).toBe('100');
+    expect(requests[0].has('PageNumber')).toBe(false);
+    expect(requests[1].get('NextToken')).toBe('page-two');
+  });
+
+  it('rejects a repeated instance-type token rather than accepting an incomplete catalogue', async () => {
+    jest.spyOn(global, 'fetch').mockResolvedValue({ ok: true, json: async () => ({ InstanceTypes: { InstanceType: [] }, NextToken: 'same' }) } as Response);
+    await expect(selectZoneAndHostInstanceTypes({
+      regionId: 'test', defaultZoneId: 'test-zone', account: { accessKeyId: 'test', accessKeySecret: 'test' },
+      hostRequests: [{ hostKey: 'host', cpu: 1, memoryGiB: 2, exactResources: true, preferredInstanceTypes: [] }],
+    })).rejects.toThrow('Repeated ECS instance-type pagination token');
+  });
+
   it('reuses quotes across hosts and bounds candidate reads while preserving same-price order', async () => {
     const types = ['ecs.a', 'ecs.b', 'ecs.c', 'ecs.d', 'ecs.e'];
     let active = 0;

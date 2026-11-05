@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { Combobox } from './combobox';
 import { DateTimePicker, parseLocalDate } from './date-time-picker';
+import { AdminDialog } from '../admin/shared/admin-dialog';
 
 afterEach(cleanup);
 
@@ -13,6 +14,21 @@ function DateField({ includeTime = true }: { includeTime?: boolean }) {
 }
 
 describe('shared form controls', () => {
+  it('allows wheel and touch scrolling in a dialog listbox while keeping the background locked', () => {
+    render(<AdminDialog open title="创建实例" onOpenChange={() => {}}>
+      <Combobox ariaLabel="镜像" value="" onValueChange={() => {}} options={Array.from({ length: 80 }, (_, index) => ({ value: String(index), label: `镜像 ${index}` }))} />
+    </AdminDialog>);
+    fireEvent.click(screen.getByRole('combobox', { name: '镜像' }));
+    const list = screen.getByRole('listbox', { name: '镜像候选列表' });
+    // JSDOM has no layout; provide the scrollable viewport dimensions.
+    list.style.overflowY = 'auto';
+    Object.defineProperties(list, { scrollHeight: { value: 4000 }, clientHeight: { value: 224 } });
+    expect(fireEvent.wheel(list, { deltaY: 80, cancelable: true })).toBe(true);
+    fireEvent.touchStart(list, { touches: [{ clientX: 0, clientY: 100 }], changedTouches: [{ clientX: 0, clientY: 100 }] });
+    expect(fireEvent.touchMove(list, { touches: [{ clientX: 0, clientY: 20 }], changedTouches: [{ clientX: 0, clientY: 20 }], cancelable: true })).toBe(true);
+    expect(fireEvent.wheel(document.body, { deltaY: 80, cancelable: true })).toBe(false);
+  });
+
   it('opens the calendar from the input surface and applies time without submitting the form', () => {
     render(<DateField />);
     const input = screen.getByRole('textbox', { name: '到期时间' });

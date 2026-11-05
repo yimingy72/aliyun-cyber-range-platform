@@ -1,7 +1,7 @@
 'use client';
 
 import React from 'react';
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { ChevronDown, MoreHorizontal, RefreshCw, Upload } from 'lucide-react';
 
@@ -20,6 +20,7 @@ import { Input } from '@/components/ui/input';
 import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group';
 import { Label } from '@/components/ui/label';
 import { TableCell, TableRow } from '@/components/ui/table';
+import { Checkbox } from '@/components/ui/checkbox';
 
 import {
   collectPlatformImage,
@@ -61,7 +62,7 @@ import type {
 } from '../../lib/admin-types';
 import {
   AdminPaginationControls,
-  buildVisiblePages,
+
   getPagination,
   useAdminPageSize,
 } from './admin-pagination';
@@ -74,6 +75,7 @@ import {
   AdminDataTableRevalidationNotice,
   AdminDataTableState,
   AdminDataTableText,
+  ADMIN_TABLE_WIDTHS,
   type AdminDataColumn,
 } from './shared/admin-data-table';
 import { AdminListToolbar } from './shared/admin-list-toolbar';
@@ -84,6 +86,7 @@ import { AcrImageCatalogView } from './acr-image-catalog';
 import { MogongImageCatalogView } from './mogong-image-catalog';
 import { useAdminSession } from './use-admin-session';
 import { useCloudWorkspace } from './cloud-workspace-provider';
+import { PackedImageTasksDialog } from './packed-image-tasks-dialog';
 import { cloudProviderLabel } from './cloud-workspace-provider';
 import { readCloudWorkspaceSelection } from '@/lib/cloud-workspace-selection';
 
@@ -128,20 +131,21 @@ const acrMatchLabels = {
 };
 
 const ASSET_COLUMNS: readonly AdminDataColumn[] = [
-  { id: 'name', label: '镜像名', priority: 'primary' },
-  { id: 'type', label: '镜像类型', priority: 'primary' },
-  { id: 'imageId', label: '镜像 ID', priority: 'secondary' },
-  { id: 'createdBy', label: '创建人', priority: 'tertiary' },
-  { id: 'tags', label: '标签', priority: 'tertiary' },
-  { id: 'status', label: '状态', priority: 'secondary' },
-  { id: 'actions', label: '操作', priority: 'primary', width: '11rem' },
+  { id: 'name', label: '镜像名', priority: 'primary', minWidth: '18rem' },
+  { id: 'type', label: '镜像类型', priority: 'primary', width: '6rem' },
+  { id: 'imageId', label: '镜像 ID', priority: 'secondary', width: ADMIN_TABLE_WIDTHS.identifier },
+  { id: 'tags', label: '标签', priority: 'tertiary', width: '10rem' },
+  { id: 'status', label: '状态', priority: 'secondary', width: ADMIN_TABLE_WIDTHS.status },
+  { id: 'createdBy', label: '创建人', priority: 'tertiary', width: ADMIN_TABLE_WIDTHS.creator },
+  { id: 'actions', label: '操作', priority: 'primary', width: ADMIN_TABLE_WIDTHS.actions },
 ];
 
 const CLOUD_IMAGE_COLUMNS: readonly AdminDataColumn[] = [
   { id: 'name', label: '镜像名', priority: 'primary' },
-  { id: 'imageId', label: '镜像 ID', priority: 'secondary' },
-  { id: 'status', label: '状态', priority: 'secondary' },
-  { id: 'actions', label: '操作', priority: 'primary', width: '11rem' },
+  { id: 'imageId', label: '镜像 ID', priority: 'secondary', width: ADMIN_TABLE_WIDTHS.identifier },
+  { id: 'os', label: '操作系统', priority: 'secondary', width: '9rem' },
+  { id: 'status', label: '状态', priority: 'secondary', width: ADMIN_TABLE_WIDTHS.status },
+  { id: 'actions', label: '操作', priority: 'primary', width: ADMIN_TABLE_WIDTHS.actions },
 ];
 
 function createImageImportDraft(provider: 'alibaba_cloud' | 'tencent_cloud' = 'alibaba_cloud'): ImageImportDialogDraft {
@@ -304,7 +308,8 @@ function buildCollectedImageIdSet(items: PlatformImageAsset[]) {
 }
 
 function replacePlatformAsset(items: PlatformImageAsset[], nextAsset: PlatformImageAsset) {
-  return items.map((item) => (item.id === nextAsset.id ? nextAsset : item));
+  // Metadata mutations omit read-only source health fields; retain the last verified view.
+  return items.map((item) => (item.id === nextAsset.id ? { ...item, ...nextAsset } : item));
 }
 
 function upsertPlatformAsset(items: PlatformImageAsset[], nextAsset: PlatformImageAsset) {
@@ -360,6 +365,8 @@ function ImageTagsDropdown({
   const [errorMessage, setErrorMessage] = useState('');
   const [isSaving, setIsSaving] = useState(false);
   const [isCreating, setIsCreating] = useState(false);
+  const savingRef = useRef(false);
+  const creatingRef = useRef(false);
 
   useEffect(() => {
     setSelectedTagIds(asset.tags.map((tag) => tag.id));
@@ -369,17 +376,13 @@ function ImageTagsDropdown({
     return <ImageTagBadges tags={asset.tags} />;
   }
 
-  const hasChanges =
-    selectedTagIds.length !== asset.tags.length ||
-    selectedTagIds.some((tagId) => !asset.tags.some((tag) => tag.id === tagId));
-
   function toggleTag(tagId: string, checked: boolean) {
-    setSelectedTagIds((current) =>
-      checked ? (current.includes(tagId) ? current : [...current, tagId]) : current.filter((currentTagId) => currentTagId !== tagId),
-    );
+    if (creatingRef.current || savingRef.current) return;
+    void saveSelection(checked ? [...new Set([...selectedTagIds, tagId])] : selectedTagIds.filter(id => id !== tagId));
   }
 
   async function handleCreateTag() {
+    if (creatingRef.current || savingRef.current) return;
     const name = newTagName.trim();
 
     if (!name) {
@@ -388,27 +391,33 @@ function ImageTagsDropdown({
     }
 
     try {
+      creatingRef.current = true;
       setErrorMessage('');
       setIsCreating(true);
       const tag = await onCreateTag(name);
-      setSelectedTagIds((current) => (current.includes(tag.id) ? current : [...current, tag.id]));
       setNewTagName('');
+      await saveSelection([...new Set([...selectedTagIds, tag.id])]);
     } catch (error) {
       setErrorMessage(error instanceof Error ? error.message : '镜像标签创建失败');
     } finally {
+      creatingRef.current = false;
       setIsCreating(false);
     }
   }
 
-  async function handleSave() {
+  async function saveSelection(tagIds: string[]) {
+    if (savingRef.current) return;
+    savingRef.current = true;
+    setSelectedTagIds(tagIds);
     try {
       setErrorMessage('');
       setIsSaving(true);
-      await onSave(asset, selectedTagIds);
-      setIsOpen(false);
+      await onSave(asset, tagIds);
     } catch (error) {
+      setSelectedTagIds(asset.tags.map(tag => tag.id));
       setErrorMessage(error instanceof Error ? error.message : '镜像标签保存失败');
     } finally {
+      savingRef.current = false;
       setIsSaving(false);
     }
   }
@@ -418,7 +427,8 @@ function ImageTagsDropdown({
       <DropdownMenuTrigger asChild>
         <Button
           aria-label={`编辑标签 ${asset.displayName}`}
-          className="h-7 max-w-56 justify-between gap-2 px-2 text-left whitespace-nowrap"
+          aria-busy={isSaving || isCreating || undefined}
+          className="h-7 max-w-full justify-between gap-2 px-2 text-left whitespace-nowrap"
           size="sm"
           type="button"
           variant="outline"
@@ -483,15 +493,7 @@ function ImageTagsDropdown({
         ) : null}
         {errorMessage ? <p className="px-2 pb-1 text-sm text-destructive" role="alert">{errorMessage}</p> : null}
         <DropdownMenuSeparator />
-        <DropdownMenuItem
-          disabled={!hasChanges || isSaving || isCreating}
-          onSelect={(event) => {
-            event.preventDefault();
-            void handleSave();
-          }}
-        >
-          保存标签
-        </DropdownMenuItem>
+        <p className="px-2 py-1.5 text-xs text-muted-foreground" role="status">{isSaving ? '正在保存标签…' : '选择后自动保存'}</p>
       </DropdownMenuContent>
     </DropdownMenu>
   );
@@ -563,6 +565,7 @@ function CloudImageCenterScreen({
   const [acrActionHost, setAcrActionHost] = useState<HTMLDivElement | null>(null);
   const showAcr = acrSelected && !showMogong && activeTab !== 'platform' && activeTab !== 'mine' && provider === 'alibaba_cloud' && session.isAdmin;
   const [mogongActionHost, setMogongActionHost] = useState<HTMLDivElement | null>(null);
+  const [mogongFilterHost, setMogongFilterHost] = useState<HTMLDivElement | null>(null);
   const [mogongRefreshRevision, setMogongRefreshRevision] = useState(0);
   const screenCache = useAdminScreenCache();
   const invalidateAcrMatches = useCallback(() => {
@@ -586,6 +589,7 @@ function CloudImageCenterScreen({
           ? cachedCustomScope
           : cachedPublicScope;
   const [searchName, setSearchName] = useState('');
+  const [packTasksOpen, setPackTasksOpen] = useState(false);
   const [platformAssets, setPlatformAssets] = useState<PlatformImageAsset[]>(() => cachedPlatformAssets?.data.items ?? []);
   const [platformContainers, setPlatformContainers] = useState<PlatformContainerImage[]>([]);
   const [containersLoaded, setContainersLoaded] = useState(false);
@@ -613,6 +617,11 @@ function CloudImageCenterScreen({
   const [tabErrors, setTabErrors] = useState<TabErrorMap>({});
   const [revalidationErrors, setRevalidationErrors] = useState<TabErrorMap>({});
   const [actionErrorMessage, setActionErrorMessage] = useState('');
+  const [metadataErrorMessage, setMetadataErrorMessage] = useState('');
+  useEffect(() => {
+    // Retained pages must not present a previous write failure as a new load failure.
+    if (isPageActive) setActionErrorMessage('');
+  }, [isPageActive]);
   const [isLoading, setIsLoading] = useState(() => !cachedActiveTab);
   const [refreshingTabs, setRefreshingTabs] = useState<Record<ActiveTab, boolean>>({
     platform: false,
@@ -629,10 +638,12 @@ function CloudImageCenterScreen({
   const [loadAttempt, setLoadAttempt] = useState(0);
   const [pendingActionKeys, setPendingActionKeys] = useState<string[]>([]);
   const [tabPages, setTabPages] = useState<TabPageMap>({ platform: 1, mine: 1, custom: 1, public: 1 });
-  const [jumpPageValue, setJumpPageValue] = useState('1');
   const [renamingAsset, setRenamingAsset] = useState<PlatformImageAsset | null>(null);
   const [renameDraft, setRenameDraft] = useState('');
   const [confirmState, setConfirmState] = useState<ImageCenterConfirmState>(null);
+  const [collectDraft, setCollectDraft] = useState<{ snapshot: ImageSnapshot; displayName: string; tagIds: string[];
+    asset?: PlatformImageAsset; error: string } | null>(null);
+  const collectSubmittingRef = useRef(false);
   const [cloudContexts, setCloudContexts] = useState<CloudAccountContext[]>(() => cachedMetadata?.data.cloudContexts ?? []);
   const [imageImportJobs, setImageImportJobs] = useState<ImageImportJob[]>(
     () => cachedMetadata?.data.imageImportJobs ?? cachedMineAssets?.data.jobs ?? [],
@@ -922,6 +933,7 @@ function CloudImageCenterScreen({
     const cachedMetadata = screenCache?.read<ImageCenterMetadata>(apiBaseUrl, token, 'image-center:metadata');
 
     if (cachedMetadata?.isFresh) {
+      setMetadataErrorMessage('');
       setCloudContexts(cachedMetadata.data.cloudContexts);
       setImageImportJobs(cachedMetadata.data.imageImportJobs);
       setAvailablePlatformImageTags(cachedMetadata.data.platformImageTags);
@@ -953,6 +965,7 @@ function CloudImageCenterScreen({
         if (!isActive) {
           return;
         }
+        setMetadataErrorMessage('');
         setCloudContexts(metadata.cloudContexts);
         if (imageImportJobsRequestVersionRef.current === imageImportJobsRequestVersion) {
           setImageImportJobs(metadata.imageImportJobs);
@@ -969,7 +982,7 @@ function CloudImageCenterScreen({
           session.logout();
           return;
         }
-        setActionErrorMessage(error instanceof Error ? error.message : '云账号上下文加载失败');
+        setMetadataErrorMessage(error instanceof Error ? error.message : '云账号上下文加载失败');
       });
 
     return () => {
@@ -1385,31 +1398,41 @@ function CloudImageCenterScreen({
     }
   }
 
-  async function handleCollectSnapshot(snapshot: ImageSnapshot) {
-    if (!session.token) {
-      return;
-    }
-
+  async function handleCollectSnapshot() {
+    if (!session.token || !collectDraft || collectSubmittingRef.current) return;
+    const draft = collectDraft, snapshot = draft.snapshot, displayName = draft.displayName.trim();
+    if (!displayName) { setCollectDraft({ ...draft, error: '请填写平台镜像名。' }); return; }
     const actionKey = `collect:${snapshot.scope}:${snapshot.imageId}`;
-
+    collectSubmittingRef.current = true;
     try {
       setActionErrorMessage('');
       beginAction(actionKey);
-      const nextPlatformAsset = await collectPlatformImage(apiBaseUrl, session.token, {
-        snapshotId: snapshot.id,
-        displayName: snapshot.sourceImageName,
-      });
-
-      syncAssetAcrossViews(nextPlatformAsset);
+      const received = draft.asset ?? await collectPlatformImage(apiBaseUrl, session.token, { snapshotId: snapshot.id, displayName });
+      if (!mountedRef.current) return;
+      const asset = { ...received,
+        sourceSnapshotAvailable: received.sourceSnapshotAvailable === undefined ? snapshot.isAvailable : received.sourceSnapshotAvailable,
+        sourceSnapshotStatus: received.sourceSnapshotStatus === undefined ? snapshot.status : received.sourceSnapshotStatus };
+      setCollectDraft(current => current?.snapshot.id === snapshot.id ? { ...current, asset, error: '' } : current);
+      syncAssetAcrossViews(asset);
+      // Preserve the accepted asset on tag failure so retry cannot collect it again.
+      if (draft.tagIds.length || draft.asset) {
+        const tagged = await setPlatformImageTags(apiBaseUrl, session.token, asset.id, draft.tagIds);
+        if (!mountedRef.current) return;
+        syncAssetAcrossViews({ ...asset, ...tagged });
+      }
+      setCollectDraft(null);
     } catch (error) {
+      if (!mountedRef.current) return;
       if (isUnauthorizedAdminError(error)) {
         session.logout();
         return;
       }
 
-      setActionErrorMessage(error instanceof Error ? error.message : '镜像收录失败');
+      setCollectDraft(current => current ? { ...current, error: (current.asset ? '镜像已收录，标签尚未保存；可重试保存标签。' : '')
+        + (error instanceof Error ? error.message : '镜像收录失败') } : current);
     } finally {
-      endAction(actionKey);
+      collectSubmittingRef.current = false;
+      if (mountedRef.current) endAction(actionKey);
     }
   }
 
@@ -1493,8 +1516,10 @@ function CloudImageCenterScreen({
       setActionErrorMessage('');
       beginAction(actionKey);
       const nextAsset = await setPlatformImageTags(apiBaseUrl, session.token, asset.id, tagIds);
+      if (!mountedRef.current) return;
       syncAssetAcrossViews(nextAsset);
     } catch (error) {
+      if (!mountedRef.current) throw error;
       if (isUnauthorizedAdminError(error)) {
         session.logout();
       }
@@ -1502,7 +1527,7 @@ function CloudImageCenterScreen({
       setActionErrorMessage(error instanceof Error ? error.message : '镜像标签保存失败');
       throw error;
     } finally {
-      endAction(actionKey);
+      if (mountedRef.current) endAction(actionKey);
     }
   }
 
@@ -1723,7 +1748,6 @@ function CloudImageCenterScreen({
   }, [activeTab, myTagFilter, platformCreatedByFilter, platformTagFilter, platformTypeFilter, searchName]);
 
   const activePagination = getPagination(activeItemsCount, tabPages[activeTab], pageSize);
-  const visiblePages = buildVisiblePages(activePagination.totalPages, activePagination.page);
 
   useEffect(() => {
     if (tabPages[activeTab] !== activePagination.page) {
@@ -1731,31 +1755,9 @@ function CloudImageCenterScreen({
     }
   }, [activePagination.page, activeTab, tabPages]);
 
-  useLayoutEffect(() => {
-    setJumpPageValue(String(activePagination.page));
-  }, [activePagination.page, activeTab]);
-
-  function goToPreviousPage() {
-    setPage(activeTab, activePagination.page - 1);
-  }
-
-  function goToNextPage() {
-    setPage(activeTab, activePagination.page + 1);
-  }
-
   function handlePageSizeChange(nextValue: 20 | 50 | 100) {
     setPageSize(nextValue);
     setTabPages({ platform: 1, mine: 1, custom: 1, public: 1 });
-  }
-
-  function handleJumpToPage() {
-    const parsedPage = Number.parseInt(jumpPageValue, 10);
-    if (Number.isNaN(parsedPage)) {
-      setJumpPageValue(String(activePagination.page));
-      return;
-    }
-
-    setPage(activeTab, parsedPage);
   }
 
   const pagedPlatformAssets = filteredPlatformAssets.slice(activePagination.startIndex, activePagination.endIndex);
@@ -1785,7 +1787,7 @@ function CloudImageCenterScreen({
     },
   ) {
     return items.map((asset) => {
-      const [nameColumn, typeColumn, imageIdColumn, createdByColumn, tagsColumn, statusColumn, actionsColumn] = columns;
+      const [nameColumn, typeColumn, imageIdColumn, tagsColumn, statusColumn, createdByColumn, actionsColumn] = columns;
       const renameActionKey = `rename:platform:${asset.id}`;
       const toggleActionKey = `${asset.enabled ? 'disable' : 'enable'}:platform:${asset.id}`;
       const visibilityActionKey = `${asset.visibility === 'platform' ? 'unpublish' : 'publish'}:platform:${asset.id}`;
@@ -1811,18 +1813,12 @@ function CloudImageCenterScreen({
       return (
         <TableRow key={asset.id}>
           <AdminDataTableCell className="font-medium" column={nameColumn!}>
-            <div className="flex min-w-48 flex-col gap-1">
-              <AdminDataTableText>{asset.displayName}</AdminDataTableText>
-              <span className="text-xs text-muted-foreground">
-                来源：{asset.sourceScope === 'custom' ? `${providerName}自定义镜像` : `${providerName}公共镜像`}
-              </span>
-            </div>
+            <AdminDataTableText>{asset.displayName}</AdminDataTableText>
           </AdminDataTableCell>
           <AdminDataTableCell column={typeColumn!}>虚拟机</AdminDataTableCell>
           <AdminDataTableCell className="font-mono text-xs text-muted-foreground" column={imageIdColumn!}>
             {asset.imageId}
           </AdminDataTableCell>
-          <AdminDataTableCell column={createdByColumn!}>{getPlatformAssetCreator(asset)}</AdminDataTableCell>
           <AdminDataTableCell column={tagsColumn!}>
             <ImageTagsDropdown
               asset={asset}
@@ -1836,8 +1832,9 @@ function CloudImageCenterScreen({
           <AdminDataTableCell column={statusColumn!}>
             <Badge variant={statusVariant}>{formatAssetStatus(asset)}</Badge>
           </AdminDataTableCell>
+          <AdminDataTableCell column={createdByColumn!}>{getPlatformAssetCreator(asset)}</AdminDataTableCell>
           <AdminDataTableCell column={actionsColumn!}>
-            <div className="flex justify-start gap-1">
+            <div className="inline-flex flex-nowrap! items-center justify-start gap-1">
               {canCreate ? (
                 <Button
                   aria-label={`创建实例 ${asset.displayName}`}
@@ -1894,17 +1891,17 @@ function CloudImageCenterScreen({
   }
 
   function renderContainerRows(items: PlatformContainerImage[], columns: readonly AdminDataColumn[]) {
-    const [nameColumn, typeColumn, imageIdColumn, createdByColumn, tagsColumn, statusColumn, actionsColumn] = columns;
+    const [nameColumn, typeColumn, imageIdColumn, tagsColumn, statusColumn, createdByColumn, actionsColumn] = columns;
     return items.map((asset) => (
       <TableRow key={`container:${asset.id}`}>
         <AdminDataTableCell className="font-medium" column={nameColumn!}><AdminDataTableText>{asset.displayName}</AdminDataTableText></AdminDataTableCell>
         <AdminDataTableCell column={typeColumn!}>容器</AdminDataTableCell>
         <AdminDataTableCell column={imageIdColumn!}>—</AdminDataTableCell>
-        <AdminDataTableCell column={createdByColumn!}>{asset.creator || '—'}</AdminDataTableCell>
         <AdminDataTableCell column={tagsColumn!}>—</AdminDataTableCell>
         <AdminDataTableCell column={statusColumn!}><Badge variant={asset.acrMatch === 'matched' ? 'default' : 'secondary'} title={asset.referenceStatus === 'needs_review' ? '源仓库引用待核验' : undefined}>
           {asset.acrMatch ? acrMatchLabels[asset.acrMatch] : asset.referenceStatus === 'needs_review' ? '引用待核验' : '待支持实例'}
         </Badge></AdminDataTableCell>
+        <AdminDataTableCell column={createdByColumn!}>{asset.creator || '—'}</AdminDataTableCell>
         <AdminDataTableCell column={actionsColumn!}>
           {session.isAdmin && !workspace?.isReadOnly ? (
             <DropdownMenu>
@@ -1919,7 +1916,7 @@ function CloudImageCenterScreen({
 
   function renderScopeRows(scope: 'custom' | 'public', snapshots: ImageSnapshot[], columns: readonly AdminDataColumn[]) {
     return snapshots.map((snapshot) => {
-      const [nameColumn, imageIdColumn, statusColumn, actionsColumn] = columns;
+      const [nameColumn, imageIdColumn, osColumn, statusColumn, actionsColumn] = columns;
       const isCollected = collectedImageIds.has(snapshot.imageId);
       const collectActionKey = `collect:${snapshot.scope}:${snapshot.imageId}`;
       const deleteActionKey = `delete:custom:${snapshot.id}`;
@@ -1934,24 +1931,24 @@ function CloudImageCenterScreen({
       return (
         <TableRow key={snapshot.id}>
           <AdminDataTableCell className="font-medium" column={nameColumn!}>
-            <div className="flex min-w-48 flex-col gap-1">
-              <AdminDataTableText>{snapshot.sourceImageName}</AdminDataTableText>
-              <span className="text-xs text-muted-foreground">平台：{snapshot.platform || '-'}</span>
-            </div>
+            <AdminDataTableText>{snapshot.sourceImageName}</AdminDataTableText>
           </AdminDataTableCell>
           <AdminDataTableCell className="font-mono text-xs text-muted-foreground" column={imageIdColumn!}>
             {snapshot.imageId}
+          </AdminDataTableCell>
+          <AdminDataTableCell column={osColumn!}>
+            <AdminDataTableText>{snapshot.platform?.trim() || snapshot.osType?.trim() || '—'}</AdminDataTableText>
           </AdminDataTableCell>
           <AdminDataTableCell column={statusColumn!}>
             <Badge variant={snapshot.isAvailable ? 'default' : 'secondary'}>{snapshot.status === 'Deleted' && snapshot.ownedSnapshotCleanup ? '快照待回收' : formatImageStatus(snapshot)}</Badge>
           </AdminDataTableCell>
           <AdminDataTableCell column={actionsColumn!}>
-            <div className="flex justify-start gap-1">
+            <div className="inline-flex flex-nowrap! items-center justify-start gap-1">
               {session.isAdmin && !workspace?.isReadOnly ? (
                 <Button
                   disabled={isCollected || isCollectPending || !snapshot.isAvailable || isImportingSnapshot}
                   aria-label={`${isCollected ? '已收录' : '收录到平台'} ${snapshot.sourceImageName}`}
-                  onClick={() => void handleCollectSnapshot(snapshot)}
+                  onClick={() => setCollectDraft({ snapshot, displayName: '', tagIds: [], error: '' })}
                   size="sm"
                   type="button"
                   variant="outline"
@@ -1960,19 +1957,24 @@ function CloudImageCenterScreen({
                 </Button>
               ) : null}
               {scope === 'custom' && session.isAdmin && !workspace?.isReadOnly && !isImportingSnapshot ? (
-                <Button
-                  disabled={isDeletePending}
-                  aria-label={`${snapshot.status === 'Deleted' && snapshot.ownedSnapshotCleanup ? '回收快照' : '删除'} ${snapshot.sourceImageName}`}
-                  onClick={() => {
-                    setActionErrorMessage('');
-                    setConfirmState({ type: 'delete-custom', snapshot, deleteOwnedSnapshots: Boolean(snapshot.ownedSnapshotCleanup && (snapshot.status === 'Deleted' || snapshot.ownedSnapshotCleanup.status === 'deleting')) });
-                  }}
-                  size="sm"
-                  type="button"
-                  variant="destructive"
-                >
-                  {snapshot.status === 'Deleted' && snapshot.ownedSnapshotCleanup ? '回收快照' : '删除'}
-                </Button>
+                <DropdownMenu>
+                  <DropdownMenuTrigger asChild>
+                    <Button aria-label={`更多操作 ${snapshot.sourceImageName}`} disabled={isDeletePending} size="icon-sm" type="button" variant="ghost"><MoreHorizontal aria-hidden="true" /></Button>
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent align="end">
+                    <DropdownMenuItem
+                      disabled={isDeletePending}
+                      aria-label={`${snapshot.status === 'Deleted' && snapshot.ownedSnapshotCleanup ? '回收快照' : '删除'} ${snapshot.sourceImageName}`}
+                      onSelect={() => {
+                        setActionErrorMessage('');
+                        setConfirmState({ type: 'delete-custom', snapshot, deleteOwnedSnapshots: Boolean(snapshot.ownedSnapshotCleanup && (snapshot.status === 'Deleted' || snapshot.ownedSnapshotCleanup.status === 'deleting')) });
+                      }}
+                      variant="destructive"
+                    >
+                      {snapshot.status === 'Deleted' && snapshot.ownedSnapshotCleanup ? '回收快照' : '删除'}
+                    </DropdownMenuItem>
+                  </DropdownMenuContent>
+                </DropdownMenu>
               ) : null}
             </div>
           </AdminDataTableCell>
@@ -2050,7 +2052,8 @@ function CloudImageCenterScreen({
   return (
     <div className="admin-screen image-center-screen admin-pagination-screen">
       <section className="admin-workbench-surface admin-pagination-surface">
-        <AdminPageHeader description="收录、导入和维护演练镜像资产。" title="镜像中心" />
+        <AdminPageHeader description="收录、导入和维护演练镜像资产。" title="镜像中心" action={<Button type="button" variant="outline" onClick={() => setPackTasksOpen(true)}>镜像导出</Button>} />
+        {isPageActive && packTasksOpen ? <PackedImageTasksDialog key={`${session.profile?.id}:${workspace?.id}:${session.token}`} apiBaseUrl={apiBaseUrl} token={session.token} open onOpenChange={setPackTasksOpen} /> : null}
         {imageImportSuccessMessage ? <p className="mt-4 text-sm text-emerald-700" aria-live="polite">{imageImportSuccessMessage}</p> : null}
 
         <div className="mt-4 flex min-h-0 flex-1 flex-col">
@@ -2078,8 +2081,8 @@ function CloudImageCenterScreen({
               ...(session.isAdmin ? [{ label: '云上镜像来源', value: 'cloud' }] : []),
             ]}
             searchControls={
-              <div className={session.isAdmin ? `${showMogong ? 'hidden sm:block ' : ''}w-full sm:w-[22.5rem]` : 'w-full sm:w-auto'}>
-                {!showMogong && activeTab === 'platform' ? (
+              <div className={session.isAdmin ? 'w-full sm:w-[22.5rem]' : 'w-full sm:w-auto'}>
+                {showMogong ? <div ref={setMogongFilterHost} /> : activeTab === 'platform' ? (
                   <div className="grid w-full grid-cols-2 gap-2 sm:grid-cols-3">
                     <AdminSelectField ariaLabel="按镜像类型筛选" emptyOptionLabel="全部类型"
                       onValueChange={setPlatformTypeFilter} options={[{ label: '虚拟机', value: 'vm' }, { label: '容器', value: 'container' }]} value={platformTypeFilter} />
@@ -2106,7 +2109,7 @@ function CloudImageCenterScreen({
                       value={platformTagFilter}
                     />
                   </div>
-                ) : !showMogong && activeTab === 'mine' ? (
+                ) : activeTab === 'mine' ? (
                   <AdminSelectField
                     ariaLabel="按标签筛选"
                     className="w-full sm:w-44"
@@ -2118,7 +2121,7 @@ function CloudImageCenterScreen({
                     options={platformImageTags.map((tag) => ({ label: tag.name, value: tag.id }))}
                     value={myTagFilter}
                   />
-                 ) : !showMogong ? (
+                 ) : (
                    <AdminSelectField
                      ariaLabel="云上镜像来源切换"
                      className="w-full sm:w-44"
@@ -2133,7 +2136,7 @@ function CloudImageCenterScreen({
                      ]}
                      value={showAcr ? 'acr' : activeTab === 'public' ? 'public' : 'custom'}
                    />
-                 ) : undefined}
+                 )}
               </div>
             }
             action={
@@ -2180,6 +2183,7 @@ function CloudImageCenterScreen({
               <MogongImageCatalogView
                 apiBaseUrl={apiBaseUrl}
                 actionHost={mogongActionHost}
+                filterHost={mogongFilterHost}
                 token={session.token}
                 search={searchName}
                 readOnly={Boolean(workspace?.isReadOnly)}
@@ -2192,15 +2196,6 @@ function CloudImageCenterScreen({
                   setPlatformContainers((current) => current.some((item) => item.id === asset.id) ? current : [asset, ...current]);
                   setMogongRefreshRevision((value) => value + 1);
                 }}
-                onCloudSynced={(scope) => {
-                  customScopeRequestVersionRef.current += 1;
-                  screenCache?.invalidate(apiBaseUrl, session.token, 'image-center:custom');
-                  screenCache?.invalidate(apiBaseUrl, session.token, 'image-center:mogong');
-                  setCustomScope(scope);
-                  markTabLoaded('custom');
-                  markTableContentUpdated('custom');
-                  setMogongRefreshRevision((value) => value + 1);
-                }}
               />
             ) : showAcr ? (
               <AcrImageCatalogView apiBaseUrl={apiBaseUrl} token={session.token} search={searchName}
@@ -2210,17 +2205,11 @@ function CloudImageCenterScreen({
               footer={
                 !isActiveTabLoading && !activeTabError && activeItemsCount ? (
                   <AdminPaginationControls
-                    jumpPageValue={jumpPageValue}
                     label={`${activeTabTitle} 分页`}
                     pageSize={pageSize}
                     pagination={activePagination}
-                    visiblePages={visiblePages}
-                    onJumpPage={handleJumpToPage}
-                    onJumpPageValueChange={setJumpPageValue}
-                    onNextPage={goToNextPage}
                     onPageSelect={(pageNumber) => setPage(activeTab, pageNumber)}
                     onPageSizeChange={handlePageSizeChange}
-                    onPreviousPage={goToPreviousPage}
                   />
                 ) : null
               }
@@ -2257,10 +2246,10 @@ function CloudImageCenterScreen({
                       label={activeTabTitle}
                     >
                       {(columns) => {
-                        const actionErrorRow = actionErrorMessage ? (
+                        const actionErrorRow = actionErrorMessage || metadataErrorMessage ? (
                           <TableRow className="hover:bg-transparent">
                             <TableCell className="px-3 py-3 text-sm text-destructive whitespace-normal" colSpan={columns.length}>
-                              <p role="alert">{actionErrorMessage}</p>
+                              <p role="alert">{actionErrorMessage || metadataErrorMessage}</p>
                             </TableCell>
                           </TableRow>
                         ) : null;
@@ -2355,6 +2344,39 @@ function CloudImageCenterScreen({
             </AdminPaginatedList>}
           </AdminListToolbar>
         </div>
+
+          {collectDraft ? (
+            <AdminDialog open title="收录到平台" size="compact"
+              description="设置平台中的镜像名和已有标签；不修改云端镜像。"
+              pending={pendingActionKeys.includes(`collect:${collectDraft.snapshot.scope}:${collectDraft.snapshot.imageId}`)}
+              onOpenChange={open => { if (!open && !collectSubmittingRef.current) setCollectDraft(null); }}
+              footer={<>
+                <Button disabled={collectSubmittingRef.current} onClick={() => setCollectDraft(null)} type="button" variant="outline">取消</Button>
+                <Button disabled={collectSubmittingRef.current} form="collect-platform-image-form" type="submit">{collectDraft.asset ? '保存标签' : '确认收录'}</Button>
+              </>}>
+              <form id="collect-platform-image-form" className="grid gap-4" onSubmit={event => { event.preventDefault(); void handleCollectSnapshot(); }}>
+                <p className="break-all text-xs text-muted-foreground">云端镜像：{collectDraft.snapshot.sourceImageName}<br />{collectDraft.snapshot.imageId}</p>
+                <div className="grid gap-1.5">
+                  <Label htmlFor="collect-platform-image-name">平台镜像名</Label>
+                  <Input autoFocus id="collect-platform-image-name" required value={collectDraft.displayName}
+                    disabled={Boolean(collectDraft.asset) || collectSubmittingRef.current}
+                    placeholder="请输入平台镜像名" onChange={event => setCollectDraft({ ...collectDraft, displayName: event.target.value, error: '' })} />
+                </div>
+                <fieldset disabled={collectSubmittingRef.current} className="grid gap-2">
+                  <legend className="mb-2 text-sm font-medium">已有标签（可选）</legend>
+                  <div className="grid max-h-48 gap-2 overflow-y-auto">
+                    {platformImageTags.map(tag => <label className="flex items-center gap-2 text-sm" key={tag.id}>
+                      <Checkbox checked={collectDraft.tagIds.includes(tag.id)} onCheckedChange={checked => setCollectDraft({ ...collectDraft,
+                        tagIds: checked === true ? [...new Set([...collectDraft.tagIds, tag.id])] : collectDraft.tagIds.filter(id => id !== tag.id), error: '' })} />
+                      {tag.name}
+                    </label>)}
+                    {!platformImageTags.length ? <p className="text-xs text-muted-foreground">暂无已有标签，可先不设置。</p> : null}
+                  </div>
+                </fieldset>
+                {collectDraft.error ? <p role="alert" className="text-sm text-destructive">{collectDraft.error}</p> : null}
+              </form>
+            </AdminDialog>
+          ) : null}
 
           {tagManagerOpen && session.isAdmin ? (
             <AdminDialog

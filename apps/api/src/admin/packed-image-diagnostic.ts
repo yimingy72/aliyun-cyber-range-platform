@@ -2,8 +2,9 @@ import type { AdminRepository, PackedImageArtifactRecord, RangeInstanceRecord } 
 import { tencentInventoryMatches } from './billing-platform-scope';
 import { readTencentPackBaseline } from './tencent-pack-snapshot-baseline';
 import { CREATE_IMAGE_PARAMETERS, CREATE_IMAGE_HINTS, TencentCloudRequestError, type TencentCreateImageParameter, type TencentCreateImageHint } from './tencent-cloud-client';
+import { AliyunImageRpcError } from './aliyun-image-rpc';
 
-const PHASES = ['unknown', 'source_disk_inventory', 'create_image', 'create_response', 'persist_image', 'persist_asset', 'account_context', 'describe_image', 'verify_image', 'snapshot_verify', 'snapshot_ledger', 'snapshot_tagging', 'persist_catalog', 'cleanup'] as const;
+const PHASES = ['unknown', 'source_disk_inventory', 'create_image', 'create_response', 'persist_image', 'persist_asset', 'account_context', 'describe_image', 'rejection_audit', 'verify_image', 'snapshot_verify', 'snapshot_ledger', 'snapshot_tagging', 'persist_catalog', 'cleanup'] as const;
 export type PackedImagePhase = typeof PHASES[number];
 const CHECKS = ['snapshot_response_shape', 'snapshot_source', 'snapshot_coverage', 'snapshot_image_binding', 'snapshot_namespace_tags', 'snapshot_owner_tags', 'snapshot_tag_response'] as const;
 type PackedImageCheck = typeof CHECKS[number];
@@ -28,11 +29,20 @@ function safeCode(value: unknown, secrets: string[]) {
   return typeof value === 'string' && /^[A-Za-z][A-Za-z0-9_.]{0,100}$/.test(value) && !secrets.filter(Boolean).some(secret => value.includes(secret)) ? value : 'UNKNOWN';
 }
 export function safePackedCloudCode(error: unknown, secrets: string[] = []) {
-  return safeCode(error instanceof TencentCloudRequestError ? error.code : null, secrets);
+  const localCodes: Record<string, string> = {
+    '打包资产配置无法验证或解密，请检查原加密密钥；恢复材料已保留。': 'OriginalConfigUnverifiable',
+    '打包云账号或地域上下文不匹配。': 'SourceAccountMismatch',
+    '打包资产的镜像来源或冻结上下文不匹配。': 'AssetSourceMismatch',
+    '打包镜像资产的 owner、工作空间或来源不匹配，拒绝接管。': 'AssetOwnershipMismatch',
+    '打包资产关联不匹配，拒绝替换原归属。': 'AssetBindingMismatch',
+  };
+  return safeCode(error instanceof TencentCloudRequestError ? error.code : error instanceof AliyunImageRpcError ? error.cloudCode
+    : error instanceof Error ? localCodes[error.message] : null, secrets);
 }
 export function packedImageDiagnostic(error: unknown, phase: PackedImagePhase, secrets: string[] = []) {
   const evidence = error instanceof PackedImageCloudError ? error.evidence : error instanceof TencentCloudRequestError
-    ? { cloudParameterName: error.parameterName, cloudErrorHint: error.hint, cloudRequestId: error.requestId } : undefined;
+    ? { cloudParameterName: error.parameterName, cloudErrorHint: error.hint, cloudRequestId: error.requestId }
+    : error instanceof AliyunImageRpcError ? { cloudRequestId: error.requestId } : undefined;
   return { phase: error instanceof PackedImageCloudError ? error.phase : error instanceof PackedImageVerificationError && error.phase ? error.phase : phase,
     cloudErrorCode: error instanceof PackedImageCloudError ? safeCode(error.cloudErrorCode, secrets) : safePackedCloudCode(error, secrets), ...safeEvidence(evidence, secrets),
     ...safeVerification(error instanceof PackedImageVerificationError ? { verificationCheck: error.verificationCheck, ...error.details } : undefined, secrets) };

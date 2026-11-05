@@ -82,12 +82,12 @@ export function Combobox({ id, ariaLabel, value, selectedValue = value, onValueC
       </PopoverAnchor>
       <PopoverContent
         role="presentation"
-        className="w-(--radix-popover-trigger-width) min-w-52 p-1"
+        className="w-(--radix-popover-trigger-width) min-w-52 overflow-hidden p-1"
         onOpenAutoFocus={(event) => event.preventDefault()}
         onCloseAutoFocus={(event) => event.preventDefault()}
         onInteractOutside={(event) => { if (anchorRef.current?.contains(event.target as Node)) event.preventDefault(); }}
       >
-        <div aria-label={`${ariaLabel}候选列表`} className="max-h-56 overflow-y-auto" id={listId} role="listbox">
+        <div aria-label={`${ariaLabel}候选列表`} className="overflow-y-auto overscroll-contain [scrollbar-gutter:stable]" style={{ maxHeight: 'min(14rem, calc(var(--radix-popover-content-available-height) - 0.625rem))' }} id={listId} role="listbox">
           {filtered.length ? filtered.map((option, index) => (
             <Button
               aria-label={option.label}

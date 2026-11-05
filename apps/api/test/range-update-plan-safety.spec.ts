@@ -1,3 +1,4 @@
+import * as imageCapacity from '../src/admin/aliyun-image-capacity';
 import { assertApprovedRangeUpdatePlan, preserveDeployedRangeHostFacts, type RangeChangeApproval } from '../src/provisioning/range-update-plan-safety';
 import type { WorkspaceState } from '../src/provisioning/opentofu-state-evidence';
 import { assertWorkspaceCanApply } from '../src/provisioning/opentofu-state-evidence';
@@ -144,10 +145,11 @@ describe('only newly added hosts are resolved during runtime updates', () => {
   const topology = {vpcCidr:'10.0.0.0/16',networkZones:[{key:'main',name:'Main',purpose:'internal',cidr:'10.0.0.0/24'}],hosts:[{key:'old',name:'Old',zoneKey:'main',role:'entry',privateIp:'10.0.0.10'},{key:'new',name:'New',zoneKey:'main',role:'server',privateIp:'10.0.0.20'}],publicEntry:{hostKey:'old',protocols:[]}};
   const graph = {nodes:[{id:'old',kind:'ecs',cpu:2,memory:4,imageId:'img-old'},{id:'new',kind:'ecs',cpu:2,memory:4,imageId:'img-new'}]};
   it('Alibaba selects only added hosts within the original zone and retains old image/type without availability queries', async () => {
+    const capacity = jest.spyOn(imageCapacity, 'readAliyunImageSystemDisk').mockResolvedValue({ imageId: 'img-new', minimumSystemDiskSize: 40, requestId: 'capacity-receipt' });
     const f=fixture(false), resolver=jest.fn(async(_input:any)=> 'ecs.new-type'); const provisioner=new OpenTofuRangeProvisioner({enableZoneScheduling:false,availableInstanceTypeResolver:resolver,env:{OPENTOFU_INSTANCE_TYPE:'auto'}});
     f.account.defaultZoneId='cn-hangzhou-a';
     const result=await (provisioner as any).buildVariables({rangeInstanceId:'range-owned',templateModulePath:'infra/module',allocatedCidr:null,runtimeConfig:f.account,topologySpec:topology,topologyGraph:graph,runtimeCredentials:{old:{password:'Original123!'},new:{password:'NewPassword123!'}}},{requireRuntimePasswords:true,priorState:f.state,priorVariables:f.priorVariables});
-    expect(resolver).toHaveBeenCalledTimes(1); expect(resolver.mock.calls[0][0]).toMatchObject({zoneId:'cn-hangzhou-h'}); expect(result.hosts.find((host:any)=>host.key==='old')).toMatchObject({image_id:'original-image',instance_type:'original-type'}); expect(result.zone_id).toBe('cn-hangzhou-h');
+    expect(capacity).toHaveBeenCalledTimes(1); expect(capacity).toHaveBeenCalledWith(expect.any(Object), 'img-new'); expect(resolver).toHaveBeenCalledTimes(1); expect(resolver.mock.calls[0][0]).toMatchObject({zoneId:'cn-hangzhou-h'}); expect(result.hosts.find((host:any)=>host.key==='old')).toMatchObject({image_id:'original-image',instance_type:'original-type'}); expect(result.zone_id).toBe('cn-hangzhou-h');
   });
   it('Tencent image disk floor is per new host; retired/old images are not queried', async () => {
     const f=fixture(true), select=jest.spyOn(tencentScheduler,'selectTencentHostInstanceTypes').mockResolvedValue({new:{instanceType:'S5.MEDIUM4',cpu:2}}), images=jest.spyOn(tencentScheduler,'assertTencentImagesAvailable').mockResolvedValue({'img-new':{minimumSystemDiskSize:200,architecture:'x86_64',isWindows:false}});

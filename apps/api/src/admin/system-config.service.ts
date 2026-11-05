@@ -378,6 +378,13 @@ export class SystemConfigService {
     }));
   }
 
+  async getBillingReconciliationMode() {
+    const scope = getCurrentCloudWorkspaceScope();
+    if (!scope || 'system' in scope) return 'legacy' as const;
+    const row = await this.prisma.cloudWorkspace.findUnique({ where: { id: scope.cloudWorkspaceId } });
+    return row?.billingReconciliationMode ?? 'legacy';
+  }
+
   async listWorkspaceAccountContextIds() {
     const scope = getCurrentCloudWorkspaceScope();
     if (!scope || 'system' in scope || !scope.accountUid) throw new BadRequestException('资源核对缺少云账号工作空间。');

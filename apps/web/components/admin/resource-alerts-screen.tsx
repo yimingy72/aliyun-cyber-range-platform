@@ -8,7 +8,7 @@ import { formatAdminDateTime } from '@/lib/admin-screen';
 import { useCloudWorkspace } from './cloud-workspace-provider';
 import { useAdminSession } from './use-admin-session';
 import { useAdminRouteIsActive } from './admin-page-cache';
-import { AdminPageHeader } from './shared/admin-page-header';
+import { AdminActionNotice } from './shared/admin-action-notice';
 import { AdminDialog } from './shared/admin-dialog';
 import { AdminDataTable, AdminDataTableCell, AdminDataTableState, type AdminDataColumn } from './shared/admin-data-table';
 import { TableLoadingState } from './shared/table-loading-state';
@@ -20,17 +20,17 @@ const labels: Record<ResourceAlertStatus, string> = { pending: '待处理', unve
 const types: Record<string, string> = { ecs: '云主机', disk: '系统盘', eip: 'EIP', nat_gateway: 'NAT', eni: '网卡', vpc: 'VPC',
   vswitch: '交换机', security_group: '安全组', network_acl: 'ACL', route_table: '路由表', snat_entry: 'SNAT', dnat_entry: 'DNAT' };
 const columns: readonly AdminDataColumn[] = [
-  { id: 'resource', label: '资源 / 状态', priority: 'primary', width: '25%' },
-  { id: 'source', label: '账号 / 地域 / 实例', priority: 'secondary', width: '24%' },
-  { id: 'reason', label: '异常与来源', priority: 'primary', width: '37%' },
-  { id: 'action', label: '操作', priority: 'primary', align: 'right', width: '14%' },
+  { id: 'resource', label: '资源', priority: 'primary', width: '18rem' },
+  { id: 'source', label: '所属实例 / 账号', priority: 'secondary', width: '18rem' },
+  { id: 'reason', label: '告警原因', priority: 'primary', minWidth: '20rem' },
+  { id: 'action', label: '操作', priority: 'primary', width: '8.5rem' },
 ];
 type Review = { preview: ResourceReclaimPreview; workspaceId: string; idempotencyKey: string };
 
-export function ResourceAlertsScreen({ apiBaseUrl = '/api' }: { apiBaseUrl?: string }) {
+export function ResourceAlertsPanel({ apiBaseUrl = '/api' }: { apiBaseUrl?: string }) {
   const session = useAdminSession();
   const workspace = useCloudWorkspace();
-  const active = useAdminRouteIsActive('/admin/resource-alerts');
+  const active = useAdminRouteIsActive('/admin/billing');
   const workspaceId = workspace?.workspace?.id ?? '';
   const source = `${workspaceId}:${session.profile?.id ?? ''}`;
   const sourceRef = useRef(source); sourceRef.current = source;
@@ -119,29 +119,30 @@ export function ResourceAlertsScreen({ apiBaseUrl = '/api' }: { apiBaseUrl?: str
   if (!session.isReady || !session.token) return null;
   if (!session.profile?.isPlatformManager) return <p className="admin-empty">仅平台超管可查看和处理资源告警。</p>;
   const visible = (rows ?? []).filter(row => filter === 'all' || (filter === 'open' ? row.status !== 'resolved' : row.status === filter));
-  return <div className="admin-screen"><section className="admin-workbench-surface">
-    <AdminPageHeader title="资源告警" description="仅显示有平台创建来源的资源，预览后确认回收。" action={<Button disabled={loading || busy} variant="outline" onClick={() => void refresh()}><RefreshCw aria-hidden="true" />刷新</Button>} />
-    <div className="my-4 flex flex-wrap items-center justify-between gap-3 text-sm">
+  return <section aria-label="资源告警" className="mt-3 grid min-w-0 gap-3">
+    <div className="flex flex-wrap items-center gap-2">
+      <h2 className="mr-auto text-sm font-semibold">资源告警</h2>
+      <AdminSelectField ariaLabel="告警状态" className="h-8 w-28" value={filter} onValueChange={value => setFilter(value as typeof filter)} options={[{ value: 'open', label: '未解决' }, { value: 'all', label: '全部' }, ...Object.entries(labels).map(([value, label]) => ({ value, label }))]} />
+      <Button disabled={loading || busy} size="sm" variant="outline" onClick={() => void refresh()}><RefreshCw aria-hidden="true" />刷新</Button>
+    </div>
+    <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-muted-foreground">
       <div className="min-w-0">
         <span>后台巡检：{patrol?.managerUsername ?? '未指定超管'}</span>
-        {patrol?.accountUid ? <span className="ml-3">{patrol.accountUid} · 每 5 分钟</span> : null}
+        {patrol?.accountUid ? <span className="ml-3">{patrol.accountUid} · 每 1 小时</span> : null}
         {patrol?.lastScanAt && patrol.lastCompleted ? <span className="ml-3 text-muted-foreground">最近检查 {formatAdminDateTime(patrol.lastScanAt)}</span> : null}
         {patrol && ['pending', 'not_configured', 'unavailable'].includes(patrol.status) ? <span className="ml-3 text-amber-800">{patrol.status === 'pending' ? '当前账号待检查' : '巡检尚未就绪'}</span> : null}
       </div>
-      <Button disabled={busy || patrol?.managerUserId === session.profile.id} variant="outline" onClick={() => void followMe()}>跟随我的账号</Button>
+      <Button size="sm" disabled={busy || patrol?.managerUserId === session.profile.id} variant="ghost" onClick={() => void followMe()}>跟随我的账号</Button>
     </div>
     {patrol?.lastScanError ? <p className="mb-3 text-sm text-destructive" role="alert">巡检失败：{patrol.lastScanError} 现有告警已保留。</p> : null}
     {error ? <p className="mb-3 text-sm text-destructive" role="alert">{error}</p> : null}
-    {notice ? <p className="mb-3 text-sm text-emerald-800" role="status">{notice}</p> : null}
-    <label className="mb-3 flex items-center gap-2 text-sm">状态
-      <AdminSelectField ariaLabel="告警状态" className="w-40" value={filter} onValueChange={value => setFilter(value as typeof filter)} options={[{ value: 'open', label: '未解决' }, { value: 'all', label: '全部' }, ...Object.entries(labels).map(([value, label]) => ({ value, label }))]} />
-    </label>
+    <AdminActionNotice message={notice} onDismiss={() => setNotice(null)} />
     <AdminDataTable columns={columns} label="资源告警列表" isRefreshing={loading && rows !== null}>
       {cols => rows === null && !error ? <TableLoadingState columnCount={cols.length} rowCount={5} label="读取资源告警" /> : !visible.length ? <AdminDataTableState columns={cols} variant={error ? 'error' : 'empty'} title={error ? '检查未完成' : '暂无平台资源告警'} description={error ?? '范围仅限已证明由平台创建的资源；检查状态见上方。'} onRetry={error ? () => void refresh() : undefined} /> :
         visible.map(row => <TableRow key={row.id}>
-          <AdminDataTableCell column={cols[0]}><div>{types[row.type] ?? row.type}</div><div className="my-1 break-all whitespace-normal text-xs text-muted-foreground">{row.resourceId}</div><span className={`admin-pill admin-pill-${row.status === 'resolved' ? 'success' : row.status === 'failed' ? 'danger' : 'warning'}`}>{labels[row.status]}</span></AdminDataTableCell>
-          <AdminDataTableCell column={cols[1]}><div>{row.accountUid}</div><div className="text-xs text-muted-foreground">{row.regionId}</div>{row.rangeInstanceId ? <span className="mt-1 block truncate" title={row.rangeInstanceId}>{row.rangeName ?? row.rangeInstanceId}</span> : <span className="text-xs">无完整关联记录</span>}</AdminDataTableCell>
-          <AdminDataTableCell className="whitespace-normal" column={cols[2]}><p className="text-sm">{row.reason}</p><p className="mt-1 text-xs text-muted-foreground">{row.evidenceSummary.recordedInventory ? '已记录准确库存' : '创建来源待核验'} · {row.evidenceSummary.sourceJobIds.length} 个来源作业</p><div className="mt-1 text-xs text-muted-foreground"><div>首次 {formatAdminDateTime(row.firstSeenAt)}</div><div>最近 {formatAdminDateTime(row.lastSeenAt)}</div></div>{row.errorSummary ? <p className="mt-1 text-xs text-destructive">{row.errorSummary}</p> : null}</AdminDataTableCell>
+          <AdminDataTableCell column={cols[0]}><div className="flex items-center gap-2">{types[row.type] ?? row.type}<span className={`admin-pill admin-pill-${row.status === 'resolved' ? 'success' : row.status === 'failed' ? 'danger' : 'warning'}`}>{labels[row.status]}</span></div><div className="mt-1 break-all whitespace-normal text-xs text-muted-foreground">{row.resourceId}</div></AdminDataTableCell>
+          <AdminDataTableCell column={cols[1]}><div className="truncate" title={row.rangeInstanceId ?? undefined}>{row.rangeName ?? row.rangeInstanceId ?? '无完整关联记录'}</div><div className="mt-1 text-xs text-muted-foreground">{row.accountUid} · {row.regionId}</div></AdminDataTableCell>
+          <AdminDataTableCell className="whitespace-normal" column={cols[2]}><p className="text-sm">{row.reason}</p><p className="mt-1 text-xs text-muted-foreground" title={`首次发现 ${formatAdminDateTime(row.firstSeenAt)}`}>{row.evidenceSummary.recordedInventory ? '已记录准确库存' : '创建来源待核验'} · 最近发现 {formatAdminDateTime(row.lastSeenAt)}</p>{row.errorSummary ? <p className="mt-1 text-xs text-destructive">{row.errorSummary}</p> : null}</AdminDataTableCell>
           <AdminDataTableCell column={cols[3]}><Button disabled={busy || row.status === 'reclaiming' || row.status === 'resolved'} size="sm" variant="outline" onClick={() => void inspect(row.id)}>查看清单</Button></AdminDataTableCell>
         </TableRow>)}
     </AdminDataTable>
@@ -152,5 +153,5 @@ export function ResourceAlertsScreen({ apiBaseUrl = '/api' }: { apiBaseUrl?: str
         <ul className="grid gap-2 text-sm">{review.preview.resources.map(item => <li className="break-all" key={`${item.type}:${item.id}`}>{types[item.type] ?? item.type} · {item.id}</li>)}</ul>
       </> : null}
     </AdminDialog>
-  </section></div>;
+  </section>;
 }

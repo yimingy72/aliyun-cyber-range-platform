@@ -1,21 +1,28 @@
 'use client';
 
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
+import { ChevronDown, ChevronRight, Download, Trash2 } from 'lucide-react';
+import { DropdownMenuItem } from '@/components/ui/dropdown-menu';
 
 import { Button } from '@/components/ui/button';
+import { InstancePowerBadge, InstancePowerMenu } from './instance-power-menu';
 import { RangeInstanceCreateButton } from './range-instance-create-button';
 import { TableCell, TableRow } from '@/components/ui/table';
+import { Checkbox } from '@/components/ui/checkbox';
 import {
   fetchProvisionJobs,
   fetchRangeInstances,
   fetchRangeInstanceDetail,
+  fetchRangeInstanceAccess,
   triggerRangeAction,
 } from '../../lib/admin-api';
 import { useAdminScreenCache } from '../../lib/admin-screen-cache';
 import { readCloudWorkspaceSelection } from '@/lib/cloud-workspace-selection';
 import { readAdminSession } from '@/lib/admin-auth-storage';
 import { beginRangeRecoveryIntent, readRangeRecoveryIntent } from '@/lib/range-recovery-intent';
+import { groupRangeInstances, rangeBatchBusy, rangeBatchStatus, type RangeInstanceGroup } from '@/lib/range-instance-batches';
+import { downloadRangeInstancesCsv, rangeInstancesCsv, type RangeExportItem } from '@/lib/range-instance-export';
 import { useCloudWorkspace } from './cloud-workspace-provider';
 import { formatAdminDateTime, isUnauthorizedAdminError } from '../../lib/admin-screen';
 import type {
@@ -24,17 +31,19 @@ import type {
 } from '../../lib/admin-types';
 import {
   AdminPaginationControls,
-  buildVisiblePages,
+
   getPagination,
   useAdminPageSize,
 } from './admin-pagination';
 import { useAdminRouteIsActive } from './admin-page-cache';
 import { ConfirmActionDialog } from './shared/confirm-action-dialog';
+import { AdminDialog } from './shared/admin-dialog';
 import {
   AdminDataTable,
   AdminDataTableCell,
   AdminDataTableRevalidationNotice,
   AdminDataTableState,
+  ADMIN_TABLE_WIDTHS,
   type AdminDataColumn,
 } from './shared/admin-data-table';
 import { AdminListToolbar } from './shared/admin-list-toolbar';
@@ -67,23 +76,25 @@ type RangeListSnapshot = {
 };
 
 const RANGE_ACTIVE_COLUMNS: readonly AdminDataColumn[] = [
-  { id: 'name', label: '实例名称', priority: 'primary' },
-  { id: 'createdBy', label: '创建人', priority: 'tertiary' },
-  { id: 'template', label: '所属靶场', priority: 'secondary' },
-  { id: 'status', label: '状态', priority: 'primary' },
-  { id: 'createdAt', label: '创建时间', priority: 'secondary' },
-  { id: 'actions', label: '操作', priority: 'primary', width: '12rem' },
+  { id: 'name', label: '实例 / 批次', priority: 'primary', minWidth: '14rem' },
+  { id: 'template', label: '所属靶场', priority: 'secondary', minWidth: '14rem' },
+  { id: 'dnatPublicIp', label: '公网 IP（DNAT IP）', priority: 'primary', width: '10rem' },
+  { id: 'status', label: '状态', priority: 'primary', width: ADMIN_TABLE_WIDTHS.status },
+  { id: 'createdAt', label: '创建时间', priority: 'secondary', width: ADMIN_TABLE_WIDTHS.dateTime },
+  { id: 'createdBy', label: '创建人', priority: 'tertiary', width: ADMIN_TABLE_WIDTHS.creator },
+  { id: 'actions', label: '操作', priority: 'primary', width: ADMIN_TABLE_WIDTHS.actions },
 ];
 
 const RANGE_HISTORY_COLUMNS: readonly AdminDataColumn[] = [
-  { id: 'name', label: '实例名称', priority: 'primary' },
-  { id: 'createdBy', label: '创建人', priority: 'tertiary' },
-  { id: 'template', label: '所属靶场', priority: 'secondary' },
-  { id: 'status', label: '状态', priority: 'primary' },
-  { id: 'createdAt', label: '创建时间', priority: 'secondary' },
-  { id: 'endedAt', label: '结束时间', priority: 'tertiary' },
-  { id: 'duration', label: '持续时长', priority: 'detail' },
-  { id: 'actions', label: '操作', priority: 'primary', width: '8rem' },
+  { id: 'name', label: '实例 / 批次', priority: 'primary', minWidth: '14rem' },
+  { id: 'template', label: '所属靶场', priority: 'secondary', minWidth: '14rem' },
+  { id: 'dnatPublicIp', label: '公网 IP（DNAT IP）', priority: 'primary', width: '10rem' },
+  { id: 'status', label: '状态', priority: 'primary', width: ADMIN_TABLE_WIDTHS.status },
+  { id: 'createdAt', label: '创建时间', priority: 'secondary', width: ADMIN_TABLE_WIDTHS.dateTime },
+  { id: 'endedAt', label: '结束时间', priority: 'tertiary', width: ADMIN_TABLE_WIDTHS.dateTime },
+  { id: 'duration', label: '持续时长', priority: 'detail', width: '8rem' },
+  { id: 'createdBy', label: '创建人', priority: 'tertiary', width: ADMIN_TABLE_WIDTHS.creator },
+  { id: 'actions', label: '操作', priority: 'primary', width: ADMIN_TABLE_WIDTHS.actions },
 ];
 
 function readRangeListMode(value: string | null): RangeListMode {
@@ -124,7 +135,7 @@ function getInstanceCreatedAt(instance: ExtendedRangeInstance, recentJob?: Exten
 
 function getInstanceActionLabel(instance: ExtendedRangeInstance) {
   if (instance.status === 'running') {
-    return '关闭';
+    return '销毁实例';
   }
 
   if (instance.status === 'destroy_failed') {
@@ -178,9 +189,10 @@ export function RangeInstancesScreen({
   const searchParams = useSearchParams();
   const session = useAdminSession();
   const workspace = useCloudWorkspace()?.workspace;
+  const isPageActive = useAdminRouteIsActive('/admin/ranges');
   const actionSession = readAdminSession();
   const actionWorkspaceId = workspace?.id ?? readCloudWorkspaceSelection() ?? '';
-  const actionScopeKey = JSON.stringify([apiBaseUrl, session.profile?.id, session.profile?.role, actionWorkspaceId, session.token, actionSession?.sessionGeneration]);
+  const actionScopeKey = JSON.stringify([apiBaseUrl, session.profile?.id, session.profile?.role, actionWorkspaceId, workspace?.isReadOnly, session.token, actionSession?.sessionGeneration, isPageActive]);
   const actionContextRef = useRef({ scope: actionScopeKey });
   if (actionContextRef.current.scope !== actionScopeKey) actionContextRef.current = { scope: actionScopeKey };
   const mountedRef = useRef(true);
@@ -189,7 +201,7 @@ export function RangeInstancesScreen({
   function recoveryScopeFor(instanceId: string) {
     return { apiBaseUrl, userId: session.profile?.id ?? '', workspaceId: actionWorkspaceId, rangeId: instanceId };
   }
-  const isPageActive = useAdminRouteIsActive('/admin/ranges');
+  const pageActiveRef = useRef(isPageActive); pageActiveRef.current = isPageActive;
   const [listMode, setListMode] = useState<RangeListMode>(() => readRangeListMode(searchParams.get('view')));
   const screenCache = useAdminScreenCache();
   const cachedActiveSnapshot = screenCache?.read<RangeListSnapshot>(apiBaseUrl, session.token, 'range-instances:active');
@@ -208,6 +220,15 @@ export function RangeInstancesScreen({
     history: null,
   });
   const [actionErrorMessage, setActionErrorMessage] = useState<string | null>(null);
+  const [actionNotice, setActionNotice] = useState<string | null>(null);
+  const [expandedBatches, setExpandedBatches] = useState<string[]>([]);
+  const [batchDestroyTarget, setBatchDestroyTarget] = useState<{ name: string; instances: RangeInstance[]; skipped: number } | null>(null);
+  const [batchProgress, setBatchProgress] = useState(0);
+  const [exportTarget, setExportTarget] = useState<RangeInstanceGroup | null>(null);
+  const [includeCredentials, setIncludeCredentials] = useState(false);
+  const [exportPending, setExportPending] = useState(false);
+  const exportPendingRef = useRef<string | null>(null);
+  const [exportError, setExportError] = useState<string | null>(null);
   const [loadedViews, setLoadedViews] = useState<RangeListRecord<boolean>>({
     active: Boolean(cachedActiveSnapshot),
     history: Boolean(cachedHistorySnapshot),
@@ -226,9 +247,10 @@ export function RangeInstancesScreen({
   const [isConfirmingDestroy, setIsConfirmingDestroy] = useState(false);
   useEffect(() => {
     submittingRef.current = null; setIsSubmittingAction(null); setIsConfirmingDestroy(false); setConfirmDestroyTarget(null); setActionErrorMessage(null);
+    setBatchDestroyTarget(null); setExpandedBatches([]); setActionNotice(null); setExportTarget(null); setExportPending(false); setExportError(null);
+    exportPendingRef.current = null;
   }, [actionScopeKey]);
   const [listPages, setListPages] = useState<Record<RangeListMode, number>>({ active: 1, history: 1 });
-  const [jumpPageValue, setJumpPageValue] = useState('1');
   const { pageSize, setPageSize } = useAdminPageSize();
 
   function markTableContentUpdated(view: RangeListMode) {
@@ -387,17 +409,38 @@ export function RangeInstancesScreen({
   }, [currentJobs]);
 
   const visibleListInstances = useMemo(() => {
-    const keyword = searchName.trim().toLowerCase();
     const matchingModeInstances = currentInstances.filter((instance) =>
       listMode === 'history' ? isRangeInstanceHistoryStatus(instance.status) : !isRangeInstanceHistoryStatus(instance.status),
     );
 
-    if (!keyword) {
-      return matchingModeInstances;
-    }
+    return matchingModeInstances;
+  }, [currentInstances, listMode]);
+  const visibleGroups = useMemo(() => groupRangeInstances(visibleListInstances, searchName), [visibleListInstances, searchName]);
 
-    return matchingModeInstances.filter((instance) => getInstanceDisplayName(instance).toLowerCase().includes(keyword));
-  }, [currentInstances, listMode, searchName]);
+  useEffect(() => {
+    if (!session.token || !isPageActive || listMode !== 'active' || isSubmittingAction !== null
+      || !currentInstances.some(instance => Boolean(instance.powerControl?.phase) || instance.launchBatch && ['pending_create', 'creating', 'pending_destroy', 'destroying', 'pending_update', 'updating'].includes(instance.status))) return;
+    let live = true;
+    const context = actionContextRef.current;
+    let timer: ReturnType<typeof setTimeout>;
+    const refresh = async () => {
+      try {
+        const snapshot = await reloadRangeInstanceRows(session.token!, 'active', true);
+        if (!live || !isCurrentAction(context)) return;
+        if (JSON.stringify(snapshot.instances) !== JSON.stringify(currentInstances)) {
+          setInstancesByView(current => ({ ...current, active: snapshot.instances }));
+          markTableContentUpdated('active');
+        }
+        setListErrors(current => ({ ...current, active: null }));
+      } catch (error) {
+        if (!live || !isCurrentAction(context)) return;
+        if (isUnauthorizedAdminError(error)) { session.logout(); router.replace('/admin/login'); }
+        else setListErrors(current => ({ ...current, active: '批次状态刷新失败，已保留现有记录，请稍后重试。' }));
+      } finally { if (live) timer = setTimeout(() => void refresh(), 5000); }
+    };
+    timer = setTimeout(() => void refresh(), 5000);
+    return () => { live = false; clearTimeout(timer); };
+  }, [apiBaseUrl, actionScopeKey, currentInstances, isPageActive, isSubmittingAction, listMode, router, screenCache, session.token]);
 
   useEffect(() => {
     setListPages((current) => ({
@@ -406,9 +449,8 @@ export function RangeInstancesScreen({
     }));
   }, [listMode, searchName]);
 
-  const activePagination = getPagination(visibleListInstances.length, listPages[listMode], pageSize);
-  const visiblePages = buildVisiblePages(activePagination.totalPages, activePagination.page);
-  const pagedVisibleListInstances = visibleListInstances.slice(activePagination.startIndex, activePagination.endIndex);
+  const activePagination = getPagination(visibleGroups.length, listPages[listMode], pageSize);
+  const pagedGroups = visibleGroups.slice(activePagination.startIndex, activePagination.endIndex);
 
   useEffect(() => {
     if (listPages[listMode] !== activePagination.page) {
@@ -419,27 +461,9 @@ export function RangeInstancesScreen({
     }
   }, [activePagination.page, listMode, listPages]);
 
-  useLayoutEffect(() => {
-    setJumpPageValue(String(activePagination.page));
-  }, [activePagination.page, listMode]);
-
   function handlePageSizeChange(nextValue: 20 | 50 | 100) {
     setPageSize(nextValue);
     setListPages({ active: 1, history: 1 });
-  }
-
-  function handleJumpToPage() {
-    const parsedPage = Number.parseInt(jumpPageValue, 10);
-
-    if (Number.isNaN(parsedPage)) {
-      setJumpPageValue(String(activePagination.page));
-      return;
-    }
-
-    setListPages((current) => ({
-      ...current,
-      [listMode]: parsedPage,
-    }));
   }
 
   function upsertInstanceInSnapshot(instance: ExtendedRangeInstance) {
@@ -475,42 +499,127 @@ export function RangeInstancesScreen({
     router.push(`/admin/ranges/${instanceId}`);
   }
 
-  async function performListDestroyAction(instance: ExtendedRangeInstance) {
-    if (!session.token || submittingRef.current || workspace?.isReadOnly) return;
+  function isCurrentAction(context: { scope: string }) {
+    const selected = readCloudWorkspaceSelection(session.profile?.id);
+    const currentSession = readAdminSession();
+    return mountedRef.current && pageActiveRef.current && actionContextRef.current === context && (!selected || selected === actionWorkspaceId)
+      && (!actionSession || currentSession?.profile.id === actionSession.profile.id && currentSession.sessionGeneration === actionSession.sessionGeneration);
+  }
+
+  async function submitDestroy(instance: RangeInstance, isCurrent: () => boolean) {
     const recoveryScope = recoveryScopeFor(instance.id);
-    const existing = readRangeRecoveryIntent(recoveryScope);
-    if (existing) { handleViewDetail(instance.id); return; }
-    const context = actionContextRef.current;
-    const isCurrent = () => {
-      const selected = readCloudWorkspaceSelection(recoveryScope.userId);
-      const currentSession = readAdminSession();
-      return mountedRef.current && actionContextRef.current === context && (!selected || selected === recoveryScope.workspaceId) &&
-        (!actionSession || currentSession?.profile.id === actionSession.profile.id && currentSession.sessionGeneration === actionSession.sessionGeneration);
-    };
-    let key: string | null = null;
-    setActionErrorMessage(null);
-    setIsSubmittingAction('destroy');
+    if (readRangeRecoveryIntent(recoveryScope)) return 'pending';
+    let persisted = false;
     try {
       const intent = beginRangeRecoveryIntent(recoveryScope, getActionTrigger(instance));
-      key = intent.key;
-      submittingRef.current = key;
-      const job = (await triggerRangeAction(apiBaseUrl, session.token, instance.id, intent.trigger, key)) as ExtendedProvisionJob | null;
-      if (!isCurrent()) return;
+      persisted = true;
+      const job = (await triggerRangeAction(apiBaseUrl, session.token!, instance.id, intent.trigger, intent.key)) as ExtendedProvisionJob | null;
+      if (!isCurrent()) return 'stale';
       screenCache?.invalidate(apiBaseUrl, session.token, 'range-instances:');
-      if (!job?.id) {
-        setActionErrorMessage('恢复操作结果未确认，请进入实例详情继续确认原请求。');
-        return;
-      }
+      if (!job?.id || job.rangeInstanceId && job.rangeInstanceId !== instance.id) return 'unknown';
       upsertInstanceInSnapshot({ ...instance, status: 'pending_destroy', lastJobId: job.id });
       upsertJobInSnapshot(job);
+      return 'accepted';
     } catch (error) {
-      if (!isCurrent()) return;
-      setActionErrorMessage(key ? '恢复操作结果未确认，请进入实例详情继续确认原请求。' : '无法保存恢复请求标识，请检查浏览器存储后重试。');
+      if (!isCurrent()) return 'stale';
+      if (isUnauthorizedAdminError(error)) return 'unauthorized';
+      return persisted ? 'unknown' : 'storage_failed';
+    }
+  }
+
+  async function performListDestroyAction(instance: ExtendedRangeInstance) {
+    if (!session.token || submittingRef.current || workspace?.isReadOnly) return;
+    if (readRangeRecoveryIntent(recoveryScopeFor(instance.id))) { handleViewDetail(instance.id); return; }
+    const context = actionContextRef.current;
+    const marker = crypto.randomUUID(); submittingRef.current = marker;
+    setActionErrorMessage(null); setActionNotice(null); setIsSubmittingAction('destroy');
+    try {
+      const result = await submitDestroy(instance, () => isCurrentAction(context));
+      if (!isCurrentAction(context)) return;
+      if (result === 'unauthorized') { session.logout(); router.replace('/admin/login'); }
+      else if (result === 'unknown') setActionErrorMessage('回收请求结果尚未确认，请进入实例详情查询原请求。');
+      else if (result === 'storage_failed') setActionErrorMessage('无法保存回收请求标识，请检查浏览器存储后重试。');
     } finally {
-      if (isCurrent()) {
-        if (submittingRef.current === key) submittingRef.current = null;
+      if (mountedRef.current && actionContextRef.current === context) {
+        if (submittingRef.current === marker) submittingRef.current = null;
         setIsSubmittingAction(null);
       }
+    }
+  }
+
+  function openBatchDestroy(group: RangeInstanceGroup) {
+    const targets = group.instances.filter(instance => Boolean(getInstanceActionLabel(instance)) && !readRangeRecoveryIntent(recoveryScopeFor(instance.id)));
+    if (!targets.length || rangeBatchBusy(group.instances) || submittingRef.current || workspace?.isReadOnly) return;
+    setBatchProgress(0);
+    setBatchDestroyTarget({ name: group.name, instances: targets, skipped: group.instances.length - targets.length });
+  }
+
+  async function performBatchDestroy() {
+    if (!session.token || !batchDestroyTarget || submittingRef.current || workspace?.isReadOnly) return;
+    const target = batchDestroyTarget, context = actionContextRef.current;
+    const marker = crypto.randomUUID(); submittingRef.current = marker;
+    setIsSubmittingAction('destroy'); setActionErrorMessage(null); setActionNotice(null);
+    let accepted = 0, unknown = 0, processed = 0, skipped = target.skipped, storageFailed = false;
+    try {
+      for (const instance of target.instances) {
+        if (!isCurrentAction(context)) return;
+        const result = await submitDestroy(instance, () => isCurrentAction(context));
+        if (!isCurrentAction(context)) return;
+        if (result === 'unauthorized') { session.logout(); router.replace('/admin/login'); return; }
+        processed++;
+        setBatchProgress(processed);
+        if (result === 'accepted') accepted++;
+        else if (result === 'pending') skipped++;
+        else if (result === 'unknown') unknown++;
+        else if (result === 'storage_failed') { storageFailed = true; break; }
+      }
+      const summary = `批次“${target.name}”：已受理 ${accepted} 套回收请求${skipped ? `，跳过 ${skipped} 套处理中或待确认记录` : ''}。`;
+      if (unknown || storageFailed) {
+        setActionErrorMessage(`${summary}${unknown ? ` ${unknown} 套结果待确认，请展开批次进入详情查询原请求，不要重复提交。` : ''}${storageFailed ? ` 浏览器无法保存回收标识，已停止后续提交，${target.instances.length - processed + 1} 套尚未提交。` : ''}`);
+      } else setActionNotice(`${summary}云端回收仍在进行，可展开查看各套实例状态。`);
+    } finally {
+      if (mountedRef.current && actionContextRef.current === context) {
+        if (submittingRef.current === marker) submittingRef.current = null;
+        setIsSubmittingAction(null); setBatchDestroyTarget(null);
+      }
+    }
+  }
+
+  function openExport(group: RangeInstanceGroup) {
+    if (exportPendingRef.current) return;
+    setIncludeCredentials(false); setExportError(null); setExportTarget(group);
+  }
+
+  function openInstanceExport(instance: RangeInstance) {
+    openExport({ id: instance.id, name: getInstanceDisplayName(instance), isBatch: false, quantity: 1, instances: [instance] });
+  }
+
+  async function exportInstances() {
+    if (!session.token || !exportTarget || exportPendingRef.current) return;
+    const context = actionContextRef.current, target = exportTarget;
+    const marker = crypto.randomUUID(); exportPendingRef.current = marker;
+    setExportPending(true); setExportError(null);
+    try {
+      const items: RangeExportItem[] = [];
+      for (const instance of target.instances) {
+        if (!isCurrentAction(context)) return;
+        const detail = await fetchRangeInstanceDetail(apiBaseUrl, session.token, instance.id);
+        if (!isCurrentAction(context)) return;
+        if (detail.id !== instance.id) throw new Error('返回的编排实例与导出目标不符。');
+        const access = includeCredentials ? await fetchRangeInstanceAccess(apiBaseUrl, session.token, instance.id) : undefined;
+        if (!isCurrentAction(context)) return;
+        if (access && access.id !== instance.id) throw new Error('返回的访问数据与导出目标不符。');
+        items.push({ detail, access });
+      }
+      downloadRangeInstancesCsv(target.name, rangeInstancesCsv(target.isBatch ? target.name : '', items, includeCredentials));
+      setExportTarget(null);
+    } catch (error) {
+      if (!isCurrentAction(context)) return;
+      if (isUnauthorizedAdminError(error)) { session.logout(); router.replace('/admin/login'); }
+      else setExportError(`导出失败，未生成文件。${error instanceof Error ? error.message : '请稍后重试。'}`);
+    } finally {
+      if (exportPendingRef.current === marker) exportPendingRef.current = null;
+      if (mountedRef.current && actionContextRef.current === context) setExportPending(false);
     }
   }
 
@@ -571,13 +680,14 @@ export function RangeInstancesScreen({
   return (
     <div className="admin-screen admin-pagination-screen">
       {actionErrorMessage ? <p className="admin-error" role="alert">{actionErrorMessage}</p> : null}
+      {actionNotice ? <p className="text-sm text-muted-foreground" role="status">{actionNotice}</p> : null}
 
       <section className="admin-workbench-surface admin-pagination-surface">
         <AdminPageHeader description="查看靶场实例状态和生命周期。" title="编排实例" />
 
         <div className="mt-4 flex min-h-0 flex-1 flex-col">
           <AdminListToolbar
-            action={<RangeInstanceCreateButton apiBaseUrl={apiBaseUrl} />}
+            action={<RangeInstanceCreateButton apiBaseUrl={apiBaseUrl} onCreated={retryListLoad} />}
             activeView={listMode}
             onSearchChange={setSearchName}
             onViewChange={(value) => {
@@ -596,18 +706,9 @@ export function RangeInstancesScreen({
             <AdminPaginatedList
               className="mt-4"
               footer={
-                visibleListInstances.length ? (
+                visibleGroups.length ? (
                   <AdminPaginationControls
-                    jumpPageValue={jumpPageValue}
                     label={`${listMode === 'history' ? '实例历史' : '实例列表'} 分页`}
-                    onJumpPage={handleJumpToPage}
-                    onJumpPageValueChange={setJumpPageValue}
-                    onNextPage={() =>
-                      setListPages((current) => ({
-                        ...current,
-                        [listMode]: activePagination.page + 1,
-                      }))
-                    }
                     onPageSelect={(pageNumber) =>
                       setListPages((current) => ({
                         ...current,
@@ -615,20 +716,13 @@ export function RangeInstancesScreen({
                       }))
                     }
                     onPageSizeChange={handlePageSizeChange}
-                    onPreviousPage={() =>
-                      setListPages((current) => ({
-                        ...current,
-                        [listMode]: activePagination.page - 1,
-                      }))
-                    }
                     pageSize={pageSize}
                     pagination={activePagination}
-                    visiblePages={visiblePages}
                   />
                 ) : null
               }
             >
-              <AdminDataTable
+              <div className="range-instance-list-table min-w-0"><AdminDataTable
                 columns={columns}
                 contentVersion={tableContentVersions[listMode]}
                 isRefreshing={isRefreshing}
@@ -666,7 +760,7 @@ export function RangeInstancesScreen({
                     />
                   ) : null;
 
-                  if (!visibleListInstances.length) {
+                  if (!visibleGroups.length) {
                     return retainedErrorRow ?? (
                       <AdminDataTableState
                         columns={tableColumns}
@@ -681,7 +775,7 @@ export function RangeInstancesScreen({
                     );
                   }
 
-                  const rows = pagedVisibleListInstances.map((instance) => {
+                  const renderInstanceRow = (instance: ExtendedRangeInstance, indented = false) => {
                     const nameColumn = getRangeColumn(tableColumns, 'name');
                     const createdByColumn = getRangeColumn(tableColumns, 'createdBy');
                     const templateColumn = getRangeColumn(tableColumns, 'template');
@@ -694,32 +788,36 @@ export function RangeInstancesScreen({
 
                       return (
                         <TableRow key={instance.id}>
-                          <AdminDataTableCell className="font-medium" column={nameColumn}>
+                          <AdminDataTableCell className={indented ? 'pl-10 font-medium' : 'font-medium'} column={nameColumn}>
                             {getInstanceDisplayName(instance)}
-                          </AdminDataTableCell>
-                          <AdminDataTableCell column={createdByColumn}>
-                            {instance.createdBy?.trim() || 'admin'}
                           </AdminDataTableCell>
                           <AdminDataTableCell column={templateColumn}>
                             {getInstanceTemplateLabel(instance)}
                           </AdminDataTableCell>
-                          <AdminDataTableCell column={getRangeColumn(tableColumns, 'status')}>
-                            <StatusBadge status={instance.status} />
+                          <AdminDataTableCell column={getRangeColumn(tableColumns, 'dnatPublicIp')}>
+                            {instance.dnatPublicIp?.trim() || '暂无'}
                           </AdminDataTableCell>
-                          <AdminDataTableCell column={createdAtColumn}>
+                          <AdminDataTableCell column={getRangeColumn(tableColumns, 'status')}>
+                            <InstancePowerBadge instance={instance} />
+                          </AdminDataTableCell>
+                          <AdminDataTableCell className="text-xs tabular-nums" column={createdAtColumn}>
                             {formatAdminDateTime(instance.createdAt)}
                           </AdminDataTableCell>
-                          <AdminDataTableCell column={getRangeColumn(tableColumns, 'endedAt')}>
+                          <AdminDataTableCell className="text-xs tabular-nums" column={getRangeColumn(tableColumns, 'endedAt')}>
                             {getEndedAtLabel(recentJob)}
                           </AdminDataTableCell>
                           <AdminDataTableCell column={getRangeColumn(tableColumns, 'duration')}>
                             {getDurationLabel(instance.createdAt, endedAt)}
                           </AdminDataTableCell>
+                          <AdminDataTableCell column={createdByColumn}>
+                            {instance.createdBy?.trim() || 'admin'}
+                          </AdminDataTableCell>
                           <AdminDataTableCell column={actionsColumn}>
-                            <div className="flex justify-start" data-slot="range-history-detail-action">
+                            <div className="flex justify-start gap-1" data-slot="range-history-detail-action">
                               <Button onMouseEnter={() => prefetchDetail(instance.id)} onFocus={() => prefetchDetail(instance.id)} onClick={() => void handleViewDetail(instance.id)} size="sm" type="button" variant="outline">
                                 查看详情
                               </Button>
+                              <Button aria-label={`导出靶场信息 ${getInstanceDisplayName(instance)}`} onClick={() => openInstanceExport(instance)} size="sm" type="button" variant="outline">导出</Button>
                             </div>
                           </AdminDataTableCell>
                         </TableRow>
@@ -728,49 +826,93 @@ export function RangeInstancesScreen({
 
                     const pendingIntent = readRangeRecoveryIntent(recoveryScopeFor(instance.id));
                     const actionLabel = getInstanceActionLabel(instance);
+                    const statusActionLabel = ['pending_destroy', 'destroying'].includes(instance.status)
+                      ? '查看回收进度'
+                      : pendingIntent ? '确认回收状态' : null;
 
                     return (
                       <TableRow key={instance.id}>
-                        <AdminDataTableCell className="font-medium" column={nameColumn}>
+                        <AdminDataTableCell className={indented ? 'pl-10 font-medium' : 'font-medium'} column={nameColumn}>
                           {getInstanceDisplayName(instance)}
-                        </AdminDataTableCell>
-                        <AdminDataTableCell column={createdByColumn}>
-                          {instance.createdBy?.trim() || 'admin'}
                         </AdminDataTableCell>
                         <AdminDataTableCell column={templateColumn}>
                           {getInstanceTemplateLabel(instance)}
                         </AdminDataTableCell>
-                        <AdminDataTableCell column={getRangeColumn(tableColumns, 'status')}>
-                          <StatusBadge status={instance.status} />
+                        <AdminDataTableCell column={getRangeColumn(tableColumns, 'dnatPublicIp')}>
+                          {instance.dnatPublicIp?.trim() || '暂无'}
                         </AdminDataTableCell>
-                        <AdminDataTableCell column={createdAtColumn}>
+                        <AdminDataTableCell column={getRangeColumn(tableColumns, 'status')}>
+                          <InstancePowerBadge instance={instance} />
+                        </AdminDataTableCell>
+                        <AdminDataTableCell className="text-xs tabular-nums" column={createdAtColumn}>
                           {getInstanceCreatedAt(instance)}
                         </AdminDataTableCell>
+                        <AdminDataTableCell column={createdByColumn}>
+                          {instance.createdBy?.trim() || 'admin'}
+                        </AdminDataTableCell>
                         <AdminDataTableCell column={actionsColumn}>
-                          <div className="flex justify-start gap-1">
+                          <div className="inline-flex flex-nowrap! items-center justify-start gap-1 whitespace-nowrap" data-slot="range-instance-actions">
                             <Button onMouseEnter={() => prefetchDetail(instance.id)} onFocus={() => prefetchDetail(instance.id)} onClick={() => void handleViewDetail(instance.id)} size="sm" type="button" variant="outline">
                               查看详情
                             </Button>
-                            {actionLabel || pendingIntent ? (
-                              <Button
-                                disabled={workspace?.isReadOnly || isSubmittingAction !== null}
-                                onClick={() => pendingIntent ? handleViewDetail(instance.id) : setConfirmDestroyTarget(instance)}
-                                size="sm"
-                                type="button"
-                                variant="destructive"
-                              >
-                                {pendingIntent ? '继续确认恢复操作' : isSubmittingAction !== null ? '处理中...' : actionLabel}
-                              </Button>
-                            ) : null}
+                            <InstancePowerMenu apiBaseUrl={apiBaseUrl} token={session.token} scopeKey={`${session.profile?.id}:${session.profile?.role}:${workspace?.id}`}
+                              target={{ kind: 'range', id: instance.id }} name={getInstanceDisplayName(instance)} label="更多" sources={[instance]}
+                              showPowerActions={instance.status === 'running' && !workspace?.isReadOnly && workspace?.provider !== 'tencent_cloud'}
+                              disabled={isSubmittingAction !== null} onChanged={retryListLoad}
+                              destructive={actionLabel ? <DropdownMenuItem variant="destructive" disabled={workspace?.isReadOnly || Boolean(instance.powerControl?.phase)}
+                                onSelect={() => setConfirmDestroyTarget(instance)}><Trash2 aria-hidden="true" />{actionLabel}</DropdownMenuItem> : undefined}>
+                              <DropdownMenuItem aria-label={`导出靶场信息 ${getInstanceDisplayName(instance)}`} onSelect={() => openInstanceExport(instance)}><Download aria-hidden="true" />导出靶场信息</DropdownMenuItem>
+                              {statusActionLabel ? <DropdownMenuItem onSelect={() => void handleViewDetail(instance.id)}>{statusActionLabel}</DropdownMenuItem> : null}
+                            </InstancePowerMenu>
                           </div>
                         </AdminDataTableCell>
                       </TableRow>
                     );
+                  };
+
+                  const rows = pagedGroups.flatMap(group => {
+                    if (!group.isBatch) return [renderInstanceRow(group.instances[0])];
+                    const first = group.instances[0], expanded = expandedBatches.includes(group.id);
+                    const publicIps = [...new Set(group.instances.map(instance => instance.dnatPublicIp?.trim()).filter(Boolean))];
+                    const endedAt = group.instances.map(instance => jobsByInstanceId.get(instance.id))
+                      .map(job => job?.finishedAt ?? job?.startedAt).filter((value): value is string => Boolean(value))
+                      .sort((a, b) => Date.parse(b) - Date.parse(a))[0];
+                    const closeable = group.instances.some(instance => Boolean(getInstanceActionLabel(instance)) && !readRangeRecoveryIntent(recoveryScopeFor(instance.id)));
+                    const busy = rangeBatchBusy(group.instances);
+                    const header = <TableRow className="bg-muted/20 hover:bg-muted/30" data-row-kind="batch" key={group.id}>
+                      {tableColumns.map(column => <AdminDataTableCell column={column} key={column.id}>
+                        {column.id === 'name' ? <div className="flex min-w-0 items-center gap-2">
+                          <Button aria-expanded={expanded} aria-label={`${expanded ? '收起' : '展开'}批次 ${group.name}`} onClick={() => setExpandedBatches(current =>
+                            expanded ? current.filter(id => id !== group.id) : [...current, group.id])} size="icon-xs" type="button" variant="ghost">
+                            {expanded ? <ChevronDown aria-hidden="true" /> : <ChevronRight aria-hidden="true" />}
+                          </Button>
+                          <div className="min-w-0"><strong className="block truncate" title={group.name}>{group.name}</strong>
+                            <span className="text-xs text-muted-foreground">{group.instances.length === group.quantity ? `${group.quantity} 套` : `当前 ${group.instances.length} 套 / 批次 ${group.quantity} 套`}</span>
+                          </div>
+                        </div> : column.id === 'createdBy' ? first.createdBy?.trim() || 'admin'
+                          : column.id === 'template' ? getInstanceTemplateLabel(first)
+                          : column.id === 'status' ? <span className="text-xs whitespace-normal">{rangeBatchStatus(group.instances)}</span>
+                          : column.id === 'dnatPublicIp' ? <span title={publicIps.join('、')}>{publicIps.length ? `${publicIps.length} 个公网入口` : '暂无'}</span>
+                          : column.id === 'createdAt' ? <span className="text-xs tabular-nums">{getInstanceCreatedAt(first)}</span>
+                          : column.id === 'endedAt' ? <span className="text-xs tabular-nums">{formatAdminDateTime(endedAt)}</span>
+                          : column.id === 'duration' ? getDurationLabel(first.createdAt, endedAt)
+                          : column.id === 'actions' ? <div className="inline-flex flex-nowrap! items-center gap-1 whitespace-nowrap" data-slot="range-batch-actions">
+                            <Button aria-label={`导出批次 ${group.name}`} onClick={() => openExport(group)} size="sm" type="button" variant="outline">导出</Button>
+                            {listMode === 'active' && first.launchBatch ? <InstancePowerMenu apiBaseUrl={apiBaseUrl} token={session.token} scopeKey={`${session.profile?.id}:${session.profile?.role}:${workspace?.id}`}
+                              target={{ kind: 'range_batch', id: first.launchBatch.id }} name={group.name} label="更多" sources={group.instances}
+                              showPowerActions={workspace?.provider !== 'tencent_cloud'} disabled={workspace?.isReadOnly || isSubmittingAction !== null} onChanged={retryListLoad}
+                              destructive={<DropdownMenuItem aria-label={`销毁批次 ${group.name}`} variant="destructive" disabled={busy || !closeable}
+                                title={busy ? '创建、更新或启停任务完成后，才能整批销毁。' : '仅销毁本批次中可回收的编排实例。'}
+                                onSelect={() => openBatchDestroy(group)}><Trash2 aria-hidden="true" />销毁整批</DropdownMenuItem>} /> : null}
+                          </div> : null}
+                      </AdminDataTableCell>)}
+                    </TableRow>;
+                    return [header, ...(expanded ? group.instances.map(instance => renderInstanceRow(instance, true)) : [])];
                   });
 
                   return retainedErrorRow ? [retainedErrorRow, ...rows] : rows;
                 }}
-              </AdminDataTable>
+              </AdminDataTable></div>
             </AdminPaginatedList>
           </AdminListToolbar>
         </div>
@@ -778,13 +920,13 @@ export function RangeInstancesScreen({
 
       {confirmDestroyTarget ? (
         <ConfirmActionDialog
-          confirmLabel={confirmDestroyTarget.status === 'destroy_failed' ? '确认重试' : '确认关闭'}
+          confirmLabel={confirmDestroyTarget.status === 'destroy_failed' ? '确认重试' : '确认销毁'}
           description={confirmDestroyTarget.status === 'destroy_failed'
             ? `将重新执行回收任务，继续删除“${getInstanceDisplayName(confirmDestroyTarget)}”的剩余云资源；回收完成后无法恢复。`
-            : `将销毁“${getInstanceDisplayName(confirmDestroyTarget)}”的全部云主机与随实例磁盘；关闭后无法恢复。`}
+            : `将销毁“${getInstanceDisplayName(confirmDestroyTarget)}”的全部云主机与随实例磁盘；销毁后无法恢复。`}
           open
           pending={isConfirmingDestroy}
-          title={confirmDestroyTarget.status === 'destroy_failed' ? '重试回收编排实例' : '关闭编排实例'}
+          title={confirmDestroyTarget.status === 'destroy_failed' ? '重试回收编排实例' : '销毁编排实例'}
           onConfirm={() => {
             if (!confirmDestroyTarget || isConfirmingDestroy) {
               return;
@@ -810,6 +952,33 @@ export function RangeInstancesScreen({
           }}
         />
       ) : null}
+
+      {batchDestroyTarget && isPageActive ? <AdminDialog open title="销毁整批编排实例" size="compact"
+        description={`将回收批次“${batchDestroyTarget.name}”中以下 ${batchDestroyTarget.instances.length} 套编排实例的全部云主机、磁盘及靶场网络，数据无法恢复。不会影响其他批次。`}
+        pending={isSubmittingAction !== null} onOpenChange={open => { if (!open && !submittingRef.current) setBatchDestroyTarget(null); }}
+        footer={<><Button disabled={isSubmittingAction !== null} onClick={() => setBatchDestroyTarget(null)} type="button" variant="outline">取消</Button>
+          <Button disabled={isSubmittingAction !== null} onClick={() => void performBatchDestroy()} type="button" variant="destructive">确认销毁整批</Button></>}>
+        <ul className="grid max-h-56 gap-2 overflow-y-auto text-sm">
+          {batchDestroyTarget.instances.map(instance => <li className="break-all" key={instance.id}><strong>{getInstanceDisplayName(instance)}</strong>
+            <span className="block text-xs text-muted-foreground">{instance.id}{instance.status === 'destroy_failed' ? ' · 重试回收剩余资源' : ''}</span></li>)}
+        </ul>
+        {batchDestroyTarget.skipped ? <p className="mt-3 text-xs text-muted-foreground">另有 {batchDestroyTarget.skipped} 套处理中、待确认或不可回收记录，本次跳过，不重复提交。</p> : null}
+        {isSubmittingAction ? <p className="mt-3 text-sm" role="status">已处理 {batchProgress} / {batchDestroyTarget.instances.length} 套请求，受理不代表云端已回收。</p> : null}
+      </AdminDialog> : null}
+
+      {exportTarget && isPageActive ? <AdminDialog open title="导出靶场信息" size="compact"
+        description={`导出“${exportTarget.name}”当前视图中的 ${exportTarget.instances.length} 套编排实例，每个主机节点一行。IP、端口和状态以平台已部署记录为准。`}
+        pending={exportPending} onOpenChange={open => { if (!open && !exportPendingRef.current) setExportTarget(null); }}
+        footer={<><Button disabled={exportPending} onClick={() => setExportTarget(null)} type="button" variant="outline">取消</Button>
+          <Button disabled={exportPending} onClick={() => void exportInstances()} type="button">{exportPending ? '正在导出…' : '导出 CSV'}</Button></>}>
+        <p className="text-sm text-muted-foreground">包含批次、实例、节点、镜像、私网 IP、公网入口、端口映射和到期时间。不会修改云资源。</p>
+        <label className="mt-4 flex items-start gap-2 text-sm">
+          <Checkbox checked={includeCredentials} disabled={exportPending} onCheckedChange={checked => setIncludeCredentials(checked === true)} />
+          包含节点登录账号和密码（敏感）
+        </label>
+        {includeCredentials ? <p className="mt-2 text-xs text-destructive">CSV 将包含明文登录凭据，请妥善保管；仅在本次导出中读取，不写入列表缓存。</p> : null}
+        {exportError ? <p className="mt-3 text-sm text-destructive" role="alert">{exportError}</p> : null}
+      </AdminDialog> : null}
     </div>
   );
 }

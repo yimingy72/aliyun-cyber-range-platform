@@ -1,4 +1,4 @@
-import { BadRequestException, ConflictException, ForbiddenException, Inject, Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ConflictException, ForbiddenException, Inject, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { createHash } from 'node:crypto';
 import { ADMIN_REPOSITORY, type AdminRepository, type RangeInstanceRecord } from './admin.repository';
 import type { SessionUserProfile } from './admin-user-auth';
@@ -12,12 +12,28 @@ import type { ResourceAlertStatus, ResourceAlertView, ResourceIdentity, Resource
 const inactive = new Set(['destroyed','create_failed','destroy_failed']);
 const digest = (value: unknown) => createHash('sha256').update(JSON.stringify(value)).digest('hex');
 const sort = (resources: ResourceIdentity[]) => [...resources].sort((a,b) => patrolResourceKey(a).localeCompare(patrolResourceKey(b)));
-const safeError = (error: unknown) => error instanceof CloudPatrolReadError
+const patrolValidationCodes = new Set([
+  'PATROL_TARGET_CHANGED','CLOUD_ACCOUNT_IDENTITY_MISMATCH','INCONSISTENT_PARENT_RESOURCE_LOOKUP',
+  'INCOMPLETE_ROUTE_TABLE_LOOKUP','UNREQUESTED_ROUTE_TABLE','UNREQUESTED_RESOURCE_ID',
+  'MALFORMED_RESOURCE_ID','MALFORMED_RESOURCE_TAGS','INCOMPLETE_ENI_PAGINATION',
+  'DUPLICATED_OR_MALFORMED_ENI','ENI_PAGINATION_LIMIT','INCOMPLETE_RULE_PAGINATION',
+  'UNREQUESTED_RULE_PARENT','DUPLICATED_RULE','MALFORMED_NAT_TABLES','MALFORMED_RULE_ID',
+  'INCOMPLETE_RESOURCE_PAGINATION','MALFORMED_RESOURCE','REPEATED_RESOURCE_PAGE','RESOURCE_PAGINATION_LIMIT',
+  'INVALID_PERSISTED_RESOURCE_ID','INVALID_CREATION_RECEIPT','CLOUD_PROVIDER_MISMATCH',
+]);
+const safeError = (error: unknown) => error instanceof CloudPatrolReadError && /^Throttling(?:\.|$)/.test(error.code)
+  ? `阿里云 ${error.action} 查询触发限流（${error.code}${error.requestId?`；请求 ID ${error.requestId}`:''}${error.attempts?`；已尝试 ${error.attempts} 次`:''}），本轮核验未完成。请降低共享账号 API 调用频率或核查速率配额；现有告警已保留。`
+  : error instanceof CloudPatrolReadError && error.code==='PLATFORM_READ_PACING_TIMEOUT'
+  ? '平台等待共享 VPC 查询额度超时，本轮巡检未完成；现有告警已保留，请稍后核验。'
+  : error instanceof CloudPatrolReadError
   ? `阿里云 ${error.action} 检查失败（HTTP ${error.status}，${error.code}；${error.requestId ? `请求 ID ${error.requestId}` : '请求 ID 未核验'}），请检查账号权限与网络后重新核验。`
+  : error instanceof Error && patrolValidationCodes.has(error.message)
+  ? `巡检校验失败（${error.message}），现有告警已保留，请重新核验。`
   : '云端检查未完成或来源已变化，请检查账号权限与网络后重新核验。';
 
 @Injectable()
 export class ResourceAlertsService {
+  private readonly logger = new Logger(ResourceAlertsService.name);
   constructor(@Inject(ADMIN_REPOSITORY) private readonly repository: AdminRepository,
     private readonly systemConfig: SystemConfigService, private readonly store: ResourcePatrolRepository,
     private readonly cloud: ResourcePatrolCloudClient) {}
@@ -90,6 +106,13 @@ export class ResourceAlertsService {
     const token = await this.store.tryLease(now);
     if (!token) return { recovered: 0, drifts: 0, skipped: true };
     let regions: string[] = [], drifts = 0, error: string | null = null, scanWorkspaceId: string | null = null;
+    let stage = 'target';
+    const recordFailure = (cause: unknown, region: string | null = null) => {
+      error = safeError(cause);
+      this.logger.error(JSON.stringify({ event:'resource_patrol_failed',stage,region,cloudWorkspaceId:scanWorkspaceId,
+        error, errorClass:cause instanceof TypeError?'TypeError':cause instanceof SyntaxError?'SyntaxError':null,
+        ...(cause instanceof CloudPatrolReadError && cause.pagination ? { pagination:cause.pagination } : {}) }));
+    };
     let leaseError: unknown = null;
     const heartbeat = setInterval(() => { void this.store.heartbeat(token).catch(value => { leaseError = value; }); }, 30_000);
     heartbeat.unref();
@@ -109,7 +132,9 @@ export class ResourceAlertsService {
       };
       await this.systemConfig.runInWorkspace(target.cloudWorkspaceId, async () => {
         const account = await this.systemConfig.getExecutionAccountContext();
+        stage = 'cloud_identity';
         await this.cloud.verifyAccount(account);
+        stage = 'platform_inventory';
         const data = await this.inventoryData(target.accountUid, target.provider);
         regions = [...new Set([...data.inventories.map(row => row.context.regionId),
           ...data.instances.flatMap(instance => {
@@ -119,16 +144,20 @@ export class ResourceAlertsService {
           ...data.profiles.filter(row => row.cloudAccountUid === target.accountUid).map(row => row.regionId)])].sort();
         for (const region of regions) {
           try {
+            stage = 'target_check';
             await assertCurrent();
             const known = data.inventories.filter(row => row.context.regionId === region).flatMap(row => row.resources);
+            stage = 'cloud_inventory';
             const observations = await this.cloud.inspect({ ...account, defaultRegion: region }, known);
+            stage = 'target_check';
             await assertCurrent();
             // A completed bounded read is required before any absence may close an alert.
+            stage = 'record_observations';
             drifts += await this.observeRegion({ ...account, defaultRegion: region }, data, observations, new Date(), assertCurrent, token);
-          } catch (cause) { error = safeError(cause); }
+          } catch (cause) { recordFailure(cause,region); }
         }
       });
-    } catch (cause) { error = safeError(cause); }
+    } catch (cause) { recordFailure(cause); }
     finally {
       clearInterval(heartbeat);
       await this.store.finish(token, new Date(), regions, error, scanWorkspaceId);

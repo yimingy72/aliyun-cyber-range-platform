@@ -1,4 +1,7 @@
 import React from 'react';
+Object.defineProperty(globalThis, 'ResizeObserver', { configurable: true, value: class {
+  observe() {} unobserve() {} disconnect() {}
+} });
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -39,6 +42,7 @@ const {
   retryImageImportMock,
   syncPublicImagesMock,
   syncCustomImagesMock,
+  syncMogongImagesMock,
   collectPlatformImageMock,
   createPlatformImageTagMock,
   deletePlatformImageTagMock,
@@ -70,6 +74,7 @@ const {
   retryImageImportMock: vi.fn(),
   syncPublicImagesMock: vi.fn(),
   syncCustomImagesMock: vi.fn(),
+  syncMogongImagesMock: vi.fn(),
   collectPlatformImageMock: vi.fn(),
   createPlatformImageTagMock: vi.fn(),
   deletePlatformImageTagMock: vi.fn(),
@@ -113,6 +118,7 @@ vi.mock('../../lib/admin-api', async () => {
     retryImageImport: retryImageImportMock,
     syncPublicImages: syncPublicImagesMock,
     syncCustomImages: syncCustomImagesMock,
+    syncMogongImages: syncMogongImagesMock,
     collectPlatformImage: collectPlatformImageMock,
     createPlatformImageTag: createPlatformImageTagMock,
     deletePlatformImageTag: deletePlatformImageTagMock,
@@ -146,12 +152,9 @@ vi.mock('./use-admin-session', () => ({
 import { ImageCenterScreen } from './image-center-screen';
 
 async function selectCloudSource(name: string) {
-  const selector = screen.getByRole('combobox', { name: '云上镜像来源切换' });
-  if (selector.textContent?.trim() === name) return;
-  fireEvent.keyDown(selector, { key: 'ArrowDown' });
-  fireEvent.click(await screen.findByRole('option', { name, exact: true }));
+  fireEvent.click(screen.getByRole('combobox', { name: '云上镜像来源切换' }));
+  fireEvent.click(await screen.findByRole('option', { name }));
 }
-
 
 function createSnapshot(
   overrides: Partial<ImageSnapshot> & Pick<ImageSnapshot, 'id' | 'imageId' | 'sourceImageName' | 'scope'>,
@@ -350,6 +353,7 @@ beforeEach(() => {
   });
   syncPublicImagesMock.mockResolvedValue(publicScopePayload);
   syncCustomImagesMock.mockResolvedValue(customScopePayload);
+  syncMogongImagesMock.mockResolvedValue({ total: 0, capturedAt: '2026-11-05T00:00:00Z' });
   collectPlatformImageMock.mockResolvedValue(
     createPlatformImageAsset({
       id: 'platform-image-collected-1',
@@ -486,13 +490,16 @@ describe('ImageCenterScreen', () => {
     fireEvent.mouseDown(screen.getByRole('tab', { name: '墨攻镜像中心' }));
     expect(await screen.findByText('没有匹配的墨攻镜像')).toBeTruthy();
     expect(fetchMogongImageCatalogMock).toHaveBeenCalledTimes(1);
+    expect(within(filterGroup as HTMLElement).getByRole('combobox', { name: '按镜像类型筛选' })).toBeTruthy();
+    expect(within(filterGroup as HTMLElement).getByRole('combobox', { name: '按创建人筛选' })).toBeTruthy();
     expect(actionSlot.firstElementChild).toBe(actionGroup);
     expect(actionGroup?.className).toContain('w-56');
     expect(screen.getByTestId('admin-list-toolbar-search-controls').children.item(1)).toBe(filterGroup);
     expect(filterGroup?.className).toContain('sm:w-[22.5rem]');
     expect(within(actionSlot).getByRole('button', { name: '管理标签' })).toBeTruthy();
-    fireEvent.click(within(actionSlot).getByRole('button', { name: '同步云镜像' }));
-    await waitFor(() => expect(syncCustomImagesMock).toHaveBeenCalledTimes(1));
+    fireEvent.click(within(actionSlot).getByRole('button', { name: '同步墨攻镜像' }));
+    await waitFor(() => expect(syncMogongImagesMock).toHaveBeenCalledTimes(1));
+    expect(syncCustomImagesMock).not.toHaveBeenCalled();
     expect(screen.queryByText(/墨攻目录快照/)).toBeNull();
   });
 
@@ -538,12 +545,8 @@ describe('ImageCenterScreen', () => {
     expect(await screen.findByText('腾讯平台镜像')).toBeTruthy();
     expect(screen.queryByRole('button', { name: '创建实例 腾讯平台镜像' })).toBeNull();
     fireEvent.mouseDown(screen.getByRole('tab', { name: '云上镜像来源' }));
-    const selector = await screen.findByRole('combobox', { name: '云上镜像来源切换' });
-    expect(selector.textContent).toContain('腾讯云自定义镜像');
-    fireEvent.keyDown(selector, { key: 'ArrowDown' });
-    expect(await screen.findByRole('option', { name: '腾讯云公共镜像' })).toBeTruthy();
-    expect(screen.queryByRole('option', { name: 'ACR 容器镜像' })).toBeNull();
-    fireEvent.keyDown(screen.getByRole('listbox'), { key: 'Escape' });
+    expect((await screen.findByRole('combobox', { name: '云上镜像来源切换' })).textContent).toContain('腾讯云自定义镜像');
+    await selectCloudSource('腾讯云公共镜像');
     expect(screen.queryByText('只读预览')).toBeNull();
     fireEvent.mouseDown(screen.getByRole('tab', { name: '我的镜像' }));
     expect((await screen.findByRole('button', { name: '上传镜像' }) as HTMLButtonElement).disabled).toBe(true);
@@ -569,7 +572,7 @@ describe('ImageCenterScreen', () => {
     expect(within(table).getByText('当前没有平台镜像。')).toBeTruthy();
   });
 
-  it('only renders nested cloud tab panels for cloud source views', async () => {
+  it('keeps cloud source selection in the search toolbar without a second tab row', async () => {
     render(<ImageCenterScreen apiBaseUrl="http://localhost:3001" />);
 
     const platformPanel = await screen.findByRole('tabpanel', { name: '平台镜像' });
@@ -586,8 +589,12 @@ describe('ImageCenterScreen', () => {
 
     const cloudPanel = await screen.findByRole('tabpanel', { name: '云上镜像来源' });
     expect(within(cloudPanel).queryByRole('tabpanel')).toBeNull();
-    expect(screen.getByRole('combobox', { name: '云上镜像来源切换' }).textContent).toContain('阿里云自定义镜像');
     expect(screen.getAllByRole('tabpanel')).toHaveLength(1);
+    const controls = screen.getByTestId('admin-list-toolbar-search-controls');
+    expect(within(controls).getByRole('searchbox', { name: '筛选镜像名' })).toBeTruthy();
+    expect(within(controls).getByRole('combobox', { name: '云上镜像来源切换' })).toBeTruthy();
+    expect(screen.queryByRole('tab', { name: '阿里云自定义镜像' })).toBeNull();
+    expect(screen.queryByRole('tab', { name: '阿里云公共镜像' })).toBeNull();
   });
 
   it('renders 平台镜像 / 我的镜像 / 云上镜像来源 and loads all payloads', async () => {
@@ -598,6 +605,7 @@ describe('ImageCenterScreen', () => {
     expect(screen.getByRole('tab', { name: '云上镜像来源' })).toBeTruthy();
     expect(screen.getByTestId('admin-list-toolbar-view-action').className).not.toContain('w-36');
     expect(screen.getByText('Alibaba Cloud Linux 3')).toBeTruthy();
+    expect(within(screen.getByRole('table', { name: '平台镜像' })).queryByText(/来源：/)).toBeNull();
     expect(screen.getByText('创建人')).toBeTruthy();
     expect(screen.getByText('admin')).toBeTruthy();
 
@@ -607,6 +615,7 @@ describe('ImageCenterScreen', () => {
 
     fireEvent.mouseDown(screen.getByRole('tab', { name: '我的镜像' }));
     expect(await screen.findByText('My Ubuntu 22.04')).toBeTruthy();
+    expect(within(screen.getByRole('table', { name: '我的镜像' })).queryByText(/来源：/)).toBeNull();
     expect(screen.getByText('test')).toBeTruthy();
 
     const mineWidths = Array.from(screen.getByRole('table', { name: '我的镜像' }).querySelectorAll('col')).map((column) =>
@@ -620,6 +629,10 @@ describe('ImageCenterScreen', () => {
     expect((await screen.findByRole('combobox', { name: '云上镜像来源切换' })).textContent).toContain('阿里云自定义镜像');
     expect(screen.getByRole('button', { name: '同步镜像' })).toBeTruthy();
     expect(screen.queryByRole('button', { name: '同步自定义镜像' })).toBeNull();
+    const cloudTable = screen.getByRole('table', { name: '阿里云自定义镜像' });
+    expect(within(cloudTable).getByRole('columnheader', { name: '操作系统' })).toBeTruthy();
+    expect(await within(cloudTable).findByRole('cell', { name: 'Ubuntu 22.04', exact: true })).toBeTruthy();
+    expect(within(cloudTable).queryByText(/平台：/)).toBeNull();
 
     expect(fetchPlatformImagesMock).toHaveBeenCalledWith('http://localhost:3001', 'dev-admin-token', 'platform');
     expect(fetchPlatformImagesMock).toHaveBeenCalledWith('http://localhost:3001', 'dev-admin-token', 'mine');
@@ -738,7 +751,6 @@ describe('ImageCenterScreen', () => {
     fireEvent.keyDown(within(row).getByRole('button', { name: '编辑标签 Alibaba Cloud Linux 3' }), { key: 'ArrowDown' });
     const menu = screen.getByRole('menu');
     fireEvent.click(await within(menu).findByRole('menuitemcheckbox', { name: '关键资产' }));
-    fireEvent.click(within(menu).getByRole('menuitem', { name: '保存标签' }));
     await waitFor(() => expect(setPlatformImageTagsMock).toHaveBeenCalledTimes(1));
     fireEvent.keyDown(menu, { key: 'Escape' });
     const manageTags = screen.getByRole('button', { name: '管理标签' });
@@ -777,6 +789,10 @@ describe('ImageCenterScreen', () => {
   });
 
   it('lets admins create and assign image tags from the inline tag dropdown', async () => {
+    setPlatformImageTagsMock.mockImplementation(async (_url: string, _token: string, id: string, tagIds: string[]) => createPlatformImageAsset({
+      id, imageId: 'aliyun-linux-3', displayName: 'Alibaba Cloud Linux 3',
+      tags: tagIds.map(id => ({ id, name: id === 'tag-critical' ? '关键资产' : '渗透测试' })),
+    }));
     render(<ImageCenterScreen apiBaseUrl="http://localhost:3001" />);
 
     const imageRow = (await screen.findByText('Alibaba Cloud Linux 3')).closest('tr') as HTMLElement;
@@ -786,6 +802,7 @@ describe('ImageCenterScreen', () => {
 
     const menu = screen.getByRole('menu');
     fireEvent.click(within(menu).getByRole('menuitemcheckbox', { name: '关键资产' }));
+    await waitFor(() => expect(within(menu).getByRole('button', { name: '新建标签 Alibaba Cloud Linux 3' })).toHaveProperty('disabled', false));
     fireEvent.change(within(menu).getByLabelText('新标签名称 Alibaba Cloud Linux 3'), { target: { value: '渗透测试' } });
     fireEvent.click(within(menu).getByRole('button', { name: '新建标签 Alibaba Cloud Linux 3' }));
 
@@ -794,7 +811,6 @@ describe('ImageCenterScreen', () => {
     });
 
     expect(within(menu).getByRole('menuitemcheckbox', { name: '渗透测试' })).toBeTruthy();
-    fireEvent.click(within(menu).getByRole('menuitem', { name: '保存标签' }));
 
     await waitFor(() => {
       expect(setPlatformImageTagsMock).toHaveBeenCalledWith(
@@ -805,7 +821,7 @@ describe('ImageCenterScreen', () => {
       );
     });
 
-    expect(await screen.findByText('渗透测试')).toBeTruthy();
+    expect(await within(imageRow).findByText('渗透测试')).toBeTruthy();
   });
 
   it('only lets ordinary owners edit tags from 我的镜像 and does not expose tag creation', async () => {
@@ -847,7 +863,6 @@ describe('ImageCenterScreen', () => {
     expect(within(menu).queryByRole('button', { name: '新建标签 Owner Ubuntu' })).toBeNull();
 
     fireEvent.click(within(menu).getByRole('menuitemcheckbox', { name: '关键资产' }));
-    fireEvent.click(within(menu).getByRole('menuitem', { name: '保存标签' }));
 
     await waitFor(() => {
       expect(setPlatformImageTagsMock).toHaveBeenCalledWith(
@@ -890,7 +905,6 @@ describe('ImageCenterScreen', () => {
     expect(within(menu).queryByRole('button', { name: '新建标签 Admin Private Ubuntu' })).toBeNull();
 
     fireEvent.click(within(menu).getByRole('menuitemcheckbox', { name: '关键资产' }));
-    fireEvent.click(within(menu).getByRole('menuitem', { name: '保存标签' }));
 
     await waitFor(() => {
       expect(setPlatformImageTagsMock).toHaveBeenCalledWith(
@@ -1495,6 +1509,9 @@ describe('ImageCenterScreen', () => {
     expect(await screen.findByText('Blue Team Ubuntu 22.04')).toBeTruthy();
 
     fireEvent.click(screen.getByRole('button', { name: '收录到平台 Blue Team Ubuntu 22.04' }));
+    const collectDialog = await screen.findByRole('dialog', { name: '收录到平台' });
+    fireEvent.change(within(collectDialog).getByLabelText('平台镜像名'), { target: { value: 'Blue Team Ubuntu 22.04' } });
+    fireEvent.click(within(collectDialog).getByRole('button', { name: '确认收录' }));
 
     await waitFor(() => {
       expect(collectPlatformImageMock).toHaveBeenCalledWith('http://localhost:3001', 'dev-admin-token', {
@@ -1508,6 +1525,100 @@ describe('ImageCenterScreen', () => {
 
     fireEvent.mouseDown(screen.getByRole('tab', { name: '平台镜像' }));
     expect(await screen.findByText('Blue Team Ubuntu 22.04')).toBeTruthy();
+  });
+
+  it('auto-saves tags without losing source availability when the mutation omits read-only fields', async () => {
+    const { sourceSnapshotAvailable: _available, sourceSnapshotStatus: _status, ...metadata } = createPlatformImageAsset({
+      id: 'platform-image-1', imageId: 'aliyun-linux-3', displayName: 'Alibaba Cloud Linux 3', tags: [{ id: 'tag-critical', name: '关键资产' }],
+    });
+    setPlatformImageTagsMock.mockResolvedValue(metadata);
+    render(<ImageCenterScreen apiBaseUrl="http://localhost:3001" />);
+    const row = (await screen.findByText('Alibaba Cloud Linux 3')).closest('tr')!;
+    fireEvent.keyDown(within(row).getByRole('button', { name: '编辑标签 Alibaba Cloud Linux 3' }), { key: 'ArrowDown' });
+    const menu = screen.getByRole('menu');
+    fireEvent.click(within(menu).getByRole('menuitemcheckbox', { name: '关键资产' }));
+    await waitFor(() => expect(setPlatformImageTagsMock).toHaveBeenCalledOnce());
+    expect(within(menu).queryByRole('menuitem', { name: '保存标签' })).toBeNull();
+    await waitFor(() => expect(within(row).getByText('关键资产')).toBeTruthy());
+    expect(within(row).getByText('已启用')).toBeTruthy();
+    expect(within(row).queryByText('来源待确认')).toBeNull();
+  });
+
+  it('keeps a real unknown source unconfirmed rather than enabling it after a metadata edit', async () => {
+    const asset = createPlatformImageAsset({ id: 'platform-image-1', imageId: 'aliyun-linux-3', displayName: 'Alibaba Cloud Linux 3', sourceSnapshotAvailable: null });
+    fetchPlatformImagesMock.mockResolvedValue({ items: [asset] });
+    const { sourceSnapshotAvailable: _available, ...metadata } = asset;
+    setPlatformImageTagsMock.mockResolvedValue({ ...metadata, tags: [{ id: 'tag-critical', name: '关键资产' }] });
+    render(<ImageCenterScreen />);
+    const row = (await screen.findByText('Alibaba Cloud Linux 3')).closest('tr')!;
+    fireEvent.keyDown(within(row).getByRole('button', { name: '编辑标签 Alibaba Cloud Linux 3' }), { key: 'ArrowDown' });
+    fireEvent.click(screen.getByRole('menuitemcheckbox', { name: '关键资产' }));
+    await waitFor(() => expect(setPlatformImageTagsMock).toHaveBeenCalledOnce());
+    expect(within(row).getByText('来源待确认')).toBeTruthy();
+    expect(within(row).queryByText('已启用')).toBeNull();
+  });
+
+  it('restores saved tags and shows the actual error after an automatic save fails', async () => {
+    setPlatformImageTagsMock.mockRejectedValue(new Error('标签保存失败测试'));
+    render(<ImageCenterScreen />);
+    fireEvent.keyDown(await screen.findByRole('button', { name: '编辑标签 Alibaba Cloud Linux 3' }), { key: 'ArrowDown' });
+    const menu = screen.getByRole('menu');
+    fireEvent.click(within(menu).getByRole('menuitemcheckbox', { name: '关键资产' }));
+    await waitFor(() => expect(within(menu).getByRole('alert').textContent).toContain('标签保存失败测试'));
+    expect(within(menu).getByRole('menuitemcheckbox', { name: '关键资产' }).getAttribute('aria-checked')).toBe('false');
+    expect(setPlatformImageTagsMock).toHaveBeenCalledOnce();
+  });
+
+  it('asks for the platform name and existing tags before collecting, and cancel writes nothing', async () => {
+    render(<ImageCenterScreen />);
+    fireEvent.mouseDown(await screen.findByRole('tab', { name: '云上镜像来源' }));
+    fireEvent.click(await screen.findByRole('button', { name: '收录到平台 Blue Team Ubuntu 22.04' }));
+    const dialog = await screen.findByRole('dialog', { name: '收录到平台' });
+    expect(within(dialog).getByLabelText('平台镜像名')).toHaveProperty('required', true);
+    expect(within(dialog).getByRole('checkbox', { name: '关键资产' })).toBeTruthy();
+    fireEvent.submit(within(dialog).getByLabelText('平台镜像名').closest('form')!);
+    expect(collectPlatformImageMock).not.toHaveBeenCalled();
+    fireEvent.click(within(dialog).getByRole('button', { name: '取消' }));
+    expect(collectPlatformImageMock).not.toHaveBeenCalled();
+    expect(setPlatformImageTagsMock).not.toHaveBeenCalled();
+  });
+
+  it('collects with the entered name and assigns existing tags in one confirmed flow', async () => {
+    const asset = createPlatformImageAsset({ id: 'new-collected', imageId: 'm-custom-001', displayName: '新平台镜像名', sourceScope: 'custom' });
+    collectPlatformImageMock.mockResolvedValue(asset);
+    setPlatformImageTagsMock.mockResolvedValue({ ...asset, tags: [{ id: 'tag-critical', name: '关键资产' }] });
+    render(<ImageCenterScreen />);
+    fireEvent.mouseDown(await screen.findByRole('tab', { name: '云上镜像来源' }));
+    fireEvent.click(await screen.findByRole('button', { name: '收录到平台 Blue Team Ubuntu 22.04' }));
+    const dialog = await screen.findByRole('dialog', { name: '收录到平台' });
+    fireEvent.change(within(dialog).getByLabelText('平台镜像名'), { target: { value: ' 新平台镜像名 ' } });
+    fireEvent.click(within(dialog).getByRole('checkbox', { name: '关键资产' }));
+    fireEvent.click(within(dialog).getByRole('button', { name: '确认收录' }));
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: '收录到平台' })).toBeNull());
+    expect(collectPlatformImageMock).toHaveBeenCalledWith('http://localhost:3001', 'dev-admin-token', { snapshotId: 'custom-snapshot-1', displayName: '新平台镜像名' });
+    expect(setPlatformImageTagsMock).toHaveBeenCalledWith('http://localhost:3001', 'dev-admin-token', 'new-collected', ['tag-critical']);
+    fireEvent.mouseDown(screen.getByRole('tab', { name: '平台镜像' }));
+    const row = (await screen.findByText('新平台镜像名')).closest('tr')!;
+    expect(within(row).getByText('关键资产')).toBeTruthy();
+  });
+
+  it('retries only tag association when collection succeeded but the tag response failed', async () => {
+    const asset = createPlatformImageAsset({ id: 'new-collected', imageId: 'm-custom-001', displayName: '部分成功镜像', sourceScope: 'custom' });
+    collectPlatformImageMock.mockResolvedValue(asset);
+    setPlatformImageTagsMock.mockRejectedValueOnce(new Error('temporary tag failure')).mockResolvedValueOnce({ ...asset, tags: [{ id: 'tag-critical', name: '关键资产' }] });
+    render(<ImageCenterScreen />);
+    fireEvent.mouseDown(await screen.findByRole('tab', { name: '云上镜像来源' }));
+    fireEvent.click(await screen.findByRole('button', { name: '收录到平台 Blue Team Ubuntu 22.04' }));
+    const dialog = await screen.findByRole('dialog', { name: '收录到平台' });
+    fireEvent.change(within(dialog).getByLabelText('平台镜像名'), { target: { value: '部分成功镜像' } });
+    fireEvent.click(within(dialog).getByRole('checkbox', { name: '关键资产' }));
+    fireEvent.click(within(dialog).getByRole('button', { name: '确认收录' }));
+    await waitFor(() => expect(within(dialog).getByRole('alert').textContent).toContain('镜像已收录'));
+    expect(within(dialog).getByLabelText('平台镜像名')).toHaveProperty('disabled', true);
+    fireEvent.click(within(dialog).getByRole('button', { name: '保存标签' }));
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: '收录到平台' })).toBeNull());
+    expect(collectPlatformImageMock).toHaveBeenCalledOnce();
+    expect(setPlatformImageTagsMock).toHaveBeenCalledTimes(2);
   });
 
   it('treats disabled catalog items as collectable until they are re-collected', async () => {
@@ -1786,7 +1897,8 @@ describe('ImageCenterScreen', () => {
     await selectCloudSource('阿里云自定义镜像');
     expect(await screen.findByText('Blue Team Ubuntu 22.04')).toBeTruthy();
 
-    fireEvent.click(screen.getByRole('button', { name: '删除 Blue Team Ubuntu 22.04' }));
+    fireEvent.keyDown(screen.getByRole('button', { name: '更多操作 Blue Team Ubuntu 22.04' }), { key: 'Enter' });
+    fireEvent.click(screen.getByRole('menuitem', { name: '删除 Blue Team Ubuntu 22.04' }));
     const deleteDialog = screen.getByRole('dialog', { name: '确认删除阿里云自定义镜像' });
     fireEvent.click(within(deleteDialog).getByRole('button', { name: '确认删除' }));
 
@@ -1807,7 +1919,8 @@ describe('ImageCenterScreen', () => {
     render(<ImageCenterScreen apiBaseUrl="http://localhost:3001" />);
     fireEvent.mouseDown(await screen.findByRole('tab', { name: '云上镜像来源' }));
     await selectCloudSource('阿里云自定义镜像');
-    fireEvent.click(await screen.findByRole('button', { name: `${snapshot.status === 'Deleted' ? '回收快照' : '删除'} ${snapshot.sourceImageName}` }));
+    fireEvent.keyDown(await screen.findByRole('button', { name: `更多操作 ${snapshot.sourceImageName}` }), { key: 'Enter' });
+    fireEvent.click(screen.getByRole('menuitem', { name: `${snapshot.status === 'Deleted' ? '回收快照' : '删除'} ${snapshot.sourceImageName}` }));
     return screen.getByRole('dialog', { name: snapshot.status === 'Deleted' ? '回收所属快照' : '确认删除阿里云自定义镜像' });
   }
 
@@ -1831,7 +1944,9 @@ describe('ImageCenterScreen', () => {
   it('retains a recovery entry when only the cloud image was removed', async () => {
     const dialog = await openCustomDelete({ ...customSnapshot, ownedSnapshotCleanup: { snapshotCount: 2, status: 'ready' } });
     fireEvent.click(within(dialog).getByRole('button', { name: '确认删除' }));
-    const retry = await screen.findByRole('button', { name: `回收快照 ${customSnapshot.sourceImageName}` });
+    await screen.findByText('快照待回收');
+    fireEvent.keyDown(screen.getByRole('button', { name: `更多操作 ${customSnapshot.sourceImageName}` }), { key: 'Enter' });
+    const retry = screen.getByRole('menuitem', { name: `回收快照 ${customSnapshot.sourceImageName}` });
     expect(screen.getByText('快照待回收')).toBeTruthy();
     fireEvent.click(retry);
     const cleanupDialog = screen.getByRole('dialog', { name: '回收所属快照' });
@@ -1930,7 +2045,7 @@ describe('ImageCenterScreen', () => {
     expect(await screen.findByText('Platform Asset 1')).toBeTruthy();
     fireEvent.keyDown(screen.getByRole('combobox', { name: '每页条数' }), { key: 'ArrowDown' });
     fireEvent.click(await screen.findByRole('option', { name: '50 条' }));
-    fireEvent.click(screen.getByRole('button', { name: '第 2 页' }));
+    fireEvent.click(screen.getByRole('link', { name: '第 2 页' }));
 
     expect(await screen.findByText('Platform Asset 51')).toBeTruthy();
     expect(screen.queryByText('Platform Asset 1')).toBeNull();
@@ -1938,7 +2053,7 @@ describe('ImageCenterScreen', () => {
     fireEvent.mouseDown(screen.getByRole('tab', { name: '云上镜像来源' }));
     await selectCloudSource('阿里云自定义镜像');
     expect(await screen.findByText('Custom 1')).toBeTruthy();
-    fireEvent.click(screen.getByRole('button', { name: '第 2 页' }));
+    fireEvent.click(screen.getByRole('link', { name: '第 2 页' }));
     expect(await screen.findByText('Custom 51')).toBeTruthy();
   });
 
@@ -1961,7 +2076,7 @@ describe('ImageCenterScreen', () => {
 
     expect(await screen.findByText('Public 41')).toBeTruthy();
     expect(screen.queryByText('Public 1')).toBeNull();
-    expect(screen.getByRole('button', { name: '第 3 页' }).getAttribute('aria-pressed')).toBe('true');
+    expect(screen.getByRole('link', { name: '第 3 页' }).getAttribute('aria-current')).toBe('page');
     fireEvent.change(screen.getByRole('spinbutton', { name: '跳转到页码' }), { target: { value: '99' } });
     fireEvent.click(screen.getByRole('button', { name: '跳转' }));
     expect(screen.getByText('Public 41')).toBeTruthy();
@@ -1986,6 +2101,9 @@ describe('ImageCenterScreen', () => {
 
     await selectCloudSource('阿里云自定义镜像');
     fireEvent.click(await screen.findByRole('button', { name: '收录到平台 Blue Team Ubuntu 22.04' }));
+    const collectDialog = await screen.findByRole('dialog', { name: '收录到平台' });
+    fireEvent.change(within(collectDialog).getByLabelText('平台镜像名'), { target: { value: 'Blue Team Ubuntu 22.04' } });
+    fireEvent.click(within(collectDialog).getByRole('button', { name: '确认收录' }));
 
     await waitFor(() => {
       expect(logoutMock).toHaveBeenCalledTimes(2);
@@ -2165,6 +2283,61 @@ describe('ImageCenterScreen', () => {
 
 
 describe('image user-flow regressions', () => {
+  it('still shows a current metadata read failure after reopening the page', async () => {
+    const message = 'Current metadata request failed with status 502';
+    fetchCloudAccountContextsMock.mockRejectedValue(new AdminApiError(502, message));
+    function Page({ pathname }: { pathname: string }) {
+      return <AdminScreenCacheProvider><AdminPageCache pathname={pathname} createPage={() => null}>
+        {pathname === '/admin/image-center' ? <ImageCenterScreen /> : <p>Other page</p>}
+      </AdminPageCache></AdminScreenCacheProvider>;
+    }
+    const view = render(<Page pathname="/admin/image-center" />);
+    await screen.findByText(message);
+    view.rerender(<Page pathname="/admin/scenarios" />);
+    view.rerender(<Page pathname="/admin/image-center" />);
+    await waitFor(() => expect(fetchCloudAccountContextsMock).toHaveBeenCalledTimes(2));
+    expect(await screen.findByText(message)).toBeTruthy();
+    expect(screen.getByText('Alibaba Cloud Linux 3')).toBeTruthy();
+  });
+
+  it('clears a recovered metadata 502 when reopening the retained image page', async () => {
+    const message = 'Admin API request failed with status 502';
+    fetchCloudAccountContextsMock.mockRejectedValueOnce(new AdminApiError(502, message));
+    function Page({ pathname }: { pathname: string }) {
+      return <AdminScreenCacheProvider><AdminPageCache pathname={pathname} createPage={() => null}>
+        {pathname === '/admin/image-center' ? <ImageCenterScreen /> : <p>Other page</p>}
+      </AdminPageCache></AdminScreenCacheProvider>;
+    }
+    const view = render(<Page pathname="/admin/image-center" />);
+    await screen.findByText(message);
+    view.rerender(<Page pathname="/admin/scenarios" />);
+    view.rerender(<Page pathname="/admin/image-center" />);
+    await waitFor(() => expect(fetchCloudAccountContextsMock).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(screen.queryByText(message)).toBeNull());
+    expect(screen.getByText('Alibaba Cloud Linux 3')).toBeTruthy();
+  });
+
+  it('does not retain an old tag-save 502 as a new page-open failure', async () => {
+    const message = 'Admin API request failed with status 502';
+    setPlatformImageTagsMock.mockRejectedValueOnce(new AdminApiError(502, message));
+    function Page({ pathname }: { pathname: string }) {
+      return <AdminScreenCacheProvider><AdminPageCache pathname={pathname} createPage={() => null}>
+        {pathname === '/admin/image-center' ? <ImageCenterScreen /> : <p>Other page</p>}
+      </AdminPageCache></AdminScreenCacheProvider>;
+    }
+    const view = render(<Page pathname="/admin/image-center" />);
+    const row = (await screen.findByText('Alibaba Cloud Linux 3')).closest('tr')!;
+    fireEvent.keyDown(within(row).getByRole('button', { name: '编辑标签 Alibaba Cloud Linux 3' }), { key: 'ArrowDown' });
+    fireEvent.click(within(screen.getByRole('menu')).getByRole('menuitemcheckbox', { name: '关键资产' }));
+    await screen.findAllByText(message);
+    fireEvent.keyDown(screen.getByRole('menu'), { key: 'Escape' });
+    view.rerender(<Page pathname="/admin/scenarios" />);
+    view.rerender(<Page pathname="/admin/image-center" />);
+    await waitFor(() => expect(fetchPlatformImagesMock.mock.calls.filter(call => call[2] === 'platform').length).toBe(2));
+    await waitFor(() => expect(screen.queryByText(message)).toBeNull());
+    expect(setPlatformImageTagsMock).toHaveBeenCalledTimes(1);
+  });
+
   it('audit-ui: a custom deletion wins over a read started while deletion was pending', async () => {
     let resolveDelete!: () => void;
     let resolveList!: (value: ImageCatalogScopePayload) => void;
@@ -2183,7 +2356,8 @@ describe('image user-flow regressions', () => {
     fireEvent.mouseDown(await screen.findByRole('tab', { name: '云上镜像来源' }));
     const table = await screen.findByRole('table', { name: '阿里云自定义镜像' });
     await within(table).findByText(customSnapshot.sourceImageName);
-    fireEvent.click(within(table).getByRole('button', { name: `删除 ${customSnapshot.sourceImageName}` }));
+    fireEvent.keyDown(within(table).getByRole('button', { name: `更多操作 ${customSnapshot.sourceImageName}` }), { key: 'Enter' });
+    fireEvent.click(screen.getByRole('menuitem', { name: `删除 ${customSnapshot.sourceImageName}` }));
     fireEvent.click(screen.getByRole('button', { name: '确认删除' }));
     await waitFor(() => expect(deleteCustomImageSnapshotMock).toHaveBeenCalledTimes(1));
     view.rerender(<Page pathname="/admin/scenarios" />);

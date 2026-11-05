@@ -1,6 +1,6 @@
 'use client';
 
-import { type ComponentProps, type ReactNode, useCallback, useLayoutEffect, useState } from 'react';
+import { type ComponentProps, type CSSProperties, type ReactNode, useCallback, useLayoutEffect, useState } from 'react';
 import { CircleAlert, Inbox } from 'lucide-react';
 
 import { AsyncContentState } from '@/components/admin/shared/async-content-state';
@@ -9,12 +9,21 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import { cn } from '@/lib/utils';
 
+export const ADMIN_TABLE_WIDTHS = {
+  creator: '7rem',
+  status: '7rem',
+  dateTime: '11.5rem',
+  identifier: '14rem',
+  actions: '11rem',
+} as const;
+
 export type AdminDataColumn = {
   id: string;
   label: string;
   priority: 'primary' | 'secondary' | 'tertiary' | 'detail';
   align?: 'left' | 'right';
   width?: string;
+  minWidth?: string;
 };
 
 interface AdminDataTableProps {
@@ -83,7 +92,7 @@ function columnPriorityColumnClassName(priority: AdminDataColumn['priority']) {
   return undefined;
 }
 
-function useTextOverflow() {
+function useTextOverflow(content: ReactNode) {
   const [element, setElement] = useState<HTMLSpanElement | null>(null);
   const [isOverflowing, setIsOverflowing] = useState(false);
 
@@ -112,18 +121,25 @@ function useTextOverflow() {
     observer.observe(element);
 
     return () => observer.disconnect();
-  }, [element, updateOverflow]);
+  }, [element, updateOverflow, content]);
 
   return { isOverflowing, textRef };
 }
 
 export function AdminDataTable({ label, columns, children, contentVersion, isRefreshing = false }: AdminDataTableProps) {
+  const priorities = ['primary', 'secondary', 'tertiary', 'detail'];
+  const minimumWidths = Object.fromEntries(priorities.map((priority, index) => [
+    `--admin-table-min-${priority}`,
+    `calc(${columns.filter(column => priorities.indexOf(column.priority) <= index)
+      .map(column => column.minWidth ?? (column.width?.includes('%') ? undefined : column.width) ?? '14rem').join(' + ') || '0px'})`,
+  ])) as CSSProperties;
   return (
     <TooltipProvider>
       <div
-        className="relative overflow-hidden rounded border border-border bg-background"
+        className="relative w-full overflow-hidden rounded border border-border bg-card"
         data-refreshing={isRefreshing || undefined}
         data-slot="admin-data-table-frame"
+        style={minimumWidths}
       >
         <span aria-hidden="true" className="admin-data-table-refresh-indicator" />
         <Table aria-busy={isRefreshing || undefined} aria-label={label} className="min-w-full table-fixed">
@@ -136,12 +152,13 @@ export function AdminDataTable({ label, columns, children, contentVersion, isRef
               />
             ))}
           </colgroup>
-          <TableHeader className="bg-muted/60">
+          <TableHeader>
             <TableRow className="hover:bg-transparent">
               {columns.map((column) => (
                 <TableHead
+                  data-column-id={column.id}
                   className={cn(
-                    'h-11 min-w-0 overflow-hidden break-words px-3 whitespace-normal',
+                    'min-w-0 overflow-hidden break-words whitespace-normal',
                     columnPriorityClassName(column.priority),
                     column.align === 'right' && 'text-right',
                   )}
@@ -165,7 +182,7 @@ export function AdminDataTable({ label, columns, children, contentVersion, isRef
 }
 
 export function AdminDataTableText({ children, className, tooltipContent }: AdminDataTableTextProps) {
-  const { isOverflowing, textRef } = useTextOverflow();
+  const { isOverflowing, textRef } = useTextOverflow(children);
   const showTooltip = isOverflowing || tooltipContent !== undefined;
   const text = (
     <span className={cn('block min-w-0 truncate', className)} ref={textRef} tabIndex={showTooltip ? 0 : undefined}>
@@ -193,11 +210,12 @@ export function AdminDataTableCell({ column, className, children, ...props }: Ad
 
   return (
     <TableCell
+      data-column-id={column.id}
       className={cn(
         'min-w-0 overflow-hidden px-3 whitespace-nowrap',
         columnPriorityClassName(column.priority),
         column.align === 'right' && 'text-right',
-        isActionColumn && 'whitespace-normal [&>div]:flex-wrap',
+        isActionColumn && '[&>div]:flex-nowrap',
         className,
       )}
       {...props}

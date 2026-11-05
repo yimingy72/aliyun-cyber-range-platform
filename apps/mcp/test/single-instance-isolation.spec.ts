@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { createToolRegistry } from '../src/server';
 import { PlatformApiClient } from '@aliyun-cyber-range/platform-api-client';
 const member = (id: string) => ({ id, name: id, singleInstanceConfig: { hostKey: 'ecs', imageDisplayName: 'Ubuntu' }, runtimeCredentials: { ecs: { username: 'root', password: 'synthetic-only' } } });
@@ -50,5 +50,12 @@ describe('single instance MCP isolation', () => {
     const registry = createToolRegistry({ destroySingleInstanceNetwork: async (id: string) => ({ networkProfileId: id, status: 'destroyed' }) } as any);
     await expect(registry.callTool('single_instance_network_destroy', ['instances:destroy'], { networkProfileId: 'profile',cleanupRunId:'synthetic-run' }, 'admin')).rejects.toThrow('Forbidden');
     expect((await registry.callTool('single_instance_network_destroy', ['instances:destroy', 'settings:write'], { networkProfileId: 'profile',cleanupRunId:'synthetic-run' }, 'admin')).structuredContent.result).toMatchObject({ networkProfileId: 'profile', status: 'destroyed' });
+  });
+  it('creates only the shared network through an admin-only confirmed tool contract', async () => {
+    const createSingleInstanceNetwork = vi.fn(async () => ({ networkProfileId:'profile',status:'ready',vpcId:'vpc' }));
+    const registry = createToolRegistry({ createSingleInstanceNetwork } as any);
+    await expect(registry.callTool('single_instance_network_create',['settings:write'],{},'admin')).rejects.toThrow('Forbidden');
+    expect((await registry.callTool('single_instance_network_create',['settings:write','instances:create'],{},'admin')).structuredContent.result).toMatchObject({networkProfileId:'profile',status:'ready'});
+    expect(createSingleInstanceNetwork).toHaveBeenCalledWith({idempotencyKey:undefined,confirmationId:undefined});
   });
 });

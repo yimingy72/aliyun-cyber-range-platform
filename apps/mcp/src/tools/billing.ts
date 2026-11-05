@@ -1,8 +1,10 @@
-import type { BillingGroupInput, BillingWindowInput, BindOssBillingInput } from '@aliyun-cyber-range/platform-api-client';
+import type { BillingEntriesInput, BillingGroupInput, BillingWindowInput, BindOssBillingInput } from '@aliyun-cyber-range/platform-api-client';
 import * as z from 'zod/v4';
 
 import {
   billingAnomaliesInputSchema,
+  billingEntriesInputSchema,
+  billingEntryDetailInputSchema,
   billingExportPlatformCsvInputSchema,
   billingExportUserCsvInputSchema,
   billingExportUsersCsvInputSchema,
@@ -59,6 +61,42 @@ const operation = (args: Record<string, unknown>) => ({ idempotencyKey: args.ide
 
 export const billingTools: ToolDefinition[] = [
   {
+    name: 'billing_entry_list', title: '查询账目与出账分类',
+    description: '只读查询当前空间的实例与平台资产账目，与账单页面使用同一模型。无需出账表示有证据证明创建前失败；待核验不等于未出账或免费。按视图、用户、账期和出账状态筛选，支持整批分页。不发起云查询或补账。',
+    requiredScopes: ['billing:read'], adminOnly: true, readOnlyHint: true,
+    inputSchema: billingEntriesInputSchema,
+    outputSchema: resultOutputSchema(z.object({ version: z.literal(2), items: z.array(z.record(z.string(),z.unknown())), total: z.number().int().nonnegative() }).passthrough()),
+    call(context,args) {
+      if (!context.client.listBillingEntries) throw new Error('Billing entries are unavailable');
+      return context.client.listBillingEntries(args as BillingEntriesInput);
+    },
+  },
+  {
+    name: 'billing_entry_get', title: '查询账目明细与操作历史',
+    description: '只读查询准确 entryId 的资源、官方费用组成及操作记录。entryId 须来自账目列表；失败记录保留历史，空金额不伪造成零元账单。不创建或变更云资源。',
+    requiredScopes: ['billing:read'], adminOnly: true, readOnlyHint: true,
+    inputSchema: billingEntryDetailInputSchema,
+    outputSchema: resultOutputSchema(z.object({ entry: z.record(z.string(),z.unknown()), resources: z.array(z.record(z.string(),z.unknown())), events: z.array(z.record(z.string(),z.unknown())) }).passthrough()),
+    call(context,args) {
+      if (!context.client.getBillingEntryDetail) throw new Error('Billing entry details are unavailable');
+      const {entryId,...window}=args as {entryId:string;startAt?:string;endAt?:string};
+      return context.client.getBillingEntryDetail(entryId,window);
+    },
+  },
+  {
+    name: 'billing_monthly_diagnose', title: '只读核对资源月账',
+    description: '为1–100项当前空间已证明由平台创建的准确台账，读取原账号普通月账，并按资源类型完整查询相关产品的分账月账；EIP覆盖eip、cdt、cbwp。只返回账号产品行数与这些资源ID的精确匹配明细；引用字段仅供排查，不代表归属证明。含零元、完整分页、官方请求ID及完整性；空明细不代表免费。月账仅供诊断，不替换日账、不修改金额或释放时间。资源须属于同一原账号上下文，账月须与记录的使用区间相交。',
+    requiredScopes: ['billing:read'], adminOnly: true, readOnlyHint: true,
+    inputSchema: z.strictObject({ billingCycle: z.string().regex(/^\d{4}-(0[1-9]|1[0-2])$/),
+      ledgerIds: z.array(z.string().regex(/^[A-Za-z0-9_-]{1,128}$/)).min(1).max(100).refine(ids => new Set(ids).size === ids.length) }),
+    outputSchema: resultOutputSchema(z.object({ billingCycle: z.string(), coverage: z.literal('official_monthly_diagnostic_only'),
+      complete: z.boolean(), billingWrites: z.literal(0), resources: z.array(z.record(z.string(), z.unknown())), queries: z.array(z.record(z.string(), z.unknown())) }).passthrough()),
+    call(context, args) {
+      if (!context.client.diagnoseBillingMonth) throw new Error('Monthly billing diagnostics are unavailable');
+      return context.client.diagnoseBillingMonth(args as { billingCycle: string; ledgerIds: string[] });
+    },
+  },
+  {
     name: 'billing_oss_bucket_binding_list', title: '查询阿里云专用 OSS 桶费用归属',
     description: '返回当前空间的专用OSS桶声明、生效区间及官方身份核验证据。不含凭据；绑定不代表费用已出账。',
     requiredScopes: ['billing:read'], adminOnly: true, readOnlyHint: true,
@@ -95,7 +133,7 @@ export const billingTools: ToolDefinition[] = [
   {
     name: 'billing_summary_get',
     title: '查询账单费用汇总',
-    description: '对应账单费用页的概览。billingScope=platform_resources统计有平台创建来源证明的资源，以及超管明确声明且官方身份已核验的阿里云专用OSS桶。platformBillingStartedAt限定新资源出生和专用桶生效起点，旧资源迟到账不纳入；历史记录保留审计。源ECS快照分账须完整来源证明，金额记录一次并关联快照集合，不拆算每个快照。缺明细、缺证明或部分专用账日保留reconciliationIssues；官方完整分账和证明到齐后定时同步补账。多币种读取currencyTotals；unallocatedCurrencyTotals只含已证明平台费用，不能加账号/地域混合金额。resourcesWithoutBillCount不含SNAT/DNAT、阿里云镜像和已核实主机系统盘组件。disk历史映射未知不代表另有费用。billingStatus=provisional表示金额可能补账调整；缺字段表示未知，不能当作零。',
+    description: '对应账单费用页的概览。billingScope=platform_resources统计有平台创建来源证明的资源，以及超管明确声明且官方身份已核验的阿里云专用OSS桶。platformBillingStartedAt限定新资源出生和专用桶生效起点，旧资源迟到账不纳入；历史记录保留审计。源ECS快照分账须完整来源证明，金额记录一次并关联快照集合，不拆算每个快照。缺明细、缺证明或部分专用账日保留reconciliationIssues；官方完整分账和证明到齐后定时同步补账。多币种读取currencyTotals；unallocatedCurrencyTotals只含已证明平台费用，不能加账号/地域混合金额。resourcesWithoutBill为与resourcesWithoutBillCount同口径的脱敏资源清单，含ID、归属、计费起止和原因，不含估算金额；不含SNAT/DNAT、阿里云镜像和已核实主机系统盘组件。disk历史映射未知不代表另有费用。billingStatus=provisional表示金额可能补账调整；缺字段表示未知，不能当作零。',
     requiredScopes: ['billing:read'], adminOnly: true,
     readOnlyHint: true,
     inputSchema: billingSummaryInputSchema,

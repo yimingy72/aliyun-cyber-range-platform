@@ -7,8 +7,6 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 
 import { Button } from '@/components/ui/button';
-import Link from 'next/link';
-import { CloudReleaseSummary } from './shared/cloud-release-status';
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
 
 import {
@@ -23,6 +21,10 @@ import {
   saveRangeInstanceAsTemplate,
   triggerRangeAction,
   fetchRangeRecoveryStatus,
+  previewRangeInstanceNodeReset,
+  resetRangeInstanceNode,
+  AdminApiError,
+  type RangeNodeResetOperation,
 } from '../../lib/admin-api';
 import { useAdminScreenCache } from '../../lib/admin-screen-cache';
 import { tencentImageError, verifiedTencentInstanceTypes } from '@/lib/cloud-execution-policy';
@@ -37,6 +39,7 @@ import type {
   RangeInstanceDetail,
   RangeInstanceChangePreview,
   RangeRecoverySummary,
+  RangeNodeResetPreview,
 } from '../../lib/admin-types';
 import { resolvePreferredInstanceTypes } from '../../lib/instance-type-catalog';
 import {
@@ -56,7 +59,12 @@ import { AsyncContentState } from './shared/async-content-state';
 import { useAdminRouteIsActive } from './admin-page-cache';
 import { AdminDialog } from './shared/admin-dialog';
 import { AdminPageHeader } from './shared/admin-page-header';
+import { AdminActionNotice } from './shared/admin-action-notice';
+import { PackedImageTasksDialog } from './packed-image-tasks-dialog';
+import { InstancePowerBadge, InstancePowerMenu } from './instance-power-menu';
+import { packedImageTaskIdFromError, isPackedImageSubmissionUnconfirmed } from '../../lib/admin-api';
 import { RangeChangePreviewDialog } from './range-change-preview-dialog';
+import { RangeNodeResetDialog } from './range-node-reset-dialog';
 import { ConfirmActionDialog } from './shared/confirm-action-dialog';
 import { Input } from '@/components/ui/input';
 import type { TemplateEdge } from './template-editor/template-editor-screen';
@@ -68,7 +76,7 @@ import {
   undoTopology,
   type TopologyHistory,
 } from './template-editor/topology-flow-history';
-import { layoutTopology } from './template-editor/topology-flow-layout';
+import { layoutTopology, type TopologyLayoutSize } from './template-editor/topology-flow-layout';
 import type {
   TopologySelection,
   TopologySnapshot,
@@ -294,7 +302,7 @@ function readPrivateIps(
 
     const ip = value.trim();
 
-    if (ip && !privateIps.includes(ip)) {
+    if (ip && !ip.includes('/') && !privateIps.includes(ip)) {
       privateIps.push(ip);
     }
   }
@@ -304,17 +312,13 @@ function readPrivateIps(
       return;
     }
 
-    value.forEach((networkInterface, index) => {
+    value.forEach((networkInterface) => {
       if (!networkInterface || typeof networkInterface !== 'object') {
         return;
       }
 
       const nic = networkInterface as Record<string, unknown>;
-      const deviceIndex = typeof nic.deviceIndex === 'number' ? nic.deviceIndex : index;
-
-      if (deviceIndex !== 0) {
-        addIp(nic.privateIp);
-      }
+      addIp(nic.privateIp);
 
       if (Array.isArray(nic.secondaryIps)) {
         nic.secondaryIps.forEach(addIp);
@@ -324,6 +328,7 @@ function readPrivateIps(
 
   const primaryNic = Array.isArray(node.nics) ? node.nics[0] : null;
   addIp(primaryNic && typeof primaryNic === 'object' ? (primaryNic as Record<string, unknown>).privateIp : node.privateIp);
+  addIp(node.privateIp);
   addSecondaryNetworkInterfaces(node.nics);
   addSecondaryNetworkInterfaces(node.networkInterfaces);
   addSecondaryNetworkInterfaces(hostSpec?.networkInterfaces);
@@ -853,7 +858,7 @@ function readWorkbenchNodesFromGraph(
         : kind === 'switch' && typeof node.cidr === 'string'
           ? [node.cidr]
           : [];
-    const cloudStatus = detail?.nodeStatuses?.[id] ?? undefined;
+    const cloudStatus = detail?.powerControl?.hosts?.[id]?.status ?? detail?.nodeStatuses?.[id] ?? undefined;
     const deployedNodes = Array.isArray(detail?.runtimeTopologyGraph?.nodes) ? detail.runtimeTopologyGraph.nodes as Array<Record<string, unknown>> : [];
     const deployedNode = deployedNodes.find((item) => item.id === id);
     const statusLabel = kind === 'ecs' ? getCloudStatusLabel(cloudStatus) ?? getStatusLabel(detail?.status ?? 'unknown') : getStatusLabel(detail?.status ?? 'unknown');
@@ -937,6 +942,9 @@ export function RangeInstanceDetailScreen({
   const scopeKey = `${identityKey}\u0000${session.token}\u0000${scopeSession?.sessionGeneration ?? ''}`;
   const scopeRef = useRef(scopeKey);
   scopeRef.current = scopeKey;
+  const packIdentityRef = useRef(identityKey);
+  packIdentityRef.current = identityKey;
+  const packPendingRef = useRef<string | null>(null);
   const recoveryScope = { apiBaseUrl, userId: session.profile?.id ?? '', workspaceId: workspace?.id ?? readCloudWorkspaceSelection() ?? '', rangeId };
   const recoveryContextRef = useRef({ scope: scopeKey });
   if (recoveryContextRef.current.scope !== scopeKey) recoveryContextRef.current = { scope: scopeKey };
@@ -963,6 +971,7 @@ export function RangeInstanceDetailScreen({
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<WorkbenchTab>('directory');
   const [selection, setSelection] = useState<TopologySelection>({ nodeIds: [], edgeIds: [] });
+  useEffect(() => { if (!isPageActive) setSuccessMessage(null); }, [isPageActive]);
   const [draftGraph, setDraftGraph] = useState<Record<string, unknown> | null>(() => cachedDetail?.data.draftTopologyGraph ?? cachedDetail?.data.runtimeTopologyGraph ?? null);
   const [isSavingDraft, setIsSavingDraft] = useState(false);
   const [isCopyingTemplate, setIsCopyingTemplate] = useState(false);
@@ -979,10 +988,18 @@ export function RangeInstanceDetailScreen({
   } | null>(null);
   const [nodeStatusOverrides, setNodeStatusOverrides] = useState<Record<string, string>>({});
   const [packImageDialog, setPackImageDialog] = useState<PackImageDialogDraft | null>(null);
+  const [packImageError, setPackImageError] = useState<string | null>(null);
+  const [packTasksOpen, setPackTasksOpen] = useState(false);
+  const [packTaskId, setPackTaskId] = useState<string | null>(null);
+  const [packImageUnconfirmed, setPackImageUnconfirmed] = useState(false);
+  const [resetDialog,setResetDialog]=useState<{nodeId:string;nodeName:string;preview:RangeNodeResetPreview|null;loading:boolean;error:string|null;uncertain:boolean}|null>(null);
+  const resetOperationRef=useRef<RangeNodeResetOperation|null>(null);
+  const resetPreviewRequestRef=useRef(0);
   const historyRef = useRef<TopologyHistory | null>(null);
   const persistedSnapshotRef = useRef('');
   const loadedRangeIdRef = useRef(rangeId);
   const [trackedUpdateJobId, setTrackedUpdateJobId] = useState<string | null>(null);
+  const [isNodeResetBusy,setIsNodeResetBusy]=useState(false);
   const [pendingRecoveryTrigger, setPendingRecoveryTrigger] = useState<'retry' | 'destroy' | null>(null);
   const [isRecoverySubmitting, setIsRecoverySubmitting] = useState(false);
   const [recoveryLookupState, setRecoveryLookupState] = useState(() => ({ scope: identityKey, intent: readRangeRecoveryIntent(recoveryScope) }));
@@ -995,6 +1012,8 @@ export function RangeInstanceDetailScreen({
   const instanceTypeAvailabilityRequestRef = useRef(0);
   useEffect(() => {
     setChangePreview(null); setIsTemplateCopyDialogOpen(false); copyRequestRef.current = null;
+    setResetDialog(null);resetOperationRef.current=null;resetPreviewRequestRef.current++;
+    setIsNodeResetBusy(false);
     setPendingRecoveryTrigger(null); setIsRecoverySubmitting(false);
     setPendingRecoveryLookup(readRangeRecoveryIntent(recoveryScope)); recoveryTriggeredJobsRef.current.clear();
     acceptedRecoveryRef.current = null; recoverySubmittingRef.current = null;
@@ -1068,6 +1087,18 @@ export function RangeInstanceDetailScreen({
   }
 
   useEffect(() => {
+    if (!isPageActive || !detail?.powerControl?.phase || !session.token) return;
+    let disposed = false, reading = false;
+    const interval = window.setInterval(async () => {
+      if (disposed || reading || document.visibilityState === 'hidden') return;
+      reading = true;
+      try { await reloadDetailSnapshot(); } catch { /* Keep the last verified snapshot. */ }
+      finally { reading = false; }
+    }, 5000);
+    return () => { disposed = true; window.clearInterval(interval); };
+  }, [isPageActive, scopeKey, session.token, detail?.powerControl?.phase]);
+
+  useEffect(() => {
     if (!isPageActive || !session.isReady || !session.token) {
       return;
     }
@@ -1084,6 +1115,8 @@ export function RangeInstanceDetailScreen({
       setPendingRecoveryTrigger(null);
       setIsRecoverySubmitting(false);
       setPackImageDialog(null);
+      setPackTaskId(null);
+      setPackTasksOpen(false);
       setIsTemplateCopyDialogOpen(false);
       setPendingNodeAction(null);
       setSuccessMessage(null);
@@ -1126,7 +1159,7 @@ export function RangeInstanceDetailScreen({
     };
   }, [apiBaseUrl, isPageActive, loadAttempt, rangeId, router, screenCache, session.isReady, session.token, session.profile?.id, session.profile?.role, identityKey]);
 
-  function acceptRecoveryIntent(intent: RangeRecoveryIntent, jobId: string, message = '恢复任务已受理，正在跟踪任务。') {
+  function acceptRecoveryIntent(intent: RangeRecoveryIntent, jobId: string, message = '原请求已受理，正在跟踪任务。') {
     acceptedRecoveryRef.current = { intent, jobId };
     recoveryTriggeredJobsRef.current.add(jobId);
     setTrackedUpdateJobId(jobId);
@@ -1164,14 +1197,14 @@ export function RangeInstanceDetailScreen({
           setIsRecoverySubmitting(false);
           setPendingRecoveryTrigger(null);
           setTrackedUpdateJobId(null);
-          setErrorMessage(`恢复请求已被服务端明确拒绝，请确认当前状态后再操作。${receipt.errorCode ? `（${receipt.errorCode}）` : ''}`);
+          setErrorMessage(`原请求已被服务端明确拒绝，请确认当前状态后再操作。${receipt.errorCode ? `（${receipt.errorCode}）` : ''}`);
           return;
         }
-        setErrorMessage('恢复操作结果未确认，正在只读查询原请求回执。');
+        setErrorMessage('原请求结果尚未确认，正在只读查询回执。');
       } catch (error) {
         if (!isCurrent()) return;
         if (isUnauthorizedAdminError(error)) { session.logout(); router.replace('/admin/login'); return; }
-        setErrorMessage('恢复操作结果未确认，状态查询失败，正在重试。');
+        setErrorMessage('原请求结果尚未确认，状态查询失败，正在重试查询。');
       }
       if (isCurrent()) timer = window.setTimeout(() => void refreshRecoveryResult(), 2000);
     }
@@ -1199,7 +1232,7 @@ export function RangeInstanceDetailScreen({
         // Restored lastJobId values that are neither updates nor in-flight lifecycle
         // jobs must not keep the tracker (or surface stale messages) alive.
         const inFlightLifecycle = ['pending_create', 'creating', 'pending_destroy', 'destroying'].includes(detailStatus);
-        if (job.jobType !== 'update' && !inFlightLifecycle && !recoveryTriggeredJobsRef.current.has(jobId)) {
+        if (!['update','reset'].includes(job.jobType) && !inFlightLifecycle && !recoveryTriggeredJobsRef.current.has(jobId)) {
           setTrackedUpdateJobId(null);
           return;
         }
@@ -1217,11 +1250,15 @@ export function RangeInstanceDetailScreen({
           }
           setTrackedUpdateJobId(null);
           recoveryTriggeredJobsRef.current.delete(jobId);
+          if(job.jobType==='reset')setIsNodeResetBusy(false);
           if (acceptedRecoveryRef.current?.jobId === jobId) {
             clearRangeRecoveryIntent(recoveryScope, acceptedRecoveryRef.current.intent.key);
             acceptedRecoveryRef.current = null;
           }
-          if (job.jobType === 'update') {
+          if(job.jobType==='reset') {
+            setSuccessMessage(job.status==='succeeded'?'节点系统盘重置完成，原主机、网络及电源状态已核验。':null);
+            setErrorMessage(job.status==='succeeded'?null:job.errorSummary||'节点重置未完成；请查看原任务，不要重复提交。');
+          } else if (job.jobType === 'update') {
             setSuccessMessage(job.status === 'succeeded' ? '实例配置变更已应用。' : null);
             setErrorMessage(job.status === 'succeeded' ? null : [job.errorSummary || '实例配置变更未完成，请检查任务。', payload.status === 'destroy_failed' ? '部分云变更可能已生效，资源尚未确认全部回收；请查看任务并执行回收。' : ''].filter(Boolean).join(' '));
           } else {
@@ -1233,6 +1270,9 @@ export function RangeInstanceDetailScreen({
         if (job.jobType === 'update') {
           setErrorMessage(null);
           setSuccessMessage('实例配置变更正在应用。');
+        } else if(job.jobType==='reset') {
+          setIsNodeResetBusy(true);
+          setErrorMessage(null);setSuccessMessage('节点系统盘正在重置，请等待原任务完成。');
         }
       } catch (error) {
         if (!isActive || !isCurrentScope()) return;
@@ -1287,7 +1327,8 @@ export function RangeInstanceDetailScreen({
   );
   const recoveryInFlight = Boolean(trackedUpdateJobId && recoveryTriggeredJobsRef.current.has(trackedUpdateJobId));
   const canOperateInstance = !workspace?.isReadOnly && (!workspace || workspace.capabilities.provisioning) && detail?.status === 'running'
-    && !isRecoverySubmitting && !pendingRecoveryLookup && !recoveryInFlight;
+    && !detail.powerControl?.phase && (!detail.powerControl || detail.powerControl.state === 'running')
+    && !isRecoverySubmitting && !pendingRecoveryLookup && !recoveryInFlight && !isNodeResetBusy && pendingNodeAction?.action!=='reset';
   const canApplyInstance = canOperateInstance && workspace?.capabilities.rangeProvisioning !== false;
   const canEditTopology = canOperateInstance && !isSavingDraft && !isCopyingTemplate && !trackedUpdateJobId;
   const recoveryActionsDisabled = Boolean(workspace?.isReadOnly) || !session.profile?.id || isRecoverySubmitting || Boolean(pendingRecoveryLookup) || recoveryInFlight;
@@ -1584,7 +1625,7 @@ export function RangeInstanceDetailScreen({
       if (replayOriginal && !existing) return;
       intent = existing ?? beginRangeRecoveryIntent(recoveryScope, trigger);
     } catch {
-      setErrorMessage('无法保存恢复请求标识，请检查浏览器存储后重试。');
+      setErrorMessage('无法保存原请求标识，请检查浏览器存储后重试。');
       return;
     }
     const context = recoveryContextRef.current;
@@ -1604,14 +1645,14 @@ export function RangeInstanceDetailScreen({
         acceptRecoveryIntent(intent, job.id, intent.trigger === 'destroy' ? '回收任务已提交，正在回收剩余云资源。' : detail.status === 'destroy_failed' ? '重试回收任务已提交。' : '重试创建任务已提交，实例将重新开通。');
         await reloadDetailSnapshot();
       } else {
-        setErrorMessage('恢复操作结果未确认，正在只读查询原请求回执。');
+        setErrorMessage('原请求结果尚未确认，正在只读查询回执。');
       }
     } catch (error) {
       if (!isCurrent()) return;
       if (!acceptedRecoveryRef.current) {
         // HTTP errors (including 4xx) cannot replace the durable rejection receipt.
         setPendingRecoveryLookup(intent);
-        setErrorMessage('恢复操作结果未确认，正在只读查询原请求回执。');
+        setErrorMessage('原请求结果尚未确认，正在只读查询回执。');
       } else if (receivedJob) {
         setErrorMessage('任务状态刷新失败，正在重试。');
       }
@@ -1682,6 +1723,9 @@ export function RangeInstanceDetailScreen({
       return;
     }
 
+    setPackImageError(null);
+    setPackImageUnconfirmed(false);
+    setPackTaskId(null);
     setPackImageDialog({
       nodeId,
       displayName: readDefaultPackImageName(node.label),
@@ -1692,10 +1736,16 @@ export function RangeInstanceDetailScreen({
   }
 
   async function handleConfirmPackImage() {
-    if (!session.token || !detail || !packImageDialog) {
+    if (!session.token || !detail || !packImageDialog || packImageUnconfirmed) {
       return;
     }
 
+    const packScope = JSON.stringify([identityKey, scopeSession?.sessionGeneration]);
+    if (packPendingRef.current === packScope) return;
+    packPendingRef.current = packScope;
+    const isCurrentPack = () => mountedRef.current && packIdentityRef.current === identityKey
+      && (!scopeSession || readAdminSession()?.sessionGeneration === scopeSession.sessionGeneration);
+    setPackImageError(null);
     setPendingNodeAction({
       nodeId: packImageDialog.nodeId,
       action: 'pack-image',
@@ -1710,30 +1760,77 @@ export function RangeInstanceDetailScreen({
         defaultPassword: packImageDialog.defaultPassword,
         description: packImageDialog.description,
       });
-      if (scopeRef.current !== scopeKey) return;
+      if (!isCurrentPack()) return;
 
-      screenCache?.invalidate(apiBaseUrl, session.token, 'range-instances:');
-      screenCache?.invalidate(apiBaseUrl, session.token, resourceKey);
-      screenCache?.invalidate(apiBaseUrl, session.token, 'image-center:');
-      screenCache?.invalidate(apiBaseUrl, session.token, 'platform-images:');
+      const responseToken = readAdminSession()?.token ?? session.token;
+      screenCache?.invalidate(apiBaseUrl, responseToken, 'range-instances:');
+      screenCache?.invalidate(apiBaseUrl, responseToken, resourceKey);
+      screenCache?.invalidate(apiBaseUrl, responseToken, 'image-center:');
+      screenCache?.invalidate(apiBaseUrl, responseToken, 'platform-images:');
       setPackImageDialog(null);
+      setPackTaskId(result.packedImageArtifactId ?? null);
+      setPackTasksOpen(true);
       setSuccessMessage(
         result.imageReady
           ? `镜像打包完成，已保存到我的镜像：${result.platformImageAsset?.displayName ?? packImageDialog.displayName}`
           : `镜像打包任务已提交，镜像可用后会出现在我的镜像：${packImageDialog.displayName}`,
       );
     } catch (error: unknown) {
-      if (scopeRef.current !== scopeKey) return;
+      if (!isCurrentPack()) return;
       if (isUnauthorizedAdminError(error)) {
+        if (readAdminSession()?.token && readAdminSession()?.token !== session.token) {
+          setPackImageUnconfirmed(true);
+          setPackImageError('登录已续期，原打包结果尚未确认；请先核对我的镜像，不要重复提交。');
+          return;
+        }
         session.logout();
         router.replace('/admin/login');
         return;
       }
 
-      setErrorMessage(error instanceof Error ? error.message : '二次打包镜像失败，请稍后重试。');
+      const message = error instanceof Error ? error.message : '打包结果尚未确认，请先检查我的镜像，不要重复提交。';
+      setPackImageError(message);
+      setErrorMessage(message);
+      setPackTaskId(packedImageTaskIdFromError(error));
+      setPackImageUnconfirmed(isPackedImageSubmissionUnconfirmed(error));
     } finally {
-      if (scopeRef.current === scopeKey) setPendingNodeAction(null);
+      if (packPendingRef.current === packScope) packPendingRef.current = null;
+      if (isCurrentPack()) setPendingNodeAction(null);
     }
+  }
+
+  async function openResetDialog(nodeId:string) {
+    if(!session.token||!detail||!canOperateInstance||trackedUpdateJobId||detail.cloudProvider!=='alibaba_cloud')return;
+    const node=directoryNodes.find(node=>node.id===nodeId),request=++resetPreviewRequestRef.current;
+    resetOperationRef.current={idempotencyKey:`node-reset:${crypto.randomUUID()}`};
+    setResetDialog({nodeId,nodeName:node?.label??nodeId,preview:null,loading:true,error:null,uncertain:false});
+    try {
+      const preview=await previewRangeInstanceNodeReset(apiBaseUrl,session.token,detail.id,nodeId,recoveryScope.workspaceId);
+      if(!isCurrentScope()||request!==resetPreviewRequestRef.current)return;
+      setResetDialog({nodeId,nodeName:preview.nodeName,preview,loading:false,error:null,uncertain:false});
+    } catch(error) {
+      if(isCurrentScope()&&request===resetPreviewRequestRef.current)
+        setResetDialog(current=>current?{...current,loading:false,error:error instanceof Error?error.message:'重置前核验失败，未执行恢复。'}:null);
+    }
+  }
+
+  async function confirmNodeReset(name:string) {
+    if(!session.token||!resetDialog?.preview||!resetOperationRef.current||pendingNodeAction||!canOperateInstance)return;
+    const preview=resetDialog.preview;
+    setPendingNodeAction({nodeId:preview.nodeId,action:'reset'});
+    setResetDialog(current=>current?{...current,error:null}:null);
+    try {
+      const result=await resetRangeInstanceNode(apiBaseUrl,session.token,preview,name,recoveryScope.workspaceId,resetOperationRef.current);
+      if(!isCurrentScope())return;
+      if(!result.jobId)throw new Error('未取得原重置任务 ID，请核对原提交，不要新建请求。');
+      setTrackedUpdateJobId(result.jobId);setIsNodeResetBusy(true);setResetDialog(null);resetOperationRef.current=null;
+      setErrorMessage(null);setSuccessMessage('节点重置任务已受理，尚未完成。');
+      await reloadDetailSnapshot();
+    } catch(error) {
+      if(!isCurrentScope())return;
+      const uncertain=!(error instanceof AdminApiError)||error.status>=500;
+      setResetDialog(current=>current?{...current,error:error instanceof Error?error.message:'提交结果尚未确认，请核对原任务。',uncertain}:null);
+    } finally {if(isCurrentScope())setPendingNodeAction(null);}
   }
 
   async function handleNodeAction(nodeId: string, action: NodeActionName) {
@@ -1747,8 +1844,7 @@ export function RangeInstanceDetailScreen({
     }
 
     if (action === 'reset') {
-      setErrorMessage('重置功能对应主机系统盘恢复到当前镜像初始状态，本轮先不执行该危险动作。');
-      setSuccessMessage(null);
+      await openResetDialog(nodeId);
       return;
     }
 
@@ -2139,14 +2235,14 @@ export function RangeInstanceDetailScreen({
     }, viewport));
   }
 
-  function handleLayoutAll() {
+  function handleLayoutAll(canvas?: TopologyLayoutSize) {
     if (!canEditTopology || topologyNodes.length === 0) {
       return;
     }
 
     try {
       commitTopologySnapshot(
-        { nodes: layoutTopology(topologyNodes, topologyEdges), edges: topologyEdges, viewport: topologyViewport },
+        { nodes: layoutTopology(topologyNodes, topologyEdges, canvas), edges: topologyEdges, viewport: topologyViewport },
         '',
       );
     } catch {
@@ -2172,11 +2268,12 @@ export function RangeInstanceDetailScreen({
         <AdminPageHeader
           description="查看实例运行状态、节点目录与拓扑编排。"
           title="实例详情"
-          action={session.profile?.isPlatformManager ? <Button asChild variant="outline"><Link href="/admin/resource-alerts">资源告警</Link></Button> : undefined}
+          action={<div className="flex flex-wrap gap-2">{detail?.status === 'running' ? <InstancePowerMenu apiBaseUrl={apiBaseUrl} token={session.token} scopeKey={identityKey} target={{ kind: 'range', id: rangeId }} name={detail.name || rangeId} label="实例操作" disabled={workspace?.isReadOnly || detail.cloudProvider === 'tencent_cloud'} onChanged={() => { void reloadDetailSnapshot(); }} /> : null}<Button type="button" variant="outline" onClick={() => { setPackTaskId(null); setPackTasksOpen(true); }}>镜像导出</Button></div>}
         />
+        {isPageActive && packTasksOpen ? <PackedImageTasksDialog key={identityKey} apiBaseUrl={apiBaseUrl} token={session.token ?? ''} open onOpenChange={setPackTasksOpen} sourceRangeInstanceId={rangeId} initialTaskId={packTaskId} /> : null}
 
         {errorMessage ? <p className="mt-4 text-sm text-destructive" role="alert">{errorMessage}</p> : null}
-        {successMessage ? <p className="mt-4 text-sm text-emerald-700" role="status">{successMessage}</p> : null}
+        {isPageActive ? <AdminActionNotice message={successMessage} onDismiss={() => setSuccessMessage(null)} /> : null}
 
         {detail ? (
           <>
@@ -2187,11 +2284,11 @@ export function RangeInstanceDetailScreen({
                 </div>
                 <div className="range-instance-overview-item">
                   <span>场景名称</span>
-                  <strong>{readScenarioName(detail)}</strong>
+                  <strong title={readScenarioName(detail)}>{readScenarioName(detail)}</strong>
                 </div>
                 <div className="range-instance-overview-item">
                   <span>当前状态</span>
-                  <strong>{getStatusLabel(detail.status)}</strong>
+                  <strong>{detail.powerControl ? <InstancePowerBadge instance={detail} /> : getStatusLabel(detail.status)}</strong>
                 </div>
                 <div className="range-instance-overview-item">
                   <span>创建人</span>
@@ -2206,10 +2303,6 @@ export function RangeInstanceDetailScreen({
                   <strong>{formatAdminDateTime(detail.expiresAt)}</strong>
                 </div>
                 <div className="range-instance-overview-item">
-                  <span>云端兜底</span>
-                  <strong><CloudReleaseSummary deadlines={detail.resourceSummary?.cloudReleaseDeadlines} hostIds={detail.resourceSummary?.hostIds} /></strong>
-                </div>
-                <div className="range-instance-overview-item">
                   <span>公网IP（DNAT IP）</span>
                   <strong>{detail.accessEntry?.publicIp ?? '暂无'}</strong>
                 </div>
@@ -2217,19 +2310,13 @@ export function RangeInstanceDetailScreen({
                   <span>网络规则</span>
                   <strong>{formatNetworkRuleSummary(detail)}</strong>
                 </div>
-                {!canOperateInstance ? (
-                  <div className="range-instance-overview-item is-readonly">
-                    <span>详情模式</span>
-                    <strong>只读历史</strong>
-                  </div>
-                ) : null}
             </section>
 
             {pendingRecoveryLookup ? (
-              <section aria-label="恢复请求确认" className="mt-4 rounded-md border border-border px-4 py-3">
-                <p className="text-sm">原{pendingRecoveryLookup.trigger === 'destroy' ? '回收' : '重试'}请求结果尚未确认，正在只读查询。请继续确认原请求后再修改恢复目标。</p>
+              <section aria-label="原请求状态确认" className="mt-4 rounded-md border border-border px-4 py-3">
+                <p className="text-sm">原{pendingRecoveryLookup.trigger === 'destroy' ? '回收' : '重试'}请求结果尚未确认，正在只读查询。请确认原请求结果后再发起其他操作。</p>
                 <div className="mt-2 flex flex-wrap gap-2">
-                  <Button onClick={() => setPendingRecoveryLookup({ ...pendingRecoveryLookup })} size="sm" type="button" variant="outline">查询恢复状态</Button>
+                  <Button onClick={() => setPendingRecoveryLookup({ ...pendingRecoveryLookup })} size="sm" type="button" variant="outline">查询请求状态</Button>
                   <Button disabled={Boolean(workspace?.isReadOnly) || isRecoverySubmitting} onClick={() => void performRecoveryAction(pendingRecoveryLookup.trigger, true)} size="sm" type="button" variant="outline">安全重试原请求</Button>
                 </div>
               </section>
@@ -2345,11 +2432,11 @@ export function RangeInstanceDetailScreen({
                       ...node,
                       createdBy: detail.createdBy ?? 'admin',
                       expiresAt: formatAdminDateTime(detail.expiresAt),
-                      cloudReleaseDeadline: detail.resourceSummary?.cloudReleaseDeadlines?.[node.id],
                       createdAt: formatAdminDateTime(detail.createdAt),
                     }))}
                     onNodeAction={handleNodeAction}
                     allowActions={canOperateInstance}
+                    allowReset={detail.cloudProvider==='alibaba_cloud'}
                     pendingAction={pendingNodeAction}
                     isRefreshing={isRefreshingDetail}
                   />
@@ -2363,7 +2450,7 @@ export function RangeInstanceDetailScreen({
                   linkedSwitchIdsByHostId={linkedSwitchIdsByHostId}
                   instanceTypeAvailability={instanceTypeAvailability}
                   platformImageAssets={platformImageAssets}
-                  runtimeNodeStatus={selectedTopologyNode ? detail?.nodeStatuses?.[selectedTopologyNode.id] ?? null : null}
+                  runtimeNodeStatus={selectedTopologyNode ? detail?.powerControl?.hosts?.[selectedTopologyNode.id]?.status ?? detail?.nodeStatuses?.[selectedTopologyNode.id] ?? null : null}
                   selection={selection}
                   viewport={topologyViewport}
                   onAddNode={handleAddTopologyNode}
@@ -2386,6 +2473,9 @@ export function RangeInstanceDetailScreen({
       </section>
 
       <RangeChangePreviewDialog preview={changePreview} pending={isSavingDraft} onClose={() => setChangePreview(null)} onConfirm={() => void handleConfirmApply()} />
+      {resetDialog?<RangeNodeResetDialog key={resetDialog.nodeId} {...resetDialog} pending={pendingNodeAction?.action==='reset'}
+        onClose={()=>{setResetDialog(null);resetOperationRef.current=null;resetPreviewRequestRef.current++;}}
+        onRetryPreview={()=>void openResetDialog(resetDialog.nodeId)} onConfirm={name=>void confirmNodeReset(name)} />:null}
       <ConfirmActionDialog
         confirmLabel={pendingRecoveryTrigger === 'retry' ? '确认重试' : '确认回收'}
         description={pendingRecoveryTrigger === 'retry'
@@ -2410,7 +2500,7 @@ export function RangeInstanceDetailScreen({
         <div className="grid gap-3"><label className="grid gap-2 text-sm"><span>新拓扑名称</span><Input autoFocus maxLength={80} aria-label="新拓扑名称" value={templateCopyName} disabled={isCopyingTemplate} onChange={event => setTemplateCopyName(event.target.value)} /></label><label className="grid gap-2 text-sm"><span>描述</span><Input aria-label="新拓扑描述" value={templateCopyDescription} disabled={isCopyingTemplate} onChange={event => setTemplateCopyDescription(event.target.value)} /></label></div>
       </AdminDialog>
 
-      {packImageDialog && detail ? (
+      {isPageActive && packImageDialog && detail ? (
         <AdminDialog
           footer={
             <>
@@ -2418,7 +2508,7 @@ export function RangeInstanceDetailScreen({
                 取消
               </Button>
               <Button
-                disabled={pendingNodeAction?.action === 'pack-image' || packImageDialog.displayName.trim().length === 0}
+                disabled={pendingNodeAction?.action === 'pack-image' || packImageUnconfirmed || packImageDialog.displayName.trim().length === 0}
                 type="button"
                 onClick={() => void handleConfirmPackImage()}
               >
@@ -2432,6 +2522,8 @@ export function RangeInstanceDetailScreen({
           title="二次打包镜像"
           onOpenChange={(open) => !open && setPackImageDialog(null)}
         >
+            {packImageError ? <p className="mb-3 text-sm text-destructive" role="alert">{packImageError}</p> : null}
+            {packImageError ? <Button type="button" variant="outline" disabled={pendingNodeAction?.action === 'pack-image'} onClick={() => { setPackImageDialog(null); setPackTasksOpen(true); }}>查看导出记录</Button> : null}
             <div className="template-workbench-dialog-grid">
               <label>
                 <span>镜像名</span>
@@ -2473,7 +2565,7 @@ export function RangeInstanceDetailScreen({
                 <span>默认密码</span>
                 <Input
                   aria-label="默认密码"
-                  placeholder="留空则随机生成"
+                  placeholder="留空则沿用原实例密码"
                   value={packImageDialog.defaultPassword}
                   onChange={(event) =>
                     setPackImageDialog((current) =>

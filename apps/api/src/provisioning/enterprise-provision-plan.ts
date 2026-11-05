@@ -675,30 +675,17 @@ function resolveSecurityGroupRules(input: {
     return explicitRules;
   }
 
-  return input.hosts.flatMap((host) => [
-    {
-      key: `${host.key}-default-ssh`,
-      name: `${host.key} default SSH`,
-      targetHostKey: host.key,
-      direction: 'ingress',
-      policy: 'accept',
-      protocol: 'tcp',
-      portRange: '22/22',
-      sourceCidr: '0.0.0.0/0',
-      priority: 1,
-    },
-    {
-      key: `${host.key}-default-http`,
-      name: `${host.key} default HTTP`,
-      targetHostKey: host.key,
-      direction: 'ingress',
-      policy: 'accept',
-      protocol: 'tcp',
-      portRange: '80/80',
-      sourceCidr: '0.0.0.0/0',
-      priority: 1,
-    },
-  ]);
+  return input.hosts.map((host) => ({
+    key: `${host.key}-default-all`,
+    name: `${host.key} default all ingress`,
+    targetHostKey: host.key,
+    direction: 'ingress',
+    policy: 'accept',
+    protocol: 'all',
+    portRange: '-1/-1',
+    sourceCidr: '0.0.0.0/0',
+    priority: 1,
+  }));
 }
 
 function buildAclDefinitionsFromCompiledSpec(compiledSpec: RangeTemplateCompiledSpec | null | undefined) {

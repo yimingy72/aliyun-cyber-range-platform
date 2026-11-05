@@ -15,6 +15,6 @@ export function configureApp(app: INestApplication) {
   app.enableCors({
     origin: true,
     credentials: true,
-    allowedHeaders: ['authorization', 'content-type', 'x-cloud-workspace-id', 'x-request-id', 'x-idempotency-key', 'idempotency-key', 'x-confirmation-id', 'x-operation-confirmation-id'],
+    allowedHeaders: ['authorization', 'content-type', 'cache-control', 'x-cloud-workspace-id', 'x-request-id', 'x-idempotency-key', 'idempotency-key', 'x-confirmation-id', 'x-operation-confirmation-id'],
   });
 }

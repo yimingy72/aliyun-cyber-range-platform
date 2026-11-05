@@ -19,7 +19,7 @@ const ledger = ['ecs','disk'].map((type,index) => ({ id: 'ledger-' + index, rang
   cloudAccountUid: account.accountUid, regionId: account.defaultRegion, ownerUserId: instance.ownerUserId,
   cloudResourceType: type, cloudResourceId: index ? 'd-owned' : 'i-owned', releasedAt: null }));
 function fixture() {
-  const repository = { getProvisionJobById: jest.fn().mockResolvedValue(source), listBillingLedgerResources: jest.fn().mockResolvedValue(ledger),
+  const repository = { listProvisionJobStepLogs: jest.fn().mockResolvedValue([]), getProvisionJobById: jest.fn().mockResolvedValue(source), listBillingLedgerResources: jest.fn().mockResolvedValue(ledger),
     getRangeInstanceById: jest.fn().mockResolvedValue(null) };
   const worker = new ProvisioningWorkerService(repository as any, {} as any, {} as any, {} as any, {} as any, {} as any) as any;
   const claim = jest.spyOn(worker,'ownsProvisionJobClaim').mockResolvedValue(true);
@@ -43,7 +43,7 @@ it.each(['foreign-account','foreign-source','missing-disk','invalid-time','missi
   if (scenario === 'missing-disk') delete value.resourceSummary.diskInventoryHostIds['host-a'];
   if (scenario === 'invalid-time') submitted.submittedAt = 'invalid';
   if (scenario === 'missing-ledger') f.repository.listBillingLedgerResources.mockResolvedValue([]);
-  await expect(f.worker.verifyAlibabaUnknownApplyAbsent(value, {}, account, submitted)).rejects.toThrow('Alibaba unknown apply');
+  await expect(f.worker.verifyAlibabaUnknownApplyAbsent(value, {}, account, submitted)).rejects.toThrow(/Alibaba (?:unknown apply|missing hosts)/);
   expect(f.known).not.toHaveBeenCalled(); expect(f.rpc).not.toHaveBeenCalled();
 });
 it.each(['named-untagged-eip','tagged-eip','incomplete-page','missing-receipt','remaining-disk','lost-claim'])('preserves recovery for %s', async scenario => {

@@ -8,6 +8,10 @@ export type MogongImage = {
   creator: string | null; containerReference: string | null;
 };
 
+export function mogongCatalogPath() {
+  return process.env.MOGONG_IMAGE_CATALOG_PATH?.trim() || '/var/lib/cyber-range/mogong/image-catalog.json';
+}
+
 export function isBoundMogongWorkspace() {
   const scope = getCurrentCloudWorkspaceScope();
   const boundId = process.env.MOGONG_CATALOG_WORKSPACE_ID?.trim();
@@ -34,25 +38,28 @@ export function isCollectableMogongContainer(image: Pick<MogongImage, 'name' | '
   return image.active && image.status === 'successful' && image.type === 'docker' && !/废弃|弃用|已淘汰|已废止/i.test(image.name);
 }
 
-export async function readMogongImageCatalog(): Promise<{ capturedAt: string; version: number; items: MogongImage[] }> {
+export function parseMogongImageCatalog(json: string): { capturedAt: string; version: number; items: MogongImage[] } {
+  const catalog = JSON.parse(json) as { capturedAt: unknown; total: unknown; version?: unknown; items: unknown };
+  if (typeof catalog.capturedAt !== 'string' || !Number.isFinite(Date.parse(catalog.capturedAt)) ||
+      !Array.isArray(catalog.items) || catalog.items.length > 10000 || catalog.total !== catalog.items.length ||
+      !(catalog.version === undefined || catalog.version === 2)) throw new Error('Invalid catalog');
+  const items = catalog.items.map((item: Partial<MogongImage>) => {
+    if (!item || !Number.isSafeInteger(item.id) || item.id! <= 0 || typeof item.name !== 'string' || !item.name.trim() ||
+        typeof item.type !== 'string' || typeof item.status !== 'string' || typeof item.active !== 'boolean' ||
+        !(item.creator === undefined || item.creator === null || typeof item.creator === 'string') ||
+        (catalog.version === 2 && item.containerReference === undefined) ||
+        !(item.containerReference === undefined || item.containerReference === null || typeof item.containerReference === 'string') ||
+        !(item.imageId === null || typeof item.imageId === 'string' && /^m-[a-z0-9]+$/i.test(item.imageId))) throw new Error('Invalid image');
+    return { id: item.id!, name: item.name, type: item.type, imageId: item.imageId, active: item.active, status: item.status,
+      creator: item.creator?.trim() || null, containerReference: item.type === 'docker' ? safeContainerReference(item.containerReference) : null };
+  });
+  if (new Set(items.map((item) => item.id)).size !== items.length) throw new Error('Duplicate image');
+  return { capturedAt: catalog.capturedAt, version: catalog.version === 2 ? 2 : 1, items };
+}
+
+export async function readMogongImageCatalog() {
   try {
-    const path = process.env.MOGONG_IMAGE_CATALOG_PATH?.trim() || '/var/lib/cyber-range/mogong/image-catalog.json';
-    const catalog = JSON.parse(await readFile(path, 'utf8')) as { capturedAt: unknown; total: unknown; version?: unknown; items: unknown };
-    if (typeof catalog.capturedAt !== 'string' || !Number.isFinite(Date.parse(catalog.capturedAt)) ||
-        !Array.isArray(catalog.items) || catalog.items.length > 10000 || catalog.total !== catalog.items.length ||
-        !(catalog.version === undefined || catalog.version === 2)) throw new Error('Invalid catalog');
-    const items = catalog.items.map((item: Partial<MogongImage>) => {
-      if (!item || !Number.isSafeInteger(item.id) || item.id! <= 0 || typeof item.name !== 'string' || !item.name.trim() ||
-          typeof item.type !== 'string' || typeof item.status !== 'string' || typeof item.active !== 'boolean' ||
-          !(item.creator === undefined || item.creator === null || typeof item.creator === 'string') ||
-          (catalog.version === 2 && item.containerReference === undefined) ||
-          !(item.containerReference === undefined || item.containerReference === null || typeof item.containerReference === 'string') ||
-          !(item.imageId === null || typeof item.imageId === 'string' && /^m-[a-z0-9]+$/i.test(item.imageId))) throw new Error('Invalid image');
-      return { id: item.id!, name: item.name, type: item.type, imageId: item.imageId, active: item.active, status: item.status,
-        creator: item.creator?.trim() || null, containerReference: item.type === 'docker' ? safeContainerReference(item.containerReference) : null };
-    });
-    if (new Set(items.map((item) => item.id)).size !== items.length) throw new Error('Duplicate image');
-    return { capturedAt: catalog.capturedAt, version: catalog.version === 2 ? 2 : 1, items };
+    return parseMogongImageCatalog(await readFile(mogongCatalogPath(), 'utf8'));
   } catch {
     throw new ServiceUnavailableException('墨攻镜像目录快照不可用，请联系管理员更新快照。');
   }

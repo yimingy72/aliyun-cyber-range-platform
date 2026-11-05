@@ -10,16 +10,16 @@ import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { useAdminRouteIsActive } from './admin-page-cache';
 import { useAdminSession } from './use-admin-session';
 import { AdminPageHeader } from './shared/admin-page-header';
-import { AdminDataTable, AdminDataTableCell, AdminDataTableState, AdminDataTableText, type AdminDataColumn } from './shared/admin-data-table';
+import { ADMIN_TABLE_WIDTHS, AdminDataTable, AdminDataTableCell, AdminDataTableState, AdminDataTableText, type AdminDataColumn } from './shared/admin-data-table';
 import { TableLoadingState } from './shared/table-loading-state';
-import { AdminPaginationControls, buildVisiblePages, getPagination, useAdminPageSize } from './admin-pagination';
+import { AdminPaginationControls, getPagination, useAdminPageSize } from './admin-pagination';
 import { AdminPaginatedList } from './shared/admin-paginated-list';
 
 const columns: readonly AdminDataColumn[] = [
-  { id: 'displayName', label: '镜像名', priority: 'primary', width: '42%' },
-  { id: 'imageId', label: '镜像 ID', priority: 'secondary', width: '30%' },
-  { id: 'platform', label: '系统', priority: 'secondary', width: '16%' },
-  { id: 'status', label: '状态', priority: 'primary', width: '12%' },
+  { id: 'displayName', label: '镜像名', priority: 'primary' },
+  { id: 'imageId', label: '镜像 ID', priority: 'secondary', width: ADMIN_TABLE_WIDTHS.identifier },
+  { id: 'platform', label: '系统', priority: 'secondary', width: '10rem' },
+  { id: 'status', label: '状态', priority: 'primary', width: ADMIN_TABLE_WIDTHS.status },
 ];
 
 export function TencentImageCenterScreen({ apiBaseUrl, workspace }: { apiBaseUrl: string; workspace: CloudWorkspaceView }) {
@@ -30,7 +30,6 @@ export function TencentImageCenterScreen({ apiBaseUrl, workspace }: { apiBaseUrl
   const [images, setImages] = useState<TencentCloudImagesPayload | null>(null);
   const [assets, setAssets] = useState<PlatformImageAsset[]>([]);
   const [page, setPage] = useState(1);
-  const [jumpPage, setJumpPage] = useState('1');
   const { pageSize, setPageSize } = useAdminPageSize();
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -40,7 +39,6 @@ export function TencentImageCenterScreen({ apiBaseUrl, workspace }: { apiBaseUrl
   const context = workspace.contexts.find(item => item.id === workspace.activeCloudAccountContextId);
   const pagination = getPagination(view === 'cloud' ? images?.totalCount ?? 0 : assets.length, page, pageSize);
 
-  useEffect(() => { setJumpPage(String(page)); }, [page]);
   useEffect(() => {
     if (!isActive || !session.token) return;
     let current = true;
@@ -76,7 +74,7 @@ export function TencentImageCenterScreen({ apiBaseUrl, workspace }: { apiBaseUrl
     </div>
     {view === 'cloud' ? <Tabs className="mt-4" value={scope} onValueChange={value => { setScope(value as typeof scope); setPage(1); }}><TabsList variant="line" aria-label="云上镜像来源切换"><TabsTrigger value="custom">腾讯云自定义镜像</TabsTrigger><TabsTrigger value="public">腾讯云公共镜像</TabsTrigger></TabsList></Tabs> : null}
     <p className="mt-3 text-xs leading-5 text-muted-foreground">{workspace.displayName} · {context?.regionId ?? '未配置地域'}。腾讯云镜像收录、导入和实例创建仍在开发。</p>
-    <AdminPaginatedList className="mt-4" footer={!isLoading && !error && pagination.totalItems ? <AdminPaginationControls label="腾讯云镜像分页" pageSize={pageSize} pagination={pagination} visiblePages={buildVisiblePages(pagination.totalPages, pagination.page)} jumpPageValue={jumpPage} onPageSizeChange={value => { setPageSize(value); setPage(1); }} onPreviousPage={() => setPage(Math.max(1, page - 1))} onNextPage={() => setPage(Math.min(pagination.totalPages, page + 1))} onPageSelect={setPage} onJumpPageValueChange={setJumpPage} onJumpPage={() => { const next = Number(jumpPage); if (Number.isInteger(next) && next >= 1) setPage(Math.min(pagination.totalPages, next)); }} /> : null}>
+    <AdminPaginatedList className="mt-4" footer={!isLoading && !error && pagination.totalItems ? <AdminPaginationControls label="腾讯云镜像分页" pageSize={pageSize} pagination={pagination} onPageSizeChange={value => { setPageSize(value); setPage(1); }} onPageSelect={setPage} /> : null}>
       <AdminDataTable columns={columns} isRefreshing={isLoading} label="腾讯云镜像目录">{visibleColumns => isLoading ? <TableLoadingState columnCount={visibleColumns.length} rowCount={3} label="正在查询腾讯云镜像" /> : error ? <AdminDataTableState columns={visibleColumns} title="镜像查询失败" description={error} variant="error" onRetry={() => setRefresh(value => value + 1)} /> : !rows.length ? <AdminDataTableState columns={visibleColumns} title="当前没有该类型镜像" description={view === 'cloud' ? '切换镜像类型或刷新查询。' : '当前账号工作空间尚未收录镜像。'} variant="empty" /> : rows.map(image => <TableRow key={image.imageId}>{visibleColumns.map(column => <AdminDataTableCell column={column} key={column.id}><AdminDataTableText>{column.id === 'status' ? (image.isAvailable ? '可用' : image.status) : image[column.id as 'displayName' | 'imageId' | 'platform'] ?? '—'}</AdminDataTableText></AdminDataTableCell>)}</TableRow>)}</AdminDataTable>
     </AdminPaginatedList>
   </section></div>;

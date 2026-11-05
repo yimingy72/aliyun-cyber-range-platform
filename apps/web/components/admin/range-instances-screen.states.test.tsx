@@ -88,15 +88,27 @@ describe('RangeInstancesScreen list states', () => {
 
     render(<RangeInstancesScreen apiBaseUrl="http://localhost:3001" />);
 
-    expect(await screen.findByRole('columnheader', { name: '实例名称' })).toBeTruthy();
+    expect(await screen.findByRole('columnheader', { name: '实例 / 批次' })).toBeTruthy();
     expect(screen.getByRole('tab', { name: '实例列表' }).getAttribute('aria-selected')).toBe('true');
     expect(screen.getByLabelText('筛选实例名')).toBeTruthy();
     expect(screen.getByText('还没有编排实例').closest('td')).toBeTruthy();
     expect(screen.getByRole('columnheader', { name: '所属靶场' })).toBeTruthy();
     expect(screen.getByRole('columnheader', { name: '状态' })).toBeTruthy();
+    expect(screen.getByRole('columnheader', { name: '公网 IP（DNAT IP）' })).toBeTruthy();
     expect(
       Array.from(screen.getByRole('table', { name: '编排实例列表' }).querySelectorAll('col')).at(-1)?.getAttribute('style') ?? '',
-    ).toContain('width: 12rem');
+    ).toContain('width: 11rem');
+  });
+
+  it.each(['active', 'history'])('shows the explicit DNAT public IP in the %s list', async view => {
+    searchParamsState.value = view === 'history' ? 'view=history' : '';
+    fetchRangeInstancesMock.mockResolvedValue([{ id: 'range-ip', name: 'DNAT 靶场', status: view === 'history' ? 'destroyed' : 'running', dnatPublicIp: '39.1.2.3' }]);
+    fetchProvisionJobsMock.mockResolvedValue([]);
+    render(<RangeInstancesScreen apiBaseUrl="http://localhost:3001" />);
+    const cell = (await screen.findByText('39.1.2.3')).closest('td');
+    const headers = screen.getAllByRole('columnheader');
+    const index = headers.findIndex(header => header.textContent === '公网 IP（DNAT IP）');
+    expect(cell?.parentElement?.children[index]).toBe(cell);
   });
 
   it('reads the history view from the URL before the first fetch settles', async () => {
@@ -113,7 +125,7 @@ describe('RangeInstancesScreen list states', () => {
     expect(screen.getByRole('columnheader', { name: '状态' })).toBeTruthy();
     expect(
       Array.from(screen.getByRole('table', { name: '编排实例历史' }).querySelectorAll('col')).at(-1)?.getAttribute('style') ?? '',
-    ).toContain('width: 8rem');
+    ).toContain('width: 11rem');
     expect(fetchRangeInstancesMock).toHaveBeenCalledWith(
       'http://localhost:3001',
       'dev-admin-token',
@@ -177,7 +189,7 @@ describe('RangeInstancesScreen list states', () => {
 
     expect(await screen.findByText('无法加载编排实例')).toBeTruthy();
     expect(screen.getByText('靶场实例加载失败，请刷新页面后重试。').closest('td')).toBeTruthy();
-    expect(screen.getByRole('columnheader', { name: '实例名称' })).toBeTruthy();
+    expect(screen.getByRole('columnheader', { name: '实例 / 批次' })).toBeTruthy();
     expect(screen.getByLabelText('筛选实例名')).toBeTruthy();
     expect(screen.getByRole('button', { name: '重试加载' })).toBeTruthy();
   });
@@ -264,7 +276,7 @@ describe('RangeInstancesScreen list states', () => {
 
     const retainedError = await screen.findByRole('alert');
     expect(retainedError.closest('tr')).toBeTruthy();
-    expect(retainedError.closest('td')?.getAttribute('colspan')).toBe('6');
+    expect(retainedError.closest('td')?.getAttribute('colspan')).toBe('7');
     expect(screen.getByText('蓝队靶场')).toBeTruthy();
   });
 
@@ -300,7 +312,7 @@ describe('RangeInstancesScreen list states', () => {
 
     const retainedError = await screen.findByRole('alert');
     expect(retainedError.closest('tr')).toBeTruthy();
-    expect(retainedError.closest('td')?.getAttribute('colspan')).toBe('6');
+    expect(retainedError.closest('td')?.getAttribute('colspan')).toBe('7');
     expect(screen.getByRole('button', { name: '重试加载' })).toBeTruthy();
     expect(screen.queryByText('还没有编排实例')).toBeNull();
   });
@@ -328,9 +340,10 @@ describe('RangeInstancesScreen list states', () => {
     fireEvent.click(await screen.findByRole('button', { name: '查看详情' }));
     expect(pushMock).toHaveBeenCalledWith('/admin/ranges/range-running');
 
-    fireEvent.click(screen.getByRole('button', { name: '关闭' }));
+    fireEvent.keyDown(screen.getByRole('button', { name: '更多操作' }), { key: 'Enter' });
+    fireEvent.click(screen.getByRole('menuitem', { name: '销毁实例' }));
     expect(triggerRangeActionMock).not.toHaveBeenCalled();
-    fireEvent.click(await screen.findByRole('button', { name: '确认关闭' }));
+    fireEvent.click(await screen.findByRole('button', { name: '确认销毁' }));
     await waitFor(() => {
       expect(triggerRangeActionMock).toHaveBeenCalledWith(
         'http://localhost:3001',

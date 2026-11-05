@@ -21,8 +21,10 @@ import type {
   CloudAccountContext,
   CreateImageImportInput,
   ImageImportJob,
+  PackedImageTask,
   ImageImportUploadSession,
   RangeInstanceNodeActionResult,
+  RangeNodeResetPreview,
   ProvisionJob,
   ProvisionJobStep,
   RangeInstanceCreateInput,
@@ -55,11 +57,18 @@ export type MogongImageCatalog = {
   capturedAt: string;
   total: number;
   containersCollectable: boolean;
+  syncAllowed: boolean;
   items: Array<{ id: number; name: string; type: string; imageId: string | null; active: boolean; status: string; creator: string | null; containerReferenceStatus: 'recorded' | 'needs_review' | null }>;
 };
 
 export async function fetchMogongImageCatalog(apiBaseUrl: string, token: string) {
   return readJson<MogongImageCatalog>(await fetch(`${apiBaseUrl}/admin/image-catalog/mogong`, { headers: createAdminHeaders(token) }));
+}
+
+export async function syncMogongImages(apiBaseUrl: string, token: string) {
+  return readJson<{ total: number; capturedAt: string }>(await fetch(`${apiBaseUrl}/admin/image-catalog/mogong/sync`, {
+    method: 'POST', headers: createAdminHeaders(token),
+  }));
 }
 
 export async function collectMogongImage(apiBaseUrl: string, token: string, id: number) {
@@ -124,12 +133,36 @@ export class AdminApiError extends Error {
   }
 }
 
-function createAdminHeaders(token: string, workspaceId: string | null = readCloudWorkspaceSelection()) {
+export function packedImageTaskIdFromError(error: unknown): string | null {
+  const details = error instanceof AdminApiError ? error.details : null;
+  if (!details || typeof details !== 'object') return null;
+  const id = (details as Record<string, unknown>).packedImageArtifactId;
+  return typeof id === 'string' && id.trim() ? id : null;
+}
+
+export function isPackedImageSubmissionUnconfirmed(error: unknown) {
+  if (!(error instanceof AdminApiError)) return true;
+  const details = error.details;
+  return Boolean(packedImageTaskIdFromError(error)) && !(details && typeof details === 'object' && (details as Record<string, unknown>).submissionRejected === true);
+}
+
+export function createAdminHeaders(token: string, workspaceId: string | null = readCloudWorkspaceSelection()) {
   return {
     Authorization: `Bearer ${token}`,
     'Content-Type': 'application/json',
     ...(workspaceId ? { 'x-cloud-workspace-id': workspaceId } : {}),
   };
+}
+
+export async function fetchPackedImageTasks(apiBaseUrl: string, token: string, sourceRangeInstanceId?: string) {
+  const query = sourceRangeInstanceId ? `?sourceRangeInstanceId=${encodeURIComponent(sourceRangeInstanceId)}` : '';
+  return readJson<PackedImageTask[]>(await fetch(`${apiBaseUrl}/admin/packed-images${query}`, { headers: createAdminHeaders(token) }));
+}
+
+export async function verifyPackedImageTask(apiBaseUrl: string, token: string, taskId: string) {
+  return readJson<PackedImageTask>(await fetch(`${apiBaseUrl}/admin/packed-images/${encodeURIComponent(taskId)}/verify`, {
+    method: 'POST', headers: createAdminHeaders(token), body: '{}',
+  }));
 }
 
 export async function fetchCloudWorkspaces(apiBaseUrl: string, token: string) {
@@ -154,7 +187,7 @@ export async function deleteCloudAccount(apiBaseUrl: string, token: string, work
   }));
 }
 
-async function readJson<T>(response: Response): Promise<T> {
+export async function readJson<T>(response: Response): Promise<T> {
   if (!response.ok) {
     let details: unknown;
 
@@ -456,6 +489,36 @@ export async function runRangeInstanceNodeAction(
   return readJson<RangeInstanceNodeActionResult>(response);
 }
 
+export async function previewRangeInstanceNodeReset(apiBaseUrl:string,token:string,rangeId:string,nodeId:string,workspaceId:string) {
+  return readJson<RangeNodeResetPreview>(await fetch(`${apiBaseUrl}/admin/ranges/${encodeURIComponent(rangeId)}/nodes/${encodeURIComponent(nodeId)}/reset-preview`,
+    {headers:createAdminHeaders(token,workspaceId)}));
+}
+
+export type RangeNodeResetOperation = {idempotencyKey:string;confirmationId?:string};
+// Called only after the user types the node name in the destructive confirmation dialog.
+// Retries reuse this same operation object, including after an uncertain network result.
+export async function resetRangeInstanceNode(apiBaseUrl:string,token:string,preview:RangeNodeResetPreview,
+  confirmedNodeName:string,workspaceId:string,operation:RangeNodeResetOperation) {
+  if(confirmedNodeName!==preview.nodeName||!workspaceId||!operation.idempotencyKey) throw new Error('请核验工作空间并输入完整节点名称。');
+  const url=`${apiBaseUrl}/admin/ranges/${encodeURIComponent(preview.rangeInstanceId)}/nodes/${encodeURIComponent(preview.nodeId)}/actions/reset`;
+  const body=JSON.stringify({planDigest:preview.planDigest,confirmedNodeName});
+  const send=()=>fetch(url,{method:'POST',headers:{...createAdminHeaders(token,workspaceId),'x-idempotency-key':operation.idempotencyKey,
+    ...(operation.confirmationId?{'x-confirmation-id':operation.confirmationId}:{})},body}).then(readJson<RangeInstanceNodeActionResult>);
+  try {return await send();} catch(error) {
+    if(!(error instanceof AdminApiError)||error.status!==409||operation.confirmationId) throw error;
+    const challenge=error.details as {code?:string;confirmationId?:string;idempotencyKey?:string;summary?:Record<string,unknown>}|undefined;
+    if(challenge?.code!=='CONFIRMATION_REQUIRED') throw error;
+    if(typeof challenge.confirmationId!=='string'||!challenge.confirmationId||challenge.idempotencyKey!==operation.idempotencyKey
+      ||!challenge.summary||challenge.summary.planDigest!==preview.planDigest||challenge.summary.nodeId!==preview.nodeId
+      ||challenge.summary.rangeInstanceId!==preview.rangeInstanceId||challenge.summary.instanceId!==preview.instanceId
+      ||challenge.summary.systemDiskId!==preview.systemDiskId||challenge.summary.nodeName!==confirmedNodeName
+      ||challenge.summary.systemDiskDataWillBeLost!==true||challenge.summary.dataDisksReset!==false)
+      throw new Error('服务端确认目标与当前预览不符，未提交重置。请重新打开核验。');
+    operation.confirmationId=challenge.confirmationId;
+    return send();
+  }
+}
+
 export async function createRangeInstance(
   apiBaseUrl: string,
   token: string,
@@ -483,6 +546,12 @@ export async function launchRangeInstance(
   });
 
   return readJson<RangeInstance>(response);
+}
+
+export async function fetchRangeInstanceAccess(apiBaseUrl: string, token: string, id: string) {
+  return readJson<Pick<RangeInstance, 'id' | 'runtimeCredentials' | 'accessEntry'>>(await fetch(
+    `${apiBaseUrl}/admin/ranges/${encodeURIComponent(id)}/access`, { headers: createAdminHeaders(token) },
+  ));
 }
 
 export async function fetchProvisionJobDetail(apiBaseUrl: string, token: string, id: string) {
@@ -740,6 +809,7 @@ export async function exportPlatformBillingCsv(
   apiBaseUrl: string,
   token: string,
   options?: { startAt?: string; endAt?: string },
+  workspaceId: string | null = readCloudWorkspaceSelection(),
 ) {
   const url = new URL(`${apiBaseUrl}/admin/billing/export/platform.csv`);
 
@@ -752,7 +822,7 @@ export async function exportPlatformBillingCsv(
   }
 
   const response = await fetch(url, {
-    headers: createAdminHeaders(token),
+    headers: createAdminHeaders(token, workspaceId),
   });
 
   return readText(response);
@@ -762,6 +832,7 @@ export async function exportBillingUsersCsv(
   apiBaseUrl: string,
   token: string,
   options?: { startAt?: string; endAt?: string },
+  workspaceId: string | null = readCloudWorkspaceSelection(),
 ) {
   const url = new URL(`${apiBaseUrl}/admin/billing/export/users.csv`);
 
@@ -774,7 +845,7 @@ export async function exportBillingUsersCsv(
   }
 
   const response = await fetch(url, {
-    headers: createAdminHeaders(token),
+    headers: createAdminHeaders(token, workspaceId),
   });
 
   return readText(response);
@@ -785,6 +856,7 @@ export async function exportBillingUserItemsCsv(
   token: string,
   userId: string,
   options?: { startAt?: string; endAt?: string },
+  workspaceId: string | null = readCloudWorkspaceSelection(),
 ) {
   const url = new URL(`${apiBaseUrl}/admin/billing/export/users/${userId}.csv`);
 
@@ -797,7 +869,7 @@ export async function exportBillingUserItemsCsv(
   }
 
   const response = await fetch(url, {
-    headers: createAdminHeaders(token),
+    headers: createAdminHeaders(token, workspaceId),
   });
 
   return readText(response);
@@ -817,9 +889,9 @@ export async function saveCloudConfig(
   return readJson<CloudConfigSnapshot>(response);
 }
 
-export async function fetchAdminUsers(apiBaseUrl: string, token: string): Promise<AdminUser[]> {
+export async function fetchAdminUsers(apiBaseUrl: string, token: string, workspaceId: string | null = readCloudWorkspaceSelection()): Promise<AdminUser[]> {
   const response = await fetch(`${apiBaseUrl}/admin/users`, {
-    headers: createAdminHeaders(token),
+    headers: createAdminHeaders(token, workspaceId),
   });
 
   return readJson<AdminUser[]>(response);

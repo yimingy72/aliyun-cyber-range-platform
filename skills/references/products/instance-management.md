@@ -9,6 +9,7 @@
 | 操作 | MCP 工具 | 必填参数 | 可选参数 | Scope |
 |---|---|---|---|---|
 | 查询共享网络 | `single_instance_network_list` | — | — | `settings:read`，仅管理员 |
+| 创建/确保共享网络 | `single_instance_network_create` | — | 操作元数据 | `settings:write`、`instances:create`，仅管理员 |
 | 登记本轮网络回收 | `single_instance_network_cleanup_register` | `networkProfileId`、`runId`、带时区 `createdAfter`、明确 `ownerUserIds` | — | `settings:write`，仅管理员 |
 | 回收空闲共享网络 | `single_instance_network_destroy` | `networkProfileId`、`cleanupRunId` | 操作元数据 | `settings:write`、`instances:destroy`，仅管理员 |
 | 查询单实例/批次 | `single_instance_list` | — | `view: active\|history`，默认 `active` | `instances:read` |
@@ -28,6 +29,7 @@
 ## 操作规则
 
 - 查询状态使用 `list`/`get`；密码、SSH、VNC 和 CSV 必须有用户明确请求并具备 `instances:credentials:read`。
+- `single_instance_network_create` 只创建或复用当前冻结账号、地域和可用区的共享 VPC、交换机与安全组，不创建 ECS；调用需要平台二阶段确认。
 - 云端 ECS 核验按 `RangeInstanceId` 标签只读查询实例启动时绑定的地域；返回匹配 ECS ID 和真实云标签白名单（PlatformUserId 对应 owner、RangeInstanceId、SingleInstanceBatchId、CreatedBy、PlatformScope），完整核验响应与分页，不会创建、停止或释放资源。
 - 创建前先从 `platform_image_list` 选择可见且启用的 `platformImageAssetId`，再用完全相同的 CPU/内存调用 `single_instance_spec_check`。仅 `exactAvailable: true` 可创建。
 - `expiresAt` 必填，必须是带时区的 ISO-8601 未来时间；不得猜测默认到期时间。`quantity` 为 1–99；省略 `systemDiskSize` 时服务端默认 40 GiB。

@@ -62,7 +62,8 @@ function DialogContent({
 }) {
   return (
     <DialogPortal>
-      <DialogOverlay />
+      {/* Portalled controls must stay in the scroll lock's React event tree. */}
+      <DialogOverlay>
       <DialogPrimitive.Content
         data-slot="dialog-content"
         className={cn(
@@ -89,6 +90,7 @@ function DialogContent({
           </DialogPrimitive.Close>
         )}
       </DialogPrimitive.Content>
+      </DialogOverlay>
     </DialogPortal>
   )
 }

@@ -13,7 +13,7 @@ type AdminPaginatedListProps = {
 export function AdminPaginatedList({ children, className, footer }: AdminPaginatedListProps) {
   return (
     <div className={cn('admin-paginated-list', className)}>
-      <div className="admin-paginated-list-body">{children}</div>
+      <div aria-label="列表内容，可滚动" className="admin-paginated-list-body" role="region" tabIndex={0}>{children}</div>
       {footer ? <div className="admin-paginated-list-footer">{footer}</div> : null}
     </div>
   );

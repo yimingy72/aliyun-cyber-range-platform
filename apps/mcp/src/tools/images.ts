@@ -140,13 +140,13 @@ export const imageTools: ToolDefinition[] = [
   {
     name: 'platform_image_collect',
     title: '收录镜像为平台资产',
-    description: '对应镜像中心的“收录”。仅管理员将已同步的云镜像快照纳入平台镜像资产；会创建可管理资产，调用前必须取得用户确认。',
+    description: '对应镜像中心的“收录”。仅管理员将已同步的云镜像快照纳入平台镜像资产；会创建可管理资产，visibility=private 仅收录到我的镜像，省略则收录到平台镜像；已有资产的归属和可见性不变。',
     requiredScopes: ['images:write'], adminOnly: true,
     inputSchema: imageCollectInputSchema,
     outputSchema: resourceOutputSchema,
     call(context, args) {
-      const input = args as { snapshotId: string; displayName: string; idempotencyKey?: string; confirmationId?: string };
-      return context.client.collectPlatformImage({ snapshotId: input.snapshotId, displayName: input.displayName }, operation(input));
+      const input = args as { snapshotId: string; displayName: string; visibility?: 'private'; idempotencyKey?: string; confirmationId?: string };
+      return context.client.collectPlatformImage({ snapshotId: input.snapshotId, displayName: input.displayName, ...(input.visibility ? { visibility: input.visibility } : {}) }, operation(input));
     },
   },
   {

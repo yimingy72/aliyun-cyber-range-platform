@@ -1,4 +1,6 @@
 import React from 'react';
+Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', { configurable: true, value: () => undefined });
+afterEach(() => localStorage.removeItem('admin-page-size'));
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -58,7 +60,7 @@ vi.mock('../../lib/admin-api', async () => {
 import { AdminApiError } from '../../lib/admin-api';
 import { AdminScreenCacheProvider } from '../../lib/admin-screen-cache';
 import * as adminSessionModule from './use-admin-session';
-import { BillingScreen } from './billing-screen';
+import { LegacyBillingScreen as BillingScreen } from './billing-legacy-screen';
 
 const adminSession = {
   token: 'dev-admin-token',
@@ -356,7 +358,7 @@ describe('BillingScreen', () => {
     });
     observer.observe(aside, { childList: true, subtree: true });
     expect(within(aside).queryByText('billing-user-21')).toBeNull();
-    fireEvent.click(within(aside).getByRole('button', { name: '下一页' }));
+    fireEvent.click(within(aside).getByRole('link', { name: '下一页' }));
     await within(aside).findByText('billing-user-21');
     observer.disconnect();
     expect(jumpInput.value).toBe('6');
@@ -364,6 +366,26 @@ describe('BillingScreen', () => {
     fireEvent.click(within(aside).getByRole('button', { name: '跳转' }));
     await within(aside).findByText('billing-user-101');
     expect(fetchBillingUsersMock).toHaveBeenLastCalledWith('http://localhost:3001', 'dev-admin-token', expect.objectContaining({ page: 6, pageSize: 20 }));
+  });
+
+  it('bounds page requests using the newly selected size while older-size rows are retained', async () => {
+    vi.spyOn(adminSessionModule, 'useAdminSession').mockReturnValue(adminSession);
+    fetchBillingSummaryMock.mockResolvedValue({ billingScope: 'platform_resources', reconciliationIssues: [], totalPretaxAmount: 101, platformPretaxAmount: 0 });
+    fetchBillingUserGroupsMock.mockResolvedValue([]);
+    fetchBillingUsersMock.mockImplementation(async (_api: string, _token: string, input: { page: number; pageSize: number }) => {
+      if (input.pageSize === 100) return new Promise(() => {});
+      return { page: 1, pageSize: 20, total: 101, items: [{ userId: 'user-1', username: 'billing-user-1', pretaxAmount: 1, itemCount: 1, launchCount: 1 }] };
+    });
+    render(<BillingScreen apiBaseUrl="http://localhost:3001" />);
+    await screen.findByText('101 位用户');
+    const pager = within(screen.getByLabelText('用户账单分页'));
+    fireEvent.keyDown(pager.getByRole('combobox', { name: '每页条数' }), { key: 'ArrowDown' });
+    fireEvent.click(screen.getByRole('option', { name: '100 条' }));
+    await waitFor(() => expect(fetchBillingUsersMock).toHaveBeenCalledWith(expect.anything(), expect.anything(), expect.objectContaining({ page: 1, pageSize: 100 })));
+    fireEvent.change(pager.getByRole('spinbutton', { name: '跳转到页码' }), { target: { value: '99' } });
+    fireEvent.click(pager.getByRole('button', { name: '跳转' }));
+    await waitFor(() => expect(fetchBillingUsersMock).toHaveBeenLastCalledWith(expect.anything(), expect.anything(), expect.objectContaining({ page: 2, pageSize: 100 })));
+    expect(pager.queryByRole('link', { name: '第 3 页' })).toBeNull();
   });
 
   it('keeps the latest user page and jump value when an older page request finishes later', async () => {
@@ -385,7 +407,7 @@ describe('BillingScreen', () => {
     await screen.findByText('101 位用户');
     const aside = screen.getByRole('complementary', { name: '用户账单' });
     const jumpInput = within(aside).getByLabelText('跳转到页码') as HTMLInputElement;
-    fireEvent.click(within(aside).getByRole('button', { name: '下一页' }));
+    fireEvent.click(within(aside).getByRole('link', { name: '下一页' }));
     await waitFor(() => expect(fetchBillingUsersMock).toHaveBeenLastCalledWith(
       'http://localhost:3001', 'dev-admin-token', expect.objectContaining({ page: 2 })));
     fireEvent.change(jumpInput, { target: { value: '6' } });
@@ -394,7 +416,7 @@ describe('BillingScreen', () => {
     await act(async () => { finishSecondPage(pageResult(2)); });
     expect(jumpInput.value).toBe('6');
     expect(within(aside).queryByText('billing-user-21')).toBeNull();
-    expect(within(aside).getByRole('button', { name: '第 6 页' }).getAttribute('aria-pressed')).toBe('true');
+    expect(within(aside).getByRole('link', { name: '第 6 页' }).getAttribute('aria-current')).toBe('page');
   });
 
   it('renders totals and user amounts by their currencies without a mixed total', async () => {
@@ -439,6 +461,35 @@ describe('BillingScreen', () => {
     expect(screen.getByText('平台待分配费用').parentElement?.textContent).toBe('平台待分配费用未知');
     expect(screen.getByText('资源费用明细待补齐').parentElement?.textContent).toBe('资源费用明细待补齐未知');
     expect(screen.queryByText('无未分配记录')).toBeNull();
+  });
+
+  it('opens exact missing-bill resources from the overview count and exposes reconciliation resources inline', async () => {
+    vi.spyOn(adminSessionModule, 'useAdminSession').mockReturnValue(adminSession);
+    const resource = { resourceKey: 'ledger:pending', ledgerId: 'pending', cloudWorkspaceId: 'workspace', cloudProvider: 'alibaba_cloud',
+      cloudResourceId: 'i-missing-bill', cloudResourceType: 'ecs', rangeInstanceId: 'range-pending', sourceProvisionJobId: 'create-pending',
+      ownerUserId: 'user-1', cloudAccountUid: 'account-id', regionId: 'cn-beijing', billingStartAt: '2026-10-10T01:00:00.000Z',
+      releasedAt: null, proofFailureReason: 'BILL_DETAILS_PENDING' };
+    fetchBillingSummaryMock.mockResolvedValue({ billingScope: 'platform_resources', totalPretaxAmount: 10, platformPretaxAmount: 2,
+      billingStatus: 'provisional', anomalyCount: 0, resourcesWithoutBillCount: 1, resourcesWithoutBill: [resource], unallocatedCurrencyTotals: [],
+      reconciliationIssues: [{ resourceType: 'snapshot', resourceCount: 1, reason: '等待快照分账。',
+        resources: [{ ...resource, resourceKey: 'ledger:snapshot', cloudResourceId: 's-pending', cloudResourceType: 'snapshot' }] }] });
+    fetchBillingUsersMock.mockResolvedValue([{ userId: 'user-1', username: 'alice', pretaxAmount: 8, itemCount: 1, launchCount: 1 }]);
+    fetchBillingUserGroupsMock.mockResolvedValue([]);
+    render(<BillingScreen apiBaseUrl="http://localhost:3001" />);
+    const button = await screen.findByRole('button', { name: '查看待补齐费用明细' });
+    expect(button.getAttribute('aria-expanded')).toBe('false');
+    fireEvent.click(button);
+    const pending = screen.getByRole('region', { name: '待补齐费用明细' });
+    expect(pending.textContent).toContain('i-missing-bill');
+    expect(pending.textContent).toContain('alice');
+    expect(pending.textContent).toContain('range-pending');
+    expect(pending.textContent).not.toContain('¥');
+    fireEvent.click(screen.getByText(/快照：1 项平台资源待核对/));
+    expect(screen.getByRole('table', { name: 'snapshot 对账资源清单' }).textContent).toContain('s-pending');
+    fireEvent.click(button);
+    expect(screen.queryByRole('region', { name: '待补齐费用明细' })).toBeNull();
+    expect(screen.getByText('平台已归属费用').parentElement?.textContent).toBe('平台已归属费用¥ 10.00');
+    expect(triggerBillingSyncMock).not.toHaveBeenCalled();
   });
 
   it('does not relabel account-wide legacy totals or anomalies as platform spending', async () => {

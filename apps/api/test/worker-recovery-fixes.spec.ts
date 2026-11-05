@@ -7,6 +7,7 @@ import { PrismaAdminRepository } from '../src/database/prisma-admin.repository';
 import { createMemoryAdminRepository } from './support/create-memory-admin-repository';
 import * as scheduling from '../src/provisioning/aliyun-zone-instance-scheduler';
 import { APPLY_PENDING_FILE } from '../src/provisioning/opentofu-state-evidence';
+import * as imageCapacity from '../src/admin/aliyun-image-capacity';
 
 const account = { provider: 'alibaba_cloud' as const, cloudAccountContextId: 'context-source', accountUid: 'uid-source',
   accountUidResolved: true, defaultRegion: 'cn-hangzhou', defaultZoneId: 'cn-hangzhou-h',
@@ -143,6 +144,7 @@ it('freezes the selected zone before the first apply and refuses changing it aft
 it('publishes the actual fallback zone before writing the executable workspace', async () => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'range-zone-recovery-'));
   try {
+    jest.spyOn(imageCapacity, 'readAliyunImageSystemDisk').mockResolvedValue({ imageId: 'm-fixture', minimumSystemDiskSize: 40, requestId: 'fixture-read' });
     jest.spyOn(scheduling, 'selectZoneAndHostInstanceTypes').mockResolvedValue({ selectedZoneId: 'cn-hangzhou-i',
       attemptedZones: [], hostInstanceTypes: { entry: 'ecs.e-c1m1.large' } } as any);
     const provisioner = new OpenTofuRangeProvisioner({ projectRootDir: '/app', workspacesRootDir: root,

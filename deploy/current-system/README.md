@@ -89,6 +89,20 @@ COMPOSE_BAKE=false docker compose up -d --build
 
 `COMPOSE_BAKE=false` 与根目录启动脚本保持一致，用于规避部分 Docker Desktop 版本的 Bake builder 请求头兼容问题。
 
+## 临时兼容阿里云镜像系统类型标识错误
+
+仅在确认客体实际为 Windows、但镜像被错误导入为 Linux 时使用：
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.dns-os-override.yml up -d --no-deps --force-recreate api provisioner-worker
+```
+
+该覆盖配置设置 `ALICLOUD_DNS_SKIP_IMAGE_OS_CHECK=true`，只跳过 Windows DNS 的镜像系统类型预检；仍核对镜像 ID、可用状态及实际客体 DNS。修正镜像后，使用基础 Compose 文件重建 API 和 worker 即恢复严格校验：
+
+```bash
+docker compose -f docker-compose.yml up -d --no-deps --force-recreate api provisioner-worker
+```
+
 ## 使用已导出镜像部署
 
 如果目标机器不打算重新构建，可以使用本目录 `images/` 下另行准备的导出镜像包。

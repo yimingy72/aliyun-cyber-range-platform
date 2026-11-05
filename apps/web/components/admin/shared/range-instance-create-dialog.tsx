@@ -17,6 +17,9 @@ type Props = {
   expiresAt: string;
   onNameChange: (value: string) => void;
   onExpiryChange: (value: string) => void;
+  quantity?: string;
+  onQuantityChange?: (value: string) => void;
+  acceptedCount?: number;
   canCreate?: boolean;
   canReplay?: boolean;
   title?: string;
@@ -32,7 +35,7 @@ type Props = {
   tencentCloud?: boolean;
 };
 
-export function RangeInstanceCreateDialog({ open, pending, onOpenChange, onConfirm, name, expiresAt, onNameChange, onExpiryChange, canCreate = true, canReplay = false, title = '创建实例', confirmLabel = '确认创建', initialFocusRef, templateId, templateOptions, onTemplateChange, loadingTemplates, templateError, onRetryTemplates, error, tencentCloud }: Props) {
+export function RangeInstanceCreateDialog({ open, pending, onOpenChange, onConfirm, name, expiresAt, onNameChange, onExpiryChange, quantity = '1', onQuantityChange, acceptedCount = 0, canCreate = true, canReplay = false, title = '创建实例', confirmLabel = '确认创建', initialFocusRef, templateId, templateOptions, onTemplateChange, loadingTemplates, templateError, onRetryTemplates, error, tencentCloud }: Props) {
   const formId = useId();
   const nameRef = useRef<HTMLInputElement>(null);
   const [templateQuery, setTemplateQuery] = useState('');
@@ -44,11 +47,13 @@ export function RangeInstanceCreateDialog({ open, pending, onOpenChange, onConfi
   </>}>
     <form className="grid gap-3" id={formId} onSubmit={(event) => { event.preventDefault(); onConfirm(); }}>
       {templateOptions ? <AdminFormField label="靶场模板" htmlFor={`${formId}-template`} required>
-        <Combobox ariaLabel="靶场模板" id={`${formId}-template`} disabled={pending || loadingTemplates} placeholder={loadingTemplates ? '正在读取模板…' : '搜索或选择靶场模板'} value={templateName ?? templateQuery} selectedValue={templateId} options={templateOptions} onValueChange={(value) => { const selected = templateOptions.find((option) => option.value === value); setTemplateQuery(selected?.label ?? value); onTemplateChange?.(selected?.value ?? ''); }} required />
+        <Combobox ariaLabel="靶场模板" id={`${formId}-template`} disabled={pending || canReplay || loadingTemplates} placeholder={loadingTemplates ? '正在读取模板…' : '搜索或选择靶场模板'} value={templateName ?? templateQuery} selectedValue={templateId} options={templateOptions} onValueChange={(value) => { const selected = templateOptions.find((option) => option.value === value); setTemplateQuery(selected?.label ?? value); onTemplateChange?.(selected?.value ?? ''); }} required />
         {templateError ? <div className="flex items-center gap-2 text-xs text-destructive" role="alert">{templateError}<Button size="sm" variant="outline" type="button" onClick={onRetryTemplates}>重试</Button></div> : !loadingTemplates && !templateOptions.length ? <p className="text-xs text-muted-foreground">暂无可用模板，请先在靶场编排页创建模板。</p> : null}
       </AdminFormField> : null}
-      <AdminFormField label="实例名" htmlFor={`${formId}-name`} required><Input id={`${formId}-name`} aria-label="实例名" ref={initialFocusRef ?? nameRef} disabled={pending} value={name} onChange={(event) => onNameChange(event.target.value)} required /></AdminFormField>
-      <AdminFormField label="到期时间" htmlFor={`${formId}-expiry`} required hint={tencentCloud ? '到期时间至少在 10 分钟后。' : undefined}><DateTimePicker id={`${formId}-expiry`} aria-label="到期时间" disabled={pending} value={expiresAt} onValueChange={onExpiryChange} required /></AdminFormField>
+      <AdminFormField label="实例名" htmlFor={`${formId}-name`} required><Input id={`${formId}-name`} aria-label="实例名" ref={initialFocusRef ?? nameRef} disabled={pending || canReplay} value={name} onChange={(event) => onNameChange(event.target.value)} required /></AdminFormField>
+      {onQuantityChange ? <AdminFormField label="创建数量" htmlFor={`${formId}-quantity`} required hint="每套独立创建和计费；多套实例名自动追加编号，共用本次到期时间。"><Input id={`${formId}-quantity`} aria-label="编排实例数量" type="number" min="1" max="99" step="1" disabled={pending || canReplay} value={quantity} onChange={(event) => onQuantityChange(event.target.value)} required /></AdminFormField> : null}
+      <AdminFormField label="到期时间" htmlFor={`${formId}-expiry`} required hint={tencentCloud ? '到期时间至少在 10 分钟后。' : undefined}><DateTimePicker id={`${formId}-expiry`} aria-label="到期时间" disabled={pending || canReplay} value={expiresAt} onValueChange={onExpiryChange} required /></AdminFormField>
+      {Number(quantity) > 1 && (pending || acceptedCount > 0) ? <p role="status" className="text-sm text-muted-foreground">已受理 {acceptedCount} / {quantity} 套；云资源创建进度请在实例列表查看。</p> : null}
       {error ? <p className="text-sm text-destructive" role="alert">{error}</p> : null}
     </form>
   </AdminDialog>;

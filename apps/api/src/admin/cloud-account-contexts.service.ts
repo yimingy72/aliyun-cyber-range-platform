@@ -237,7 +237,7 @@ export class CloudAccountContextsService {
     try {
       return await this.prisma.cloudWorkspace.upsert({
         where: { provider_accountUid: { provider, accountUid } },
-        create: { provider, accountUid, displayName: input.displayName?.trim() || `${provider === 'alibaba_cloud' ? '阿里云' : '腾讯云'} ${accountUid}` },
+        create: { provider, accountUid, billingReconciliationMode: provider==='alibaba_cloud'?'resource':'legacy', displayName: input.displayName?.trim() || `${provider === 'alibaba_cloud' ? '阿里云' : '腾讯云'} ${accountUid}` },
         update: {},
       });
     } catch (error) {

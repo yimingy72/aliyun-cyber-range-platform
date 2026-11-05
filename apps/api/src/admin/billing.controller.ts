@@ -1,4 +1,4 @@
-import { BadGatewayException, Body, Controller, Get, Param, Post, Query, Res, UseGuards } from '@nestjs/common';
+import { BadGatewayException, Body, Controller, Get, Optional, Param, Post, Query, Res, UseGuards } from '@nestjs/common';
 import type { Response } from 'express';
 
 import { AdminAuthGuard } from './admin-auth.guard';
@@ -6,6 +6,8 @@ import { BillingService } from './billing.service';
 import { BillingSyncService } from './billing-sync.service';
 import { resolveBillingWindow } from './billing-window';
 import { BillingWindowDto } from './dto/billing.dto';
+import { BillingReconciliationService } from './billing-reconciliation.service';
+import { BillingDiagnosticsService } from './billing-diagnostics.service';
 
 @Controller('admin/billing')
 @UseGuards(AdminAuthGuard)
@@ -13,7 +15,14 @@ export class BillingController {
   constructor(
     private readonly billingService: BillingService,
     private readonly billingSyncService: BillingSyncService,
+    @Optional() private readonly resourceBilling?: BillingReconciliationService,
+    @Optional() private readonly diagnostics?: BillingDiagnosticsService,
   ) {}
+
+  @Get('diagnostics/monthly')
+  monthlyDiagnostics(@Query() query: { billingCycle?: string; ledgerIds?: string } & Record<string, unknown>) {
+    return this.diagnostics!.monthly(query);
+  }
 
   @Get('summary')
   getSummary(@Query() query: BillingWindowDto) {
@@ -59,6 +68,10 @@ export class BillingController {
   async sync(@Body() body: BillingWindowDto) {
     const window = resolveBillingWindow(body, 7);
     try {
+      if (this.resourceBilling && typeof this.billingSyncService.currentMode==='function' && await this.billingSyncService.currentMode() === 'resource') {
+        const queued = await this.resourceBilling.request({startAt:window.startAtText,endAt:window.endAtText});
+        return {syncedDays:0,importedLineItems:0,anomalyCount:0,deferredCount:queued.scheduledTasks,syncInProgress:true,...queued};
+      }
       if (!body.startAt && !body.endAt) return await this.billingSyncService.syncRecentDays(7);
       return await this.billingSyncService.syncRange({ startAt: window.startAtText, endAt: window.endAtText });
     } catch (error) {

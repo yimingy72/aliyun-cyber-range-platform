@@ -9,6 +9,7 @@ describe('resource alert MCP contract', () => {
     await expect(registry.callTool('resource_alert_reclaim', ['settings:write'], { alertId: 'a', planDigest: digest, idempotencyKey: 'k' }, 'admin')).rejects.toThrow('Forbidden');
     await expect(registry.callTool('resource_alert_reclaim', scopes, { alertId: 'a', planDigest: digest, idempotencyKey: 'k', resourceIds: ['i-outsider'] }, 'admin')).rejects.toThrow('Invalid input');
     expect(registry.listTools(scopes, 'admin').find(tool => tool.name === 'resource_alert_reclaim')?.annotations).toMatchObject({ destructiveHint: true, idempotentHint: true });
+    expect(registry.listTools(scopes, 'admin').find(tool => tool.name === 'resource_patrol_manager_set')?.description).toContain('默认每1小时');
   });
   it('strips secrets and raw evidence from alerts', async () => {
     const row = { id: 'a', cloudWorkspaceId: 'space-a', provider: 'alibaba_cloud', accountUid: '111', regionId: 'cn-hangzhou',

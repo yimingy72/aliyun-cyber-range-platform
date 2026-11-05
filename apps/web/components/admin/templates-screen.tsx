@@ -29,17 +29,17 @@ import {
 import { useAdminScreenCache } from '../../lib/admin-screen-cache';
 import { workspaceStorageKey } from '../../lib/cloud-workspace-selection';
 import { cloudExpiryError } from '@/lib/cloud-execution-policy';
+import { clearRangeLaunchBatch, readRangeLaunchBatch, saveRangeLaunchBatch, submitRangeLaunchBatch, type RangeLaunchBatchRequest } from '@/lib/range-launch-batch';
 import { useCloudWorkspace } from './cloud-workspace-provider';
 import { isUnauthorizedAdminError } from '../../lib/admin-screen';
 import type {
   RangeTemplateView,
-  RangeInstanceLaunchInput,
   Scenario,
   ScenarioUpdateInput,
 } from '../../lib/admin-types';
 import {
   AdminPaginationControls,
-  buildVisiblePages,
+
   getPagination,
   useAdminPageSize,
 } from './admin-pagination';
@@ -50,9 +50,11 @@ import {
   AdminDataTableCell,
   AdminDataTableRevalidationNotice,
   AdminDataTableState,
+  ADMIN_TABLE_WIDTHS,
   type AdminDataColumn,
 } from './shared/admin-data-table';
 import { AdminListToolbar } from './shared/admin-list-toolbar';
+import { AdminSelectField } from './shared/admin-select-field';
 import { AdminDialog } from './shared/admin-dialog';
 import { AdminPaginatedList } from './shared/admin-paginated-list';
 import { ConfirmActionDialog } from './shared/confirm-action-dialog';
@@ -79,6 +81,7 @@ type LaunchInstanceDraft = {
   templateName: string;
   name: string;
   expiresAt: string;
+  quantity: string;
 };
 
 type TemplateConfirmState =
@@ -103,15 +106,16 @@ const EMPTY_LAUNCH_INSTANCE_DRAFT: LaunchInstanceDraft = {
   templateName: '',
   name: '',
   expiresAt: '',
+  quantity: '1',
 };
 
 const TEMPLATE_COLUMNS: readonly AdminDataColumn[] = [
-  { id: 'template', label: '靶场', priority: 'primary' },
-  { id: 'creator', label: '创建人', priority: 'secondary' },
-  { id: 'description', label: '靶场描述', priority: 'detail' },
-  { id: 'topology', label: '拓扑概览', priority: 'tertiary' },
-  { id: 'status', label: '状态', priority: 'primary' },
-  { id: 'actions', label: '操作', priority: 'primary', width: '12rem' },
+  { id: 'template', label: '靶场', priority: 'primary', width: '20rem' },
+  { id: 'description', label: '靶场描述', priority: 'detail', minWidth: '18rem' },
+  { id: 'topology', label: '拓扑概览', priority: 'tertiary', width: '10rem' },
+  { id: 'status', label: '状态', priority: 'primary', width: ADMIN_TABLE_WIDTHS.status },
+  { id: 'creator', label: '创建人', priority: 'tertiary', width: ADMIN_TABLE_WIDTHS.creator },
+  { id: 'actions', label: '操作', priority: 'primary', width: ADMIN_TABLE_WIDTHS.actions },
 ];
 
 function readTemplateView(value: string | null): RangeTemplateView {
@@ -185,6 +189,10 @@ function removeScenario(items: Scenario[], scenarioId: string) {
   return items.filter((scenario) => scenario.id !== scenarioId);
 }
 
+function templateCreator(template: Scenario) {
+  return template.createdBy?.trim() || 'admin';
+}
+
 export function TemplatesScreen({
   apiBaseUrl = 'http://localhost:3001',
 }: TemplatesScreenProps) {
@@ -226,25 +234,26 @@ export function TemplatesScreen({
   const [confirmState, setConfirmState] = useState<TemplateConfirmState>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const launchScope = JSON.stringify([apiBaseUrl, session.profile?.id, workspace?.id]);
-  const launchContextRef = useRef({ scope: launchScope, token: session.token });
-  launchContextRef.current = { scope: launchScope, token: session.token };
+  const launchContextRef = useRef({ scope: launchScope, token: session.token, active: isPageActive });
+  launchContextRef.current = { scope: launchScope, token: session.token, active: isPageActive };
   const launchMountedRef = useRef(true);
   useEffect(() => { launchMountedRef.current = true; return () => { launchMountedRef.current = false; }; }, []);
   const isCurrentLaunch = () => launchMountedRef.current && launchContextRef.current.scope === launchScope;
   const launchPendingRef = useRef(false);
-  const launchRequestRef = useRef<{ fingerprint: string; key: string; payload: RangeInstanceLaunchInput } | null>(null);
+  const launchRequestRef = useRef<RangeLaunchBatchRequest | null>(null);
+  const [launchAcceptedCount, setLaunchAcceptedCount] = useState(0);
   const [pendingEditorTemplateId, setPendingEditorTemplateId] = useState<string | null>(null);
   const [searchName, setSearchName] = useState('');
+  const [creatorFilter, setCreatorFilter] = useState('');
   const [createDraft, setCreateDraft] = useState<CreateTemplateDraft>(EMPTY_CREATE_TEMPLATE_DRAFT);
   const [editDraft, setEditDraft] = useState<TemplateDraft>(EMPTY_TEMPLATE_DRAFT);
   const [launchDraft, setLaunchDraft] = useState<LaunchInstanceDraft>(EMPTY_LAUNCH_INSTANCE_DRAFT);
-  const launchFingerprint = JSON.stringify([launchScope, launchDraft.templateId, launchDraft.name.trim(), launchDraft.expiresAt.trim()]);
+  const launchFingerprint = JSON.stringify([launchScope, launchDraft.templateId, launchDraft.name.trim(), launchDraft.expiresAt.trim(), launchDraft.quantity]);
   const canReplayLaunch = launchRequestRef.current?.fingerprint === launchFingerprint;
   const createNameRef = useRef<HTMLInputElement>(null);
   const editNameRef = useRef<HTMLInputElement>(null);
   const launchNameRef = useRef<HTMLInputElement>(null);
   const [viewPages, setViewPages] = useState<Record<RangeTemplateView, number>>({ platform: 1, mine: 1, all: 1 });
-  const [jumpPageValue, setJumpPageValue] = useState('1');
   const { pageSize, setPageSize } = useAdminPageSize();
 
   function markTableContentUpdated(view: RangeTemplateView) {
@@ -385,22 +394,28 @@ export function TemplatesScreen({
 
   const scenarios = activeView === 'all' ? allTemplates : activeView === 'platform' ? platformTemplates : myTemplates;
 
+  const creatorOptions = useMemo(() =>
+    [...new Set(scenarios.map(templateCreator))]
+      .sort((left, right) => left.localeCompare(right, 'zh-CN'))
+      .map((creator) => ({ value: creator, label: creator })),
+  [scenarios]);
+
   const filteredTemplates = useMemo(() => {
-    return scenarios.filter((scenario) => {
-      const displayName = getScenarioDisplayName(scenario).toLowerCase();
-      return searchName.trim().length === 0 || displayName.includes(searchName.trim().toLowerCase());
-    });
-  }, [searchName, scenarios]);
+    const query = searchName.trim().toLowerCase();
+    return scenarios.filter((scenario) =>
+      (!creatorFilter || templateCreator(scenario) === creatorFilter) &&
+      (!query || getScenarioDisplayName(scenario).toLowerCase().includes(query)),
+    );
+  }, [creatorFilter, searchName, scenarios]);
 
   useEffect(() => {
     setViewPages((current) => ({
       ...current,
       [activeView]: 1,
     }));
-  }, [activeView, searchName]);
+  }, [activeView, creatorFilter, searchName]);
 
   const activePagination = getPagination(filteredTemplates.length, viewPages[activeView], pageSize);
-  const visiblePages = buildVisiblePages(activePagination.totalPages, activePagination.page);
   const pagedTemplates = filteredTemplates.slice(activePagination.startIndex, activePagination.endIndex);
 
   useEffect(() => {
@@ -411,10 +426,6 @@ export function TemplatesScreen({
       }));
     }
   }, [activePagination.page, activeView, viewPages]);
-
-  useLayoutEffect(() => {
-    setJumpPageValue(String(activePagination.page));
-  }, [activePagination.page, activeView]);
 
   function handlePageSizeChange(nextValue: 20 | 50 | 100) {
     setPageSize(nextValue);
@@ -445,20 +456,6 @@ export function TemplatesScreen({
     setErrorMessage(null);
     setRevalidationErrorMessage(null);
     setLoadAttempt((current) => current + 1);
-  }
-
-  function handleJumpToPage() {
-    const parsedPage = Number.parseInt(jumpPageValue, 10);
-
-    if (Number.isNaN(parsedPage)) {
-      setJumpPageValue(String(activePagination.page));
-      return;
-    }
-
-    setViewPages((current) => ({
-      ...current,
-      [activeView]: parsedPage,
-    }));
   }
 
   const editingTemplate = useMemo(() => {
@@ -548,12 +545,16 @@ export function TemplatesScreen({
   }
 
   function openLaunchDialog(template: Scenario) {
-    launchRequestRef.current = null;
-    setLaunchDraft({
+    const original = readRangeLaunchBatch(launchScope);
+    launchRequestRef.current = original;
+    setLaunchAcceptedCount(original?.accepted.length ?? 0);
+    setActionErrorMessage(original ? '创建结果尚未确认，请继续查询原请求；已受理的实例不会重复提交。' : null);
+    setLaunchDraft(original ? { templateId: original.payload.templateId, templateName: getScenarioDisplayName(template), name: original.payload.name, expiresAt: original.expiresAtInput, quantity: String(original.quantity) } : {
       templateId: template.id,
       templateName: getScenarioDisplayName(template),
       name: buildRangeInstanceName(template),
       expiresAt: '',
+      quantity: '1',
     });
   }
 
@@ -760,10 +761,13 @@ export function TemplatesScreen({
     }
 
     if (!canReplayLaunch) {
+      const quantity = Number(launchDraft.quantity);
+      if (!Number.isInteger(quantity) || quantity < 1 || quantity > 99) { setActionErrorMessage('创建数量必须是 1–99 的整数。'); return; }
+      if (!Number.isFinite(Date.parse(expiresAt))) { setActionErrorMessage('请选择有效的到期时间。'); return; }
       const expiryError = workspace?.provider === 'tencent_cloud' ? cloudExpiryError(expiresAt, workspace.provider) : null;
       if (expiryError) { setActionErrorMessage(expiryError); return; }
       const payload = { templateId: launchDraft.templateId, name, expiresAt: new Date(expiresAt).toISOString() };
-      launchRequestRef.current = { fingerprint: launchFingerprint, key: crypto.randomUUID(), payload };
+      launchRequestRef.current = { fingerprint: launchFingerprint, key: crypto.randomUUID(), payload, quantity, expiresAtInput: launchDraft.expiresAt, accepted: [] };
     }
     const request = launchRequestRef.current!;
     launchPendingRef.current = true;
@@ -772,12 +776,16 @@ export function TemplatesScreen({
     setIsSubmitting(true);
 
     try {
-      const instance = await launchRangeInstance(apiBaseUrl, session.token, request.payload, request.key);
+      saveRangeLaunchBatch(launchScope, request);
+      const instances = await submitRangeLaunchBatch(request,
+        (payload, key) => launchRangeInstance(apiBaseUrl, session.token!, payload, key), () => isCurrentLaunch() && launchContextRef.current.active,
+        (count) => { saveRangeLaunchBatch(launchScope, request); if (isCurrentLaunch()) setLaunchAcceptedCount(count); });
       if (!isCurrentLaunch()) return;
       launchRequestRef.current = null;
+      clearRangeLaunchBatch(launchScope, request.key);
       screenCache?.invalidate(apiBaseUrl, session.token, 'range-instances:');
       closeLaunchDialog();
-      router.push(`/admin/ranges/${instance.id}`);
+      router.push(instances.length === 1 ? `/admin/ranges/${instances[0]!.id}` : '/admin/ranges');
     } catch (error: unknown) {
       if (!isCurrentLaunch()) return;
       if (isUnauthorizedAdminError(error)) {
@@ -829,22 +837,36 @@ export function TemplatesScreen({
             onSearchChange={setSearchName}
             onViewChange={(nextView) => {
               if (nextView === 'mine' || nextView === 'platform' || (nextView === 'all' && session.isAdmin)) {
+                setCreatorFilter('');
                 setActiveViewWithUrl(nextView);
               }
             }}
             searchLabel="筛选靶场名"
             searchPlaceholder="筛选靶场名"
             searchValue={searchName}
+            searchControls={
+              <AdminSelectField
+                ariaLabel="按创建人筛选"
+                className="w-full sm:w-40"
+                emptyOptionLabel="全部创建人"
+                onValueChange={setCreatorFilter}
+                options={creatorOptions}
+                value={creatorFilter}
+              />
+            }
             views={[
               { label: '我的拓扑', value: 'mine' },
               { label: '平台拓扑', value: 'platform' },
               ...(session.isAdmin ? [{ label: '全部拓扑', value: 'all' }] : []),
             ]}
+            compactViewAction
             action={
-              <Button disabled={!canProvision} onClick={() => setIsCreateDialogOpen(true)} type="button">
-                <Plus aria-hidden="true" />
-                新建拓扑
-              </Button>
+              <div className="flex flex-wrap gap-2">
+                <Button disabled={!canProvision} onClick={() => setIsCreateDialogOpen(true)} type="button">
+                  <Plus aria-hidden="true" />
+                  新建拓扑
+                </Button>
+              </div>
             }
           >
             <AdminPaginatedList
@@ -852,19 +874,9 @@ export function TemplatesScreen({
               footer={
                 filteredTemplates.length ? (
                   <AdminPaginationControls
-                    jumpPageValue={jumpPageValue}
                     label="靶场列表分页"
                     pageSize={pageSize}
                     pagination={activePagination}
-                    visiblePages={visiblePages}
-                    onJumpPage={handleJumpToPage}
-                    onJumpPageValueChange={setJumpPageValue}
-                    onNextPage={() =>
-                      setViewPages((current) => ({
-                        ...current,
-                        [activeView]: activePagination.page + 1,
-                      }))
-                    }
                     onPageSelect={(pageNumber) =>
                       setViewPages((current) => ({
                         ...current,
@@ -872,12 +884,6 @@ export function TemplatesScreen({
                       }))
                     }
                     onPageSizeChange={handlePageSizeChange}
-                    onPreviousPage={() =>
-                      setViewPages((current) => ({
-                        ...current,
-                        [activeView]: activePagination.page - 1,
-                      }))
-                    }
                   />
                 ) : null
               }
@@ -889,7 +895,7 @@ export function TemplatesScreen({
                 label="靶场列表"
               >
                 {(columns) => {
-                  const [templateColumn, creatorColumn, descriptionColumn, topologyColumn, statusColumn, actionsColumn] = columns;
+                  const [templateColumn, descriptionColumn, topologyColumn, statusColumn, creatorColumn, actionsColumn] = columns;
 
                   if (errorMessage) {
                     return (
@@ -923,7 +929,9 @@ export function TemplatesScreen({
                         <AdminDataTableState
                           columns={columns}
                           description={
-                            activeView === 'mine'
+                            searchName.trim() || creatorFilter
+                              ? '请调整靶场名称或创建人。'
+                              : activeView === 'mine'
                               ? '你可以新建一个靶场并开始编排。'
                               : activeView === 'all' ? '当前云账号工作空间暂无拓扑。' : '平台暂时没有可用的已发布拓扑。'
                           }
@@ -946,9 +954,6 @@ export function TemplatesScreen({
                         <AdminDataTableCell className="font-medium" column={templateColumn!}>
                           {getScenarioDisplayName(template)}
                         </AdminDataTableCell>
-                        <AdminDataTableCell column={creatorColumn!}>
-                          {template.createdBy?.trim() || 'admin'}
-                        </AdminDataTableCell>
                         <AdminDataTableCell
                           className="max-w-72 whitespace-normal text-muted-foreground"
                           column={descriptionColumn!}
@@ -964,6 +969,9 @@ export function TemplatesScreen({
                         </AdminDataTableCell>
                         <AdminDataTableCell column={statusColumn!}>
                           <StatusBadge status={isPublished ? 'published' : 'private'} />
+                        </AdminDataTableCell>
+                        <AdminDataTableCell column={creatorColumn!}>
+                          {templateCreator(template)}
                         </AdminDataTableCell>
                         <AdminDataTableCell column={actionsColumn!}>
                           <div className="flex justify-start gap-1">
@@ -1136,6 +1144,9 @@ export function TemplatesScreen({
         onConfirm={() => void handleLaunchInstance()}
         name={launchDraft.name}
         expiresAt={launchDraft.expiresAt}
+        quantity={launchDraft.quantity}
+        acceptedCount={launchAcceptedCount}
+        onQuantityChange={(quantity) => setLaunchDraft((previous) => ({ ...previous, quantity }))}
         onNameChange={(name) => setLaunchDraft((previous) => ({ ...previous, name }))}
         onExpiryChange={(expiresAt) => setLaunchDraft((previous) => ({ ...previous, expiresAt }))}
         tencentCloud={workspace?.provider === 'tencent_cloud'}

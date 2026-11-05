@@ -6,6 +6,7 @@ import { SingleInstanceNetworkBootstrapService, singleNetworkWorkspaceKey } from
 import type { SessionUserProfile } from './admin-user-auth';
 import { describeTencentResourceInventory } from './tencent-cloud-resources';
 import { SingleInstanceBatchExecutionService } from './single-instance-batch-execution.service';
+import { ResourcePatrolCloudClient } from './resource-patrol-cloud-client';
 @Injectable()
 export class SingleInstanceNetworkService {
   constructor(
@@ -14,6 +15,7 @@ export class SingleInstanceNetworkService {
     private readonly bootstrap: SingleInstanceNetworkBootstrapService,
     private readonly cidrPoolService: CidrPoolService,
     @Optional() private readonly execution?: SingleInstanceBatchExecutionService,
+    @Optional() private readonly patrol?: ResourcePatrolCloudClient,
   ) {}
 
   async ensureDefaultProfile(account?: SystemCloudAccountContext,creatorUserId?:string) {
@@ -94,6 +96,20 @@ export class SingleInstanceNetworkService {
     this.assertAdmin(currentUser);
     return this.adminRepository.listSingleInstanceNetworkProfiles();
   }
+  async prepareEnsure(currentUser: SessionUserProfile) {
+    this.assertAdmin(currentUser);
+    const account = await this.systemConfigService.getExecutionAccountContext();
+    if (!account.accountUid || !account.cloudAccountContextId) throw new ConflictException('Default network requires a verified cloud account');
+    return { targetId: `${account.provider}:${account.accountUid}:${account.defaultRegion}:${account.defaultZoneId}`,
+      targetSnapshot: { provider: account.provider, cloudAccountUid: account.accountUid, cloudAccountContextId: account.cloudAccountContextId,
+        regionId: account.defaultRegion, zoneId: account.defaultZoneId },
+      summary: { targetName: '单实例共享默认网络', destructive: false, createsVpc: true,
+        createsVswitches: account.provider === 'tencent_cloud' ? 1 : 3, createsSecurityGroup: true } };
+  }
+  async ensure(currentUser: SessionUserProfile) {
+    this.assertAdmin(currentUser);
+    return this.ensureDefaultProfile(undefined,currentUser.id);
+  }
   async registerCleanup(id:string,runId:string,createdAfter:string,ownerUserIds:string[],admin:SessionUserProfile) {
     this.assertAdmin(admin);
     const start=new Date(createdAfter);
@@ -128,16 +144,49 @@ export class SingleInstanceNetworkService {
       const account = { ...sourceAccount, defaultZoneId: profile.zoneId };
       if (account.accountUid !== profile.cloudAccountUid || account.defaultRegion !== profile.regionId)
         throw new ConflictException('Network cloud source does not match its persisted identity');
+      const instances = await this.adminRepository.listRangeInstances();
+      const jobs = await this.adminRepository.listProvisionJobs();
       if (profile.status === 'destroying' && (!profile.vpcId || !profile.securityGroupId || !profile.vswitchIds.length)) {
-        const recovered = await this.bootstrap.recoverDefaultProfile(profile, account);
-        profile = await this.adminRepository.upsertSingleInstanceNetworkProfile(recovered);
+        try {
+          const recovered = await this.bootstrap.recoverDefaultProfile(profile, account);
+          profile = await this.adminRepository.upsertSingleInstanceNetworkProfile(recovered);
+        } catch (recoveryError) {
+          if (!this.patrol) throw recoveryError;
+          const directReferences = instances.filter(instance => instance.singleInstanceConfig?.networkProfileId === id);
+          if (directReferences.some(instance => !['destroyed', 'create_failed'].includes(instance.status)
+            || instance.status === 'create_failed' && Object.values(instance.resourceSummary?.hostIds ?? {}).length))
+            throw new ConflictException('Default network is still referenced by an active or uncleared instance');
+          if (directReferences.some(instance=>!profile.cleanupOwnerUserIds?.includes(instance.ownerUserId??'')))
+            throw new ConflictException('Network includes references outside this validation run');
+          const directIds = new Set(directReferences.map(instance => instance.id));
+          if (jobs.some(job => directIds.has(job.rangeInstanceId) && ['pending', 'running'].includes(job.status)))
+            throw new ConflictException('Default network still has resource jobs');
+          await this.auditNetwork(profile, currentUser.id, 'destroy', 'requested');
+          await this.adminRepository.markSingleInstanceNetworkDestroying(id);
+          let cleanupVerified = false;
+          try {
+            await this.bootstrap.destroyVerifiedUnknownEmptyProfile(profile, account, async () => {
+              const candidates = await this.patrol!.findAliyunDefaultNetworkCandidates(account, profile);
+              if (candidates.length) throw new ConflictException('Unknown default network apply still has tagged cloud resources; preserve the profile for recovery');
+            }, async () => {
+              await this.auditNetwork(profile, currentUser.id, 'destroy', 'succeeded');
+              await this.adminRepository.deleteSingleInstanceNetworkProfile(id);
+              cleanupVerified = true;
+            });
+            if (!cleanupVerified) throw new ConflictException('Default network cleanup verification was not completed');
+          } catch (error) {
+            await this.auditNetwork(profile, currentUser.id, 'destroy', 'failed', 'NETWORK_CLEANUP_FAILED');
+            throw error;
+          }
+          return { networkProfileId: id, status: 'destroyed', vpcId: '', vswitchIds: [], securityGroupId: '' };
+        }
       }
-      const references = (await this.adminRepository.listRangeInstances()).filter(instance => instance.singleInstanceConfig?.networkProfileId === id || instance.resourceSummary?.vpcId === profile.vpcId || profile.vswitchIds.includes(instance.singleInstanceConfig?.assignedVswitchId ?? ''));
+      const references = instances.filter(instance => instance.singleInstanceConfig?.networkProfileId === id || instance.resourceSummary?.vpcId === profile.vpcId || profile.vswitchIds.includes(instance.singleInstanceConfig?.assignedVswitchId ?? ''));
       if (references.some(instance => !['destroyed', 'create_failed'].includes(instance.status) || instance.status === 'create_failed' && Object.values(instance.resourceSummary?.hostIds ?? {}).length))
         throw new ConflictException('Default network is still referenced by an active or uncleared instance');
       if(references.some(instance=>!profile.cleanupOwnerUserIds?.includes(instance.ownerUserId??''))) throw new ConflictException('Network includes references outside this validation run');
       const ids = new Set(references.map(instance => instance.id));
-      if ((await this.adminRepository.listProvisionJobs()).some(job => ids.has(job.rangeInstanceId) && ['pending', 'running'].includes(job.status)))
+      if (jobs.some(job => ids.has(job.rangeInstanceId) && ['pending', 'running'].includes(job.status)))
         throw new ConflictException('Default network still has resource jobs');
       if (!this.execution)
         throw new ConflictException('Network lifecycle executor unavailable');

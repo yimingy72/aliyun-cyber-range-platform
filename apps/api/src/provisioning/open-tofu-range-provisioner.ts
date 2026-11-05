@@ -5,6 +5,7 @@ import { prepareOpenTofuProviderEnv, migrateAliCloudWorkspaceProvider } from './
 import { createHash, createHmac, randomUUID } from 'node:crypto';
 import { requestTencentCloud } from '../admin/tencent-cloud-client';
 import { isAliyunRequestTimeout, sanitizeAliyunErrorCode } from '../admin/aliyun-error-code';
+import { readAliyunImageSystemDisk } from '../admin/aliyun-image-capacity';
 import { assertApprovedRangeUpdatePlan, assertRangeStateOwnership, assertRangeStateMatchesInventory, preserveDeployedRangeHostFacts } from './range-update-plan-safety';
 import { createHostCloudReleaseDeadline, assertCloudReleaseDeadlineCanCreate, verifyCloudReleaseDeadlines, assertPlatformExpirationSupportsCloudDeadline } from './cloud-release-deadlines';
 import { createRangeResourceReceiptObserver } from './range-resource-creation-receipts';
@@ -62,6 +63,7 @@ type OpenTofuProvisionerEnv = Partial<
     | 'ALICLOUD_SECRET_KEY'
     | 'ALICLOUD_REGION'
     | 'ALICLOUD_ZONE_ID'
+    | 'ALICLOUD_DNS_SKIP_IMAGE_OS_CHECK'
     | 'ALICLOUD_IMAGE_ID'
     | 'ALICLOUD_IMAGE_ID_PREFERENCES'
     | 'ALICLOUD_INSTANCE_TYPE'
@@ -553,8 +555,14 @@ export class OpenTofuRangeProvisioner implements RangeProvisioner {
     const records: Record<string, HostCloudReleaseDeadline> = { ...input.knownResourceSummary?.cloudReleaseDeadlines, ...recorded };
     for (const [key, known] of Object.entries(input.knownResourceSummary?.cloudReleaseDeadlines ?? {})) {
       const original = recorded[key];
-      if (original && ['provider','platformExpiresAt','creationPhaseStartedAt','cloudReleaseAt','sourceProvisionJobId'].some(field => original[field] !== (known as any)[field]))
-        throw new Error('Persisted cloud release deadline conflicts with the platform inventory');
+      if (original && ['provider','platformExpiresAt','creationPhaseStartedAt','cloudReleaseAt','sourceProvisionJobId'].some(field => original[field] !== (known as any)[field])) {
+        // The worker has checked the same-source expiry job before passing this inventory.
+        if (!input.knownResourceSummary?.expiryChangeJobId || known.status !== 'verified'
+          || known.platformExpiresAt !== input.expiresAt || known.instanceId !== input.knownResourceSummary.hostIds?.[key]
+          || ['provider','creationPhaseStartedAt','sourceProvisionJobId'].some(field => original[field] !== (known as any)[field]))
+          throw new Error('Persisted cloud release deadline conflicts with the platform inventory');
+        records[key] = known;
+      }
     }
     const startedAt = new Date().toISOString();
     for (const key of addedHostKeys) {
@@ -1197,6 +1205,7 @@ export class OpenTofuRangeProvisioner implements RangeProvisioner {
 
     if (
       hostInstanceTypeRequests.length > 0 && (requiresMultiNicCapacityScheduling ||
+      hostInstanceTypeRequests.some(host => host.exactResources) ||
       (this.enableZoneScheduling &&
         (!requestedInstanceType || requestedInstanceType.toLowerCase() === 'auto')))
     ) {
@@ -1239,7 +1248,8 @@ export class OpenTofuRangeProvisioner implements RangeProvisioner {
       Object.values(hostImageIds ?? {})[0] ??
       options.priorVariables?.image_id ?? (await this.resolveImageId(runtimeConfig));
     const hostWindows = options.requireRuntimePasswords
-      ? { ...Object.fromEntries(plan.hostDefinitions.filter(host => deployedKeys.has(host.key) && host.dns).map(host => [host.key, true])), ...await resolveAliyunWindowsDnsHostImages({ hosts: newPlan.hostDefinitions, hostImageIds: hostImageIds ?? {}, fallbackImageId: imageId, runtimeConfig }) }
+      ? { ...Object.fromEntries(plan.hostDefinitions.filter(host => deployedKeys.has(host.key) && host.dns).map(host => [host.key, true])), ...await resolveAliyunWindowsDnsHostImages({ hosts: newPlan.hostDefinitions, hostImageIds: hostImageIds ?? {}, fallbackImageId: imageId, runtimeConfig,
+        skipImageOsCheck: this.env.ALICLOUD_DNS_SKIP_IMAGE_OS_CHECK === 'true' }) }
       : undefined;
     const hostPasswords = Object.fromEntries(
       plan.hostDefinitions.map((host) => [
@@ -1252,6 +1262,22 @@ export class OpenTofuRangeProvisioner implements RangeProvisioner {
     const instancePassword = options.requireRuntimePasswords
       ? requireRuntimePassword(input.runtimeCredentials, plan.entryHostKey)
       : DESTROY_PLACEHOLDER_PASSWORD;
+    const hostSystemDiskSizes: Record<string, number> = {};
+    if (options.requireRuntimePasswords) {
+      const capacities = new Map<string, number>();
+      for (const host of newPlan.hostDefinitions) {
+        const selectedImageId = hostImageIds?.[host.key] ?? imageId;
+        if (!capacities.has(selectedImageId)) capacities.set(selectedImageId,
+          (await readAliyunImageSystemDisk(runtimeConfig, selectedImageId)).minimumSystemDiskSize);
+        const defaultSize = Number(this.env.OPENTOFU_SYSTEM_DISK_SIZE ?? 40);
+        if (capacities.get(selectedImageId)! > defaultSize) hostSystemDiskSizes[host.key] = capacities.get(selectedImageId)!;
+      }
+    }
+    for (const host of plan.hostDefinitions.filter(host => deployedKeys.has(host.key))) {
+      const priorHost = options.priorVariables?.hosts.find((old: any) => old.key === host.key);
+      const size = priorHost?.system_disk_size ?? options.priorVariables?.system_disk_size;
+      if (size !== undefined) hostSystemDiskSizes[host.key] = size;
+    }
     return this.renderer.render({
       plan,
       rangeInstanceId: input.rangeInstanceId,
@@ -1261,6 +1287,7 @@ export class OpenTofuRangeProvisioner implements RangeProvisioner {
       hostInstanceTypes,
       imageId,
       hostImageIds,
+      ...(Object.keys(hostSystemDiskSizes).length ? { hostSystemDiskSizes } : {}),
       ...(hostWindows ? { hostWindows } : {}),
       hostPasswords,
       instancePassword,
@@ -1492,6 +1519,14 @@ export class OpenTofuRangeProvisioner implements RangeProvisioner {
         runtimeHint,
       });
 
+      const cpu = runtimeHint?.requestedCpu;
+      const memory = runtimeHint?.requestedMemoryGiB;
+      // Imported specifications outside the economy presets must never fall back to a different CPU/memory size.
+      const exactResources = !resolutionPolicy.fixedInstanceType &&
+        resolutionPolicy.preferredInstanceTypes.length === 0 &&
+        typeof cpu === 'number' && Number.isSafeInteger(cpu) && cpu > 0 &&
+        typeof memory === 'number' && Number.isSafeInteger(memory) && memory > 0;
+
       return {
         hostKey: host.key,
         ...(typeof runtimeHint?.requestedCpu === 'number' ? { cpu: runtimeHint.requestedCpu } : {}),
@@ -1499,6 +1534,7 @@ export class OpenTofuRangeProvisioner implements RangeProvisioner {
           ? { memoryGiB: runtimeHint.requestedMemoryGiB }
           : {}),
         networkInterfaceCount,
+        ...(exactResources ? { exactResources: true } : {}),
         ...(resolutionPolicy.strictPreferredInstanceTypes
           ? { strictPreferredInstanceTypes: true }
           : {}),
@@ -1506,7 +1542,7 @@ export class OpenTofuRangeProvisioner implements RangeProvisioner {
           ? [resolutionPolicy.fixedInstanceType]
           : resolutionPolicy.preferredInstanceTypes.length > 0
             ? resolutionPolicy.preferredInstanceTypes
-            : [...defaultPreferences],
+            : exactResources ? [] : [...defaultPreferences],
       };
     });
   }
@@ -1696,6 +1732,7 @@ export async function resolveAliyunWindowsDnsHostImages(input: {
   hostImageIds: Record<string, string>;
   fallbackImageId: string;
   runtimeConfig: ResolvedProvisioningRuntimeConfig;
+  skipImageOsCheck?: boolean;
 }): Promise<Record<string, boolean> | undefined> {
   const hosts = input.hosts.filter(host => host.dns);
   if (!hosts.length) return undefined;
@@ -1706,7 +1743,11 @@ export async function resolveAliyunWindowsDnsHostImages(input: {
     if (!windowsByImage.has(imageId)) {
       const payload = await performAliyunRpcRequest({ accessKeyId: input.runtimeConfig.accessKeyId, accessKeySecret: input.runtimeConfig.accessKeySecret, regionId: input.runtimeConfig.defaultRegion, action: 'DescribeImages', parameters: { ImageId: imageId, PageSize: '100', PageNumber: '1' } }) as { TotalCount?: unknown; Images?: { Image?: Array<{ ImageId?: unknown; Status?: unknown; OSType?: unknown; Platform?: unknown }> } };
       const images = payload?.Images?.Image;
-      if (payload?.TotalCount !== 1 || !Array.isArray(images) || images.length !== 1 || images[0]?.ImageId !== imageId || images[0]?.Status !== 'Available' || images[0]?.OSType !== 'windows' || (images[0].Platform !== undefined && (typeof images[0].Platform !== 'string' || !/^(?:Microsoft\s+)?Windows\b/i.test(images[0].Platform)))) throw new Error('Alibaba host DNS requires an available officially identified Windows image');
+      if (payload?.TotalCount !== 1 || !Array.isArray(images) || images.length !== 1 || images[0]?.ImageId !== imageId || images[0]?.Status !== 'Available')
+        throw new Error(input.skipImageOsCheck ? 'Alibaba host DNS requires an available image' : 'Alibaba host DNS requires an available officially identified Windows image');
+      // Temporary compatibility for Windows images imported with incorrect Alibaba OS metadata.
+      if (!input.skipImageOsCheck && (images[0].OSType !== 'windows' || (images[0].Platform !== undefined && (typeof images[0].Platform !== 'string' || !/^(?:Microsoft\s+)?Windows\b/i.test(images[0].Platform)))))
+        throw new Error('Alibaba host DNS requires an available officially identified Windows image');
       windowsByImage.set(imageId, true);
     }
     result[host.key] = true;

@@ -56,6 +56,7 @@ vi.mock('@xyflow/react', async () => {
 
   return {
     Background: () => <div data-testid="flow-background" />,
+    ViewportPortal: ({children}: {children: React.ReactNode}) => <div data-testid="viewport-portal">{children}</div>,
     Controls: () => <div data-testid="flow-controls" />,
     Handle: () => null,
     MiniMap: ({
@@ -254,6 +255,12 @@ afterEach(() => {
 });
 
 describe('TopologyFlowCanvas', () => {
+  it('passes the actual canvas dimensions to the shared network layout',()=>{
+    const props=createCanvasProps();render(<TopologyFlowCanvas {...props}/>);
+    vi.spyOn(screen.getByTestId('topology-flow-canvas'),'getBoundingClientRect').mockReturnValue({width:720,height:900,x:0,y:0,top:0,left:0,bottom:900,right:720,toJSON:()=>({})});
+    fireEvent.click(screen.getByRole('button',{name:'全部自动布局'}));
+    expect(props.onLayoutAll).toHaveBeenCalledWith({width:720,height:900});
+  });
   it('默认保持资源工具轨收缩，并使用 React Flow 无限画布部件', () => {
     const canvasProps = createCanvasProps();
     render(<TopologyFlowCanvas {...canvasProps} />);
@@ -266,7 +273,7 @@ describe('TopologyFlowCanvas', () => {
     expect(screen.getByRole('button', { name: '显示导航图' }).getAttribute('aria-pressed')).toBe('false');
     expect(flowState.props).toMatchObject({
       multiSelectionKeyCode: 'Shift',
-      minZoom: 0.25,
+      minZoom: 0.1,
       onlyRenderVisibleElements: true,
       panActivationKeyCode: 'Space',
       panOnDrag: [0, 1],
@@ -281,11 +288,11 @@ describe('TopologyFlowCanvas', () => {
     expect(screen.getByTestId('topology-resource-rail').getAttribute('data-expanded')).toBe('true');
     expect(flowState.props?.fitViewOptions).toMatchObject({
       maxZoom: 1.2,
-      padding: 0.45,
+      padding: 0.2,
     });
   });
 
-  it('将多交换机到同一 ECS 的边作为独立 bezier 端点传给 React Flow', () => {
+  it('将多交换机到同一 ECS 的边作为独立网络路由端点传给 React Flow', () => {
     render(
       <TopologyFlowCanvas
         {...createCanvasProps()}
@@ -296,11 +303,11 @@ describe('TopologyFlowCanvas', () => {
 
     expect(flowState.props?.edges).toMatchObject([{
       id: 'edge-switch-a-ecs',
-      type: 'bezier',
+      type: 'topology-network',
       targetHandle: 'target-edge-switch-a-ecs',
     }, {
       id: 'edge-switch-b-ecs',
-      type: 'bezier',
+      type: 'topology-network',
       targetHandle: 'target-edge-switch-b-ecs',
     }]);
     expect(flowState.props?.nodes.find((node: { id: string }) => node.id === 'ecs-1')?.data.targetPorts)
@@ -701,7 +708,7 @@ describe('TopologyFlowCanvas', () => {
     await waitFor(() => expect(flowState.fitView).toHaveBeenCalledWith({
       duration: 180,
       maxZoom: 1.2,
-      padding: 0.45,
+      padding: 0.2,
     }));
 
     fireEvent.click(screen.getByRole('button', { name: '适应视图' }));
@@ -714,7 +721,7 @@ describe('TopologyFlowCanvas', () => {
 
     for (const name of ['选择模式', '连线模式', '全部自动布局', '撤销', '重做', '适应视图', '进入全屏编辑模式', '显示导航图']) {
       const button = screen.getByRole('button', { name });
-      expect(button.getAttribute('title')).toBe(name);
+      expect(button.getAttribute('title')).toBe(name === '全部自动布局' ? '按网络区域自动布局，保留每台多网卡主机的唯一节点' : name);
       expect(button.getAttribute('aria-label')).toBe(name);
     }
   });

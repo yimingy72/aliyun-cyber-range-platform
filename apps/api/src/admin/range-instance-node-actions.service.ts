@@ -5,6 +5,7 @@ import {
   ForbiddenException,
   Inject,
   Injectable,
+  Logger,
   NotFoundException,
   Optional,
 } from '@nestjs/common';
@@ -12,14 +13,14 @@ import {
 import { ADMIN_REPOSITORY, AdminRepository, RangeInstanceRecord } from './admin.repository';
 import { buildAliyunTagParameters, buildBillingTags } from './billing-tagging';
 import type { SessionUserProfile } from './admin-user-auth';
-import { generateAliyunEcsPassword } from './ecs-password-generator';
 import { PackedImagesService } from './packed-images.service';
-import { imageRpc } from './aliyun-image-rpc';
+import { imageRpc, AliyunImageRpcError, isAliyunImageSubmissionRejection } from './aliyun-image-rpc';
 import { describeTencentInstances, assertTencentOwnedInstance } from './tencent-cloud-resources';
 import { requestTencentCloud } from './tencent-cloud-client';
 import { encryptPlatformImageDefaultPassword } from './platform-image-password';
 import { SystemConfigService, type SystemCloudAccountContext } from './system-config.service';
 import { encodePackedImageDiagnostic, packedImageDiagnostic, type PackedImagePhase } from './packed-image-diagnostic';
+import { assertPowerAllowsMutation } from './instance-power-types';
 
 const ALICLOUD_VNC_CONSOLE_URL = 'https://g.alicdn.com/aliyun/ecs-console-vnc2/0.0.8/index.html';
 
@@ -28,6 +29,7 @@ type AuthenticatedUser = Pick<SessionUserProfile, 'id' | 'role'>;
 
 @Injectable()
 export class RangeInstanceNodeActionsService {
+  private readonly logger = new Logger(RangeInstanceNodeActionsService.name);
   constructor(
     @Inject(ADMIN_REPOSITORY) private readonly adminRepository: AdminRepository,
     private readonly systemConfigService: SystemConfigService,
@@ -60,6 +62,7 @@ export class RangeInstanceNodeActionsService {
     if (!isNodeActionName(action)) {
       throw new NotFoundException('Unsupported node action');
     }
+    assertPowerAllowsMutation(instance);
 
     if (instance.instanceMode === 'range') {
       if (instance.status !== 'running') throw new ConflictException('Only running ranges can control nodes');
@@ -180,14 +183,15 @@ export class RangeInstanceNodeActionsService {
         zoneId: accountContext.defaultZoneId, accessKeyId: accountContext.accessKeyId, accessKeySecret: accountContext.accessKeySecret, imageImportBucket: accountContext.imageImportBucket, status: 'ready',
       }, { name: displayName, description: payload.description?.trim() || null });
     }
-    const defaultHostName = payload.defaultHostName?.trim() || readHostName(hostNode, nodeId);
-    const defaultPassword = payload.defaultPassword?.trim() || generateAliyunEcsPassword();
+    const defaultHostName = payload.defaultHostName?.trim() || (instance.instanceMode === 'single'
+      ? instance.singleInstanceConfig?.hostName?.trim() || null : readHostName(hostNode, nodeId));
+    const defaultPassword = payload.defaultPassword?.trim() || instance.runtimeCredentials?.[nodeId]?.password?.trim() || null;
     const description = payload.description?.trim() || null;
     const ownerUserId = instance.ownerUserId ?? instance.createdBy;
     if (!ownerUserId || !accountContext.accountUid || !accountContext.cloudAccountContextId) throw new ConflictException('打包需要明确 owner 和已验证云账号。');
     const artifact = await this.packedImages.begin({ cloudAccountContextId: accountContext.cloudAccountContextId, cloudAccountUid: accountContext.accountUid, regionId: accountContext.defaultRegion, ownerUserId, sourceRangeInstanceId: rangeInstanceId, sourceHostKey: nodeId, sourceInstanceId: hostInstanceId }, {
       id: accountContext.cloudAccountContextId, provider: accountContext.provider, accountUid: accountContext.accountUid, regionId: accountContext.defaultRegion, zoneId: accountContext.defaultZoneId, accessKeyId: accountContext.accessKeyId, accessKeySecret: accountContext.accessKeySecret, imageImportBucket: accountContext.imageImportBucket, status: 'ready',
-    }, { displayName, defaultHostName, defaultPassword: encryptPlatformImageDefaultPassword(defaultPassword), description });
+    }, { displayName, defaultHostName, defaultPassword: defaultPassword ? encryptPlatformImageDefaultPassword(defaultPassword) : null, description });
     let packPhase: PackedImagePhase = 'create_image';
     try {
       if (accountContext.provider === 'alibaba_cloud') await this.packedImages.updateClaimed(artifact.id, artifact.submissionToken, { status: 'creating' });
@@ -202,7 +206,8 @@ export class RangeInstanceNodeActionsService {
           action: 'CreateImage',
           parameters: {
             InstanceId: hostInstanceId,
-            ImageName: displayName,
+            // Platform display names may contain brackets/spaces; the cloud identity is stable and legal.
+            ImageName: `range-pack-${artifact.id}`,
             ClientToken: artifact.id,
             ...(description ? { Description: description } : {}),
             ...buildAliyunTagParameters(
@@ -214,7 +219,7 @@ export class RangeInstanceNodeActionsService {
                 platformResourceType: 'image',
                 platformPackedImageArtifactId: artifact.id,
                 platformHostKey: nodeId,
-                billingStartAt: new Date(),
+                billingStartAt: artifact.createdAt,
               }),
             ),
           },
@@ -267,6 +272,7 @@ export class RangeInstanceNodeActionsService {
       return { platformImageAsset, snapshot };
       });
 
+      this.logger.log(JSON.stringify({ event: 'packed_image_submitted', packedImageArtifactId: artifact.id, rangeInstanceId, nodeId, imageId }));
       return {
         status: 'accepted',
         packedImageArtifactId: artifact.id,
@@ -280,7 +286,13 @@ export class RangeInstanceNodeActionsService {
       };
     } catch (error) {
       const diagnostic = packedImageDiagnostic(error, packPhase, [accountContext.accessKeyId, accountContext.accessKeySecret]);
-      await this.packedImages.updateClaimed(artifact.id, artifact.submissionToken, { errorMessage: encodePackedImageDiagnostic(diagnostic) });
+      const rejected = packPhase === 'create_image' && error instanceof AliyunImageRpcError && error.action === 'CreateImage'
+        && error.cloudStatus >= 400 && error.cloudStatus < 500 && Boolean(error.requestId) && isAliyunImageSubmissionRejection(error.cloudCode);
+      await this.packedImages.updateClaimed(artifact.id, artifact.submissionToken, { errorMessage: encodePackedImageDiagnostic(diagnostic),
+        ...(rejected ? { status: 'failed', completedAt: new Date() } : {}) });
+      this.logger.warn(JSON.stringify({ event: rejected ? 'packed_image_rejected' : 'packed_image_unconfirmed', packedImageArtifactId: artifact.id,
+        rangeInstanceId, nodeId, ...diagnostic }));
+      if (rejected) throw new BadGatewayException({ message: `阿里云明确拒绝镜像打包（${diagnostic.cloudErrorCode}）；未创建新镜像，请修正原因后重试。`, packedImageArtifactId: artifact.id, submissionRejected: true, ...diagnostic });
       throw new BadGatewayException({ message: '打包结果未完整确认，请按来源记录核验；不要重复提交或删除恢复材料。', packedImageArtifactId: artifact.id, ...diagnostic });
     } finally {
       await this.packedImages.endSubmission(artifact.id, artifact.submissionToken);

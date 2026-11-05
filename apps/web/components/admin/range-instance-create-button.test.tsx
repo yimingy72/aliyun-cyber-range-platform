@@ -11,6 +11,7 @@ import { RangeInstanceCreateButton } from './range-instance-create-button';
 
 afterEach(cleanup);
 beforeEach(() => {
+  window.sessionStorage.clear();
   vi.clearAllMocks();
   state.workspace = null;
   state.templates.mockResolvedValue([{ id: 'template-1', name: '训练模板', slug: 'training' }]);
@@ -27,6 +28,37 @@ async function fill() {
 }
 
 describe('range list creation entry', () => {
+  it('creates independently numbered instances and returns to the refreshed list', async () => {
+    const onCreated = vi.fn();
+    state.launch.mockResolvedValueOnce({ id: 'range-1' }).mockResolvedValueOnce({ id: 'range-2' });
+    render(<RangeInstanceCreateButton apiBaseUrl="http://localhost:3001" onCreated={onCreated} />);
+    await fill();
+    fireEvent.change(screen.getByLabelText('编排实例数量'), { target: { value: '2' } });
+    fireEvent.click(screen.getByRole('button', { name: '确认创建' }));
+    await waitFor(() => expect(state.push).toHaveBeenCalledWith('/admin/ranges'));
+    expect(state.launch.mock.calls.map(call => call[2].name)).toEqual(['训练实例-1', '训练实例-2']);
+    expect(state.launch.mock.calls[0][3]).not.toEqual(state.launch.mock.calls[1][3]);
+    expect(onCreated).toHaveBeenCalledOnce();
+  });
+
+  it('resumes an incomplete batch after reload without resubmitting acknowledged members', async () => {
+    state.launch.mockResolvedValueOnce({ id: 'range-1' }).mockRejectedValueOnce(new TypeError('network'));
+    const view = render(<RangeInstanceCreateButton apiBaseUrl="http://localhost:3001" />);
+    await fill();
+    fireEvent.change(screen.getByLabelText('编排实例数量'), { target: { value: '2' } });
+    fireEvent.click(screen.getByRole('button', { name: '确认创建' }));
+    await screen.findByText(/创建结果尚未确认/);
+    const unknown = state.launch.mock.calls[1];
+    view.unmount();
+    state.launch.mockResolvedValueOnce({ id: 'range-2' });
+    render(<RangeInstanceCreateButton apiBaseUrl="http://localhost:3001" />);
+    fireEvent.click(screen.getByRole('button', { name: '创建实例', exact: true }));
+    fireEvent.click(await screen.findByRole('button', { name: '查询原请求' }));
+    await waitFor(() => expect(state.push).toHaveBeenCalledWith('/admin/ranges'));
+    expect(state.launch).toHaveBeenCalledTimes(3);
+    expect(state.launch.mock.calls[2]).toEqual(unknown);
+  });
+
   it('selects a visible template and opens the created instance', async () => {
     render(<RangeInstanceCreateButton apiBaseUrl="http://localhost:3001" />);
     await fill();
