@@ -5,14 +5,15 @@
 
 <#macro registrationLayout bodyClass="" displayInfo=false displayMessage=true displayRequiredFields=false>
 <!DOCTYPE html>
-<html class="${properties.kcHtmlClass!}" lang="${lang}"<#if realm.internationalizationEnabled> dir="${(locale.rtl)?then('rtl','ltr')}"</#if>>
+<html class="${properties.kcHtmlClass!}" lang="${lang}" data-platform-theme="cel"<#if realm.internationalizationEnabled> dir="${(locale.rtl)?then('rtl','ltr')}"</#if>>
 <head>
     <meta charset="utf-8">
     <meta http-equiv="Content-Type" content="text/html; charset=UTF-8" />
     <meta name="robots" content="noindex, nofollow">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>${msg("loginTitle",(realm.displayName!''))}</title>
-    <link rel="icon" href="${url.resourcesPath}/img/favicon.ico" />
+    <link rel="icon" type="image/svg+xml" href="${url.resourcesPath}/img/platform-favicon.svg" />
+    <script>try { if (localStorage.getItem('range-platform-theme') === 'classic') delete document.documentElement.dataset.platformTheme; } catch {}</script>
     <#if properties.stylesCommon?has_content>
         <#list properties.stylesCommon?split(' ') as style>
             <link href="${url.resourcesCommonPath}/${style}" rel="stylesheet" />
@@ -54,21 +55,23 @@
         <p class="cr-login-subtitle">使用平台账号继续进入综合靶场管理工作台。</p>
       </header>
 
-      <#if displayMessage && message?has_content && (message.type != 'warning' || !isAppInitiatedAction??)>
+      <div class="cr-login-body">
+        <#if displayMessage && message?has_content && (message.type != 'warning' || !isAppInitiatedAction??)>
           <div class="cr-alert cr-alert-${(message.type = 'error')?then('danger', message.type)}">
               <span class="cr-alert-text">${kcSanitize(message.summary)?no_esc}</span>
           </div>
-      </#if>
+        </#if>
 
-      <#nested "form">
+        <#nested "form">
 
-      <#if displayInfo>
-        <div id="kc-info" class="cr-login-info">
+        <#if displayInfo>
+          <div id="kc-info" class="cr-login-info">
             <div id="kc-info-wrapper">
                 <#nested "info">
             </div>
-        </div>
-      </#if>
+          </div>
+        </#if>
+      </div>
     </main>
 
     <@loginFooter.content/>
