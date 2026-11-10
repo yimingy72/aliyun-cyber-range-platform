@@ -5,7 +5,7 @@ import { useSyncExternalStore } from 'react';
 
 import { Button } from '@/components/ui/button';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuRadioGroup, DropdownMenuRadioItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
-import { PLATFORM_THEME_KEY, type PlatformTheme } from '@/lib/platform-theme';
+import { DEFAULT_PLATFORM_THEME, PLATFORM_THEME_KEY, type PlatformTheme } from '@/lib/platform-theme';
 
 const themeEvent = 'range-platform-theme-change';
 
@@ -13,9 +13,13 @@ function getTheme(): PlatformTheme {
   return document.documentElement.dataset.platformTheme === 'cel' ? 'cel' : 'classic';
 }
 
-function setTheme(theme: PlatformTheme) {
+function applyTheme(theme: PlatformTheme) {
   if (theme === 'cel') document.documentElement.dataset.platformTheme = 'cel';
   else delete document.documentElement.dataset.platformTheme;
+}
+
+function setTheme(theme: PlatformTheme) {
+  applyTheme(theme);
   try {
     window.localStorage.setItem(PLATFORM_THEME_KEY, theme);
   } catch {
@@ -27,8 +31,7 @@ function setTheme(theme: PlatformTheme) {
 function subscribe(listener: () => void) {
   function syncStorage(event: StorageEvent) {
     if (event.key !== PLATFORM_THEME_KEY && event.key !== null) return;
-    if (event.newValue === 'cel') document.documentElement.dataset.platformTheme = 'cel';
-    else delete document.documentElement.dataset.platformTheme;
+    applyTheme(event.newValue === 'classic' ? 'classic' : DEFAULT_PLATFORM_THEME);
     listener();
   }
 
@@ -41,7 +44,7 @@ function subscribe(listener: () => void) {
 }
 
 export function usePlatformTheme() {
-  return useSyncExternalStore<PlatformTheme>(subscribe, getTheme, () => 'classic');
+  return useSyncExternalStore<PlatformTheme>(subscribe, getTheme, () => DEFAULT_PLATFORM_THEME);
 }
 
 export function PlatformThemeMenu() {

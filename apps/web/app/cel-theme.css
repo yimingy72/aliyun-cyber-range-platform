@@ -783,7 +783,42 @@ html[data-platform-theme='cel'] {
   }
 
   & .admin-login-shell { background: var(--cel-paper); }
-  & .admin-login-card :is(h1, p) { color: var(--cel-ink); }
+  & .admin-login-layout { width: min(500px, 100%); }
+  & .admin-login-card {
+    --login-gutter: clamp(18px, 5vw, 28px);
+    max-width: none;
+    gap: 0;
+    padding: 0;
+    animation: none;
+  }
+  & .admin-login-copy {
+    gap: 12px;
+    padding: var(--login-gutter);
+    border-bottom: var(--cel-outline);
+    background: var(--cel-blue);
+  }
+  & .admin-login-eyebrow { display: none; }
+  & .admin-login-title {
+    gap: 14px;
+    color: var(--cel-ink);
+    font-size: clamp(1.25rem, 4vw, 2rem);
+    font-weight: 900;
+    letter-spacing: -.025em;
+  }
+  & .admin-login-copy p { color: var(--cel-ink); font-weight: 650; }
+  & .admin-login-form { padding: var(--login-gutter); }
+  & .admin-login-security { color: var(--muted-foreground); }
+  & .admin-login-form .admin-login-command {
+    min-height: 46px;
+    background: var(--cel-yellow);
+    color: var(--cel-ink);
+    font-weight: 800;
+  }
+  & .admin-login-form .form-error {
+    border: var(--cel-outline);
+    border-radius: 0;
+    color: var(--destructive);
+  }
 
   @media (width < 1024px) {
     & .admin-workspace .admin-topbar { padding-inline: 14px; }

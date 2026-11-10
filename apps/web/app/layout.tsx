@@ -1,7 +1,7 @@
 import type { Metadata } from 'next';
 import type { ReactNode } from 'react';
 
-import { initializePlatformTheme } from '@/lib/platform-theme';
+import { DEFAULT_PLATFORM_THEME, initializePlatformTheme } from '@/lib/platform-theme';
 
 import './globals.css';
 import './cel-theme.css';
@@ -27,7 +27,7 @@ type RootLayoutProps = {
 
 export default function RootLayout({ children }: RootLayoutProps) {
   return (
-    <html lang="zh-CN" suppressHydrationWarning>
+    <html lang="zh-CN" data-platform-theme={DEFAULT_PLATFORM_THEME} suppressHydrationWarning>
       <head><script dangerouslySetInnerHTML={{ __html: initializePlatformTheme }} /></head>
       <body>{children}</body>
     </html>

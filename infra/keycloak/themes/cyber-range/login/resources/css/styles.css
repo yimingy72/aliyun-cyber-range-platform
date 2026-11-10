@@ -208,3 +208,82 @@ button[data-password-toggle],
     padding: 26px 22px;
   }
 }
+
+/* Match the platform entry page; same-origin Keycloak shares its saved preference. */
+html[data-platform-theme="cel"] {
+  --cel-ink: #1a1a2e;
+  --cel-paper: #fafaf5;
+  --cel-yellow: #f1c40f;
+  --cel-blue: #4ea8de;
+  --cel-error: #b51f30;
+  --cel-outline: 3px solid var(--cel-ink);
+  --cel-shadow: 3px 3px 0 var(--cel-ink);
+  --login-gutter: clamp(18px, 5vw, 28px);
+}
+
+html[data-platform-theme="cel"] :is(body, .cr-login-shell) {
+  background: var(--cel-paper);
+  color: var(--cel-ink);
+  font-family: "PingFang SC", "Noto Sans CJK SC", "Hiragino Sans GB", "Microsoft YaHei", system-ui, sans-serif;
+}
+
+html[data-platform-theme="cel"] .cr-login-wrap { width: min(500px, 100%); }
+html[data-platform-theme="cel"] .cr-login-card {
+  padding: 0;
+  border: var(--cel-outline);
+  border-radius: 0;
+  box-shadow: var(--cel-shadow);
+}
+
+html[data-platform-theme="cel"] .cr-login-copy {
+  gap: 12px;
+  margin-bottom: 0;
+  padding: var(--login-gutter);
+  border-bottom: var(--cel-outline);
+  background: var(--cel-blue);
+}
+
+html[data-platform-theme="cel"] .cr-login-eyebrow { display: none; }
+html[data-platform-theme="cel"] .cr-login-title-row { gap: 14px; }
+html[data-platform-theme="cel"] .cr-login-title-mark {
+  box-sizing: border-box;
+  width: 42px;
+  height: 42px;
+  content: url("../img/platform-mark-cel.svg");
+  border: var(--cel-outline);
+  box-shadow: var(--cel-shadow);
+}
+
+html[data-platform-theme="cel"] .cr-login-title {
+  color: var(--cel-ink);
+  font-size: clamp(1.25rem, 4vw, 2rem);
+  font-weight: 900;
+  letter-spacing: -.025em;
+}
+
+html[data-platform-theme="cel"] .cr-login-subtitle { color: var(--cel-ink); font-weight: 650; }
+html[data-platform-theme="cel"] .cr-login-body { padding: var(--login-gutter); }
+html[data-platform-theme="cel"] :is(.cr-form-label, .cr-form-input, .cr-login-info, .cr-login-info a) { color: var(--cel-ink); }
+html[data-platform-theme="cel"] :is(.cr-form-input, .cr-login-button, .cr-alert) {
+  border: var(--cel-outline);
+  border-radius: 0;
+}
+
+html[data-platform-theme="cel"] :is(.cr-alert-danger, .cr-form-error) { color: var(--cel-error); }
+html[data-platform-theme="cel"] .cr-form-input[aria-invalid="true"] { border-color: var(--cel-error); }
+html[data-platform-theme="cel"] .cr-form-input:focus { box-shadow: none; }
+html[data-platform-theme="cel"] :is(.cr-form-input, .cr-login-button, .cr-login-info a):focus-visible {
+  outline: 3px solid var(--cel-ink);
+  outline-offset: 2px;
+}
+
+html[data-platform-theme="cel"] .cr-login-button {
+  background: var(--cel-yellow);
+  color: var(--cel-ink);
+  box-shadow: var(--cel-shadow);
+  font-weight: 800;
+}
+
+html[data-platform-theme="cel"] .cr-login-button:not(:disabled):hover { box-shadow: 1px 1px 0 var(--cel-ink); }
+html[data-platform-theme="cel"] .cr-login-button:not(:disabled):active { box-shadow: none; }
+html[data-platform-theme="cel"] .cr-login-button:disabled { opacity: .65; cursor: wait; }

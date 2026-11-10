@@ -80,18 +80,19 @@ export function AdminOidcCallbackScreen({ oidcIssuer, oidcClientId }: AdminOidcC
 
   return (
     <main className="admin-login-shell">
-      <section className="admin-login-card">
-        <div className="admin-login-card-copy">
-          <strong>综合靶场平台</strong>
-        </div>
-
-        <div className="admin-form admin-login-form">
-          <p className="form-error" role="alert">{errorMessage}</p>
-          <Button asChild size="lg">
-            <Link href="/admin/login">重新登录</Link>
-          </Button>
-        </div>
-      </section>
+      <div className="admin-login-layout">
+        <section aria-labelledby="admin-login-title" className="admin-login-card">
+          <header className="admin-login-copy">
+            <h1 className="admin-login-title" id="admin-login-title">综合靶场平台</h1>
+          </header>
+          <div className="admin-login-form">
+            <p className="form-error" role="alert">{errorMessage}</p>
+            <Button asChild className="admin-login-command" size="lg">
+              <Link href="/admin/login">重新登录</Link>
+            </Button>
+          </div>
+        </section>
+      </div>
     </main>
   );
 }

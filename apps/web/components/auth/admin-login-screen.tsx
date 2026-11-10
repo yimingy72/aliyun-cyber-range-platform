@@ -41,24 +41,24 @@ export function AdminLoginScreen({ oidcIssuer, oidcClientId }: AdminLoginScreenP
     <main className="admin-login-shell">
       <div className="admin-login-layout">
         <section aria-labelledby="admin-login-title" className="admin-login-card">
-          <div aria-label="管理员登录表单" className="admin-login-form">
-            <div className="admin-login-copy">
-              <span className="admin-login-eyebrow">管理入口</span>
-              <h1 className="admin-login-title" id="admin-login-title">
-                <img
-                  alt=""
-                  aria-hidden="true"
-                  data-testid="admin-login-title-mark"
-                  height="31"
-                  src="/brand/platform-mark.svg"
-                  width="31"
-                />
-                登录综合靶场平台
-              </h1>
-              <p>使用平台统一账号验证身份并进入管理后台。</p>
-            </div>
+          <header className="admin-login-copy">
+            <span className="admin-login-eyebrow">管理入口</span>
+            <h1 className="admin-login-title" id="admin-login-title">
+              <img
+                alt=""
+                aria-hidden="true"
+                data-testid="admin-login-title-mark"
+                height="31"
+                src="/brand/platform-mark.svg"
+                width="31"
+              />
+              登录综合靶场平台
+            </h1>
+            <p>使用平台统一账号验证身份并进入管理后台。</p>
+          </header>
 
-            {errorMessage ? <p className="form-error">{errorMessage}</p> : null}
+          <div aria-label="管理员登录表单" className="admin-login-form">
+            {errorMessage ? <p className="form-error" role="alert">{errorMessage}</p> : null}
 
             <Button
               className="admin-login-command"
