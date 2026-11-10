@@ -895,7 +895,8 @@ export async function saveCloudConfig(
 }
 
 export async function fetchAdminUsers(apiBaseUrl: string, token: string, workspaceId: string | null = readCloudWorkspaceSelection()): Promise<AdminUser[]> {
-  const response = await fetch(`${apiBaseUrl}/admin/users`, {
+  const path = process.env.NEXT_PUBLIC_PLATFORM_AUTH_MODE === 'keycloak' ? '/admin/billing/workspace-members' : '/admin/users';
+  const response = await fetch(`${apiBaseUrl}${path}`, {
     headers: createAdminHeaders(token, workspaceId),
   });
 

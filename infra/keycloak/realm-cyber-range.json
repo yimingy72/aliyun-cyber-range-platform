@@ -18,7 +18,8 @@
   "clients": [
     {
       "clientId": "platform-web",
-      "name": "Platform Web",
+      "name": "靶场 · 网页登录",
+      "description": "管理员和普通用户共用的网页登录入口。",
       "publicClient": true,
       "standardFlowEnabled": true,
       "directAccessGrantsEnabled": false,
@@ -101,7 +102,8 @@
     },
     {
       "clientId": "platform-api",
-      "name": "Platform API",
+      "name": "靶场 · API 令牌接收",
+      "description": "靶场后端的访问令牌接收方，也是 MCP 令牌交换目标。",
       "bearerOnly": true,
       "publicClient": false,
       "standardFlowEnabled": false,
@@ -126,7 +128,8 @@
     },
     {
       "clientId": "mcp-gateway",
-      "name": "MCP Gateway",
+      "name": "靶场 · MCP 接入",
+      "description": "MCP 网关代表登录用户换取供靶场后端使用的令牌。",
       "publicClient": false,
       "secret": "mcp-gateway-dev-only",
       "serviceAccountsEnabled": true,
@@ -135,7 +138,8 @@
     },
     {
       "clientId": "platform-admin",
-      "name": "Platform User Lifecycle Sync",
+      "name": "靶场 · 用户同步",
+      "description": "后台服务账号，用于同步用户创建、密码、角色和启用状态。",
       "publicClient": false,
       "secret": "platform-admin-dev-only",
       "serviceAccountsEnabled": true,
@@ -144,7 +148,8 @@
     },
     {
       "clientId": "smoke-conf",
-      "name": "MCP Smoke Client",
+      "name": "测试 · MCP 用户登录",
+      "description": "用于验证用户身份访问 MCP 的自动化检查，不供日常登录。",
       "publicClient": false,
       "secret": "smoke-secret",
       "standardFlowEnabled": false,
@@ -222,7 +227,8 @@
     },
     {
       "clientId": "mcp-smoke-sa",
-      "name": "MCP Smoke Service Account",
+      "name": "测试 · MCP 服务账号",
+      "description": "用于验证 MCP 服务身份的自动化检查，不供日常登录。",
       "publicClient": false,
       "secret": "mcp-smoke-secret",
       "serviceAccountsEnabled": true,

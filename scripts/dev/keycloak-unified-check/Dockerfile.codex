@@ -1,0 +1,3 @@
+FROM node:22.21.1-bookworm-slim
+RUN npm install -g @openai/codex@0.166.0
+RUN mkdir -p /root/.codex && printf 'mcp_oauth_callback_port = 13465\ncli_auth_credentials_store = "file"\nmcp_oauth_credentials_store = "file"\n' > /root/.codex/config.toml

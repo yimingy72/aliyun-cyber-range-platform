@@ -17,14 +17,16 @@ const tools = [...imageTools, ...singleInstanceTools, ...templateTools, ...range
 const genericOutputSchema = resultOutputSchema();
 
 export function createToolRegistry(client: PlatformApiClientLike) {
+  const available = process.env.PLATFORM_AUTH_MODE === 'keycloak'
+    ? tools.filter(tool => !adminUserTools.includes(tool)) : tools;
   return {
     listTools(scopes: string[], role?: 'admin' | 'user') {
       const scopeSet = new Set(scopes);
 
-      return tools.filter((tool) => canAccess(tool, scopeSet, role)).map((tool) => describe(tool));
+      return available.filter((tool) => canAccess(tool, scopeSet, role)).map((tool) => describe(tool));
     },
     async callTool(name: string, scopes: string[], args: Record<string, unknown>, role?: 'admin' | 'user') {
-      const tool = tools.find((item) => item.name === name);
+      const tool = available.find((item) => item.name === name);
 
       if (!tool) {
         throw new Error(`Unknown tool: ${name}`);

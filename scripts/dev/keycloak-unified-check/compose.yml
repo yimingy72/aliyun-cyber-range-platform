@@ -1,0 +1,89 @@
+name: range-unified-acceptance
+x-auth: &auth
+  DATABASE_URL: postgresql://fixture:fixture@db:5432/fixture?schema=public
+  PLATFORM_AUTH_MODE: keycloak
+  OIDC_ISSUER: http://127.0.0.1:13464/realms/cyber-range
+  OIDC_JWKS_URL: http://keycloak:8080/realms/cyber-range/protocol/openid-connect/certs
+  OIDC_TOKEN_ENDPOINT: http://keycloak:8080/realms/cyber-range/protocol/openid-connect/token
+  OIDC_UNIFIED_CLIENT_SECRET: fixture-confidential-client-secret-local
+  OIDC_UNIFIED_CLIENT_ID: cyber-range
+  OIDC_MCP_DELEGATION_KEY: fixture-shared-internal-delegation-secret-012345
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: fixture
+      POSTGRES_PASSWORD: fixture
+      POSTGRES_DB: fixture
+    healthcheck:
+      test: [CMD-SHELL, pg_isready -U fixture -d fixture]
+      interval: 2s
+      timeout: 2s
+      retries: 20
+  keycloak:
+    image: quay.io/keycloak/keycloak:26.1.4
+    command: [start-dev, --import-realm, --hostname, 'http://127.0.0.1:13464']
+    environment:
+      KC_BOOTSTRAP_ADMIN_USERNAME: fixture-admin-root
+      KC_BOOTSTRAP_ADMIN_PASSWORD: fixture-only-2026-strong
+      OIDC_UNIFIED_CLIENT_SECRET: fixture-confidential-client-secret-local
+      OIDC_UNIFIED_WEB_REDIRECT_URI: http://127.0.0.1:13461/admin/callback
+      OIDC_UNIFIED_WEB_ORIGIN: http://127.0.0.1:13461
+      OIDC_MCP_PUBLIC_ORIGIN: http://127.0.0.1:13463
+    ports: ['127.0.0.1:13464:8080']
+    volumes:
+      - ./.tmp/unified-auth/realm-cyber-range.json:/opt/keycloak/data/import/realm-cyber-range.json:ro
+  api:
+    image: range-keycloak-unified:api
+    build:
+      context: .
+      dockerfile: apps/api/Dockerfile
+    entrypoint: [sh, -ec]
+    command: ['pnpm --filter @aliyun-cyber-range/database prisma:migrate:deploy && pnpm --filter @aliyun-cyber-range/api start']
+    environment:
+      <<: *auth
+      NODE_ENV: production
+      API_PORT: '3001'
+      KEYCLOAK_ADMIN_BASE_URL: http://keycloak:8080
+      KEYCLOAK_REALM: cyber-range
+      OIDC_UNIFIED_CLIENT_UUID: bc0e793f-4d21-4c8c-8d49-16d664b2ec50
+      OIDC_WORKSPACE_GROUP_MAP: '{"bc0e793f-4d21-4c8c-8d49-16d664b2ec51":"fixture-alpha","bc0e793f-4d21-4c8c-8d49-16d664b2ec52":"fixture-beta"}'
+      RANGE_PROVISIONER_MODE: dry-run
+    depends_on:
+      db:
+        condition: service_healthy
+    ports: ['127.0.0.1:13462:3001']
+  web:
+    image: range-keycloak-unified:web
+    build:
+      context: .
+      dockerfile: apps/web/Dockerfile
+      args:
+        NEXT_PUBLIC_PLATFORM_AUTH_MODE: keycloak
+        NEXT_PUBLIC_OIDC_CLIENT_ID: cyber-range
+        NEXT_PUBLIC_OIDC_ISSUER: http://127.0.0.1:13464/realms/cyber-range
+        NEXT_PUBLIC_API_BASE_URL: http://127.0.0.1:13462
+    entrypoint: [pnpm, --filter, '@aliyun-cyber-range/web', start]
+    environment:
+      <<: *auth
+      NODE_ENV: production
+      OIDC_UNIFIED_WEB_REDIRECT_URI: http://127.0.0.1:13461/admin/callback
+    ports: ['127.0.0.1:13461:3000']
+  mcp:
+    image: range-keycloak-unified:mcp
+    build:
+      context: .
+      dockerfile: apps/mcp/Dockerfile
+    entrypoint: [pnpm, --filter, '@aliyun-cyber-range/mcp', dev]
+    environment:
+      <<: *auth
+      NODE_ENV: production
+      MCP_HOST: 0.0.0.0
+      MCP_PORT: '13463'
+      MCP_PUBLIC_URL: http://127.0.0.1:13463/mcp
+      PLATFORM_API_BASE_URL: http://api:3001
+      OIDC_MCP_BROKER_KEY: '64ac925ee7f0ce09dfbc0be020c13e9076d9cf978bc9e2e5eadf145cb40f2062'
+    ports: ['127.0.0.1:13463:13463']
+    networks:
+      default:
+        aliases: [mcp.localhost]

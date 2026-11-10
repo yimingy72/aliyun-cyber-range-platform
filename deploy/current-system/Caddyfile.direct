@@ -26,6 +26,14 @@ https://{$CADDY_PUBLIC_HOST} {
 		reverse_proxy mcp:8787
 	}
 
+	handle /mcp/oauth/* {
+		reverse_proxy mcp:8787
+	}
+
+	handle /.well-known/oauth-authorization-server {
+		reverse_proxy mcp:8787
+	}
+
 	handle /mcp {
 		reverse_proxy mcp:8787
 	}

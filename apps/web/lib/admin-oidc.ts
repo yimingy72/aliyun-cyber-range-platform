@@ -29,7 +29,7 @@ export async function buildAdminOidcAuthorizeUrl(input: AdminOidcAuthorizeInput)
   url.searchParams.set('client_id', input.clientId);
   url.searchParams.set('redirect_uri', input.redirectUri);
   url.searchParams.set('response_type', 'code');
-  url.searchParams.set('scope', 'openid');
+  url.searchParams.set('scope', process.env.NEXT_PUBLIC_PLATFORM_AUTH_MODE === 'keycloak' ? 'openid web-access' : 'openid');
   url.searchParams.set('state', state);
   url.searchParams.set('code_challenge', codeChallenge);
   url.searchParams.set('code_challenge_method', 'S256');
@@ -106,7 +106,7 @@ export async function exchangeAdminOidcCode(input: {
   code: string;
   codeVerifier: string;
 }) {
-  const response = await fetch(`${trimTrailingSlash(input.issuer)}/protocol/openid-connect/token`, {
+  const response = await fetch(adminTokenEndpoint(input.issuer), {
     method: 'POST',
     headers: {
       'Content-Type': 'application/x-www-form-urlencoded',
@@ -132,7 +132,7 @@ export async function refreshAdminOidcToken(input: {
   clientId: string;
   refreshToken: string;
 }) {
-  const response = await fetch(`${trimTrailingSlash(input.issuer)}/protocol/openid-connect/token`, {
+  const response = await fetch(adminTokenEndpoint(input.issuer), {
     method: 'POST',
     headers: {
       'Content-Type': 'application/x-www-form-urlencoded',
@@ -151,6 +151,11 @@ export async function refreshAdminOidcToken(input: {
   return (await response.json()) as AdminOidcTokenResponse;
 }
 
+function adminTokenEndpoint(issuer: string) {
+  return process.env.NEXT_PUBLIC_PLATFORM_AUTH_MODE === 'keycloak'
+    ? '/auth/oidc/token' : `${trimTrailingSlash(issuer)}/protocol/openid-connect/token`;
+}
+
 export function parseAdminOidcSessionPayload(tokenResponse: AdminOidcTokenResponse): AdminSessionPayload | null {
   const accessToken = normalizeText(tokenResponse.access_token);
   const idToken = normalizeText(tokenResponse.id_token);
@@ -163,7 +168,9 @@ export function parseAdminOidcSessionPayload(tokenResponse: AdminOidcTokenRespon
   const payload = decodeJwtPayload(accessToken);
   const subject = normalizeText(payload?.sub);
   const username = normalizeText(payload?.preferred_username) ?? normalizeText(payload?.email) ?? subject;
-  const roles = Array.isArray(payload?.realm_access?.roles) ? payload.realm_access.roles : [];
+  const clientRoles = payload?.resource_access?.[process.env.NEXT_PUBLIC_OIDC_CLIENT_ID || 'cyber-range']?.roles;
+  const configuredRoles = process.env.NEXT_PUBLIC_PLATFORM_AUTH_MODE === 'keycloak' ? clientRoles : payload?.realm_access?.roles;
+  const roles = Array.isArray(configuredRoles) ? configuredRoles : [];
   const role = roles.includes('admin') ? 'admin' : roles.includes('user') ? 'user' : null;
 
   if (!subject || !username || !role) {
@@ -200,6 +207,7 @@ function decodeJwtPayload(token: string) {
       preferred_username?: string;
       email?: string;
       realm_access?: { roles?: string[] };
+      resource_access?: Record<string, { roles?: string[] }>;
     };
   } catch {
     return null;

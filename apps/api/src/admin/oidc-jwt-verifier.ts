@@ -42,7 +42,8 @@ export type VerifiedOidcJwtClaims = {
 export class OidcJwtVerifier {
   private readonly issuer = this.requireEnv('OIDC_ISSUER');
   private readonly jwksUrl = this.requireEnv('OIDC_JWKS_URL');
-  private readonly expectedAudience = process.env.PLATFORM_API_AUDIENCE?.trim() || 'platform-api';
+  private readonly expectedAudience = process.env.PLATFORM_AUTH_MODE === 'keycloak'
+    ? 'cyber-range-web' : process.env.PLATFORM_API_AUDIENCE?.trim() || 'platform-api';
   private cachedKeys: OidcJwk[] | null = null;
   private jwksRequest: Promise<OidcJwk[]> | null = null;
   private refreshAfter = 0;

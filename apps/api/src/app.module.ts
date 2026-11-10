@@ -58,6 +58,7 @@ import { AdminUsersService } from './admin/admin-users.service';
 import { KeycloakAdminService } from './admin/keycloak-admin.service';
 import { OidcJwtVerifier } from './admin/oidc-jwt-verifier';
 import { OidcPrincipalResolver } from './admin/oidc-principal-resolver';
+import { KeycloakIdentityService, usesKeycloakRoles } from './auth/keycloak-identity.service';
 import { RangeInstancesService } from './admin/range-instances.service';
 import { RangeNetworkDiagnosticsService } from './admin/range-network-diagnostics.service';
 import { RangeInstanceNodeActionsService } from './admin/range-instance-node-actions.service';
@@ -112,7 +113,7 @@ function resolveProjectRootDir() {
 @Module({
   controllers: [
     AppController,
-    AdminUsersController,
+    ...(usesKeycloakRoles() ? [] : [AdminUsersController]),
     ScenariosController,
     RangesController,
     ProvisionJobsController,
@@ -170,10 +171,10 @@ function resolveProjectRootDir() {
     AliyunVpcReadPacingService,
     ResourceAlertReclaimer,
     TencentBillingClient,
-    AdminUsersService,
-    KeycloakAdminService,
+    ...(usesKeycloakRoles() ? [] : [AdminUsersService, KeycloakAdminService, OidcAdminBootstrapService]),
     OidcJwtVerifier,
     OidcPrincipalResolver,
+    KeycloakIdentityService,
     RangeTemplatesService,
     RangeInstancesService,
     RangeNetworkDiagnosticsService,
@@ -197,7 +198,6 @@ function resolveProjectRootDir() {
     AliyunEcsResourceClient,
     PlatformResourceReconciliationService,
     ProvisioningWorkerService,
-    OidcAdminBootstrapService,
     OperationControlService,
     PrismaService,
     PrismaAdminRepository,

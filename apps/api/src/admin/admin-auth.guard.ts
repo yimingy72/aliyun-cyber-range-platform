@@ -7,6 +7,8 @@ import type { RequestAuthContext } from '../auth/request-auth-context';
 import type { CloudWorkspaceScope } from '../auth/cloud-workspace-scope';
 import { CloudWorkspacesService } from './cloud-workspaces.service';
 import { assertDelegatedApiScopes, hasDelegatedScopes, resolveDelegatedScopes } from '../auth/delegated-api-scopes';
+import { usesKeycloakRoles } from '../auth/keycloak-identity.service';
+import { verifyMcpDelegation } from '../auth/mcp-delegation';
 
 type GuardRequest = {
   headers: Record<string, string | undefined>;
@@ -69,11 +71,20 @@ export class AdminAuthGuard implements CanActivate {
       throw new UnauthorizedException('OIDC authentication is not configured');
     }
 
-    const claims = await this.oidcJwtVerifier.verifyAccessToken(token);
-    const user = await this.oidcPrincipalResolver.resolve({
+    const unified = usesKeycloakRoles();
+    const path = (request.originalUrl ?? request.url ?? '').split('?')[0];
+    const delegated = unified && token.startsWith('mcp-v1.');
+    const claims = delegated ? verifyMcpDelegation(token) : await this.oidcJwtVerifier.verifyAccessToken(token);
+    if (unified && !delegated && (claims.authorizedParty !== (process.env.OIDC_UNIFIED_CLIENT_ID?.trim() || 'cyber-range') ||
+      claims.scopes?.includes('mcp-access'))) {
+      throw new UnauthorizedException('Invalid web client');
+    }
+    const identity = {
       issuer: claims.issuer,
       subject: claims.subject,
-    });
+    };
+    const user = unified && !delegated
+      ? await this.oidcPrincipalResolver.resolve(identity, token) : await this.oidcPrincipalResolver.resolve(identity);
 
     const profile = {
       id: user.id,
@@ -86,7 +97,7 @@ export class AdminAuthGuard implements CanActivate {
     request.adminUser = profile;
     request.authContext = {
       user: profile,
-      source: claims.authorizedParty === (process.env.MCP_GATEWAY_CLIENT_ID?.trim() || 'mcp-gateway') ? 'mcp' : 'web',
+      source: (unified ? delegated : claims.authorizedParty === (process.env.MCP_GATEWAY_CLIENT_ID?.trim() || 'mcp-gateway')) ? 'mcp' : 'web',
       oauthClientId: claims.authorizedParty,
     };
 
@@ -94,7 +105,6 @@ export class AdminAuthGuard implements CanActivate {
       throw new ForbiddenException('Admin access required');
     }
 
-    const path = (request.originalUrl ?? request.url ?? '').split('?')[0];
     const tokenScopes = (claims as typeof claims & { scopes?: string[] }).scopes;
     if (request.authContext.source === 'mcp' || hasDelegatedScopes(tokenScopes)) {
       const scopes = resolveDelegatedScopes(user.role, tokenScopes);

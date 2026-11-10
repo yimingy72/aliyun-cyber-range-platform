@@ -23,6 +23,8 @@ ARG NEXT_PUBLIC_OIDC_ISSUER=http://localhost:8080/realms/cyber-range
 ENV NEXT_PUBLIC_OIDC_ISSUER=$NEXT_PUBLIC_OIDC_ISSUER
 ARG NEXT_PUBLIC_OIDC_CLIENT_ID=platform-web
 ENV NEXT_PUBLIC_OIDC_CLIENT_ID=$NEXT_PUBLIC_OIDC_CLIENT_ID
+ARG NEXT_PUBLIC_PLATFORM_AUTH_MODE=legacy
+ENV NEXT_PUBLIC_PLATFORM_AUTH_MODE=$NEXT_PUBLIC_PLATFORM_AUTH_MODE
 
 RUN sed -i "s|https://dl-cdn.alpinelinux.org/alpine|${ALPINE_REPOSITORY%/}|g" /etc/apk/repositories \
   && apk add --no-cache curl openssl libc6-compat \

@@ -1,0 +1,156 @@
+{
+  "realm": "cyber-range",
+  "enabled": true,
+  "displayName": "Cyber Range Platform",
+  "loginTheme": "cyber-range",
+  "registrationAllowed": false,
+  "resetPasswordAllowed": false,
+  "accessTokenLifespan": 120,
+  "roles": {
+    "client": {
+      "cyber-range": [
+        {
+          "name": "user"
+        },
+        {
+          "name": "admin"
+        },
+        {
+          "name": "platform-operator"
+        }
+      ]
+    }
+  },
+  "clients": [
+    {
+      "id": "bc0e793f-4d21-4c8c-8d49-16d664b2ec50",
+      "clientId": "cyber-range",
+      "name": "云上综合靶场",
+      "protocol": "openid-connect",
+      "publicClient": false,
+      "secret": "${OIDC_UNIFIED_CLIENT_SECRET}",
+      "standardFlowEnabled": true,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": true,
+      "redirectUris": [
+        "${OIDC_UNIFIED_WEB_REDIRECT_URI}",
+        "${OIDC_MCP_PUBLIC_ORIGIN}/mcp/oauth/callback"
+      ],
+      "attributes": {
+        "pkce.code.challenge.method": "S256",
+        "post.logout.redirect.uris": "${OIDC_UNIFIED_WEB_ORIGIN}/admin/login"
+      },
+      "defaultClientScopes": [],
+      "optionalClientScopes": [
+        "web-access",
+        "mcp-access"
+      ],
+      "protocolMappers": [
+        {
+          "name": "identity-subject",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-usermodel-property-mapper",
+          "config": {
+            "access.token.claim": "true",
+            "user.attribute": "id",
+            "claim.name": "sub",
+            "jsonType.label": "String",
+            "id.token.claim": "true",
+            "introspection.token.claim": "true"
+          }
+        },
+        {
+          "name": "identity-username",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-usermodel-property-mapper",
+          "config": {
+            "access.token.claim": "true",
+            "user.attribute": "username",
+            "claim.name": "preferred_username",
+            "jsonType.label": "String",
+            "id.token.claim": "true"
+          }
+        },
+        {
+          "name": "cyber-range-roles",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-usermodel-client-role-mapper",
+          "config": {
+            "access.token.claim": "true",
+            "usermodel.clientRoleMapping.clientId": "cyber-range",
+            "claim.name": "resource_access.cyber-range.roles",
+            "jsonType.label": "String",
+            "multivalued": "true"
+          }
+        },
+        {
+          "name": "realm-management-roles",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-usermodel-client-role-mapper",
+          "config": {
+            "access.token.claim": "true",
+            "usermodel.clientRoleMapping.clientId": "realm-management",
+            "claim.name": "resource_access.realm-management.roles",
+            "jsonType.label": "String",
+            "multivalued": "true"
+          }
+        }
+      ]
+    }
+  ],
+  "users": [
+    {
+      "username": "service-account-cyber-range",
+      "enabled": true,
+      "serviceAccountClientId": "cyber-range",
+      "clientRoles": {
+        "realm-management": [
+          "view-users",
+          "query-users"
+        ]
+      }
+    }
+  ],
+  "clientScopes": [
+    {
+      "name": "web-access",
+      "protocol": "openid-connect",
+      "attributes": {
+        "include.in.token.scope": "true"
+      },
+      "protocolMappers": [
+        {
+          "name": "web-access",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "config": {
+            "included.custom.audience": "cyber-range-web",
+            "id.token.claim": "false",
+            "access.token.claim": "true",
+            "introspection.token.claim": "true"
+          }
+        }
+      ]
+    },
+    {
+      "name": "mcp-access",
+      "protocol": "openid-connect",
+      "attributes": {
+        "include.in.token.scope": "true"
+      },
+      "protocolMappers": [
+        {
+          "name": "mcp-access",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "config": {
+            "included.custom.audience": "cyber-range-mcp",
+            "id.token.claim": "false",
+            "access.token.claim": "true",
+            "introspection.token.claim": "true"
+          }
+        }
+      ]
+    }
+  ]
+}

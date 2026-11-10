@@ -10,7 +10,7 @@ const userScopes = [
 ];
 const adminScopes = [...userScopes, 'users:read', 'users:write', 'billing:read', 'billing:sync', 'settings:read', 'settings:write'];
 
-const identityScopes = new Set(['openid', 'profile', 'email', 'address', 'phone', 'offline_access', 'roles', 'web-origins', 'acr', 'basic']);
+const identityScopes = new Set(['openid', 'profile', 'email', 'address', 'phone', 'offline_access', 'roles', 'web-origins', 'acr', 'basic', 'mcp-access', 'web-access']);
 
 export function hasDelegatedScopes(scopes?: readonly string[]) {
   return scopes?.some(scope => !identityScopes.has(scope)) === true;
@@ -43,7 +43,7 @@ const rules: ScopeRule[] = [
   { method: 'GET', path: /^\/admin\/users$/, all: ['users:read'] },
   { method: 'POST', path: /^\/admin\/users(?:\/[^/]+\/reset-password)?$/, all: ['users:write'] },
   { method: 'PATCH', path: /^\/admin\/users\/[^/]+\/(?:role|status)$/, all: ['users:write'] },
-  { method: 'GET', path: /^\/admin\/billing\/(?:summary|users|user-groups|users\/[^/]+(?:\/items)?|platform\/(?:items|groups)|anomalies|export\/(?:platform\.csv|users\.csv|users\/[^/]+\.csv))$/, all: ['billing:read'] },
+  { method: 'GET', path: /^\/admin\/billing\/(?:summary|users|user-groups|workspace-members|users\/[^/]+(?:\/items)?|platform\/(?:items|groups)|anomalies|export\/(?:platform\.csv|users\.csv|users\/[^/]+\.csv))$/, all: ['billing:read'] },
   { method: 'POST', path: /^\/admin\/billing\/sync$/, all: ['billing:sync'] },
   { method: 'GET', path: /^\/admin\/billing\/diagnostics\/monthly$/, all: ['billing:read'] },
   { method: 'GET', path: /^\/admin\/billing\/(?:entries(?:\/[^/]+)?|reconciliation(?:\/tasks\/[^/]+)?)$/, all: ['billing:read'] },
