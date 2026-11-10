@@ -287,3 +287,48 @@ html[data-platform-theme="cel"] .cr-login-button {
 html[data-platform-theme="cel"] .cr-login-button:not(:disabled):hover { box-shadow: 1px 1px 0 var(--cel-ink); }
 html[data-platform-theme="cel"] .cr-login-button:not(:disabled):active { box-shadow: none; }
 html[data-platform-theme="cel"] .cr-login-button:disabled { opacity: .65; cursor: wait; }
+
+/* The data-dense option follows the same compact controls as the platform. */
+html[data-platform-theme="data-dense"] :is(body, .cr-login-shell) {
+  background: #f8fafc;
+  color: #1e293b;
+  font-family: "PingFang SC", "Noto Sans CJK SC", "Microsoft YaHei", system-ui, sans-serif;
+}
+
+html[data-platform-theme="data-dense"] :is(.cr-login-card, .cr-form-input, .cr-login-button, .cr-alert) {
+  border-radius: 4px;
+  box-shadow: none;
+}
+
+html[data-platform-theme="data-dense"] .cr-login-card { padding: 16px; border-color: #e2e8f0; }
+html[data-platform-theme="data-dense"] .cr-login-copy { gap: 8px; margin-bottom: 12px; }
+html[data-platform-theme="data-dense"] .cr-login-eyebrow { display: none; }
+html[data-platform-theme="data-dense"] .cr-login-title { font-size: 18px; color: #1e293b; }
+html[data-platform-theme="data-dense"] :is(.cr-login-subtitle, .cr-form-label) { color: #64748b; font-size: 12px; }
+html[data-platform-theme="data-dense"] :is(.cr-login-form, .cr-form-group) { gap: 8px; }
+html[data-platform-theme="data-dense"] .cr-form-input { height: 28px; border-color: #e2e8f0; font-size: 12px; }
+html[data-platform-theme="data-dense"] .cr-login-button { min-height: 28px; background: #2563eb; font-size: 12px; }
+html[data-platform-theme="data-dense"] .cr-login-button:not(:disabled):hover { background: #1d4ed8; }
+html[data-platform-theme="data-dense"] .cr-login-button:disabled { opacity: .65; cursor: wait; }
+html[data-platform-theme="data-dense"] :is(.cr-form-input, .cr-login-button):focus-visible {
+  outline: 1px solid #3b82f6;
+  outline-offset: 1px;
+}
+
+.cr-alert { border-radius: 8px; }
+.cr-alert-success { border-color: #bbdfc8; background: #f0fdf4; color: #166534; }
+.cr-alert-info { border-color: #bfdbfe; background: #eff6ff; color: #1d4ed8; }
+.cr-alert-warning { border-color: #ebd49a; background: #fefce8; color: #854d0e; }
+
+html[data-platform-theme="cel"] .cr-alert {
+  padding: 8px 12px;
+  border: var(--cel-outline);
+  border-radius: 0;
+  font-weight: 700;
+}
+
+html[data-platform-theme="data-dense"] .cr-alert {
+  padding: 5px 8px;
+  border-radius: 4px;
+  font-size: 12px;
+}

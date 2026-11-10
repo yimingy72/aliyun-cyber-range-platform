@@ -29,8 +29,9 @@ interface AdminPageHeaderProps {
 }
 
 export function AdminPageHeader({ title, description, action, artwork, overview }: AdminPageHeaderProps) {
-  const isCel = usePlatformTheme() === 'cel';
-  const workbench = isCel ? overview : undefined;
+  const theme = usePlatformTheme();
+  const isCel = theme === 'cel';
+  const workbench = theme !== 'classic' ? overview : undefined;
 
   return (
     <>

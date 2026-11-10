@@ -1,5 +1,7 @@
 'use client';
 
+import { AdminNotice } from '../shared/admin-notice';
+import { AdminActionNotice } from '../shared/admin-action-notice';
 import { type FormEvent, useEffect, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { MoreHorizontal, Plus, RefreshCw } from 'lucide-react';
@@ -35,7 +37,9 @@ export function SettingsScreen({ apiBaseUrl = 'http://localhost:3001' }: { apiBa
   const session = useAdminSession();
   const current = useCloudWorkspace();
   const isPageActive = useAdminRouteIsActive('/admin/settings/cloud');
-  const isCel = usePlatformTheme() === 'cel';
+  const theme = usePlatformTheme();
+  const compactWorkbench = theme !== 'classic';
+  const isDense = theme === 'data-dense';
   const [workspaces, setWorkspaces] = useState<CloudWorkspaceView[]>([]);
   const [provider, setProvider] = useState<CloudWorkspaceView['provider']>(current?.workspace?.provider ?? 'alibaba_cloud');
   const [form, setForm] = useState(emptyForm);
@@ -65,6 +69,7 @@ export function SettingsScreen({ apiBaseUrl = 'http://localhost:3001' }: { apiBa
     if (!isPageActive || !canBind) {
       setShowForm(false); setEditing(null); setForm(emptyForm); setActionError(null);
     }
+    if (!isPageActive) setSuccess(null);
   }, [isPageActive, canBind]);
   useEffect(() => {
     if (!isPageActive || !session.isReady || !session.token || !session.isAdmin) return;
@@ -153,18 +158,18 @@ export function SettingsScreen({ apiBaseUrl = 'http://localhost:3001' }: { apiBa
   const bindAction = canBind ? <Button aria-label={'绑定' + cloudProviderLabel(provider) + '账号'} disabled={isBusy} onClick={() => { setEditing(null); setForm(emptyForm); setShowForm(true); setActionError(null); setSuccess(null); }}><Plus aria-hidden="true" />绑定账号</Button> : null;
 
   return <div className="admin-screen"><section className="admin-workbench-surface">
-    <AdminPageHeader artwork="settings" title="基础配置" description={isCel ? '管理云账号、地域和当前工作空间。' : undefined}
-      action={isCel ? bindAction : undefined} overview={{ metrics: [
+    <AdminPageHeader artwork="settings" title="基础配置" description={compactWorkbench ? '管理云账号、地域和当前工作空间。' : undefined}
+      action={compactWorkbench ? bindAction : undefined} overview={{ metrics: [
         { label: '阿里云', tone: 'green', value: isLoading || error ? null : boundWorkspaces.filter(item => item.provider === 'alibaba_cloud').length },
         { label: '腾讯云', tone: 'blue', value: isLoading || error ? null : boundWorkspaces.filter(item => item.provider === 'tencent_cloud').length },
         { label: '历史工作空间', tone: 'red', value: isLoading || error ? null : Number(Boolean(historyWorkspace)) },
       ] }} />
-    {isCel ? <AdminWorkbenchControls title="云账号清单" views={providerTabs} actions={refreshAction} /> :
+    {compactWorkbench ? <AdminWorkbenchControls title="云账号清单" views={providerTabs} actions={refreshAction} /> :
       <div className="mt-4 flex flex-wrap items-center justify-between gap-3">
         {providerTabs}<div className="flex flex-wrap items-center gap-2">{refreshAction}{bindAction}</div>
       </div>}
-    {actionError && !showForm ? <p className="mt-4 break-words text-sm text-destructive" role="alert">{actionError}</p> : null}
-    {success ? <p className="mt-4 text-sm text-emerald-700" role="status">{success}</p> : null}
+    {actionError && !showForm ? <AdminNotice tone="error" className="mt-4">{actionError}</AdminNotice> : null}
+    {isPageActive ? <AdminActionNotice message={success} onDismiss={() => setSuccess(null)} /> : null}
     <div className="mt-4"><AdminDataTable columns={columns} contentVersion={refresh} isRefreshing={isLoading} label="已绑定云账号">
       {visibleColumns => isLoading ? <TableLoadingState columnCount={visibleColumns.length} rowCount={3} label="正在加载绑定云账号" /> : error ? <AdminDataTableState columns={visibleColumns} title="云账号加载失败" description={error} variant="error" onRetry={() => setRefresh(value => value + 1)} /> : !visible.length ? <AdminDataTableState columns={visibleColumns} title={`尚未绑定${cloudProviderLabel(provider)}账号`} description={canBind ? '点击“绑定账号”添加。' : '联系平台管理员绑定云账号。'} variant="empty" /> : visible.map(workspace => {
         const context = workspace.contexts.find(item => item.id === workspace.activeCloudAccountContextId) ?? workspace.contexts[0];
@@ -172,16 +177,20 @@ export function SettingsScreen({ apiBaseUrl = 'http://localhost:3001' }: { apiBa
         return <TableRow key={workspace.id}>{visibleColumns.map(column => <AdminDataTableCell column={column} key={column.id}>
           {column.id === 'account' ? <div className="grid min-w-0 gap-1">
             <div className="flex min-w-0 items-center gap-2"><div className="min-w-0"><AdminDataTableText className="font-medium">{workspace.displayName}</AdminDataTableText></div>{selected ? <span className="admin-pill admin-pill-success shrink-0">当前</span> : null}</div>
-            <span className="break-all text-xs text-muted-foreground">{workspace.accountUid ?? '历史来源未确认'}</span>
+            <span className="break-all text-xs text-muted-foreground" data-numeric={workspace.accountUid ? true : undefined}>{workspace.accountUid ?? '历史来源未确认'}</span>
             {context ? <span className="break-words text-xs text-muted-foreground md:hidden">{context.regionId} · {context.zoneId}</span> : null}
             {workspace.isReadOnly ? <span className="text-xs text-muted-foreground">只读历史</span> : context?.status !== 'ready' ? <span className="text-xs text-amber-700">待配置</span> : null}
           </div> : column.id === 'region' ? <div className="grid gap-1 text-xs"><AdminDataTableText>{context?.regionId ?? '—'}</AdminDataTableText><AdminDataTableText className="text-muted-foreground">{context?.zoneId ?? '—'}</AdminDataTableText></div> : <div className="flex items-center justify-start gap-1">
             {!selected ? <Button aria-label={`切换到此账号：${workspace.displayName}`} disabled={isBusy} size="sm" variant="outline" onClick={() => void select(workspace)}>切换</Button> : null}
+            {isDense && canBind && workspace.accountUid && !workspace.isReadOnly
+              ? <Button disabled={isBusy} size="sm" variant="outline" onClick={() => edit(workspace)}>编辑配置</Button> : null}
             {canBind && workspace.accountUid && !workspace.isReadOnly ? <DropdownMenu>
               <DropdownMenuTrigger asChild><Button aria-label={`账号“${workspace.displayName}”的更多操作`} disabled={isBusy} size="icon-sm" variant="ghost"><MoreHorizontal aria-hidden="true" /></Button></DropdownMenuTrigger>
               <DropdownMenuContent align="end">
-                <DropdownMenuItem onSelect={() => edit(workspace)}>编辑配置</DropdownMenuItem>
-                <DropdownMenuSeparator />
+                {!isDense && <>
+                  <DropdownMenuItem onSelect={() => edit(workspace)}>编辑配置</DropdownMenuItem>
+                  <DropdownMenuSeparator />
+                </>}
                 <DropdownMenuItem disabled={selected} variant="destructive" onSelect={() => { setDeleting(workspace); setActionError(null); setSuccess(null); }}>删除账号{selected ? '（先切换到其他账号）' : ''}</DropdownMenuItem>
               </DropdownMenuContent>
             </DropdownMenu> : null}
@@ -207,7 +216,7 @@ export function SettingsScreen({ apiBaseUrl = 'http://localhost:3001' }: { apiBa
     >
       <form id="cloud-account-form" className="grid gap-3" aria-label="云账号绑定表单" aria-busy={isSaving} onSubmit={save}>
         <div className="grid gap-3 sm:grid-cols-2">{([['displayName', '账号名称', '例如：训练环境'], ['regionId', '默认地域', provider === 'tencent_cloud' ? 'ap-nanjing' : 'cn-hangzhou'], ['zoneId', '默认可用区', provider === 'tencent_cloud' ? 'ap-nanjing-1' : 'cn-hangzhou-h'], ['accessKeyId', provider === 'tencent_cloud' ? 'SecretId' : 'AccessKey ID', ''], ['accessKeySecret', provider === 'tencent_cloud' ? 'SecretKey' : 'AccessKey Secret', ''], ...(provider === 'alibaba_cloud' ? [['imageImportBucket', '镜像导入 OSS Bucket', '可选：现有 Bucket 名称']] : [])] as Array<[keyof typeof form, string, string]>).map(([field, label, placeholder]) => <div className={field === 'displayName' || field === 'imageImportBucket' ? 'grid gap-1.5 sm:col-span-2' : 'grid gap-1.5'} key={field}><Label htmlFor={`cloud-account-${field}`}>{label}</Label><Input ref={field === 'displayName' ? accountNameRef : undefined} id={`cloud-account-${field}`} name={field} autoComplete={field === 'accessKeySecret' ? 'new-password' : 'off'} disabled={isBusy} required={field !== 'displayName' && field !== 'imageImportBucket'} type={field === 'accessKeySecret' ? 'password' : 'text'} placeholder={placeholder} value={form[field]} onChange={event => { setForm(value => ({ ...value, [field]: event.target.value })); setActionError(null); }} /></div>)}</div>
-        {actionError ? <p className="break-words text-sm text-destructive" role="alert">{actionError}</p> : null}
+        {actionError ? <AdminNotice tone="error">{actionError}</AdminNotice> : null}
       </form>
     </AdminDialog>
     <ConfirmActionDialog

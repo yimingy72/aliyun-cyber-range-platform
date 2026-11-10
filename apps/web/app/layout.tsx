@@ -5,6 +5,8 @@ import { DEFAULT_PLATFORM_THEME, initializePlatformTheme } from '@/lib/platform-
 
 import './globals.css';
 import './cel-theme.css';
+import './data-dense-theme.css';
+import './admin-notice.css';
 
 export const metadata: Metadata = {
   title: '云上综合靶场平台',
@@ -29,7 +31,7 @@ export default function RootLayout({ children }: RootLayoutProps) {
   return (
     <html lang="zh-CN" data-platform-theme={DEFAULT_PLATFORM_THEME} suppressHydrationWarning>
       <head><script dangerouslySetInnerHTML={{ __html: initializePlatformTheme }} /></head>
-      <body>{children}</body>
+      <body>{children}<div id="admin-notice-stack" className="admin-notice-stack" /></body>
     </html>
   );
 }

@@ -1,5 +1,7 @@
 'use client';
 
+import { AdminNotice } from './shared/admin-notice';
+import { AdminActionNotice } from './shared/admin-action-notice';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { RefreshCw } from 'lucide-react';
@@ -192,8 +194,8 @@ export function MogongImageCatalogView({ apiBaseUrl, actionHost, filterHost, tok
         </div>,
         filterHost,
       ) : null}
-      {error && catalog ? <p className="mb-3 text-sm text-destructive" role="alert">{error}</p> : null}
-      {syncNotice ? <p className="mb-3 text-sm text-muted-foreground" role="status">{syncNotice}</p> : null}
+      {error && catalog ? <AdminNotice tone="error" className="mb-3">{error}</AdminNotice> : null}
+      <AdminActionNotice message={syncNotice || null} onDismiss={() => setSyncNotice('')} />
       <AdminDataTable columns={columns} label="墨攻镜像中心">
         {(visibleColumns) => {
           if (loading) return <TableLoadingState columnCount={visibleColumns.length} label="正在加载墨攻镜像" rowCount={5} />;

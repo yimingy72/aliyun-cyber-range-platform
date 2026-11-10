@@ -1,5 +1,6 @@
 'use client';
 
+import { AdminNotice } from './shared/admin-notice';
 import React from 'react';
 import { defaultSwitchCidr as readDefaultSwitchCidr, nextAvailableGraphId } from '@aliyun-cyber-range/scenario-runtime';
 import dynamic from 'next/dynamic';
@@ -2277,7 +2278,7 @@ export function RangeInstanceDetailScreen({
         />
         {isPageActive && packTasksOpen ? <PackedImageTasksDialog key={identityKey} apiBaseUrl={apiBaseUrl} token={session.token ?? ''} open onOpenChange={setPackTasksOpen} sourceRangeInstanceId={rangeId} initialTaskId={packTaskId} /> : null}
 
-        {errorMessage ? <p className="mt-4 text-sm text-destructive" role="alert">{errorMessage}</p> : null}
+        {errorMessage ? <AdminNotice tone="error" className="mt-4">{errorMessage}</AdminNotice> : null}
         {isPageActive ? <AdminActionNotice message={successMessage} onDismiss={() => setSuccessMessage(null)} /> : null}
 
         {detail ? (
@@ -2422,7 +2423,7 @@ export function RangeInstanceDetailScreen({
               ) : null}
             </div>
 
-            {activeTab === 'topology' && (pendingAddedHosts.length > 0 || pendingDeletedHosts.length > 0) ? <div className="mb-3 flex flex-wrap gap-3 text-sm" role="status"><span>待创建主机 {pendingAddedHosts.length}</span><span className={pendingDeletedHosts.length ? 'text-destructive' : ''}>待回收主机 {pendingDeletedHosts.length}</span><span className="text-muted-foreground">草稿尚未应用</span></div> : null}
+            {activeTab === 'topology' && (pendingAddedHosts.length > 0 || pendingDeletedHosts.length > 0) ? <AdminNotice tone={pendingDeletedHosts.length ? 'warning' : 'info'} className="mb-3"><div className="flex flex-wrap gap-x-3 gap-y-1"><span>待创建主机 {pendingAddedHosts.length}</span><span>待回收主机 {pendingDeletedHosts.length}</span><span>草稿尚未应用</span></div></AdminNotice> : null}
             <div
               className={
                 activeTab === 'directory'
@@ -2529,7 +2530,7 @@ export function RangeInstanceDetailScreen({
           title="二次打包镜像"
           onOpenChange={(open) => !open && setPackImageDialog(null)}
         >
-            {packImageError ? <p className="mb-3 text-sm text-destructive" role="alert">{packImageError}</p> : null}
+            {packImageError ? <AdminNotice tone="error" className="mb-3">{packImageError}</AdminNotice> : null}
             {packImageError ? <Button type="button" variant="outline" disabled={pendingNodeAction?.action === 'pack-image'} onClick={() => { setPackImageDialog(null); setPackTasksOpen(true); }}>查看导出记录</Button> : null}
             <div className="template-workbench-dialog-grid">
               <label>

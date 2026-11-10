@@ -77,7 +77,7 @@ function ToolbarLayout({ search, controls }: { search: ReactNode; controls?: Rea
 }
 
 export function AdminListToolbar(props: AdminListToolbarProps) {
-  const isCel = usePlatformTheme() === 'cel';
+  const compactWorkbench = usePlatformTheme() !== 'classic';
   const search = (
     <div className="flex min-w-0 flex-wrap items-center gap-2 sm:shrink-0" data-testid="admin-list-toolbar-search-controls">
       <SearchField {...props} compact={Boolean(props.searchControls)} />
@@ -90,7 +90,7 @@ export function AdminListToolbar(props: AdminListToolbarProps) {
       <TabsList aria-label={props.searchLabel + '视图'} variant="line">
         {props.views.map(({ value, label, celIcon }) => (
           <TabsTrigger key={value} value={value}>
-            {isCel && props.celViewsInBand && celIcon && <AdminWorkbenchIcon {...celIcon} />}
+            {compactWorkbench && props.celViewsInBand && celIcon && <AdminWorkbenchIcon {...celIcon} />}
             {label}
           </TabsTrigger>
         ))}
@@ -102,7 +102,7 @@ export function AdminListToolbar(props: AdminListToolbarProps) {
     ) : null;
     return (
       <Tabs className="min-h-0 flex-1 gap-3" onValueChange={props.onViewChange} value={props.activeView}>
-        {isCel ? <>
+        {compactWorkbench ? <>
           {props.celViewsInBand && <div className="cel-source-tabs">{views}</div>}
           <AdminWorkbenchControls title={props.listTitle}
             views={props.celViewsInBand ? props.celHeadingControls : views} actions={actions} filters={search} />
@@ -116,7 +116,7 @@ export function AdminListToolbar(props: AdminListToolbarProps) {
 
   return (
     <>
-      {isCel ? <AdminWorkbenchControls title={props.listTitle} actions={props.action} filters={search} /> : <ToolbarLayout controls={props.action} search={search} />}
+      {compactWorkbench ? <AdminWorkbenchControls title={props.listTitle} actions={props.action} filters={search} /> : <ToolbarLayout controls={props.action} search={search} />}
       {props.children}
     </>
   );

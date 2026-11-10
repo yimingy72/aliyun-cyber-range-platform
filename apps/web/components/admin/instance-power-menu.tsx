@@ -1,5 +1,6 @@
 'use client';
 
+import { AdminNotice } from './shared/admin-notice';
 import React, { useEffect, useRef, useState } from 'react';
 import { Button } from '@/components/ui/button';
 import { Checkbox } from '@/components/ui/checkbox';
@@ -165,8 +166,8 @@ export function InstancePowerDialog({ apiBaseUrl, token, scopeKey, target, name,
         {mode !== 'manage' ? preview ? <Button type="button" disabled={pending || !confirmed || uncertain} onClick={() => void act(submit)}>{pending ? '提交中…' : mode === 'schedule' ? '确认保存预约' : mode === 'resume' ? '确认恢复开机' : '确认节省停机'}</Button>
           : <Button type="button" disabled={pending || mode === 'schedule' && !date} onClick={() => void act(prepare)}>{pending ? '核验中…' : '核对目标与影响'}</Button> : null}</>}>
       <div className="space-y-4">
-        {error ? <p className="text-sm text-destructive" role="alert">{error}</p> : null}
-        {notice ? <p className="text-sm text-emerald-700" role="status">{notice}</p> : null}
+        {error ? <AdminNotice tone="error">{error}</AdminNotice> : null}
+        {notice ? <AdminNotice tone="info">{notice}</AdminNotice> : null}
         {uncertain ? <div className="space-y-2 text-sm"><p>提交结果尚需核对，请先查看原任务，不要新建重复请求。</p><Button variant="outline" type="button" onClick={() => { setMode('manage'); setAttempt(value => value + 1); }}>查询原任务</Button></div> : null}
         {mode === 'schedule' ? <label className="block space-y-2"><span className="text-sm font-medium">一次性预约时间 · 北京时间</span><DateTimePicker aria-label="节省停机预约时间" value={date} disabled={pending} onValueChange={value => { setDate(value); setPreview(null); setConfirmed(false); }} /><p className="text-xs text-muted-foreground">支持修改、取消。到点遇到其他任务会等待最多 5 分钟；错过窗口会标记未执行，不会无限延后补发。</p></label> : null}
         <ul className="list-disc space-y-1 pl-5 text-sm text-muted-foreground">{(preview?.warnings ?? view?.warnings ?? []).map(warning => <li key={warning}>{warning}</li>)}</ul>

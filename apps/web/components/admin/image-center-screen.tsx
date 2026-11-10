@@ -1,5 +1,7 @@
 'use client';
 
+import { AdminNotice } from './shared/admin-notice';
+import { AdminActionNotice } from './shared/admin-action-notice';
 import React from 'react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
@@ -492,7 +494,7 @@ function ImageTagsDropdown({
             </div>
           </>
         ) : null}
-        {errorMessage ? <p className="px-2 pb-1 text-sm text-destructive" role="alert">{errorMessage}</p> : null}
+        {errorMessage ? <AdminNotice tone="error" className="m-1">{errorMessage}</AdminNotice> : null}
         <DropdownMenuSeparator />
         <p className="px-2 py-1.5 text-xs text-muted-foreground" role="status">{isSaving ? '正在保存标签…' : '选择后自动保存'}</p>
       </DropdownMenuContent>
@@ -534,7 +536,7 @@ function CloudImageCenterScreen({
 }: ImageCenterScreenProps) {
   const router = useRouter();
   const session = useAdminSession();
-  const isCel = usePlatformTheme() === 'cel';
+  const compactWorkbench = usePlatformTheme() !== 'classic';
   const workspace = useCloudWorkspace()?.workspace;
   const provider = workspace?.provider ?? 'alibaba_cloud';
   const providerName = cloudProviderLabel(provider);
@@ -1850,7 +1852,7 @@ function CloudImageCenterScreen({
             />
           </AdminDataTableCell>
           <AdminDataTableCell column={statusColumn!}>
-            <Badge variant={statusVariant}>{formatAssetStatus(asset)}</Badge>
+            <Badge data-dense-tone={isImportingAsset ? 'warning' : statusVariant === 'default' ? 'success' : undefined} variant={statusVariant}>{formatAssetStatus(asset)}</Badge>
           </AdminDataTableCell>
           <AdminDataTableCell column={createdByColumn!}>{getPlatformAssetCreator(asset)}</AdminDataTableCell>
           <AdminDataTableCell column={actionsColumn!}>
@@ -1918,7 +1920,7 @@ function CloudImageCenterScreen({
         <AdminDataTableCell column={typeColumn!}>容器</AdminDataTableCell>
         <AdminDataTableCell column={imageIdColumn!}>—</AdminDataTableCell>
         <AdminDataTableCell column={tagsColumn!}>—</AdminDataTableCell>
-        <AdminDataTableCell column={statusColumn!}><Badge variant={asset.acrMatch === 'matched' ? 'default' : 'secondary'} title={asset.referenceStatus === 'needs_review' ? '源仓库引用待核验' : undefined}>
+        <AdminDataTableCell column={statusColumn!}><Badge data-dense-tone={asset.acrMatch === 'matched' ? 'success' : 'warning'} variant={asset.acrMatch === 'matched' ? 'default' : 'secondary'} title={asset.referenceStatus === 'needs_review' ? '源仓库引用待核验' : undefined}>
           {asset.acrMatch ? acrMatchLabels[asset.acrMatch] : asset.referenceStatus === 'needs_review' ? '引用待核验' : '待支持实例'}
         </Badge></AdminDataTableCell>
         <AdminDataTableCell column={createdByColumn!}>{asset.creator || '—'}</AdminDataTableCell>
@@ -1960,7 +1962,7 @@ function CloudImageCenterScreen({
             <AdminDataTableText>{snapshot.platform?.trim() || snapshot.osType?.trim() || '—'}</AdminDataTableText>
           </AdminDataTableCell>
           <AdminDataTableCell column={statusColumn!}>
-            <Badge variant={snapshot.isAvailable ? 'default' : 'secondary'}>{snapshot.status === 'Deleted' && snapshot.ownedSnapshotCleanup ? '快照待回收' : formatImageStatus(snapshot)}</Badge>
+            <Badge data-dense-tone={snapshot.isAvailable ? 'success' : /^Creating\b/i.test(snapshot.status ?? '') ? 'warning' : undefined} variant={snapshot.isAvailable ? 'default' : 'secondary'}>{snapshot.status === 'Deleted' && snapshot.ownedSnapshotCleanup ? '快照待回收' : formatImageStatus(snapshot)}</Badge>
           </AdminDataTableCell>
           <AdminDataTableCell column={actionsColumn!}>
             <div className="inline-flex flex-nowrap! items-center justify-start gap-1">
@@ -2086,13 +2088,13 @@ function CloudImageCenterScreen({
       <section className="admin-workbench-surface admin-pagination-surface">
         <AdminPageHeader artwork="images" description="收录、导入和维护演练镜像资产。" title="镜像中心" action={<Button type="button" variant="outline" onClick={() => setPackTasksOpen(true)}>镜像导出</Button>} />
         {isPageActive && packTasksOpen ? <PackedImageTasksDialog key={`${session.profile?.id}:${workspace?.id}:${session.token}`} apiBaseUrl={apiBaseUrl} token={session.token} open onOpenChange={setPackTasksOpen} /> : null}
-        {imageImportSuccessMessage ? <p className="mt-4 text-sm text-emerald-700" aria-live="polite">{imageImportSuccessMessage}</p> : null}
+        {isPageActive ? <AdminActionNotice message={imageImportSuccessMessage || null} tone="info" onDismiss={() => setImageImportSuccessMessage('')} /> : null}
 
-        <div className="mt-4 flex min-h-0 flex-1 flex-col">
+        <div className="admin-workbench-list mt-4 flex min-h-0 flex-1 flex-col">
           <AdminListToolbar
             listTitle="镜像清单"
             celViewsInBand
-            celHeadingControls={isCel && isCloudView ? (
+            celHeadingControls={compactWorkbench && isCloudView ? (
               <div className="inline-flex" data-cel-view-buttons="" role="group" aria-label="云上镜像来源切换">
                 {cloudSourceOptions.map(({ label, value }) => (
                   <Button aria-pressed={cloudSource === value} key={value} onClick={() => changeCloudSource(value)}
@@ -2122,7 +2124,7 @@ function CloudImageCenterScreen({
               ...(session.isAdmin && provider === 'alibaba_cloud' ? [{ label: '墨攻镜像中心', value: 'mogong', celIcon: imageSourceIcons.mogong }] : []),
               ...(session.isAdmin ? [{ label: '云上镜像来源', value: 'cloud', celIcon: imageSourceIcons.cloud }] : []),
             ]}
-            searchControls={isCel && isCloudView ? undefined : (
+            searchControls={compactWorkbench && isCloudView ? undefined : (
               <div className={cn(session.isAdmin ? 'w-full sm:w-[22.5rem]' : 'w-full sm:w-auto',
                 (showMogong || activeTab !== 'platform') && 'cel-image-filters-fit')}>
                 {showMogong ? <div ref={setMogongFilterHost} /> : activeTab === 'platform' ? (
@@ -2178,7 +2180,7 @@ function CloudImageCenterScreen({
             action={
               <div className={session.isAdmin ? 'cel-image-toolbar-actions flex w-56 flex-wrap items-center gap-2' : 'flex flex-wrap items-center gap-2'}>
                 {session.isAdmin ? <Button disabled={workspace?.isReadOnly || pendingActionKeys.length > 0} onClick={() => { setTagManagerError(''); setTagManagerOpen(true); }} size="sm" type="button" variant="outline">管理标签</Button> : null}
-                {showMogong ? <div ref={setMogongActionHost} /> : showAcr ? <div ref={setAcrActionHost} /> : activeTab === 'platform' || activeTab === 'mine' ? (
+                {showMogong ? <div data-slot="image-toolbar-portal" ref={setMogongActionHost} /> : showAcr ? <div data-slot="image-toolbar-portal" ref={setAcrActionHost} /> : activeTab === 'platform' || activeTab === 'mine' ? (
                   <Button
                     disabled={!canImportImages || pendingActionKeys.includes('create:image-import')}
                     title={imageImportUnavailableMessage ?? undefined}
@@ -2257,7 +2259,7 @@ function CloudImageCenterScreen({
                         <div key={job.id} className={`image-import-job image-import-job--${job.status}`}>
                           <strong>{job.displayName}</strong>
                           <span>{job.status === 'available' && job.errorMessage ? '临时文件清理重试中' : formatImportStatus(job.status)}</span>
-                          {job.errorMessage ? <p role="alert">{job.errorMessage}</p> : null}
+                          {job.errorMessage ? <AdminNotice tone="error">{job.errorMessage}</AdminNotice> : null}
                           {job.status === 'failed' && !job.imageId ? (
                             <Button
                               disabled={workspace?.isReadOnly || pendingActionKeys.includes(`retry:image-import:${job.id}`)}
@@ -2285,7 +2287,7 @@ function CloudImageCenterScreen({
                         const actionErrorRow = actionErrorMessage || metadataErrorMessage ? (
                           <TableRow className="hover:bg-transparent">
                             <TableCell className="px-3 py-3 text-sm text-destructive whitespace-normal" colSpan={columns.length}>
-                              <p role="alert">{actionErrorMessage || metadataErrorMessage}</p>
+                              <AdminNotice tone="error">{actionErrorMessage || metadataErrorMessage}</AdminNotice>
                             </TableCell>
                           </TableRow>
                         ) : null;
@@ -2409,7 +2411,7 @@ function CloudImageCenterScreen({
                     {!platformImageTags.length ? <p className="text-xs text-muted-foreground">暂无已有标签，可先不设置。</p> : null}
                   </div>
                 </fieldset>
-                {collectDraft.error ? <p role="alert" className="text-sm text-destructive">{collectDraft.error}</p> : null}
+                {collectDraft.error ? <AdminNotice tone="error">{collectDraft.error}</AdminNotice> : null}
               </form>
             </AdminDialog>
           ) : null}
@@ -2426,7 +2428,7 @@ function CloudImageCenterScreen({
                 <Button disabled={pendingActionKeys.includes('delete:platform-image-tag')} onClick={() => void handleDeleteTag()} type="button" variant="destructive">确认删除标签</Button>
               </> : undefined}
             >
-              {tagManagerError ? <p role="alert" className="text-sm text-destructive">{tagManagerError}</p> : null}
+              {tagManagerError ? <AdminNotice tone="error">{tagManagerError}</AdminNotice> : null}
               {!deletingTag ? <ul className="max-h-80 divide-y overflow-y-auto">
                 {platformImageTags.map(tag => <li className="flex min-w-0 items-center justify-between gap-3 py-2" key={tag.id}>
                   <span className="min-w-0 break-words">{tag.name}</span>
@@ -2594,7 +2596,7 @@ function CloudImageCenterScreen({
                     <progress value={imageImportProgress} max="100">{imageImportProgress}%</progress>
                   </div>
                 ) : null}
-                {imageImportErrorMessage ? <p className="admin-error image-import-dialog-error" role="alert">{imageImportErrorMessage}</p> : null}
+                {imageImportErrorMessage ? <AdminNotice tone="error" className="image-import-dialog-error">{imageImportErrorMessage}</AdminNotice> : null}
               </form>
             </ImageCenterDialog>
           ) : null}
@@ -2676,7 +2678,7 @@ function CloudImageCenterScreen({
                 </label> : <p className="text-xs text-muted-foreground">该镜像缺少可核验的打包快照来源，平台不会自动删除其快照。</p>}
                 </RadioGroup>
               </fieldset>
-              {actionErrorMessage ? <p className="mt-3 text-sm text-destructive" role="alert">{actionErrorMessage}</p> : null}
+              {actionErrorMessage ? <AdminNotice tone="error" className="mt-3">{actionErrorMessage}</AdminNotice> : null}
             </AdminDialog>
           ) : null}
       </section>

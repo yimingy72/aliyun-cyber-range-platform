@@ -1,5 +1,6 @@
 'use client';
 
+import { AdminNotice } from './shared/admin-notice';
 import React, { useRef, useState } from 'react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -29,9 +30,8 @@ export function RangeNodeResetDialog({nodeName,preview,loading,pending,error,unc
         {preview.hasDns?'将恢复并核验已部署 DNS；原为关机时会短暂启动。':null}</p>
       <label className="grid gap-2"><span>输入完整节点名称「{preview.nodeName}」确认</span>
         <Input aria-label="确认重置节点名称" autoComplete="off" value={name} disabled={pending} onChange={event=>setName(event.target.value)} /></label></>:null}
-      {error?<div role="alert" className="text-destructive"><p>{error}</p>
-        {!pending&&!uncertain?<Button variant="outline" className="mt-2" onClick={onRetryPreview}>重新核验</Button>:null}</div>:null}
-      {uncertain?<p role="status">提交结果尚未确认。再次操作只核对同一提交，不会生成新的重置请求；也可查看原任务。</p>:null}
+      {error?<AdminNotice tone="error" actions={!pending&&!uncertain?<Button variant="outline" size="sm" onClick={onRetryPreview}>重新核验</Button>:null}>{error}</AdminNotice>:null}
+      {uncertain?<AdminNotice tone="warning">提交结果尚未确认。再次操作只核对同一提交，不会生成新的重置请求；也可查看原任务。</AdminNotice>:null}
     </div>
   </AdminDialog>;
 }

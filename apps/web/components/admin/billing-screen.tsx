@@ -1,5 +1,6 @@
 'use client';
 
+import { AdminNotice } from './shared/admin-notice';
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { useRouter } from 'next/navigation';
 import { ArrowLeft, CalendarDays, ChevronDown, ChevronRight, Download, RefreshCw } from 'lucide-react';
@@ -66,7 +67,7 @@ function BillingRangeFilter({range,onChange}:{range:BillingRange;onChange:(range
         <div className="grid min-w-0 gap-1.5"><span className="text-xs text-muted-foreground">开始日期</span><DateTimePicker aria-label="开始账期" includeTime={false} required value={draft.startAt} onValueChange={value=>setDraft(previous=>({...previous,startAt:value}))}/></div>
         <div className="grid min-w-0 gap-1.5"><span className="text-xs text-muted-foreground">结束日期</span><DateTimePicker aria-label="结束账期" includeTime={false} required value={draft.endAt} onValueChange={value=>setDraft(previous=>({...previous,endAt:value}))}/></div>
       </div>
-      {!valid?<p className="mt-2 text-xs text-destructive" role="alert">请选择完整账期，开始日期不能晚于结束日期。</p>:null}
+      {!valid?<AdminNotice tone="error" className="mt-2">请选择完整账期，开始日期不能晚于结束日期。</AdminNotice>:null}
       <div className="mt-3 flex justify-end">
         <Button type="button" size="sm" disabled={!valid} onClick={()=>{if(draft.startAt!==range.startAt||draft.endAt!==range.endAt)onChange(draft);setOpen(false);}}>应用账期</Button>
       </div>
@@ -102,7 +103,7 @@ export function BillingScreen({apiBaseUrl='http://localhost:3001'}:{apiBaseUrl?:
 }
 
 function BillingLifecycleScreen({context,active,readOnly,onUnauthorized,resourceAction}:{context:BillingRequestContext;active:boolean;readOnly:boolean;onUnauthorized:()=>void;resourceAction:ReactNode}) {
-  const isCel = usePlatformTheme() === 'cel';
+  const compactWorkbench = usePlatformTheme() !== 'classic';
   const [range,setRange]=useState<BillingRange>(getDefaultRange),[view,setView]=useState<'user'|'platform'>('user');
   const [userId,setUserId]=useState(''),[billStatus,setBillStatus]=useState<BillingDocumentStatus|''>('');
   const [page,setPage]=useState(1),{pageSize,setPageSize}=useAdminPageSize();
@@ -211,7 +212,7 @@ function BillingLifecycleScreen({context,active,readOnly,onUnauthorized,resource
       </>;
   return <div ref={screen} className="admin-screen admin-pagination-screen relative" data-testid="billing-lifecycle-screen">
     <section className="admin-workbench-surface admin-pagination-surface">
-      {isCel ? <>
+      {compactWorkbench ? <>
         <AdminPageHeader artwork="billing" title="账单费用" description="查看当前账期的费用归属和出账状态。" action={billingActions}
           overview={{ metrics: [
             { label: '已出账', tone: 'green', value: counts?.issued ?? (result?.total === 0 ? 0 : null) },
@@ -228,9 +229,9 @@ function BillingLifecycleScreen({context,active,readOnly,onUnauthorized,resource
           {billingViews}{billingFilters}
         </div>
       </>}
-      {loadError?<div className="mb-3 flex items-center justify-between gap-3 text-sm" role="alert"><span className="text-destructive">{loadError}{result?' 当前显示上次数据。':''}</span><Button variant="outline" size="sm" onClick={refresh}>重试加载</Button></div>:null}
-      {actionError?<p className="mb-3 text-sm text-destructive" role="alert">{actionError}</p>:null}
-      {result?.integrity&&result.integrity.unrepresentedRows>0?<p className="mb-3 text-sm text-destructive" role="alert">有 {result.integrity.unrepresentedRows} 条出账明细尚未关联账目。</p>:null}
+      {loadError?<AdminNotice tone="error" className="mb-3" actions={<Button variant="outline" size="sm" onClick={refresh}>重试加载</Button>}>{loadError}{result?' 当前显示上次数据。':''}</AdminNotice>:null}
+      {actionError?<AdminNotice tone="error" className="mb-3">{actionError}</AdminNotice>:null}
+      {result?.integrity&&result.integrity.unrepresentedRows>0?<AdminNotice tone="warning" role="alert" className="mb-3">有 {result.integrity.unrepresentedRows} 条出账明细尚未关联账目。</AdminNotice>:null}
       <AdminPaginatedList footer={result&&result.total>0?<AdminPaginationControls label="账目分页" pagination={getPagination(result.total,page,pageSize)} pageSize={pageSize} isPending={loading} onPageSelect={value=>{closeDetail();setPage(value);}} onPageSizeChange={value=>{closeDetail();setPageSize(value);setPage(1);}}/>:null}>
         <AdminDataTable label="实例与平台资产账目" columns={columns} isRefreshing={loading&&Boolean(result)}>{visibleColumns=><>
           {!result&&loading&&validRange?Array.from({length:6},(_,i)=><TableRow key={i}><TableCell colSpan={visibleColumns.length}><Skeleton className="my-1 h-10 w-full" aria-label={i===0?'正在加载账目':undefined}/></TableCell></TableRow>):null}

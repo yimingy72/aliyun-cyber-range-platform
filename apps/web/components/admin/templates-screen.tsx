@@ -1,5 +1,7 @@
 'use client';
 
+import { AdminNotice } from './shared/admin-notice';
+import { AdminActionNotice } from './shared/admin-action-notice';
 import { type MouseEvent, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { MoreHorizontal, Plus } from 'lucide-react';
@@ -204,7 +206,9 @@ export function TemplatesScreen({
   const canProvision = !workspace || (!workspace.isReadOnly && workspace.capabilities.provisioning);
   const canLaunchRange = canProvision && (!workspace || (workspace.capabilities.rangeProvisioning ?? workspace.provider === 'alibaba_cloud'));
   const isPageActive = useAdminRouteIsActive('/admin/scenarios');
-  const isCel = usePlatformTheme() === 'cel';
+  const theme = usePlatformTheme();
+  const compactWorkbench = theme !== 'classic';
+  const isDense = theme === 'data-dense';
   const [selectedView, setActiveView] = useState<RangeTemplateView>(() => readTemplateView(searchParams.get('view')));
   const activeView = selectedView === 'all' && !session.isAdmin ? 'mine' : selectedView;
   const screenCache = useAdminScreenCache();
@@ -827,11 +831,11 @@ export function TemplatesScreen({
 
   return (
     <div className="admin-screen template-workbench-screen admin-pagination-screen" onClickCapture={handleScreenClickCapture}>
-      {actionErrorMessage && !launchDraft.templateId ? <p className="admin-error">{actionErrorMessage}</p> : null}
-      {actionSuccessMessage ? <p className="admin-success">{actionSuccessMessage}</p> : null}
+      {actionErrorMessage && !launchDraft.templateId ? <AdminNotice tone="error" className="mb-3">{actionErrorMessage}</AdminNotice> : null}
+      {isPageActive ? <AdminActionNotice message={actionSuccessMessage} onDismiss={() => setActionSuccessMessage(null)} /> : null}
 
       <section className="admin-workbench-surface admin-pagination-surface">
-        <AdminPageHeader artwork="scenarios" description="管理可复用的演练蓝图" title="靶场编排" action={isCel ? createTemplateAction : undefined}
+        <AdminPageHeader artwork="scenarios" description="管理可复用的演练蓝图" title="靶场编排" action={compactWorkbench ? createTemplateAction : undefined}
           overview={{ metrics: [
             { label: '已发布', tone: 'green', value: loadedViews[activeView] ? scenarios.filter(item => item.status === 'published').length : null },
             { label: '当前视图', tone: 'blue', value: loadedViews[activeView] ? scenarios.length : null },
@@ -839,7 +843,7 @@ export function TemplatesScreen({
           ] }} />
         {!canProvision ? <p className="mt-4 text-sm text-muted-foreground">{workspace?.isReadOnly ? "当前账号工作空间为只读历史。" : "当前云厂商的拓扑编排与实例创建仍在开发。"}</p> : null}
         {canProvision && !canLaunchRange ? <p className="mt-4 text-sm text-muted-foreground">腾讯云编排开启待受控回收验证；可继续编辑模板和创建单实例。</p> : null}
-        <div className="mt-4 flex min-h-0 flex-1 flex-col">
+        <div className="admin-workbench-list mt-4 flex min-h-0 flex-1 flex-col">
           <AdminListToolbar
             listTitle="拓扑清单"
             activeView={activeView}
@@ -869,7 +873,7 @@ export function TemplatesScreen({
               ...(session.isAdmin ? [{ label: '全部拓扑', value: 'all' }] : []),
             ]}
             compactViewAction
-            action={!isCel ? <div className="flex flex-wrap gap-2">{createTemplateAction}</div> : undefined}
+            action={!compactWorkbench ? <div className="flex flex-wrap gap-2">{createTemplateAction}</div> : undefined}
           >
             <AdminPaginatedList
               className="mt-4"
@@ -985,6 +989,10 @@ export function TemplatesScreen({
                             >
                               {pendingEditorTemplateId === template.id ? '正在进入编排...' : '进入编排'}
                             </Button>
+                            {isDense && canConsumeTemplate ? (
+                              <Button disabled={isSubmitting || !canLaunchRange} size="sm" type="button" variant="outline"
+                                onClick={() => void handleOpenGenerateInstance(template)}>生成实例</Button>
+                            ) : null}
                             {canConsumeTemplate ? (
                               <DropdownMenu>
                                 <DropdownMenuTrigger asChild>
@@ -1018,9 +1026,9 @@ export function TemplatesScreen({
                                       )}
                                     </>
                                   ) : null}
-                                  <DropdownMenuItem disabled={!canLaunchRange} onSelect={() => void handleOpenGenerateInstance(template)}>
+                                  {!isDense && <DropdownMenuItem disabled={!canLaunchRange} onSelect={() => void handleOpenGenerateInstance(template)}>
                                     生成实例
-                                  </DropdownMenuItem>
+                                  </DropdownMenuItem>}
                                   {canManageCurrentTemplate ? (
                                     <DropdownMenuItem
                                       variant="destructive"

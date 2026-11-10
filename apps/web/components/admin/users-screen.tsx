@@ -1,5 +1,7 @@
 'use client';
 
+import { AdminNotice } from './shared/admin-notice';
+import { AdminActionNotice } from './shared/admin-action-notice';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { MoreHorizontal, Plus } from 'lucide-react';
@@ -110,7 +112,7 @@ export function UsersScreen({
   const usersResource = 'users:list';
   const usersSource = `${apiBaseUrl}\u0000${session.token ?? ''}`;
   const cachedUsers = screenCache?.read<AdminUser[]>(apiBaseUrl, session.token, usersResource);
-  const isCel = usePlatformTheme() === 'cel';
+  const compactWorkbench = usePlatformTheme() !== 'classic';
   const [users, setUsers] = useState<AdminUser[]>(() => cachedUsers?.data ?? []);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [actionErrorMessage, setActionErrorMessage] = useState<string | null>(null);
@@ -502,28 +504,22 @@ export function UsersScreen({
   return (
     <div className="admin-screen admin-pagination-screen">
       {actionErrorMessage && !isCreateDialogOpen && !resetPasswordState ? (
-        <p className="mb-3 text-sm text-destructive" role="alert">
-          {actionErrorMessage}
-        </p>
+        <AdminNotice tone="error" className="mb-3">{actionErrorMessage}</AdminNotice>
       ) : null}
-      {actionSuccessMessage ? (
-        <p className="mb-3 text-sm text-emerald-700" aria-live="polite">
-          {actionSuccessMessage}
-        </p>
-      ) : null}
+      {isPageActive ? <AdminActionNotice message={actionSuccessMessage} onDismiss={() => setActionSuccessMessage(null)} /> : null}
 
       <section className="admin-workbench-surface users-workbench-panel admin-pagination-surface">
         <AdminPageHeader artwork="users" description="创建后台账号，并管理角色、启用状态和密码重置。" title="用户管理"
-          action={isCel ? createUserAction : undefined} overview={{ metrics: [
+          action={compactWorkbench ? createUserAction : undefined} overview={{ metrics: [
             { label: '管理员', tone: 'green', value: hasLoadedUsers ? counts.adminCount : null },
             { label: '总用户', tone: 'blue', value: hasLoadedUsers ? users.length : null },
             { label: '已禁用', tone: 'red', value: hasLoadedUsers ? counts.disabledCount : null },
           ] }} />
 
-        <div className="mt-4 flex min-h-0 flex-1 flex-col">
+        <div className="admin-workbench-list mt-4 flex min-h-0 flex-1 flex-col">
           <AdminListToolbar
             listTitle="用户清单"
-            action={!isCel ? (
+            action={!compactWorkbench ? (
               <>
                 <div aria-label="用户统计" className="flex flex-wrap items-center gap-x-3 gap-y-1 text-sm text-muted-foreground">
                   <span>总用户 {users.length}</span>
@@ -695,7 +691,7 @@ export function UsersScreen({
         pending={isSubmitting}
         title="创建用户"
       >
-          {actionErrorMessage ? <p className="text-sm text-destructive" role="alert">{actionErrorMessage}</p> : null}
+          {actionErrorMessage ? <AdminNotice tone="error">{actionErrorMessage}</AdminNotice> : null}
           <div className="grid gap-3">
             <div className="grid gap-1.5">
               <Label htmlFor="create-user-username">用户名</Label>
@@ -758,7 +754,7 @@ export function UsersScreen({
         pending={isSubmitting}
         title="重置密码"
       >
-          {actionErrorMessage ? <p className="text-sm text-destructive" role="alert">{actionErrorMessage}</p> : null}
+          {actionErrorMessage ? <AdminNotice tone="error">{actionErrorMessage}</AdminNotice> : null}
           <div className="grid gap-1.5">
             <Label htmlFor="reset-user-password">新密码</Label>
             <Input

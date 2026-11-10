@@ -28,7 +28,7 @@ const columns: readonly AdminDataColumn[] = [
 export function TencentImageCenterScreen({ apiBaseUrl, workspace }: { apiBaseUrl: string; workspace: CloudWorkspaceView }) {
   const session = useAdminSession();
   const isActive = useAdminRouteIsActive('/admin/image-center');
-  const isCel = usePlatformTheme() === 'cel';
+  const compactWorkbench = usePlatformTheme() !== 'classic';
   const [view, setView] = useState<'platform' | 'mine' | 'cloud'>('platform');
   const [scope, setScope] = useState<'public' | 'custom'>('custom');
   const [images, setImages] = useState<TencentCloudImagesPayload | null>(null);
@@ -70,14 +70,14 @@ export function TencentImageCenterScreen({ apiBaseUrl, workspace }: { apiBaseUrl
   if (!session.isReady || !session.token) return null;
   const rows = view === 'cloud' ? images?.items ?? [] : assets.slice(pagination.startIndex, pagination.endIndex).map(asset => ({ displayName: asset.displayName, imageId: asset.imageId, platform: null, status: asset.enabled ? '可用' : '已停用', isAvailable: asset.enabled }));
 
-  const viewTabs = <Tabs value={view} onValueChange={value => { setView(value as typeof view); setPage(1); }}><TabsList variant="line" aria-label="镜像视图"><TabsTrigger value="platform">{isCel && <AdminWorkbenchIcon {...imageSourceIcons.platform} />}平台镜像</TabsTrigger><TabsTrigger value="mine">{isCel && <AdminWorkbenchIcon {...imageSourceIcons.mine} />}我的镜像</TabsTrigger>{session.isAdmin ? <TabsTrigger value="cloud">{isCel && <AdminWorkbenchIcon {...imageSourceIcons.cloud} />}云上镜像来源</TabsTrigger> : null}</TabsList></Tabs>;
+  const viewTabs = <Tabs value={view} onValueChange={value => { setView(value as typeof view); setPage(1); }}><TabsList variant="line" aria-label="镜像视图"><TabsTrigger value="platform">{compactWorkbench && <AdminWorkbenchIcon {...imageSourceIcons.platform} />}平台镜像</TabsTrigger><TabsTrigger value="mine">{compactWorkbench && <AdminWorkbenchIcon {...imageSourceIcons.mine} />}我的镜像</TabsTrigger>{session.isAdmin ? <TabsTrigger value="cloud">{compactWorkbench && <AdminWorkbenchIcon {...imageSourceIcons.cloud} />}云上镜像来源</TabsTrigger> : null}</TabsList></Tabs>;
   const refreshAction = <Button disabled={isLoading} size="sm" variant="outline" onClick={() => setRefresh(value => value + 1)}>刷新镜像</Button>;
   const scopeTabs = view === 'cloud' ? <Tabs value={scope} onValueChange={value => { setScope(value as typeof scope); setPage(1); }}><TabsList variant="line" aria-label="云上镜像来源切换"><TabsTrigger value="custom">腾讯云自定义镜像</TabsTrigger><TabsTrigger value="public">腾讯云公共镜像</TabsTrigger></TabsList></Tabs> : null;
   const description = workspace.displayName + ' · ' + (context?.regionId ?? '未配置地域') + '。腾讯云镜像收录、导入和实例创建仍在开发。';
 
   return <div className="admin-screen image-center-screen admin-pagination-screen"><section className="admin-workbench-surface admin-pagination-surface">
-    <AdminPageHeader artwork="images" title="镜像中心" description={isCel ? description : '查看当前腾讯云账号的镜像资产与云上来源。'} />
-    {isCel ? <>
+    <AdminPageHeader artwork="images" title="镜像中心" description={compactWorkbench ? description : '查看当前腾讯云账号的镜像资产与云上来源。'} />
+    {compactWorkbench ? <>
       <div className="cel-source-tabs">{viewTabs}</div>
       <AdminWorkbenchControls title="镜像清单" views={scopeTabs} actions={refreshAction} />
     </> : <>

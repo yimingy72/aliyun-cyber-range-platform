@@ -1,5 +1,6 @@
 'use client';
 
+import { AdminNotice } from './shared/admin-notice';
 import type { ReactNode } from 'react';
 import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
@@ -438,7 +439,7 @@ function AdminWorkspaceShellContent({ children }: AdminWorkspaceShellProps) {
         <div className="admin-main-content-shell">
           <section className="admin-main-content">
             {cloudWorkspace && !cloudWorkspace.isReady ? <div className="admin-workbench-surface min-h-48" aria-busy={!cloudWorkspace.error}>
-              {cloudWorkspace.error ? <div className="grid gap-4"><p role="alert" className="text-sm text-destructive">{cloudWorkspace.error}</p><div className="flex flex-wrap gap-2"><Button variant="outline" onClick={cloudWorkspace.retry}>重新加载工作空间</Button><Button variant="outline" onClick={cloudWorkspace.resetSelection}>使用登录账号默认工作空间</Button></div></div> : <span className="sr-only">正在恢复云账号工作空间</span>}
+              {cloudWorkspace.error ? <AdminNotice tone="error" actions={<><Button variant="outline" onClick={cloudWorkspace.retry}>重新加载工作空间</Button><Button variant="outline" onClick={cloudWorkspace.resetSelection}>使用登录账号默认工作空间</Button></>}>{cloudWorkspace.error}</AdminNotice> : <span className="sr-only">正在恢复云账号工作空间</span>}
             </div> : cloudWorkspace && !cloudWorkspace.workspace && pathname !== '/admin/settings/cloud' ? <div className="admin-workbench-surface"><p className="text-sm">尚未绑定云账号工作空间。</p>{session.profile?.isPlatformManager ? <Link className="mt-4 inline-block text-sm text-primary" href="/admin/settings/cloud">前往基础配置绑定云账号</Link> : null}</div> :
             <AdminScreenCacheProvider key={`${session.profile?.id}:${cloudWorkspace?.workspace?.id ?? ''}:${cloudWorkspace?.workspace?.activeCloudAccountContextId ?? ''}`}>
               <AdminPageCache pathname={pathname}>{children}</AdminPageCache>

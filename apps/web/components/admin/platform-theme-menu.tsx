@@ -5,17 +5,17 @@ import { useSyncExternalStore } from 'react';
 
 import { Button } from '@/components/ui/button';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuRadioGroup, DropdownMenuRadioItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
-import { DEFAULT_PLATFORM_THEME, PLATFORM_THEME_KEY, type PlatformTheme } from '@/lib/platform-theme';
+import { DEFAULT_PLATFORM_THEME, PLATFORM_THEMES, PLATFORM_THEME_KEY, resolvePlatformTheme, type PlatformTheme } from '@/lib/platform-theme';
 
 const themeEvent = 'range-platform-theme-change';
 
 function getTheme(): PlatformTheme {
-  return document.documentElement.dataset.platformTheme === 'cel' ? 'cel' : 'classic';
+  return resolvePlatformTheme(document.documentElement.dataset.platformTheme ?? 'classic');
 }
 
 function applyTheme(theme: PlatformTheme) {
-  if (theme === 'cel') document.documentElement.dataset.platformTheme = 'cel';
-  else delete document.documentElement.dataset.platformTheme;
+  if (theme === 'classic') delete document.documentElement.dataset.platformTheme;
+  else document.documentElement.dataset.platformTheme = theme;
 }
 
 function setTheme(theme: PlatformTheme) {
@@ -31,7 +31,7 @@ function setTheme(theme: PlatformTheme) {
 function subscribe(listener: () => void) {
   function syncStorage(event: StorageEvent) {
     if (event.key !== PLATFORM_THEME_KEY && event.key !== null) return;
-    applyTheme(event.newValue === 'classic' ? 'classic' : DEFAULT_PLATFORM_THEME);
+    applyTheme(resolvePlatformTheme(event.newValue));
     listener();
   }
 
@@ -58,9 +58,10 @@ export function PlatformThemeMenu() {
         </Button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end" aria-label="平台主题">
-        <DropdownMenuRadioGroup value={theme} onValueChange={(value) => setTheme(value === 'cel' ? 'cel' : 'classic')}>
-          <DropdownMenuRadioItem value="classic">经典</DropdownMenuRadioItem>
-          <DropdownMenuRadioItem value="cel">赛璐璐</DropdownMenuRadioItem>
+        <DropdownMenuRadioGroup value={theme} onValueChange={(value) => setTheme(resolvePlatformTheme(value))}>
+          {Object.entries(PLATFORM_THEMES).map(([value, label]) =>
+            <DropdownMenuRadioItem key={value} value={value}>{label}</DropdownMenuRadioItem>
+          )}
         </DropdownMenuRadioGroup>
       </DropdownMenuContent>
     </DropdownMenu>

@@ -1,5 +1,6 @@
 'use client';
 
+import { AdminNotice } from './shared/admin-notice';
 import { DateTimePicker } from '@/components/ui/date-time-picker';
 
 import { useEffect, useMemo, useState, type ReactNode } from 'react';
@@ -673,27 +674,18 @@ export function LegacyBillingScreen({ apiBaseUrl = 'http://localhost:3001', visi
         ) : null}
 
         {errorMessage ? (
-          <p className="mt-4 border border-destructive/20 bg-destructive/5 px-3 py-2 text-sm text-destructive" role="alert">
-            {errorMessage}
-          </p>
+          <AdminNotice tone="error" className="mt-4">{errorMessage}</AdminNotice>
         ) : null}
         {overviewRevalidationErrorMessage ? (
-          <div
-            className="mt-4 flex flex-wrap items-center justify-between gap-3 border border-destructive/20 bg-destructive/5 px-3 py-2 text-sm"
-            role="alert"
-          >
-            <span className="text-destructive">
-              {overviewRevalidationErrorMessage} 正在显示上次成功加载的账单数据。
-            </span>
-            <Button aria-label="重试加载账单概览" onClick={retryOverview} size="sm" type="button" variant="outline">
+          <AdminNotice tone="warning" role="alert" className="mt-4"
+                actions={<Button aria-label="重试加载账单概览" onClick={retryOverview} size="sm" type="button" variant="outline">
               重试加载
-            </Button>
-          </div>
+            </Button>}>
+                {overviewRevalidationErrorMessage} 正在显示上次成功加载的账单数据。
+              </AdminNotice>
         ) : null}
       {syncMessage ? (
-        <p className="mt-4 border border-emerald-700/20 bg-emerald-700/5 px-3 py-2 text-sm text-emerald-800" role="status">
-          {syncMessage}
-        </p>
+        <AdminNotice tone="info" className="mt-4">{syncMessage}</AdminNotice>
       ) : null}
 
       <div className="billing-detail-workspace mt-4 flex min-h-0 min-w-0 flex-1 flex-col items-stretch gap-5 max-lg:flex-none lg:grid lg:grid-cols-[minmax(0,1fr)_17rem]">
@@ -796,15 +788,13 @@ export function LegacyBillingScreen({ apiBaseUrl = 'http://localhost:3001', visi
           >
           <div aria-live="polite" className="overflow-hidden rounded border border-border bg-card">
             {groupsErrorMessage ? (
-              <div className="flex flex-wrap items-center justify-between gap-3 border-b border-destructive/15 bg-destructive/5 px-3 py-2 text-sm" role="alert">
-                <span className="text-destructive">
-                  {groupsErrorMessage}
-                  {groups.length ? ' 正在显示上次成功加载的费用明细。' : ''}
-                </span>
-                <Button onClick={retryGroups} size="sm" type="button" variant="outline">
+              <AdminNotice tone="warning" role="alert" className="m-2"
+                actions={<Button onClick={retryGroups} size="sm" type="button" variant="outline">
                   重试加载
-                </Button>
-              </div>
+                </Button>}>
+                {groupsErrorMessage}
+                  {groups.length ? ' 正在显示上次成功加载的费用明细。' : ''}
+              </AdminNotice>
             ) : null}
 
             {isLoadingGroups && !hasGroupsSnapshot ? (
