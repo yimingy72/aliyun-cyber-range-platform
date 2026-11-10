@@ -35,10 +35,11 @@ describe('range topology cold chunk transition', () => {
     const module = await import('./range-instance-detail-screen');
     render(<module.RangeInstanceDetailScreen rangeId="range-1" />);
     const tab = await screen.findByRole('tab', { name: '拓扑结构' });
+    expect(importCount).toBe(0);
+    fireEvent.mouseEnter(tab);
     await waitFor(() => expect(importCount).toBe(1));
     const pending = module.preloadRangeInstanceTopologyWorkspace();
     expect(module.preloadRangeInstanceTopologyWorkspace()).toBe(pending);
-    fireEvent.mouseEnter(tab);
     fireEvent.focus(tab);
     fireEvent.mouseDown(tab);
     const placeholder = await screen.findByTestId('range-topology-placeholder');

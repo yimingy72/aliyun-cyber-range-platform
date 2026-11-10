@@ -2439,19 +2439,24 @@ describe('image user-flow regressions', () => {
     });
     fetchImageImportJobsMock.mockResolvedValue({ items: [] });
     vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
+    const hidden = vi.spyOn(document, 'hidden', 'get').mockReturnValue(false);
     try {
       render(<AdminScreenCacheProvider><ImageCenterScreen /></AdminScreenCacheProvider>);
       fireEvent.mouseDown(await screen.findByRole('tab', { name: '我的镜像' }));
       await screen.findByText('Packed image');
       await waitFor(() => expect(reads).toBe(2));
       expect(screen.queryByRole('button', { name: '创建实例 Packed image' })).toBeNull();
+      hidden.mockReturnValue(true);
       await act(async () => { await vi.advanceTimersByTimeAsync(5_000); });
+      expect(reads).toBe(2);
+      hidden.mockReturnValue(false);
+      fireEvent(document, new Event('visibilitychange'));
       await waitFor(() => expect(reads).toBe(3));
       if (terminalStatus === 'Available') expect(screen.getByRole('button', { name: '创建实例 Packed image' })).toBeTruthy();
       else expect(screen.queryByRole('button', { name: '创建实例 Packed image' })).toBeNull();
       await act(async () => { await vi.advanceTimersByTimeAsync(10_000); });
       expect(reads).toBe(3);
       expect(screen.getByRole('table', { name: '我的镜像' }).getAttribute('aria-busy')).toBeNull();
-    } finally { vi.useRealTimers(); }
+    } finally { hidden.mockRestore(); vi.useRealTimers(); }
   });
 });

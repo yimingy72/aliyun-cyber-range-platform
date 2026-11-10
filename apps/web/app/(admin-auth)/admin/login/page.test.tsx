@@ -1,8 +1,8 @@
 import { cleanup, fireEvent, render, renderHook, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { useAdminSession } from '../../../components/admin/use-admin-session';
-import { ADMIN_SESSION_STORAGE_KEY, writeAdminSession } from '../../../lib/admin-auth-storage';
+import { useAdminSession } from '@/components/admin/use-admin-session';
+import { ADMIN_SESSION_STORAGE_KEY, writeAdminSession } from '@/lib/admin-auth-storage';
 
 const replace = vi.fn();
 const assign = vi.fn();

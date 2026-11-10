@@ -1,68 +1,88 @@
 'use client';
 
-import type { ReactNode } from 'react';
-import { createContext, useContext, useEffect, useLayoutEffect, useRef } from 'react';
+import { createContext, memo, useContext, useEffect, useLayoutEffect, useRef, useState, type ComponentType, type ReactNode } from 'react';
 
 import { resolveAdminApiBaseUrl } from '../../lib/admin-api-base-url';
 import { AdminContentTransition } from './admin-content-transition';
-import { BillingScreen } from './billing-screen';
-import { ImageCenterScreen } from './image-center-screen';
-import { RangeInstancesScreen } from './range-instances-screen';
-import { SettingsScreen } from './settings/settings-screen';
-import { SingleInstancesScreen } from './single-instances-screen';
-import { TemplatesScreen } from './templates-screen';
-import { UsersScreen } from './users-screen';
 
-const RETAINED_ADMIN_ROUTES = new Set([
-  '/admin/image-center',
-  '/admin/instances',
-  '/admin/scenarios',
-  '/admin/ranges',
-  '/admin/users',
-  '/admin/billing',
-  '/admin/settings/cloud',
-]);
-const RETAINED_ADMIN_DYNAMIC_ROUTE_PATTERNS = [/^\/admin\/scenarios\/[^/]+$/, /^\/admin\/ranges\/[^/]+$/];
+const loading = () => <div aria-busy="true" className="admin-workbench-surface min-h-48"><span className="sr-only">正在加载工作台</span></div>;
 
-type AdminRouteActivityContextValue = {
-  pathname: string;
+function deferAdminScreen<Props extends object>(load: () => Promise<ComponentType<Props>>) {
+  let resolved: ComponentType<Props> | null = null;
+  let pending: Promise<ComponentType<Props>> | null = null;
+
+  return function DeferredAdminScreen(props: Props) {
+    const [Screen, setScreen] = useState(() => resolved);
+    const [failure, setFailure] = useState<{ error: unknown } | null>(null);
+
+    useEffect(() => {
+      if (Screen) return;
+      let current = true;
+      pending ??= load().then(component => resolved = component, error => { pending = null; throw error; });
+      // Show the ready screen immediately; the shell already provides the loading frame.
+      void pending.then(component => { if (current) setScreen(() => component); }, error => { if (current) setFailure({ error }); });
+      return () => { current = false; };
+    }, [Screen]);
+
+    if (failure) throw failure.error;
+    return Screen ? <Screen {...props} /> : loading();
+  };
+}
+
+// Retain mounted page state without bundling every workspace into the common shell.
+const retainedScreens = {
+  '/admin/image-center': deferAdminScreen(() => import('./image-center-screen').then(module => module.ImageCenterScreen)),
+  '/admin/instances': deferAdminScreen(() => import('./single-instances-screen').then(module => module.SingleInstancesScreen)),
+  '/admin/scenarios': deferAdminScreen(() => import('./templates-screen').then(module => module.TemplatesScreen)),
+  '/admin/ranges': deferAdminScreen(() => import('./range-instances-screen').then(module => module.RangeInstancesScreen)),
+  '/admin/users': deferAdminScreen(() => import('./users-screen').then(module => module.UsersScreen)),
+  '/admin/billing': deferAdminScreen(() => import('./billing-screen').then(module => module.BillingScreen)),
+  '/admin/settings/cloud': deferAdminScreen(() => import('./settings/settings-screen').then(module => module.SettingsScreen)),
 };
+const rangeDetailRoute = /^\/admin\/ranges\/([^/]+)$/;
+const templateEditorRoute = /^\/admin\/scenarios\/[^/]+$/;
+const RangeInstanceDetailScreen = deferAdminScreen(() => import('./range-instance-detail-screen').then(module => module.RangeInstanceDetailScreen));
 
-const AdminRouteActivityContext = createContext<AdminRouteActivityContextValue | null>(null);
+const AdminRouteActivityContext = createContext<string | null | undefined>(undefined);
 
 function isRetainedAdminRoute(pathname: string) {
   return pathname !== '/admin/scenarios/new' &&
-    (RETAINED_ADMIN_ROUTES.has(pathname) || RETAINED_ADMIN_DYNAMIC_ROUTE_PATTERNS.some((pattern) => pattern.test(pathname)));
+    (Object.hasOwn(retainedScreens, pathname) || rangeDetailRoute.test(pathname) || templateEditorRoute.test(pathname));
 }
 
 function createRetainedAdminPage(pathname: string) {
   const apiBaseUrl = resolveAdminApiBaseUrl();
-
-  switch (pathname) {
-    case '/admin/image-center':
-      return <ImageCenterScreen apiBaseUrl={apiBaseUrl} />;
-    case '/admin/instances':
-      return <SingleInstancesScreen apiBaseUrl={apiBaseUrl} />;
-    case '/admin/scenarios':
-      return <TemplatesScreen apiBaseUrl={apiBaseUrl} />;
-    case '/admin/ranges':
-      return <RangeInstancesScreen apiBaseUrl={apiBaseUrl} />;
-    case '/admin/users':
-      return <UsersScreen apiBaseUrl={apiBaseUrl} />;
-    case '/admin/billing':
-      return <BillingScreen apiBaseUrl={apiBaseUrl} />;
-    case '/admin/settings/cloud':
-      return <SettingsScreen apiBaseUrl={apiBaseUrl} />;
-    default:
-      return null;
+  const Screen = retainedScreens[pathname as keyof typeof retainedScreens];
+  if (Screen) return <Screen apiBaseUrl={apiBaseUrl} />;
+  const range = rangeDetailRoute.exec(pathname);
+  if (!range?.[1]) return null;
+  // The router's child slot is recreated on navigation; retain the detail controller by ID.
+  try {
+    return <RangeInstanceDetailScreen apiBaseUrl={apiBaseUrl} rangeId={decodeURIComponent(range[1])} />;
+  } catch {
+    return null;
   }
 }
 
 export function useAdminRouteIsActive(pathname: string) {
   const routeActivity = useContext(AdminRouteActivityContext);
 
-  return routeActivity ? routeActivity.pathname === pathname : true;
+  return routeActivity === undefined || routeActivity === pathname;
 }
+
+const RetainedAdminPage = memo(function RetainedAdminPage({ route, active, page }: {
+  route: string;
+  active: boolean;
+  page: ReactNode;
+}) {
+  return (
+    <AdminRouteActivityContext.Provider value={active ? route : null}>
+      <AdminContentTransition hidden={!active} pathname={route} testId={active ? 'admin-content-transition' : null}>
+        {page}
+      </AdminContentTransition>
+    </AdminRouteActivityContext.Provider>
+  );
+});
 
 export type AdminPageCacheProps = {
   pathname: string;
@@ -112,20 +132,13 @@ export function AdminPageCache({
   }, [pathname]);
 
   return (
-    <AdminRouteActivityContext.Provider value={{ pathname }}>
+    <>
       {[...retainedPagesRef.current.entries()].map(([route, page]) => (
-        <AdminContentTransition
-          hidden={route !== pathname}
-          key={route}
-          pathname={route}
-          testId={route === pathname ? 'admin-content-transition' : null}
-        >
-          {page}
-        </AdminContentTransition>
+        <RetainedAdminPage active={route === pathname} key={route} route={route} page={page} />
       ))}
       {!isRetainedAdminRoute(pathname) ? (
-        <AdminContentTransition pathname={pathname}>{children}</AdminContentTransition>
+        <RetainedAdminPage active key={pathname} route={pathname} page={children} />
       ) : null}
-    </AdminRouteActivityContext.Provider>
+    </>
   );
 }

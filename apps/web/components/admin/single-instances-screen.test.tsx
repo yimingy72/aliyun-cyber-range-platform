@@ -136,18 +136,20 @@ function readBlobAsBytes(blob: Blob) {
   });
 }
 
-async function openCreateDialog() {
+async function openCreateDialog({ waitForImages = true } = {}) {
   const button = await waitFor(() => {
     const button = screen.getByRole('button', { name: '创建实例' });
     expect(button.hasAttribute('disabled')).toBe(false);
     return button;
   });
   fireEvent.click(button);
-  return screen.findByRole('dialog', { name: '创建实例' });
+  const dialog = await screen.findByRole('dialog', { name: '创建实例' });
+  if (waitForImages) await waitFor(() => expect(screen.getByRole('button', { name: '确认创建' })).toHaveProperty('disabled', false));
+  return dialog;
 }
 
 describe('SingleInstancesScreen', () => {
-  it('opens the create dialog only after delayed images enable the button', async () => {
+  it('loads images only when opening the dialog and preserves fields entered while waiting', async () => {
     fetchSingleInstancesMock.mockResolvedValue([]);
     fetchProvisionJobsMock.mockResolvedValue([]);
     fetchInstanceTypeAvailabilityMock.mockResolvedValue({ cpu: 2, memory: 2, exactAvailable: true,
@@ -156,16 +158,19 @@ describe('SingleInstancesScreen', () => {
     fetchPlatformImagesMock.mockReturnValue(new Promise(resolve => { resolveImages = resolve; }));
     render(<SingleInstancesScreen />);
 
-    const opening = openCreateDialog();
-    await act(async () => { await Promise.resolve(); });
-    expect(screen.getByRole('button', { name: '创建实例' }).hasAttribute('disabled')).toBe(true);
-    expect(screen.queryByRole('dialog', { name: '创建实例' })).toBeNull();
+    await screen.findByRole('heading', { name: '实例管理' });
+    expect(fetchPlatformImagesMock).not.toHaveBeenCalled();
+    await openCreateDialog({ waitForImages: false });
+    expect(screen.getByText('正在加载可用镜像…')).toBeTruthy();
+    expect(screen.getByRole('button', { name: '确认创建' })).toHaveProperty('disabled', true);
+    fireEvent.change(screen.getByLabelText('实例名'), { target: { value: '训练环境' } });
 
     await act(async () => {
       resolveImages({ items: [{ id: 'platform-image-1', imageId: 'm-123', displayName: 'Ubuntu', enabled: true }] });
     });
-    await opening;
-    expect(screen.getByLabelText('实例名')).toBeTruthy();
+    expect(screen.getByLabelText('实例名')).toHaveProperty('value', '训练环境');
+    expect(screen.getByLabelText('镜像')).toHaveProperty('value', 'Ubuntu (m-123)');
+    expect(screen.getByRole('button', { name: '确认创建' })).toHaveProperty('disabled', false);
     expect(launchSingleInstancesMock).not.toHaveBeenCalled();
   });
 
@@ -269,10 +274,11 @@ describe('SingleInstancesScreen', () => {
     fetchSingleInstancesMock.mockResolvedValue([]); fetchProvisionJobsMock.mockResolvedValue([]);
     fetchPlatformImagesMock.mockResolvedValue({ items: [{ id: 'workspace-image', imageId: 'img-fixture', displayName: '可用腾讯镜像', enabled: true, sourceSnapshotAvailable: true }] });
     render(<SingleInstancesScreen />);
-    await waitFor(() => expect(fetchPlatformImagesMock).toHaveBeenCalled());
+    await screen.findByRole('heading', { name: '实例管理' });
     expect(screen.getByText('腾讯云实例创建仍在开发。')).toBeTruthy();
     expect((screen.getByRole('button', { name: '创建实例' }) as HTMLButtonElement).disabled).toBe(true);
     fireEvent.click(screen.getByRole('button', { name: '创建实例' }));
+    expect(fetchPlatformImagesMock).not.toHaveBeenCalled();
     expect(launchSingleInstancesMock).not.toHaveBeenCalled();
   });
 
@@ -1770,9 +1776,9 @@ describe('SingleInstancesScreen', () => {
 
     render(<SingleInstancesScreen apiBaseUrl="http://localhost:3001" />);
 
-    expect(await screen.findByRole('heading', { name: '实例管理' })).toBeTruthy();
-    expect(screen.getByText('请先前往镜像中心收录或启用至少一个平台镜像。')).toBeTruthy();
-    expect((screen.getByRole('button', { name: '创建实例' }) as HTMLButtonElement).disabled).toBe(true);
+    await openCreateDialog({ waitForImages: false });
+    expect(await screen.findByText('请先前往镜像中心收录或启用平台镜像后，再创建实例。')).toBeTruthy();
+    expect(screen.getByRole('button', { name: '确认创建' })).toHaveProperty('disabled', true);
     expect(fetchInstanceTypeAvailabilityMock).not.toHaveBeenCalled();
   });
 
@@ -1823,14 +1829,14 @@ describe('SingleInstancesScreen', () => {
 
     render(<SingleInstancesScreen apiBaseUrl="http://localhost:3001" />);
 
-    expect(await screen.findByRole('heading', { name: '实例管理' })).toBeTruthy();
-    expect(screen.queryByText('请先前往镜像中心收录或启用至少一个平台镜像。')).toBeNull();
+    await openCreateDialog({ waitForImages: false });
+    expect(screen.queryByText('请先前往镜像中心收录或启用平台镜像后，再创建实例。')).toBeNull();
 
     resolveImages({
       items: [],
     });
 
-    expect(await screen.findByText('请先前往镜像中心收录或启用至少一个平台镜像。')).toBeTruthy();
+    expect(await screen.findByText('请先前往镜像中心收录或启用平台镜像后，再创建实例。')).toBeTruthy();
   });
 
   it('does not flash 暂无实例 before the first instance payload resolves', async () => {
