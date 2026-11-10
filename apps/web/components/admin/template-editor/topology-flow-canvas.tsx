@@ -3,6 +3,7 @@
 import { Button } from '@/components/ui/button';
 
 import React from 'react';
+import { MAX_TOPOLOGY_REGIONS, readTopologyRegions, type TopologyRegion, type TopologyRegionAppearance, type TopologyRegionBounds } from '@aliyun-cyber-range/scenario-runtime';
 import {
   Background,
   Controls,
@@ -25,18 +26,22 @@ import {
   Minimize2,
   MousePointer2,
   Redo2,
+  SquareDashed,
   Undo2,
 } from 'lucide-react';
 
 import { fromFlowNodes, toFlowEdges, toFlowNodes } from './topology-flow-adapter';
 import { TopologyNetworkEdge } from './topology-network-edge';
-import { TopologyNetworkRegions } from './topology-network-regions';
+import { buildCanvasRegions, regionKey, TopologyNetworkRegions, type CanvasRegion } from './topology-network-regions';
+import { TopologyRegionDrawing } from './topology-region-drawing';
+import { TopologyRegionProperties } from './topology-region-properties';
 import { TopologyFlowNode } from './topology-flow-node';
 import {
   TopologyFlowResourceRail,
   type TopologyResourceKind,
 } from './topology-flow-resource-rail';
 import type { TemplateEdge } from './template-editor-screen';
+import { hasSameTopologySelection } from './topology-flow-types';
 import type {
   TopologyFlowNode as TopologyFlowNodeState,
   TopologySelection,
@@ -58,6 +63,7 @@ const topologyFitViewOptions = {
 const topologyEdgeTypes = { 'topology-network': TopologyNetworkEdge };
 const resourceNodeFootprint = { height: 96, width: 208 };
 const resourcePlacementStep = { x: 240, y: 144 };
+const emptyRegions: TopologyRegion[] = [];
 
 type NodePositionCommit = {
   id: string;
@@ -69,6 +75,8 @@ export type TopologyFlowCanvasMode = 'edit' | 'readonly';
 export type TopologyFlowCanvasProps = {
   nodes: TemplateNode[];
   edges: TemplateEdge[];
+  regions?: TopologyRegion[];
+  onRegionsChange?: (regions: TopologyRegion[]) => void;
   fullscreenTargetSelector?: string;
   mode?: TopologyFlowCanvasMode;
   viewport: TopologyViewport | null;
@@ -108,18 +116,6 @@ function hasSameViewport(
 ) {
   return left === right
     || (left?.x === right?.x && left?.y === right?.y && left?.zoom === right?.zoom);
-}
-
-function hasSameTopologySelection(left: TopologySelection, right: TopologySelection) {
-  if (left.nodeIds.length !== right.nodeIds.length || left.edgeIds.length !== right.edgeIds.length) {
-    return false;
-  }
-
-  const leftNodeIds = new Set(left.nodeIds);
-  const leftEdgeIds = new Set(left.edgeIds);
-
-  return right.nodeIds.every((nodeId) => leftNodeIds.has(nodeId))
-    && right.edgeIds.every((edgeId) => leftEdgeIds.has(edgeId));
 }
 
 function applyNodeSelection(
@@ -196,6 +192,8 @@ function findResourceInsertionPosition(nodes: TemplateNode[], preferredPosition:
 
 function TopologyFlowCanvasInner({
   edges,
+  regions = emptyRegions,
+  onRegionsChange,
   fullscreenTargetSelector = '.template-editor-grid',
   mode = 'edit',
   nodes,
@@ -216,10 +214,14 @@ function TopologyFlowCanvasInner({
   const [connectMode, setConnectMode] = React.useState(false);
   const [isFullscreen, setIsFullscreen] = React.useState(false);
   const [isMiniMapVisible, setIsMiniMapVisible] = React.useState(false);
+  const [drawingRegion, setDrawingRegion] = React.useState(false);
+  const selectedRegionKey = selection.regionKey ?? null;
   const canvasRef = React.useRef<HTMLDivElement>(null);
   const workbenchRef = React.useRef<HTMLElement>(null);
   const { fitView, screenToFlowPosition, setViewport } = useReactFlow();
-  const isConnectMode = !isReadonly && connectMode;
+  const canEditRegions = !isReadonly && Boolean(onRegionsChange);
+  const isDrawingRegion = canEditRegions && drawingRegion;
+  const isConnectMode = !isReadonly && !isDrawingRegion && connectMode;
   const topologyFlowNodes = React.useMemo(
     () => toFlowNodes(nodes, edges, isConnectMode),
     [edges, isConnectMode, nodes],
@@ -229,6 +231,8 @@ function TopologyFlowCanvasInner({
     [selection, topologyFlowNodes],
   );
   const [flowNodes, setFlowNodes, onNodesChange] = useNodesState(externalFlowNodes);
+  const canvasRegions = React.useMemo(() => buildCanvasRegions(fromFlowNodes(flowNodes), edges, regions), [flowNodes, edges, regions]);
+  const selectedRegion = canvasRegions.find(region => regionKey(region) === selectedRegionKey);
   const routedFlowEdges = React.useMemo(() => toFlowEdges(nodes, edges), [nodes, edges]);
   const flowEdges = React.useMemo(() => {
     const selectedEdgeIds = new Set(selection.edgeIds);
@@ -374,17 +378,53 @@ function TopologyFlowCanvasInner({
     const pendingExternalSelection = pendingExternalSelectionRef.current;
 
     if (pendingExternalSelection) {
-      if (hasSameTopologySelection(pendingExternalSelection, nextSelection)) {
+      if (hasSameTopologySelection({ ...pendingExternalSelection, regionKey: undefined }, nextSelection)) {
         pendingExternalSelectionRef.current = null;
       }
       return;
     }
 
+    if (selectionRef.current.regionKey && nextSelection.nodeIds.length === 0 && nextSelection.edgeIds.length === 0) return;
     reportSelectionChange(nextSelection);
   }, [reportSelectionChange]);
 
+  function selectRegion(region: Pick<TopologyRegion, 'id' | 'kind'>) {
+    reportSelectionChange({ edgeIds: [], nodeIds: [], regionKey: regionKey(region) }, true);
+  }
+
+  function closeRegionSelection() {
+    if (selectionRef.current.regionKey) reportSelectionChange({ edgeIds: [], nodeIds: [] }, true);
+  }
+
+  function updateRegion(region: CanvasRegion, patch: Partial<TopologyRegionAppearance & TopologyRegionBounds>) {
+    if (!canEditRegions) return;
+    const [next] = readTopologyRegions([{ ...region, ...patch }]);
+    if (!next) return;
+    const key = regionKey(next);
+    const index = regions.findIndex(item => regionKey(item) === key);
+    if (index < 0 && regions.length >= MAX_TOPOLOGY_REGIONS) return;
+    onRegionsChange?.(index < 0 ? [...regions, next] : regions.map((item, i) => i === index ? next : item));
+  }
+
+  function removeRegion(region: CanvasRegion) {
+    if (!canEditRegions) return;
+    onRegionsChange?.(regions.filter(item => regionKey(item) !== regionKey(region)));
+    if (region.kind === 'manual') closeRegionSelection();
+  }
+
+  function createRegion(bounds: TopologyRegionBounds) {
+    if (!canEditRegions || regions.length >= MAX_TOPOLOGY_REGIONS) return;
+    const region: TopologyRegion = {
+      kind: 'manual', id: crypto.randomUUID(), title: '手绘区域',
+      color: '#1f5fbf', borderStyle: 'dashed', fill: 'tint', ...bounds,
+    };
+    onRegionsChange?.([...regions, region]);
+    setDrawingRegion(false);
+    selectRegion(region);
+  }
+
   function handleNodeClick(event: React.MouseEvent, node: { id: string }) {
-    if (event.shiftKey || event.ctrlKey || event.metaKey) {
+    if (!selectionRef.current.regionKey && (event.shiftKey || event.ctrlKey || event.metaKey)) {
       return;
     }
 
@@ -396,7 +436,7 @@ function TopologyFlowCanvasInner({
   }
 
   function handleEdgeClick(event: React.MouseEvent, edge: { id: string }) {
-    if (event.shiftKey || event.ctrlKey || event.metaKey) {
+    if (!selectionRef.current.regionKey && (event.shiftKey || event.ctrlKey || event.metaKey)) {
       return;
     }
 
@@ -542,16 +582,25 @@ function TopologyFlowCanvasInner({
         return;
       }
 
+      if (selectedRegion) {
+        if (selectedRegion.kind === 'manual' && canEditRegions) {
+          event.preventDefault();
+          removeRegion(selectedRegion);
+        }
+        return;
+      }
       event.preventDefault();
       onDeleteSelection();
     }
 
     window.addEventListener('keydown', handleWindowKeyDown);
     return () => window.removeEventListener('keydown', handleWindowKeyDown);
-  }, [isReadonly, onDeleteSelection]);
+  }, [isReadonly, onDeleteSelection, selectedRegion, canEditRegions, regions, onRegionsChange]);
 
   function handleKeyboardShortcut(event: React.KeyboardEvent<HTMLElement>) {
     if (event.key === 'Escape') {
+      setDrawingRegion(false);
+      closeRegionSelection();
       if (isFullscreen) {
         return;
       }
@@ -562,7 +611,7 @@ function TopologyFlowCanvasInner({
       return;
     }
 
-    if (isReadonly) {
+    if (isReadonly || isEditableKeyboardTarget(event.target)) {
       return;
     }
 
@@ -583,6 +632,7 @@ function TopologyFlowCanvasInner({
   }
 
   return (
+    <>
     <section
       className="topology-flow-workbench"
       data-connect-mode={isConnectMode ? 'true' : 'false'}
@@ -597,10 +647,10 @@ function TopologyFlowCanvasInner({
           <>
             <Button variant="ghost"
               aria-label="选择模式"
-              aria-pressed={!isConnectMode}
+              aria-pressed={!isConnectMode && !isDrawingRegion}
               className="topology-flow-tool-button"
-              data-active={!isConnectMode ? 'true' : 'false'}
-              onClick={() => setConnectMode(false)}
+              data-active={!isConnectMode && !isDrawingRegion ? 'true' : 'false'}
+              onClick={() => { setDrawingRegion(false); setConnectMode(false); }}
               title="选择模式"
               type="button"
             >
@@ -611,12 +661,21 @@ function TopologyFlowCanvasInner({
               aria-pressed={isConnectMode}
               className="topology-flow-tool-button"
               data-active={isConnectMode ? 'true' : 'false'}
-              onClick={() => setConnectMode(true)}
+              onClick={() => { setDrawingRegion(false); setConnectMode(true); }}
               title="连线模式"
               type="button"
             >
               <GitBranch aria-hidden="true" />
             </Button>
+            {canEditRegions && <Button variant="ghost"
+              aria-label="绘制区域" aria-pressed={isDrawingRegion}
+              data-active={isDrawingRegion ? 'true' : 'false'}
+              className="topology-flow-tool-button" type="button"
+              disabled={regions.length >= MAX_TOPOLOGY_REGIONS}
+              title="绘制区域：拖拽框选，或按 Enter 添加默认区域"
+              onClick={() => { setConnectMode(false); closeRegionSelection(); setDrawingRegion(value => !value); }}>
+              <SquareDashed aria-hidden="true" />
+            </Button>}
             <Button variant="ghost"
               aria-label="全部自动布局"
               className="topology-flow-tool-button"
@@ -696,6 +755,7 @@ function TopologyFlowCanvasInner({
             }
           }}
           onEdgeClick={handleEdgeClick}
+          onPaneClick={closeRegionSelection}
           onNodeClick={handleNodeClick}
           onNodesChange={onNodesChange}
           onSelectionChange={handleSelectionChange}
@@ -705,7 +765,8 @@ function TopologyFlowCanvasInner({
           selectionOnDrag={false}
         >
           <Background gap={20} size={1} />
-          <TopologyNetworkRegions nodes={fromFlowNodes(flowNodes)} edges={edges} />
+          <TopologyNetworkRegions regions={canvasRegions} selectedKey={selectedRegionKey} canEdit={canEditRegions}
+            toFlow={screenToFlowPosition} onSelect={selectRegion} onBoundsChange={updateRegion} />
           <Controls showInteractive={false} />
           {isMiniMapVisible ? (
             <MiniMap
@@ -716,6 +777,8 @@ function TopologyFlowCanvasInner({
           ) : null}
         </ReactFlow>
       </div>
+      {isDrawingRegion && <TopologyRegionDrawing toFlow={screenToFlowPosition} onDraw={createRegion}
+        onCancel={() => setDrawingRegion(false)} />}
       <Button variant="ghost"
         aria-label={isMiniMapVisible ? '隐藏导航图' : '显示导航图'}
         aria-pressed={isMiniMapVisible}
@@ -727,6 +790,10 @@ function TopologyFlowCanvasInner({
         <MapIcon aria-hidden="true" />
       </Button>
     </section>
+    {selectedRegion && <TopologyRegionProperties key={regionKey(selectedRegion)} region={selectedRegion}
+      editable={canEditRegions} onChange={patch => updateRegion(selectedRegion, patch)}
+      onRemove={() => removeRegion(selectedRegion)} onClose={closeRegionSelection} />}
+    </>
   );
 }
 

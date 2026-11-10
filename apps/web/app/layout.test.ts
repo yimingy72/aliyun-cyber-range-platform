@@ -5,20 +5,15 @@ import { describe, expect, it } from 'vitest';
 import { metadata } from './layout';
 
 describe('root metadata', () => {
-  it('declares a versioned ICO favicon and ships 16px, 32px, and 48px icon entries', () => {
-    const faviconUrl = '/platform-favicon.ico?v=shield-v1';
+  it('uses the yellow shield favicon for every route without a competing default icon', () => {
+    const faviconUrl = '/platform-favicon.svg?v=cel-v1';
 
     expect(metadata.icons).toMatchObject({
-      icon: [{ url: faviconUrl, type: 'image/x-icon', sizes: 'any' }],
+      icon: [{ url: faviconUrl, type: 'image/svg+xml', sizes: 'any' }],
       shortcut: faviconUrl,
     });
     expect(existsSync(resolve(process.cwd(), 'app/favicon.ico'))).toBe(false);
-
-    const icon = readFileSync(resolve(process.cwd(), 'public/platform-favicon.ico'));
-    expect([...icon.subarray(0, 4)]).toEqual([0, 0, 1, 0]);
-    expect(icon.readUInt16LE(4)).toBe(3);
-
-    const entryWidths = [6, 22, 38].map((offset) => icon[offset]);
-    expect(entryWidths).toEqual([16, 32, 48]);
+    expect(readFileSync(resolve(process.cwd(), 'public/platform-favicon.svg'), 'utf8'))
+      .toMatch(/<svg[\s\S]*fill="#f1c40f"/);
   });
 });

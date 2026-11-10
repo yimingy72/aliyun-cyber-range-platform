@@ -231,22 +231,29 @@ describe('Range instance draft API', () => {
     await app.close();
   });
 
-  it('saves only server-compiled artifacts for a valid running instance', async () => {
+  it('saves visual regions with the draft while keeping the server-compiled artifacts identical', async () => {
+    const regions = [
+      { kind: 'manual', id: 'area-1', title: '演示标注', x: 20, y: 30, width: 200, height: 120, color: '#3571a1', borderStyle: 'dashed', fill: 'tint' },
+      { kind: 'network', id: 'zone/switch-dmz', title: '演示网段', color: '#127a42', borderStyle: 'dotted', fill: 'none' },
+    ];
     const response = await request(app.getHttpServer())
       .patch(`/admin/ranges/${instanceId}/draft`)
       .set('authorization', `Bearer ${userToken}`)
-      .send({ ...validDraftPayload, expectedDraftRevision: 0 })
+      .send({ ...validDraftPayload, draftTopologyGraph: { ...validDraftPayload.draftTopologyGraph, regions }, expectedDraftRevision: 0 })
       .expect(200);
 
     expect(response.body.status).toBe('running');
     expect(response.body.draftTopologyGraph.viewport).toEqual({ x: 24, y: 48, zoom: 1 });
     expect(response.body.draftTopologySpec.publicEntry.hostKey).toBe('ecs-entry');
     expect(response.body.draftCompiledProvisionSpec.topology.entryHostKey).toBe('ecs-entry');
+    expect(response.body.draftTopologyGraph.regions).toEqual(regions);
+    expect(response.body.draftCompiledProvisionSpec).toEqual(validDraftPayload.draftCompiledProvisionSpec);
     expect(response.body.draftRevision).toBe(1);
     expect(response.body.draftUpdatedBy).toBe(draftUser.id);
 
     const persisted = await repository.getRangeInstanceById(instanceId);
 
+    expect(persisted?.draftTopologyGraph?.regions).toEqual(regions);
     expect(persisted?.draftUpdatedBy).toBe(draftUser.id);
     expect(persisted?.draftTopologySpec).toEqual(validDraftPayload.draftTopologySpec);
     expect(persisted?.draftRevision).toBe(1);

@@ -17,6 +17,7 @@ import {
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
 import { Input } from '@/components/ui/input';
+import { cn } from '@/lib/utils';
 import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group';
 import { Label } from '@/components/ui/label';
 import { TableCell, TableRow } from '@/components/ui/table';
@@ -67,7 +68,9 @@ import {
   useAdminPageSize,
 } from './admin-pagination';
 import { useAdminRouteIsActive } from './admin-page-cache';
+import { usePlatformTheme } from './platform-theme-menu';
 import { AdminPageHeader } from './shared/admin-page-header';
+import { imageSourceIcons } from './shared/admin-workbench-icon';
 import { AdminSelectField } from './shared/admin-select-field';
 import {
   AdminDataTable,
@@ -533,6 +536,7 @@ function CloudImageCenterScreen({
 }: ImageCenterScreenProps) {
   const router = useRouter();
   const session = useAdminSession();
+  const isCel = usePlatformTheme() === 'cel';
   const workspace = useCloudWorkspace()?.workspace;
   const provider = workspace?.provider ?? 'alibaba_cloud';
   const providerName = cloudProviderLabel(provider);
@@ -2049,15 +2053,37 @@ function CloudImageCenterScreen({
     return null;
   }
 
+  const cloudSourceOptions = [
+    { label: providerName + '自定义镜像', value: 'custom' },
+    { label: providerName + '公共镜像', value: 'public' },
+    ...(provider === 'alibaba_cloud' ? [{ label: 'ACR 容器镜像', value: 'acr' }] : []),
+  ];
+  const cloudSource = showAcr ? 'acr' : activeTab === 'public' ? 'public' : 'custom';
+  const isCloudView = activeMainView === 'cloud' && !showMogong;
+  function changeCloudSource(value: string) {
+    setAcrSelected(value === 'acr');
+    if (value === 'custom' || value === 'public') setActiveTab(value);
+  }
+
   return (
     <div className="admin-screen image-center-screen admin-pagination-screen">
       <section className="admin-workbench-surface admin-pagination-surface">
-        <AdminPageHeader description="收录、导入和维护演练镜像资产。" title="镜像中心" action={<Button type="button" variant="outline" onClick={() => setPackTasksOpen(true)}>镜像导出</Button>} />
+        <AdminPageHeader artwork="images" description="收录、导入和维护演练镜像资产。" title="镜像中心" action={<Button type="button" variant="outline" onClick={() => setPackTasksOpen(true)}>镜像导出</Button>} />
         {isPageActive && packTasksOpen ? <PackedImageTasksDialog key={`${session.profile?.id}:${workspace?.id}:${session.token}`} apiBaseUrl={apiBaseUrl} token={session.token} open onOpenChange={setPackTasksOpen} /> : null}
         {imageImportSuccessMessage ? <p className="mt-4 text-sm text-emerald-700" aria-live="polite">{imageImportSuccessMessage}</p> : null}
 
         <div className="mt-4 flex min-h-0 flex-1 flex-col">
           <AdminListToolbar
+            listTitle="镜像清单"
+            celViewsInBand
+            celHeadingControls={isCel && isCloudView ? (
+              <div className="inline-flex" data-cel-view-buttons="" role="group" aria-label="云上镜像来源切换">
+                {cloudSourceOptions.map(({ label, value }) => (
+                  <Button aria-pressed={cloudSource === value} key={value} onClick={() => changeCloudSource(value)}
+                    size="sm" type="button" variant="ghost">{label}</Button>
+                ))}
+              </div>
+            ) : undefined}
             activeView={showMogong ? 'mogong' : activeMainView}
             compactViewAction
             onSearchChange={setSearchName}
@@ -2075,13 +2101,14 @@ function CloudImageCenterScreen({
             searchPlaceholder={showAcr ? '搜索仓库、标签或地域' : '搜索镜像名或镜像 ID'}
             searchValue={searchName}
             views={[
-              { label: '平台镜像', value: 'platform' },
-              { label: '我的镜像', value: 'mine' },
-              ...(session.isAdmin && provider === 'alibaba_cloud' ? [{ label: '墨攻镜像中心', value: 'mogong' }] : []),
-              ...(session.isAdmin ? [{ label: '云上镜像来源', value: 'cloud' }] : []),
+              { label: '平台镜像', value: 'platform', celIcon: imageSourceIcons.platform },
+              { label: '我的镜像', value: 'mine', celIcon: imageSourceIcons.mine },
+              ...(session.isAdmin && provider === 'alibaba_cloud' ? [{ label: '墨攻镜像中心', value: 'mogong', celIcon: imageSourceIcons.mogong }] : []),
+              ...(session.isAdmin ? [{ label: '云上镜像来源', value: 'cloud', celIcon: imageSourceIcons.cloud }] : []),
             ]}
-            searchControls={
-              <div className={session.isAdmin ? 'w-full sm:w-[22.5rem]' : 'w-full sm:w-auto'}>
+            searchControls={isCel && isCloudView ? undefined : (
+              <div className={cn(session.isAdmin ? 'w-full sm:w-[22.5rem]' : 'w-full sm:w-auto',
+                (showMogong || activeTab !== 'platform') && 'cel-image-filters-fit')}>
                 {showMogong ? <div ref={setMogongFilterHost} /> : activeTab === 'platform' ? (
                   <div className="grid w-full grid-cols-2 gap-2 sm:grid-cols-3">
                     <AdminSelectField ariaLabel="按镜像类型筛选" emptyOptionLabel="全部类型"
@@ -2125,22 +2152,15 @@ function CloudImageCenterScreen({
                    <AdminSelectField
                      ariaLabel="云上镜像来源切换"
                      className="w-full sm:w-44"
-                     onValueChange={(value) => {
-                       setAcrSelected(value === 'acr');
-                       if (value === 'custom' || value === 'public') setActiveTab(value);
-                     }}
-                     options={[
-                       { label: `${providerName}自定义镜像`, value: 'custom' },
-                       { label: `${providerName}公共镜像`, value: 'public' },
-                       ...(provider === 'alibaba_cloud' ? [{ label: 'ACR 容器镜像', value: 'acr' }] : []),
-                     ]}
-                     value={showAcr ? 'acr' : activeTab === 'public' ? 'public' : 'custom'}
+                     onValueChange={changeCloudSource}
+                     options={cloudSourceOptions}
+                     value={cloudSource}
                    />
                  )}
               </div>
-            }
+            )}
             action={
-              <div className={session.isAdmin ? 'flex w-56 flex-wrap items-center gap-2' : 'flex flex-wrap items-center gap-2'}>
+              <div className={session.isAdmin ? 'cel-image-toolbar-actions flex w-56 flex-wrap items-center gap-2' : 'flex flex-wrap items-center gap-2'}>
                 {session.isAdmin ? <Button disabled={workspace?.isReadOnly || pendingActionKeys.length > 0} onClick={() => { setTagManagerError(''); setTagManagerOpen(true); }} size="sm" type="button" variant="outline">管理标签</Button> : null}
                 {showMogong ? <div ref={setMogongActionHost} /> : showAcr ? <div ref={setAcrActionHost} /> : activeTab === 'platform' || activeTab === 'mine' ? (
                   <Button

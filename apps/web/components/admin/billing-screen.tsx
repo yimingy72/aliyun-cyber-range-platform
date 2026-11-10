@@ -21,6 +21,8 @@ import { BillingAmounts, BillingDocumentBadge, BillingEntryDetails, billingDocum
 import { downloadCsv, getDefaultRange, LegacyBillingScreen } from './billing-legacy-screen';
 import { useCloudWorkspace } from './cloud-workspace-provider';
 import { ADMIN_TABLE_WIDTHS, AdminDataTable, AdminDataTableCell, AdminDataTableText, type AdminDataColumn } from './shared/admin-data-table';
+import { usePlatformTheme } from './platform-theme-menu';
+import { AdminWorkbenchControls } from './shared/admin-workbench-controls';
 import { AdminPageHeader } from './shared/admin-page-header';
 import { AdminPaginatedList } from './shared/admin-paginated-list';
 import { AdminSelectField } from './shared/admin-select-field';
@@ -97,6 +99,7 @@ export function BillingScreen({apiBaseUrl='http://localhost:3001'}:{apiBaseUrl?:
 }
 
 function BillingLifecycleScreen({context,active,readOnly,onUnauthorized,resourceAction}:{context:BillingRequestContext;active:boolean;readOnly:boolean;onUnauthorized:()=>void;resourceAction:ReactNode}) {
+  const isCel = usePlatformTheme() === 'cel';
   const [range,setRange]=useState<BillingRange>(getDefaultRange),[view,setView]=useState<'user'|'platform'>('user');
   const [userId,setUserId]=useState(''),[billStatus,setBillStatus]=useState<BillingDocumentStatus|''>('');
   const [page,setPage]=useState(1),{pageSize,setPageSize}=useAdminPageSize();
@@ -177,22 +180,17 @@ function BillingLifecycleScreen({context,active,readOnly,onUnauthorized,resource
       onClick={event=>{if(canActivateBillingRow(event))activate();}}>{visibleColumns.map(column=><AdminDataTableCell key={column.id} column={column}>{values[column.id]}</AdminDataTableCell>)}</TableRow>;
   };
   if(legacy)return <LegacyBillingScreen apiBaseUrl={context.apiBaseUrl} visible={active} resourceAction={resourceAction}/>;
-  return <div ref={screen} className="admin-screen admin-pagination-screen relative" data-testid="billing-lifecycle-screen">
-    <section className="admin-workbench-surface admin-pagination-surface">
-      <header className="flex shrink-0 flex-wrap items-center gap-2 pb-2 sm:gap-x-3">
-        <h1 className="mr-auto font-heading text-lg font-semibold text-foreground">账单费用</h1>
-        <div className="order-last flex w-full min-w-0 items-center gap-2 sm:order-none sm:w-auto">
+  const billedTotal = <div className="order-last flex w-full min-w-0 items-center gap-2 sm:order-none sm:w-auto">
           <span className="shrink-0 text-xs text-muted-foreground" title="仅统计当前筛选范围内已确认归属的官方费用">已出账合计</span>
           <strong className="min-w-0 max-w-72 text-sm font-semibold [overflow-wrap:anywhere] [&_span]:whitespace-normal"><BillingAmounts amounts={result?.filteredAmounts??[]}/></strong>
-        </div>
-        <div className="flex shrink-0 items-center gap-1.5">
+        </div>;
+  const billingActions = <div className="flex shrink-0 items-center gap-1.5">
           {resourceAction}
           <DropdownMenu><DropdownMenuTrigger asChild><Button type="button" size="sm" variant="outline" className="px-2 sm:px-3" disabled={exporting||!validRange}><Download aria-hidden="true" className="hidden size-3.5 sm:block"/>{exporting?'正在导出':'导出账单'}<ChevronDown aria-hidden="true" className="size-3"/></Button></DropdownMenuTrigger><DropdownMenuContent align="end"><DropdownMenuItem onSelect={()=>void exportCsv('users')}>导出用户汇总</DropdownMenuItem><DropdownMenuItem disabled={!userId||view!=='user'} onSelect={()=>void exportCsv('user')}>导出当前用户明细</DropdownMenuItem><DropdownMenuItem onSelect={()=>void exportCsv('platform')}>导出平台费用</DropdownMenuItem></DropdownMenuContent></DropdownMenu>
           <Button type="button" size="sm" variant="outline" className="px-2 sm:px-3" title={syncDescription} aria-description={syncDescription} disabled={loading||!validRange} onClick={refresh}><RefreshCw aria-hidden="true" className={loading?'hidden size-3.5 animate-spin sm:block':'hidden size-3.5 sm:block'}/>刷新</Button>
-        </div>
-      </header>
-      <div className="grid shrink-0 grid-cols-[minmax(0,1.25fr)_minmax(0,1fr)] items-center gap-2 pb-2 sm:flex sm:flex-wrap" aria-label="账单筛选">
-        <div aria-label="费用明细视图" role="group" className="inline-flex justify-self-start rounded-md bg-muted p-0.5">{(['user','platform'] as const).map(value=><Button key={value} type="button" variant="ghost" size="sm" aria-pressed={view===value} className={`rounded px-1.5 text-xs sm:px-3 ${view===value?'bg-background shadow-sm':'text-muted-foreground'}`} onClick={()=>{if(view!==value){closeDetail();setView(value);setPage(1);}}}>{value==='user'?'用户明细':'平台费用'}</Button>)}</div>
+        </div>;
+  const billingViews = <div data-cel-view-buttons="" aria-label="费用明细视图" role="group" className="inline-flex justify-self-start rounded-md bg-muted p-0.5">{(['user','platform'] as const).map(value=><Button key={value} type="button" variant="ghost" size="sm" aria-pressed={view===value} className={`rounded px-1.5 text-xs sm:px-3 ${view===value?'bg-background shadow-sm':'text-muted-foreground'}`} onClick={()=>{if(view!==value){closeDetail();setView(value);setPage(1);}}}>{value==='user'?'用户明细':'平台费用'}</Button>)}</div>;
+  const billingFilters = <>
         <AdminSelectField ariaLabel="筛选用户" className="h-8 w-full min-w-0 sm:w-28" disabled={view==='platform'} emptyOptionLabel={view==='platform'?'平台公共':'全部用户'} options={users.map(user=>({label:user.username,value:user.id}))} value={view==='user'?userId:''} onValueChange={value=>{closeDetail();setUserId(value);setPage(1);}}/>
         <BillingRangeFilter range={range} onChange={updateRange}/>
         <DropdownMenu>
@@ -207,7 +205,26 @@ function BillingLifecycleScreen({context,active,readOnly,onUnauthorized,resource
           </DropdownMenuContent>
         </DropdownMenu>
         {usersError?<Button variant="ghost" size="sm" type="button" className="col-span-full justify-self-start" onClick={()=>setUsersAttempt(value=>value+1)}>重试用户列表</Button>:null}
-      </div>
+      </>;
+  return <div ref={screen} className="admin-screen admin-pagination-screen relative" data-testid="billing-lifecycle-screen">
+    <section className="admin-workbench-surface admin-pagination-surface">
+      {isCel ? <>
+        <AdminPageHeader artwork="billing" title="账单费用" description="查看当前账期的费用归属和出账状态。" action={billingActions}
+          overview={{ metrics: [
+            { label: '已出账', tone: 'green', value: counts?.issued ?? (result?.total === 0 ? 0 : null) },
+            { label: '当前账目', tone: 'blue', value: result?.rowTotal ?? result?.total },
+            { label: '待核对资源', tone: 'red', value: result?.pendingResourceCount },
+          ] }} />
+        <AdminWorkbenchControls title="账目清单" views={billingViews} actions={billedTotal} filters={billingFilters} />
+      </> : <>
+        <header className="flex shrink-0 flex-wrap items-center gap-2 pb-2 sm:gap-x-3">
+          <h1 className="mr-auto font-heading text-lg font-semibold text-foreground">账单费用</h1>
+          {billedTotal}{billingActions}
+        </header>
+        <div className="grid shrink-0 grid-cols-[minmax(0,1.25fr)_minmax(0,1fr)] items-center gap-2 pb-2 sm:flex sm:flex-wrap" aria-label="账单筛选">
+          {billingViews}{billingFilters}
+        </div>
+      </>}
       {loadError?<div className="mb-3 flex items-center justify-between gap-3 text-sm" role="alert"><span className="text-destructive">{loadError}{result?' 当前显示上次数据。':''}</span><Button variant="outline" size="sm" onClick={refresh}>重试加载</Button></div>:null}
       {actionError?<p className="mb-3 text-sm text-destructive" role="alert">{actionError}</p>:null}
       {result?.integrity&&result.integrity.unrepresentedRows>0?<p className="mb-3 text-sm text-destructive" role="alert">有 {result.integrity.unrepresentedRows} 条出账明细尚未关联账目。</p>:null}

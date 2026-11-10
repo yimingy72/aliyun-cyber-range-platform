@@ -121,6 +121,21 @@ describe('RangeInstanceTopologyWorkspace', () => {
     expect((screen.getByLabelText('交换机标识 1') as HTMLButtonElement).matches(':disabled')).toBe(true);
   });
 
+  it('shows region styles in the only property panel even when a legacy node is available', () => {
+    const props = createWorkspaceProps(true);
+    const { rerender } = render(<RangeInstanceTopologyWorkspace {...props} selectedNode={ecsNode}
+      selection={{ nodeIds: [], edgeIds: [], regionKey: 'manual:area-1' }}
+      regions={[{ id: 'area-1', kind: 'manual', title: '演示分区', x: 0, y: 0, width: 200, height: 100,
+        color: '#1f5fbf', borderStyle: 'dashed', fill: 'tint' }]} />);
+    expect(screen.getAllByRole('heading', { name: '属性面板' })).toHaveLength(1);
+    expect(screen.getByLabelText('区域颜色')).toBeTruthy();
+    expect(screen.queryByLabelText('名称')).toBeNull();
+    rerender(<RangeInstanceTopologyWorkspace {...props} />);
+    expect(screen.getAllByRole('heading', { name: '属性面板' })).toHaveLength(1);
+    expect(screen.queryByLabelText('区域颜色')).toBeNull();
+    expect(screen.getByLabelText('名称')).toBeTruthy();
+  });
+
   it('declares a fullscreen-capable three-column instance topology grid', () => {
     const styles = readFileSync(resolve(process.cwd(), 'app/globals.css'), 'utf8');
 

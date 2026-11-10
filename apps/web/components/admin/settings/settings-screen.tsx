@@ -15,6 +15,8 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSepara
 import { useAdminRouteIsActive } from '../admin-page-cache';
 import { useAdminSession } from '../use-admin-session';
 import { cloudProviderLabel, useCloudWorkspace } from '../cloud-workspace-provider';
+import { usePlatformTheme } from '../platform-theme-menu';
+import { AdminWorkbenchControls } from '../shared/admin-workbench-controls';
 import { AdminPageHeader } from '../shared/admin-page-header';
 import { AdminDataTable, AdminDataTableCell, AdminDataTableState, AdminDataTableText, type AdminDataColumn } from '../shared/admin-data-table';
 import { TableLoadingState } from '../shared/table-loading-state';
@@ -33,6 +35,7 @@ export function SettingsScreen({ apiBaseUrl = 'http://localhost:3001' }: { apiBa
   const session = useAdminSession();
   const current = useCloudWorkspace();
   const isPageActive = useAdminRouteIsActive('/admin/settings/cloud');
+  const isCel = usePlatformTheme() === 'cel';
   const [workspaces, setWorkspaces] = useState<CloudWorkspaceView[]>([]);
   const [provider, setProvider] = useState<CloudWorkspaceView['provider']>(current?.workspace?.provider ?? 'alibaba_cloud');
   const [form, setForm] = useState(emptyForm);
@@ -144,15 +147,22 @@ export function SettingsScreen({ apiBaseUrl = 'http://localhost:3001' }: { apiBa
   const visible = workspaces.filter(workspace => workspace.provider === provider && workspace.id !== historyWorkspace?.id);
   const isBusy = isSaving || isDeleting || current?.isSwitching === true;
 
+  const boundWorkspaces = workspaces.filter(workspace => workspace.id !== historyWorkspace?.id);
+  const providerTabs = <Tabs value={provider} onValueChange={changeProvider}><TabsList aria-label="云厂商" variant="line"><TabsTrigger disabled={isBusy} value="alibaba_cloud">阿里云</TabsTrigger><TabsTrigger disabled={isBusy} value="tencent_cloud">腾讯云</TabsTrigger></TabsList></Tabs>;
+  const refreshAction = <Button aria-label="刷新账号" disabled={isLoading || isBusy} size="icon-sm" variant="ghost" onClick={() => setRefresh(value => value + 1)}><RefreshCw aria-hidden="true" /></Button>;
+  const bindAction = canBind ? <Button aria-label={'绑定' + cloudProviderLabel(provider) + '账号'} disabled={isBusy} onClick={() => { setEditing(null); setForm(emptyForm); setShowForm(true); setActionError(null); setSuccess(null); }}><Plus aria-hidden="true" />绑定账号</Button> : null;
+
   return <div className="admin-screen"><section className="admin-workbench-surface">
-    <AdminPageHeader title="基础配置" />
-    <div className="mt-4 flex flex-wrap items-center justify-between gap-3">
-      <Tabs value={provider} onValueChange={changeProvider}><TabsList aria-label="云厂商" variant="line"><TabsTrigger disabled={isBusy} value="alibaba_cloud">阿里云</TabsTrigger><TabsTrigger disabled={isBusy} value="tencent_cloud">腾讯云</TabsTrigger></TabsList></Tabs>
-      <div className="flex flex-wrap items-center gap-2">
-        <Button aria-label="刷新账号" disabled={isLoading || isBusy} size="icon-sm" variant="ghost" onClick={() => setRefresh(value => value + 1)}><RefreshCw aria-hidden="true" /></Button>
-        {canBind ? <Button aria-label={`绑定${cloudProviderLabel(provider)}账号`} disabled={isBusy} onClick={() => { setEditing(null); setForm(emptyForm); setShowForm(true); setActionError(null); setSuccess(null); }}><Plus aria-hidden="true" />绑定账号</Button> : null}
-      </div>
-    </div>
+    <AdminPageHeader artwork="settings" title="基础配置" description={isCel ? '管理云账号、地域和当前工作空间。' : undefined}
+      action={isCel ? bindAction : undefined} overview={{ metrics: [
+        { label: '阿里云', tone: 'green', value: isLoading || error ? null : boundWorkspaces.filter(item => item.provider === 'alibaba_cloud').length },
+        { label: '腾讯云', tone: 'blue', value: isLoading || error ? null : boundWorkspaces.filter(item => item.provider === 'tencent_cloud').length },
+        { label: '历史工作空间', tone: 'red', value: isLoading || error ? null : Number(Boolean(historyWorkspace)) },
+      ] }} />
+    {isCel ? <AdminWorkbenchControls title="云账号清单" views={providerTabs} actions={refreshAction} /> :
+      <div className="mt-4 flex flex-wrap items-center justify-between gap-3">
+        {providerTabs}<div className="flex flex-wrap items-center gap-2">{refreshAction}{bindAction}</div>
+      </div>}
     {actionError && !showForm ? <p className="mt-4 break-words text-sm text-destructive" role="alert">{actionError}</p> : null}
     {success ? <p className="mt-4 text-sm text-emerald-700" role="status">{success}</p> : null}
     <div className="mt-4"><AdminDataTable columns={columns} contentVersion={refresh} isRefreshing={isLoading} label="已绑定云账号">

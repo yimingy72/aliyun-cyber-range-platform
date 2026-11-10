@@ -1,4 +1,4 @@
-import type { ScenarioGraphDraft } from '@aliyun-cyber-range/scenario-runtime/compiled';
+import { topologyRegionFields, type ScenarioGraphDraft } from '@aliyun-cyber-range/scenario-runtime/compiled';
 
 const select = (value: Record<string, any>, keys: string[]) => Object.fromEntries(keys.filter(key => value[key] !== undefined).map(key => [key, structuredClone(value[key])]));
 const base = ['id', 'kind', 'label', 'position'];
@@ -27,5 +27,6 @@ export function portableRangeTemplateGraph(value: Record<string, unknown>): Scen
   }),
   edges: graph.edges.map((edge: Record<string, any>) => select(edge, ['id', 'fromNodeId', 'toNodeId', 'relationType', 'label'])),
   ...(graph.viewport ? { viewport: select(graph.viewport, ['x', 'y', 'zoom']) } : {}),
+  ...topologyRegionFields(graph.regions),
  } as ScenarioGraphDraft;
 }

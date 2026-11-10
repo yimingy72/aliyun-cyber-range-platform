@@ -53,6 +53,7 @@ function Button({
 
   return (
     <Comp
+      data-platform-button=""
       data-slot="button"
       data-variant={variant}
       data-size={size}

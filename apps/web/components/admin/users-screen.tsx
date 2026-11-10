@@ -33,6 +33,7 @@ import {
   useAdminPageSize,
 } from './admin-pagination';
 import { useAdminRouteIsActive } from './admin-page-cache';
+import { usePlatformTheme } from './platform-theme-menu';
 import { AdminPageHeader } from './shared/admin-page-header';
 import { AdminSelectField } from './shared/admin-select-field';
 import {
@@ -109,6 +110,7 @@ export function UsersScreen({
   const usersResource = 'users:list';
   const usersSource = `${apiBaseUrl}\u0000${session.token ?? ''}`;
   const cachedUsers = screenCache?.read<AdminUser[]>(apiBaseUrl, session.token, usersResource);
+  const isCel = usePlatformTheme() === 'cel';
   const [users, setUsers] = useState<AdminUser[]>(() => cachedUsers?.data ?? []);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [actionErrorMessage, setActionErrorMessage] = useState<string | null>(null);
@@ -493,6 +495,9 @@ export function UsersScreen({
   const isBootstrapLoading = isLoading && !hasLoadedUsers;
   const isRefreshing = isLoading && hasLoadedUsers;
   const hasVisibleUsers = filteredUsers.length > 0;
+  const createUserAction = <Button disabled={isSubmitting || workspace?.isReadOnly} onClick={() => { setActionErrorMessage(null); setIsCreateDialogOpen(true); }} type="button">
+    <Plus aria-hidden="true" data-icon="inline-start" />创建用户
+  </Button>;
 
   return (
     <div className="admin-screen admin-pagination-screen">
@@ -508,23 +513,26 @@ export function UsersScreen({
       ) : null}
 
       <section className="admin-workbench-surface users-workbench-panel admin-pagination-surface">
-        <AdminPageHeader description="创建后台账号，并管理角色、启用状态和密码重置。" title="用户管理" />
+        <AdminPageHeader artwork="users" description="创建后台账号，并管理角色、启用状态和密码重置。" title="用户管理"
+          action={isCel ? createUserAction : undefined} overview={{ metrics: [
+            { label: '管理员', tone: 'green', value: hasLoadedUsers ? counts.adminCount : null },
+            { label: '总用户', tone: 'blue', value: hasLoadedUsers ? users.length : null },
+            { label: '已禁用', tone: 'red', value: hasLoadedUsers ? counts.disabledCount : null },
+          ] }} />
 
         <div className="mt-4 flex min-h-0 flex-1 flex-col">
           <AdminListToolbar
-            action={
+            listTitle="用户清单"
+            action={!isCel ? (
               <>
                 <div aria-label="用户统计" className="flex flex-wrap items-center gap-x-3 gap-y-1 text-sm text-muted-foreground">
                   <span>总用户 {users.length}</span>
                   <span>管理员 {counts.adminCount}</span>
                   <span>已禁用 {counts.disabledCount}</span>
                 </div>
-                <Button disabled={isSubmitting || workspace?.isReadOnly} onClick={() => { setActionErrorMessage(null); setIsCreateDialogOpen(true); }} type="button">
-                  <Plus aria-hidden="true" data-icon="inline-start" />
-                  创建用户
-                </Button>
+                {createUserAction}
               </>
-            }
+            ) : undefined}
             onSearchChange={setSearchName}
             searchLabel="筛选用户名"
             searchPlaceholder="搜索用户名"

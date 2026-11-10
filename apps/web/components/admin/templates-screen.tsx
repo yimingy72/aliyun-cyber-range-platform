@@ -44,6 +44,7 @@ import {
   useAdminPageSize,
 } from './admin-pagination';
 import { useAdminRouteIsActive } from './admin-page-cache';
+import { usePlatformTheme } from './platform-theme-menu';
 import { AdminPageHeader } from './shared/admin-page-header';
 import {
   AdminDataTable,
@@ -203,6 +204,7 @@ export function TemplatesScreen({
   const canProvision = !workspace || (!workspace.isReadOnly && workspace.capabilities.provisioning);
   const canLaunchRange = canProvision && (!workspace || (workspace.capabilities.rangeProvisioning ?? workspace.provider === 'alibaba_cloud'));
   const isPageActive = useAdminRouteIsActive('/admin/scenarios');
+  const isCel = usePlatformTheme() === 'cel';
   const [selectedView, setActiveView] = useState<RangeTemplateView>(() => readTemplateView(searchParams.get('view')));
   const activeView = selectedView === 'all' && !session.isAdmin ? 'mine' : selectedView;
   const screenCache = useAdminScreenCache();
@@ -817,6 +819,7 @@ export function TemplatesScreen({
   }
 
   const isActiveViewLoading = !loadedViews[activeView] && !errorMessage;
+  const createTemplateAction = <Button disabled={!canProvision} onClick={() => setIsCreateDialogOpen(true)} type="button"><Plus aria-hidden="true" />新建拓扑</Button>;
 
   function canManageTemplate(template: Scenario) {
     return !workspace?.isReadOnly && (template.canManage ?? session.isAdmin);
@@ -828,11 +831,17 @@ export function TemplatesScreen({
       {actionSuccessMessage ? <p className="admin-success">{actionSuccessMessage}</p> : null}
 
       <section className="admin-workbench-surface admin-pagination-surface">
-        <AdminPageHeader description="管理可复用的演练蓝图" title="靶场编排" />
+        <AdminPageHeader artwork="scenarios" description="管理可复用的演练蓝图" title="靶场编排" action={isCel ? createTemplateAction : undefined}
+          overview={{ metrics: [
+            { label: '已发布', tone: 'green', value: loadedViews[activeView] ? scenarios.filter(item => item.status === 'published').length : null },
+            { label: '当前视图', tone: 'blue', value: loadedViews[activeView] ? scenarios.length : null },
+            { label: '未发布', tone: 'red', value: loadedViews[activeView] ? scenarios.filter(item => item.status === 'private').length : null },
+          ] }} />
         {!canProvision ? <p className="mt-4 text-sm text-muted-foreground">{workspace?.isReadOnly ? "当前账号工作空间为只读历史。" : "当前云厂商的拓扑编排与实例创建仍在开发。"}</p> : null}
         {canProvision && !canLaunchRange ? <p className="mt-4 text-sm text-muted-foreground">腾讯云编排开启待受控回收验证；可继续编辑模板和创建单实例。</p> : null}
         <div className="mt-4 flex min-h-0 flex-1 flex-col">
           <AdminListToolbar
+            listTitle="拓扑清单"
             activeView={activeView}
             onSearchChange={setSearchName}
             onViewChange={(nextView) => {
@@ -860,14 +869,7 @@ export function TemplatesScreen({
               ...(session.isAdmin ? [{ label: '全部拓扑', value: 'all' }] : []),
             ]}
             compactViewAction
-            action={
-              <div className="flex flex-wrap gap-2">
-                <Button disabled={!canProvision} onClick={() => setIsCreateDialogOpen(true)} type="button">
-                  <Plus aria-hidden="true" />
-                  新建拓扑
-                </Button>
-              </div>
-            }
+            action={!isCel ? <div className="flex flex-wrap gap-2">{createTemplateAction}</div> : undefined}
           >
             <AdminPaginatedList
               className="mt-4"

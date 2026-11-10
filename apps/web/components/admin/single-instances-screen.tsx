@@ -62,6 +62,7 @@ import {
 import { AdminListToolbar } from './shared/admin-list-toolbar';
 import { AdminDialog, type AdminDialogSize } from './shared/admin-dialog';
 import { AdminPaginatedList } from './shared/admin-paginated-list';
+import { usePlatformTheme } from './platform-theme-menu';
 import { AdminPageHeader } from './shared/admin-page-header';
 import { AdminActionNotice } from './shared/admin-action-notice';
 import { StatusBadge } from './shared/status-badge';
@@ -529,6 +530,7 @@ export function SingleInstancesScreen({
   const workspace = useCloudWorkspace()?.workspace;
   const canProvision = !workspace || (!workspace.isReadOnly && workspace.capabilities.provisioning);
   const isPageActive = useAdminRouteIsActive('/admin/instances');
+  const isCel = usePlatformTheme() === 'cel';
   const [listMode, setListMode] = useState<ListMode>(() => readListMode(searchParams.get('view')));
   const screenCache = useAdminScreenCache();
   const cachedActiveRows = screenCache?.read<SingleInstanceRows>(apiBaseUrl, session.token, 'single-instances:active');
@@ -1620,6 +1622,17 @@ export function SingleInstancesScreen({
   const emptyTitle = listMode === 'history' ? '暂无实例历史' : '暂无实例';
   const emptyDescription = normalizedSearchName ? '没有找到匹配的实例或批次。' : '当前视图还没有可查看的实例。';
 
+  const overviewInstances = listMode === 'active'
+    ? [...activeInstances, ...activeBatchGroups.flatMap((group) => group.instances)]
+    : [...historyInstances, ...historyBatchGroups.flatMap((group) => group.instances)];
+  const countOverview = (match: (instance: RangeInstance) => boolean) =>
+    hasCurrentViewSnapshot ? overviewInstances.filter(match).length : null;
+  const createInstanceAction = (
+    <Button disabled={!canProvision || !enabledPlatformImages.length} onClick={openCreateDialog} type="button">
+      <Plus aria-hidden="true" data-icon="inline-start" />创建实例
+    </Button>
+  );
+
   return (
     <div className="admin-screen admin-workbench-screen single-instance-screen admin-pagination-screen">
       {isPageActive ? <AdminActionNotice message={packSuccessMessage} onDismiss={() => setPackSuccessMessage(null)} /> : null}
@@ -1630,7 +1643,17 @@ export function SingleInstancesScreen({
       ) : null}
 
       <section className="admin-workbench-surface admin-pagination-surface">
-        <AdminPageHeader description="创建并管理训练实例、批次与生命周期。" title="实例管理" action={<Button type="button" variant="outline" onClick={() => { setPackTaskId(null); setPackTasksSourceId(undefined); setPackTasksOpen(true); }}>镜像导出</Button>} />
+        <AdminPageHeader artwork="instances" description="创建并管理训练实例、批次与生命周期。" title="实例管理"
+          action={<>{isCel && createInstanceAction}<Button type="button" variant="outline" onClick={() => { setPackTaskId(null); setPackTasksSourceId(undefined); setPackTasksOpen(true); }}>镜像导出</Button></>}
+          overview={{ metrics: listMode === 'active' ? [
+            { label: '运行中', tone: 'green', value: countOverview(instance => instancePowerStatus(instance) === 'running') },
+            { label: '创建中', tone: 'blue', value: countOverview(instance => ['pending_create', 'creating'].includes(instance.status)) },
+            { label: '待处理', tone: 'red', value: countOverview(instance => instance.status === 'destroy_failed') },
+          ] : [
+            { label: '已销毁', tone: 'green', value: countOverview(instance => instance.status === 'destroyed') },
+            { label: '历史实例', tone: 'blue', value: hasCurrentViewSnapshot ? overviewInstances.length : null },
+            { label: '创建失败', tone: 'red', value: countOverview(instance => instance.status === 'create_failed') },
+          ] }} />
         {isPageActive && packTasksOpen ? <PackedImageTasksDialog key={`${session.profile?.id}:${workspace?.id}:${session.token}`} apiBaseUrl={apiBaseUrl} token={session.token} open onOpenChange={setPackTasksOpen} sourceRangeInstanceId={packTasksSourceId} initialTaskId={packTaskId} /> : null}
         {!canProvision && workspace ? <p className="mt-4 text-sm text-muted-foreground">{workspace.isReadOnly ? "当前账号工作空间为只读历史。" : `${cloudProviderLabel(workspace.provider)}实例创建仍在开发。`}</p> : null}
 
@@ -1639,13 +1662,9 @@ export function SingleInstancesScreen({
             <p className="text-sm text-muted-foreground">请先前往镜像中心收录或启用至少一个平台镜像。</p>
           ) : null}
             <AdminListToolbar
+            listTitle="实例清单"
               activeView={listMode}
-              action={
-                <Button disabled={!canProvision || !enabledPlatformImages.length} onClick={openCreateDialog} type="button">
-                  <Plus aria-hidden="true" data-icon="inline-start" />
-                  创建实例
-                </Button>
-              }
+              action={isCel ? undefined : createInstanceAction}
               onSearchChange={setSearchName}
               onViewChange={(nextView) => setListModeWithUrl(nextView === 'history' ? 'history' : 'active')}
               searchLabel="筛选实例名"

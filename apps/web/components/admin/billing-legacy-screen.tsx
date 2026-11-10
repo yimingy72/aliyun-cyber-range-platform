@@ -598,7 +598,7 @@ export function LegacyBillingScreen({ apiBaseUrl = 'http://localhost:3001', visi
   return (
     <div className="admin-screen admin-workbench-screen admin-pagination-screen billing-screen gap-3 max-lg:h-auto! max-lg:min-h-full!">
       <section className="admin-workbench-surface admin-pagination-surface max-lg:flex-none! max-lg:overflow-visible!">
-        <AdminPageHeader
+        <AdminPageHeader artwork="billing"
           action={
             <>
               {resourceAction}
@@ -626,6 +626,11 @@ export function LegacyBillingScreen({ apiBaseUrl = 'http://localhost:3001', visi
           }
           description="仅统计平台创建资源的应付费用。账单可能因延迟出账、退款或调账继续变化。"
           title="账单费用"
+          overview={{ listTitle: '账目清单', metrics: [
+            { label: '账单用户', tone: 'green', value: summary ? usersResult.total : null },
+            { label: '异常账单', tone: 'blue', value: summary?.anomalyCount },
+            { label: '待出账资源', tone: 'red', value: hasPlatformBillingScope ? summary?.resourcesWithoutBillCount : null },
+          ] }}
         />
 
         <dl

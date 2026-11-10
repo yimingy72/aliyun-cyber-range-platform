@@ -4,7 +4,7 @@ import type { ReactNode } from 'react';
 import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
 import { useEffect, useRef, useState } from 'react';
-import { MenuIcon } from 'lucide-react';
+import { Boxes, ChevronRight, Cloud, Layers, MenuIcon, Receipt, Server, Settings, Users, Workflow } from 'lucide-react';
 
 import { Button } from '@/components/ui/button';
 import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetTrigger } from '@/components/ui/sheet';
@@ -25,6 +25,7 @@ import {
 import { AdminScreenCacheProvider } from '../../lib/admin-screen-cache';
 import { AdminPageCache } from './admin-page-cache';
 import { AdminWorkspaceLoadingState } from './admin-workspace-loading-state';
+import { PlatformThemeMenu } from './platform-theme-menu';
 import { PlatformBrand } from './platform-brand';
 import { useAdminSession } from './use-admin-session';
 import { fetchAuthenticatedAdminProfile } from '@/lib/admin-api';
@@ -39,6 +40,7 @@ interface AdminNavigationItem {
   href: string;
   label: string;
   shortLabel: string;
+  icon: typeof Boxes;
   requiresAdmin?: boolean;
 }
 
@@ -54,39 +56,39 @@ const navigationItems: readonly AdminNavigationItem[] = [
   {
     href: '/admin/image-center',
     label: '镜像中心',
-    shortLabel: '镜像',
+    shortLabel: '镜像', icon: Layers,
   },
   {
     href: '/admin/instances',
     label: '实例管理',
-    shortLabel: '实例',
+    shortLabel: '实例', icon: Server,
   },
   {
     href: '/admin/scenarios',
     label: '靶场编排',
-    shortLabel: '编排',
+    shortLabel: '编排', icon: Workflow,
   },
   {
     href: '/admin/ranges',
     label: '编排实例',
-    shortLabel: '实例',
+    shortLabel: '实例', icon: Boxes,
   },
   {
     href: '/admin/users',
     label: '用户管理',
-    shortLabel: '用户',
+    shortLabel: '用户', icon: Users,
     requiresAdmin: true,
   },
   {
     href: '/admin/billing',
     label: '账单费用',
-    shortLabel: '账单',
+    shortLabel: '账单', icon: Receipt,
     requiresAdmin: true,
   },
   {
     href: '/admin/settings/cloud',
     label: '基础配置',
-    shortLabel: '配置',
+    shortLabel: '配置', icon: Settings,
     requiresAdmin: true,
   },
 ];
@@ -111,6 +113,7 @@ function AdminNavigation({ items, onNavigate, pathname, pendingHref, className }
         return (
           <Link
             key={item.href}
+            data-slot="admin-navigation-item"
             aria-busy={isPending || undefined}
             aria-current={isActive ? 'page' : undefined}
             className={cn(
@@ -133,13 +136,15 @@ function AdminNavigation({ items, onNavigate, pathname, pendingHref, className }
           >
             <span
               className={cn(
-                'grid size-7 shrink-0 place-items-center rounded-md bg-[#f0f4f9] text-[10px] font-bold text-[#4a607f]',
+                'admin-nav-short-label grid size-7 shrink-0 place-items-center rounded-md bg-[#f0f4f9] text-[10px] font-bold text-[#4a607f]',
                 isActive && 'bg-white text-[#1d56a7]',
               )}
             >
               {item.shortLabel}
             </span>
+            <item.icon aria-hidden="true" className="cel-nav-icon hidden size-[19px] shrink-0" />
             <span className="min-w-0 font-semibold">{item.label}</span>
+            {isActive && <ChevronRight aria-hidden="true" className="cel-nav-icon ml-auto hidden size-4" />}
           </Link>
         );
       })}
@@ -171,6 +176,7 @@ function AdminWorkspaceShellContent({ children }: AdminWorkspaceShellProps) {
   const loggingOutRef = useRef(false);
   const hasRenderedWorkspaceRef = useRef(false);
   const visibleNavigationItems = navigationItems.filter((item) => !item.requiresAdmin || session.isAdmin);
+  const currentSection = pathname === '/admin/resource-alerts' ? '资源告警' : visibleNavigationItems.find((item) => isNavigationItemActive(pathname, item.href))?.label;
   const tokenExpiresAt = session.token ? readAdminOidcTokenExpiresAt(session.token) : null;
   const shouldRenewNow = Boolean(
     session.token &&
@@ -365,6 +371,13 @@ function AdminWorkspaceShellContent({ children }: AdminWorkspaceShellProps) {
           pathname={pathname}
           pendingHref={pendingHref}
         />
+        {cloudWorkspace?.workspace && <div className="cel-sidebar-workspace hidden">
+          <Cloud aria-hidden="true" size={22} />
+          <div className="min-w-0">
+            <strong className="block truncate" title={cloudWorkspace.workspace.displayName}>{cloudWorkspace.workspace.displayName}</strong>
+            <span className="text-xs">{cloudProviderLabel(cloudWorkspace.workspace.provider)}{cloudWorkspace.workspace.isReadOnly ? ' · 只读' : ''}</span>
+          </div>
+        </div>}
       </aside>
 
       <div className="admin-main-shell">
@@ -395,7 +408,8 @@ function AdminWorkspaceShellContent({ children }: AdminWorkspaceShellProps) {
               </SheetContent>
             </Sheet>
 
-            {cloudWorkspace?.workspace ? <div className="flex min-w-0 max-w-[48%] items-center gap-2 text-xs text-muted-foreground" aria-label="当前云账号工作空间">
+            <div className="cel-breadcrumb hidden">工作台{currentSection && <><ChevronRight aria-hidden="true" size={15} /><strong>{currentSection}</strong></>}</div>
+            {cloudWorkspace?.workspace ? <div className="admin-current-workspace flex min-w-0 max-w-[48%] items-center gap-2 text-xs text-muted-foreground" aria-label="当前云账号工作空间">
               <span className="shrink-0 font-semibold text-foreground">{cloudProviderLabel(cloudWorkspace.workspace.provider)}</span>
               <span className="hidden truncate sm:inline" title={cloudWorkspace.workspace.displayName}>{cloudWorkspace.workspace.displayName} · {cloudWorkspace.workspace.accountUid ?? '历史数据'}</span>
             </div> : null}
@@ -408,6 +422,7 @@ function AdminWorkspaceShellContent({ children }: AdminWorkspaceShellProps) {
                   </span>
                 </div>
               ) : null}
+              <PlatformThemeMenu />
               <Button
                 onClick={logoutFromPlatform}
                 size="sm"
