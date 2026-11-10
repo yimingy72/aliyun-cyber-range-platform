@@ -13,16 +13,28 @@ export type NetworkZone = { node: SwitchTemplateNode; color: string; localHosts:
 export const compareIds = (a: { id: string }, b: { id: string }) => a.id === b.id ? 0 : a.id < b.id ? -1 : 1;
 const address = (cidr: string) => cidr.split('/')[0]!.split('.').reduce((value, part) => value * 256 + Number(part), 0);
 
+export function indexTopologyEdges(edges: TemplateEdge[], endpoint: 'fromNodeId' | 'toNodeId') {
+  const byNode = new Map<string, TemplateEdge[]>();
+  for (const edge of edges) {
+    const id = edge[endpoint];
+    const bucket = byNode.get(id);
+    if (bucket) bucket.push(edge);
+    else byNode.set(id, [edge]);
+  }
+  return byNode;
+}
+
 /** NICs describe membership; graph edges remain the only rendered connections. */
 export function readTopologyNetworks(nodes: TemplateNode[], edges: TemplateEdge[]) {
   const switches = nodes.filter((node): node is SwitchTemplateNode => node.kind === 'switch')
     .sort((a, b) => address(a.cidr) - address(b.cidr) || compareIds(a, b));
   const zones: NetworkZone[] = switches.map((node, index) => ({ node, color: networkColors[index % networkColors.length]!, localHosts: [], sharedHosts: [] }));
   const zonesById = new Map(zones.map(zone => [zone.node.id, zone]));
+  const incoming = indexTopologyEdges(edges, 'toNodeId');
   const memberships = new Map<string, NetworkMembership[]>();
   const sharedHosts: EcsTemplateNode[] = [], unassignedHosts: EcsTemplateNode[] = [];
   for (const host of nodes.filter((node): node is EcsTemplateNode => node.kind === 'ecs').sort(compareIds)) {
-    const connectedSwitches = new Set(edges.filter(edge => edge.toNodeId === host.id && zonesById.has(edge.fromNodeId))
+    const connectedSwitches = new Set((incoming.get(host.id) ?? []).filter(edge => zonesById.has(edge.fromNodeId))
       .sort((a, b) => a.fromNodeId.localeCompare(b.fromNodeId) || compareIds(a, b)).map(edge => edge.fromNodeId));
     const ids = new Set([...(host.nics ?? []).map(nic => nic.switchId).filter(id => zonesById.has(id)), ...connectedSwitches]);
     const links = [...ids].map(id => {
@@ -54,7 +66,8 @@ export function topologyNodeSize(node: TemplateNode, links: NetworkMembership[] 
 
 export function readNetworkRegions(nodes: TemplateNode[], edges: TemplateEdge[]) {
   const model = readTopologyNetworks(nodes, edges);
-  const box = (node: TemplateNode) => node.position && ({ ...node.position, ...topologyNodeSize(node, model.memberships.get(node.id)) });
+  const boxesById = new Map(nodes.flatMap(node => node.position
+    ? [[node.id, { ...node.position, ...topologyNodeSize(node, model.memberships.get(node.id)) }] as const] : []));
   const groups = [
     ...model.zones.map(zone => ({ id: `zone/${zone.node.id}`, title: zone.node.cidr, color: zone.color,
       description: `区内 ${zone.localHosts.length} · 跨区 ${zone.sharedHosts.length}`, nodes: [zone.node, ...zone.localHosts] as TemplateNode[] })),
@@ -62,14 +75,16 @@ export function readNetworkRegions(nodes: TemplateNode[], edges: TemplateEdge[])
     { id: 'group/unassigned', title: '未关联网络', description: '请为这些主机关联交换机', color: '#8a5d2b', nodes: model.unassignedHosts as TemplateNode[] },
   ];
   return groups.flatMap(group => {
-    const boxes = group.nodes.map(box).filter(item => !!item);
+    const boxes = group.nodes.map(node => boxesById.get(node.id)).filter(item => !!item);
     if (!boxes.length || boxes.length !== group.nodes.length) return [];
     const x = Math.min(...boxes.map(item => item.x)) - 32, y = Math.min(...boxes.map(item => item.y)) - 88;
     const width = Math.max(...boxes.map(item => item.x + item.width)) - x + 32;
     const height = Math.max(...boxes.map(item => item.y + item.height)) - y + 32;
     const ids = new Set(group.nodes.map(node => node.id));
     // A manually mixed canvas must not imply that unrelated hosts belong to this subnet.
-    if (nodes.some(node => { const other = box(node); return !ids.has(node.id) && other && other.x < x + width && other.x + other.width > x && other.y < y + height && other.y + other.height > y; })) return [];
+    for (const [id, other] of boxesById) {
+      if (!ids.has(id) && other.x < x + width && other.x + other.width > x && other.y < y + height && other.y + other.height > y) return [];
+    }
     return [{ id: group.id, title: group.title, description: group.description, color: group.color, x, y, width, height }];
   });
 }

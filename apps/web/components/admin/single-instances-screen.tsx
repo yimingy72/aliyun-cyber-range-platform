@@ -528,6 +528,7 @@ export function SingleInstancesScreen({
   const searchParams = useSearchParams();
   const session = useAdminSession();
   const workspace = useCloudWorkspace()?.workspace;
+  const provider = workspace?.provider ?? 'alibaba_cloud';
   const canProvision = !workspace || (!workspace.isReadOnly && workspace.capabilities.provisioning);
   const isPageActive = useAdminRouteIsActive('/admin/instances');
   const isCel = usePlatformTheme() === 'cel';
@@ -549,6 +550,8 @@ export function SingleInstancesScreen({
   const [platformImages, setPlatformImages] = useState<PlatformImageAsset[]>(() =>
     [...new Map([...(cachedPlatformImages?.data.items ?? []), ...(cachedMyImages?.data.items ?? [])].map((item) => [item.id, item])).values()]);
   const [hasLoadedPlatformImages, setHasLoadedPlatformImages] = useState(Boolean(cachedPlatformImages && cachedMyImages));
+  const [imageLoadError, setImageLoadError] = useState(false);
+  const [imageLoadAttempt, setImageLoadAttempt] = useState(0);
   const [isLoading, setIsLoading] = useState(() => !cachedCurrentRows);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [loadedListMode, setLoadedListMode] = useState<ListMode | null>(() => (cachedCurrentRows ? listMode : null));
@@ -559,6 +562,8 @@ export function SingleInstancesScreen({
   const [listErrorMessage, setListErrorMessage] = useState<string | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [isCreateOpen, setIsCreateOpen] = useState(false);
+  const prefilledImageId = searchParams.get('create') === '1' ? readCreateImageId(searchParams.get('platformImageAssetId')) : null;
+  const needsCreateImages = isCreateOpen || Boolean(prefilledImageId);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const launchScope = JSON.stringify([apiBaseUrl, session.profile?.id, workspace?.id]);
   const launchContextRef = useRef({ scope: launchScope, token: session.token });
@@ -744,9 +749,11 @@ export function SingleInstancesScreen({
       setHasLoadedPlatformImages(false);
       return;
     }
+    if (!canProvision || !needsCreateImages) return;
 
     let isActive = true;
     const token = session.token;
+    setImageLoadError(false);
     const loadImages = (view: 'platform' | 'mine') => {
       const load = () => fetchPlatformImages(apiBaseUrl, token, view);
       return screenCache ? screenCache.load(apiBaseUrl, token, `platform-images:${view}`, load) : load();
@@ -763,9 +770,13 @@ export function SingleInstancesScreen({
 
         setPlatformImages(nextImages.items);
         setHasLoadedPlatformImages(true);
-        setCreateForm((current) =>
-          current.platformImageQuery ? current : buildDefaultDialogState(nextImages.items.filter((item) => item.enabled), workspace?.provider ?? 'alibaba_cloud'),
-        );
+        const defaults = buildDefaultDialogState(nextImages.items.filter((item) => item.enabled), provider);
+        setCreateForm((current) => current.platformImageQuery ? current : {
+          ...current,
+          hostName: current.hostName || defaults.hostName,
+          platformImageQuery: defaults.platformImageQuery,
+          systemDiskSize: String(Math.max(Number(current.systemDiskSize) || 0, Number(defaults.systemDiskSize))),
+        });
       })
       .catch((error: unknown) => {
         if (!isActive) {
@@ -778,13 +789,13 @@ export function SingleInstancesScreen({
           return;
         }
 
-        setHasLoadedPlatformImages(true);
+        setImageLoadError(true);
       });
 
     return () => {
       isActive = false;
     };
-  }, [apiBaseUrl, isPageActive, router, screenCache, session.isReady, session.token]);
+  }, [apiBaseUrl, canProvision, imageLoadAttempt, isPageActive, needsCreateImages, provider, router, screenCache, session.isReady, session.token]);
 
   const allListedInstances = [...instances, ...batchGroups.flatMap((group) => group.instances)];
   const hasChangingInstances = allListedInstances.some((instance) =>
@@ -920,24 +931,21 @@ export function SingleInstancesScreen({
   );
 
   useEffect(() => {
-    if (!session.isReady || !session.token) {
+    if (!isPageActive || !canProvision || !session.isReady || !session.token) {
       return;
     }
 
-    const platformImageAssetId = readCreateImageId(searchParams.get('platformImageAssetId'));
-    const shouldOpenCreate = searchParams.get('create') === '1';
-
-    if (!shouldOpenCreate || !platformImageAssetId || consumedPrefillRef.current === platformImageAssetId) {
+    if (!prefilledImageId || consumedPrefillRef.current === prefilledImageId) {
       return;
     }
 
-    const selectedImage = enabledPlatformImages.find((item) => item.id === platformImageAssetId);
+    const selectedImage = enabledPlatformImages.find((item) => item.id === prefilledImageId);
 
     if (!selectedImage) {
       return;
     }
 
-    consumedPrefillRef.current = platformImageAssetId;
+    consumedPrefillRef.current = prefilledImageId;
     launchRequestRef.current = null;
     setCreateForm({
       ...buildDefaultDialogState(enabledPlatformImages, workspace?.provider ?? 'alibaba_cloud'),
@@ -953,7 +961,7 @@ export function SingleInstancesScreen({
     nextSearchParams.delete('platformImageAssetId');
     const nextQuery = nextSearchParams.toString();
     window.history.replaceState(null, '', nextQuery ? `${window.location.pathname}?${nextQuery}` : window.location.pathname);
-  }, [enabledPlatformImages, searchParams, session.isReady, session.token]);
+  }, [canProvision, enabledPlatformImages, isPageActive, prefilledImageId, searchParams, session.isReady, session.token]);
   const activeBatchGroups = useMemo(
     () => batchGroups.filter((group) => !isHistoryBatch(group)),
     [batchGroups],
@@ -1005,7 +1013,7 @@ export function SingleInstancesScreen({
   }
 
   useEffect(() => {
-    if (!isCreateOpen) {
+    if (!isPageActive || !isCreateOpen || !enabledPlatformImages.length) {
       setInstanceTypeAvailability(null);
       return;
     }
@@ -1059,7 +1067,7 @@ export function SingleInstancesScreen({
     return () => {
       isActive = false;
     };
-  }, [apiBaseUrl, createForm.cpu, createForm.memory, isCreateOpen, session.isReady, session.token]);
+  }, [apiBaseUrl, createForm.cpu, createForm.memory, enabledPlatformImages.length, isCreateOpen, isPageActive, session.isReady, session.token]);
 
   async function handleCreateSubmit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -1628,7 +1636,7 @@ export function SingleInstancesScreen({
   const countOverview = (match: (instance: RangeInstance) => boolean) =>
     hasCurrentViewSnapshot ? overviewInstances.filter(match).length : null;
   const createInstanceAction = (
-    <Button disabled={!canProvision || !enabledPlatformImages.length} onClick={openCreateDialog} type="button">
+    <Button disabled={!canProvision} onClick={openCreateDialog} type="button">
       <Plus aria-hidden="true" data-icon="inline-start" />创建实例
     </Button>
   );
@@ -1658,9 +1666,6 @@ export function SingleInstancesScreen({
         {!canProvision && workspace ? <p className="mt-4 text-sm text-muted-foreground">{workspace.isReadOnly ? "当前账号工作空间为只读历史。" : `${cloudProviderLabel(workspace.provider)}实例创建仍在开发。`}</p> : null}
 
         <div className="mt-4 flex min-h-0 flex-1 flex-col gap-4">
-          {hasLoadedPlatformImages && !enabledPlatformImages.length ? (
-            <p className="text-sm text-muted-foreground">请先前往镜像中心收录或启用至少一个平台镜像。</p>
-          ) : null}
             <AdminListToolbar
             listTitle="实例清单"
               activeView={listMode}
@@ -1855,7 +1860,7 @@ export function SingleInstancesScreen({
         </div>
       </section>
 
-        <SingleInstanceDialog open={isCreateOpen}
+        <SingleInstanceDialog open={isPageActive && isCreateOpen}
           size="wide"
           footer={
             <>
@@ -1903,7 +1908,9 @@ export function SingleInstancesScreen({
               <Textarea className="min-h-14" id="single-instance-remark" aria-label="备注" placeholder="可选，填写用途或备注" value={createForm.remark} onChange={(event) => updateCreateForm('remark', event.target.value)} rows={2} />
             </AdminFormField>
             {createFormError ? <p className="text-sm text-destructive sm:col-span-6" role="alert">{createFormError}</p> : null}
-            {!enabledPlatformImages.length ? <p className="text-xs text-muted-foreground sm:col-span-6">请先前往镜像中心收录或启用平台镜像后，再创建实例。</p> : null}
+            {imageLoadError ? <p className="text-sm text-destructive sm:col-span-6" role="alert">镜像加载失败。<Button type="button" variant="link" onClick={() => setImageLoadAttempt(attempt => attempt + 1)}>重试</Button></p>
+              : !hasLoadedPlatformImages ? <p className="text-xs text-muted-foreground sm:col-span-6" role="status">正在加载可用镜像…</p>
+              : !enabledPlatformImages.length ? <p className="text-xs text-muted-foreground sm:col-span-6">请先前往镜像中心收录或启用平台镜像后，再创建实例。</p> : null}
             {instanceTypeAvailability && !instanceTypeAvailability.exactAvailable ? <p className="text-xs text-muted-foreground sm:col-span-6">{instanceTypeAvailability.warning ?? `默认可用区暂无 ${createForm.cpu} 核 / ${createForm.memory} G 的精确可售规格。`}</p> : null}
           </form>
         </SingleInstanceDialog>

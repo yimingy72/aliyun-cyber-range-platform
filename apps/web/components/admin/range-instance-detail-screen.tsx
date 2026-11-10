@@ -927,7 +927,7 @@ export function RangeInstanceDetailScreen({
   const session = useAdminSession();
   const workspace = useCloudWorkspace()?.workspace;
   const screenCache = useAdminScreenCache();
-  const isPageActive = useAdminRouteIsActive(`/admin/ranges/${rangeId}`);
+  const isPageActive = useAdminRouteIsActive(`/admin/ranges/${encodeURIComponent(rangeId)}`);
   const resourceKey = `range-instance-detail:${rangeId}:${session.profile?.id ?? 'current-session'}:${session.profile?.role ?? ''}`;
   const identityKey = `${apiBaseUrl}\u0000${session.profile?.id ?? 'current-session'}\u0000${session.profile?.role ?? ''}\u0000${rangeId}\u0000${workspace?.id ?? readCloudWorkspaceSelection() ?? ''}`;
   const scopeSession = readAdminSession();
@@ -1016,10 +1016,6 @@ export function RangeInstanceDetailScreen({
   useEffect(() => {
     recoverySubmittingRef.current = null; setIsRecoverySubmitting(false); setPendingRecoveryTrigger(null);
   }, [scopeKey]);
-
-  useEffect(() => {
-    if (isPageActive && detail?.id) void preloadRangeInstanceTopologyWorkspace().catch(() => undefined);
-  }, [detail?.id, isPageActive]);
 
   function replaceTopologyDraft(nextGraph: Record<string, unknown> | null) {
     const parsed = readTopologyGraphDraft(nextGraph);
@@ -1357,26 +1353,28 @@ export function RangeInstanceDetailScreen({
   }, [selection, topologyNodes]);
 
   useEffect(() => {
-    if (!session.isReady || !session.token || !canOperateInstance) {
+    if (!isPageActive || activeTab !== 'topology' || !session.isReady || !session.token || !canOperateInstance) {
       return;
     }
 
     let isActive = true;
 
-    Promise.all([
-      fetchPlatformImages(apiBaseUrl, session.token, 'platform'),
-      fetchPlatformImages(apiBaseUrl, session.token, 'mine'),
-    ])
+    const token = session.token;
+    const loadImages = (view: 'platform' | 'mine') => {
+      const load = () => fetchPlatformImages(apiBaseUrl, token, view);
+      return screenCache ? screenCache.load(apiBaseUrl, token, `platform-images:${view}`, load) : load();
+    };
+    Promise.all([loadImages('platform'), loadImages('mine')])
       .then(([platformPayload, minePayload]) => {
         if (!isActive) {
           return;
         }
 
-        setPlatformImageAssets(
-          [...platformPayload.items, ...minePayload.items]
-            .filter((item) => item.enabled)
-            .filter((item, index, items) => items.findIndex((candidate) => candidate.id === item.id) === index),
-        );
+        const byId = new Map<string, PlatformImageAsset>();
+        for (const item of [...platformPayload.items, ...minePayload.items]) {
+          if (item.enabled && !byId.has(item.id)) byId.set(item.id, item);
+        }
+        setPlatformImageAssets([...byId.values()]);
       })
       .catch((error: unknown) => {
         if (!isActive) {
@@ -1395,10 +1393,10 @@ export function RangeInstanceDetailScreen({
     return () => {
       isActive = false;
     };
-  }, [apiBaseUrl, canOperateInstance, router, session.isReady, session.token]);
+  }, [activeTab, apiBaseUrl, canOperateInstance, isPageActive, router, screenCache, session.isReady, session.token]);
 
   useEffect(() => {
-    if (!selectedTopologyNode || selectedTopologyNode.kind !== 'ecs') {
+    if (!isPageActive || !selectedTopologyNode || selectedTopologyNode.kind !== 'ecs') {
       setInstanceTypeAvailability(null);
       return;
     }
@@ -1450,7 +1448,7 @@ export function RangeInstanceDetailScreen({
     return () => {
       isActive = false;
     };
-  }, [apiBaseUrl, router, selectedTopologyNode, session.isReady, session.token]);
+  }, [apiBaseUrl, isPageActive, router, selectedTopologyNode, session.isReady, session.token]);
 
   async function persistDraftChanges() {
     if (!session.token || !detail || !topologyDraft) {
@@ -2266,6 +2264,8 @@ export function RangeInstanceDetailScreen({
       restoreTopologyHistory(redoTopology(historyRef.current), '已重做上一步拓扑操作。');
     }
   }
+
+  if (!isPageActive) return null;
 
   return (
     <main className="admin-screen range-instance-detail-screen min-w-0">

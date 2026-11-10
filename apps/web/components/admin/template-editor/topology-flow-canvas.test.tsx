@@ -349,7 +349,7 @@ describe('TopologyFlowCanvas', () => {
       ".admin-workspace[data-topology-editor='true'] .admin-main-shell",
     );
 
-    expect(styles).toContain('@import url("@xyflow/react/dist/style.css");');
+    expect(readFileSync(resolve(process.cwd(), 'components/admin/template-editor/topology-flow-vendor.css'), 'utf8')).toContain('@xyflow/react/dist/style.css');
     expect(transition).toContain('height: 100%');
     expect(editorGrid).toContain('grid-template-columns: minmax(0, 1fr)');
     expect(editorGrid).toContain('height: 100%');

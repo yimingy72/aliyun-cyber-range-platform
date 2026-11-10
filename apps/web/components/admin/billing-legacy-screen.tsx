@@ -37,6 +37,7 @@ import { AdminPaginatedList } from './shared/admin-paginated-list';
 import { StatusBadge } from './shared/status-badge';
 import { useAdminRouteIsActive } from './admin-page-cache';
 import { useAdminSession } from './use-admin-session';
+import { downloadCsv, formatMoney, getDefaultRange } from './billing-workbench-utils';
 import { BillingPendingResources, formatBillingResourceType as formatResourceType } from './billing-pending-resources';
 
 type BillingScreenProps = {
@@ -58,45 +59,6 @@ type BillingOverviewSnapshot = {
   filterUsers: AdminUser[];
 };
 
-const preciseMoneyFormatter = new Intl.NumberFormat('zh-CN', {
-  minimumFractionDigits: 2,
-  maximumFractionDigits: 18,
-});
-
-export function getDefaultRange(): BillingRange {
-  const endAt = new Date(`${new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Shanghai' }).format(new Date())}T00:00:00.000Z`);
-  const startAt = new Date(endAt);
-  startAt.setUTCDate(startAt.getUTCDate() - 29);
-
-  return {
-    startAt: startAt.toISOString().slice(0, 10),
-    endAt: endAt.toISOString().slice(0, 10),
-  };
-}
-
-export function formatMoney(value: number | string | null | undefined, currency = 'CNY') {
-  if (value === null) return '按币种查看';
-  if (typeof value === 'string' ? value.length > 128 || !/^-?\d+(?:\.\d{1,18})?$/.test(value) : typeof value !== 'number' || !Number.isFinite(value)) return '未知';
-  // Intl accepts decimal strings without converting them to a rounded Number.
-  const amount = value as number;
-
-  if (currency === 'CNY') {
-    return `¥ ${preciseMoneyFormatter.format(amount)}`;
-  }
-
-  try {
-    return new Intl.NumberFormat('zh-CN', {
-      style: 'currency',
-      currency,
-      currencyDisplay: 'code',
-      minimumFractionDigits: 2,
-      maximumFractionDigits: 18,
-    }).format(amount);
-  } catch {
-    return `${currency} ${preciseMoneyFormatter.format(amount)}`;
-  }
-}
-
 function formatBillingLineSecondary(item: BillingLaunchGroup['items'][number]) {
   return item.productDetail?.trim() || item.productCode || '账单项';
 }
@@ -111,16 +73,6 @@ function formatBillingGroupTitle(group: Pick<BillingLaunchGroup, 'kind' | 'title
   }
 
   return group.title;
-}
-
-export function downloadCsv(contents: string, fileName: string) {
-  const blob = new Blob([contents], { type: 'text/csv;charset=utf-8' });
-  const url = window.URL.createObjectURL(blob);
-  const link = document.createElement('a');
-  link.href = url;
-  link.download = fileName;
-  link.click();
-  window.URL.revokeObjectURL(url);
 }
 
 export function LegacyBillingScreen({ apiBaseUrl = 'http://localhost:3001', visible = true, resourceAction }: BillingScreenProps) {

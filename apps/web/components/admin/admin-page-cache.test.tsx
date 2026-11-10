@@ -1,8 +1,12 @@
 import { fireEvent, render, screen } from '@testing-library/react';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { type ReactNode, useEffect, useState } from 'react';
 
 import { AdminPageCache, useAdminRouteIsActive } from './admin-page-cache';
+
+vi.mock('./range-instance-detail-screen', () => ({
+  RangeInstanceDetailScreen: ({ rangeId }: { rangeId: string }) => <RetainedPage label={rangeId} />,
+}));
 
 function RetainedPage({ label }: { label: string }) {
   const [count, setCount] = useState(0);
@@ -35,6 +39,18 @@ function RouteActivityProbe({ pathname, onActive }: { pathname: string; onActive
 }
 
 describe('AdminPageCache', () => {
+  it('retains the instance detail controller even when the router replaces its child slot', async () => {
+    const pathname = '/admin/ranges/range-1';
+    const { rerender } = render(<AdminPageCache pathname={pathname}><p>原路由内容</p></AdminPageCache>);
+    fireEvent.click(await screen.findByRole('button', { name: 'range-1:0' }));
+
+    rerender(<AdminPageCache pathname="/admin/other"><p>其他页面</p></AdminPageCache>);
+    expect(screen.queryByRole('button', { name: 'range-1:1' })).toBeNull();
+
+    rerender(<AdminPageCache pathname={pathname}><p>新的路由内容</p></AdminPageCache>);
+    expect(screen.getByRole('button', { name: 'range-1:1' })).toBeTruthy();
+  });
+
   it('audit-ui: mounts a fresh new-template page after returning to the list', () => {
     const view = render(<TestAdminPageCache pathname="/admin/scenarios/new" pages={{
       '/admin/scenarios/new': <RetainedPage label="first draft" />,

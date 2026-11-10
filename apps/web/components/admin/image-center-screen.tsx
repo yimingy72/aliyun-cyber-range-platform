@@ -1,7 +1,7 @@
 'use client';
 
 import React from 'react';
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { ChevronDown, MoreHorizontal, RefreshCw, Upload } from 'lucide-react';
 
@@ -281,8 +281,7 @@ function normalizeKeyword(keyword: string) {
   return keyword.trim().toLowerCase();
 }
 
-function matchesSnapshotSearch(snapshot: ImageSnapshot, keyword: string) {
-  const normalizedKeyword = normalizeKeyword(keyword);
+function matchesSnapshotSearch(snapshot: ImageSnapshot, normalizedKeyword: string) {
   if (!normalizedKeyword) {
     return true;
   }
@@ -293,8 +292,7 @@ function matchesSnapshotSearch(snapshot: ImageSnapshot, keyword: string) {
   );
 }
 
-function matchesPlatformAssetSearch(asset: PlatformImageAsset, keyword: string) {
-  const normalizedKeyword = normalizeKeyword(keyword);
+function matchesPlatformAssetSearch(asset: PlatformImageAsset, normalizedKeyword: string) {
   if (!normalizedKeyword) {
     return true;
   }
@@ -1022,7 +1020,7 @@ function CloudImageCenterScreen({
     let refreshing = false;
 
     const refresh = async () => {
-      if (refreshing) {
+      if (document.hidden || refreshing) {
         return;
       }
       refreshing = true;
@@ -1032,10 +1030,13 @@ function CloudImageCenterScreen({
 
     void refresh();
     const interval = window.setInterval(() => void refresh(), 5_000);
+    const onVisible = () => { void refresh(); };
+    document.addEventListener('visibilitychange', onVisible);
 
     return () => {
       isActive = false;
       window.clearInterval(interval);
+      document.removeEventListener('visibilitychange', onVisible);
     };
   }, [apiBaseUrl, hasCreatingImages, hasImportingJobs, isPageActive, session.token]);
 
@@ -1719,24 +1720,37 @@ function CloudImageCenterScreen({
     }
   }
 
-  const platformCreators = [...new Set([...platformAssets.map(getPlatformAssetCreator), ...platformContainers.map((asset) => asset.creator?.trim() || '—')])].sort((left, right) =>
-    left.localeCompare(right, 'zh-CN'),
+  const platformCreators = useMemo(
+    () => [...new Set([...platformAssets.map(getPlatformAssetCreator), ...platformContainers.map(asset => asset.creator?.trim() || '—')])]
+      .sort((left, right) => left.localeCompare(right, 'zh-CN')),
+    [platformAssets, platformContainers],
   );
-  const filteredPlatformAssets = platformAssets.filter(
-    (asset) =>
-      platformTypeFilter !== 'container' && matchesPlatformAssetSearch(asset, searchName) &&
+  const keyword = normalizeKeyword(searchName);
+  const filteredPlatformAssets = useMemo(() =>
+    activeTab === 'platform' && !showMogong && platformTypeFilter !== 'container' ? platformAssets.filter(asset =>
+      matchesPlatformAssetSearch(asset, keyword) &&
       (!platformCreatedByFilter || getPlatformAssetCreator(asset) === platformCreatedByFilter) &&
-      (!platformTagFilter || asset.tags.some((tag) => tag.id === platformTagFilter)),
+      (!platformTagFilter || asset.tags.some(tag => tag.id === platformTagFilter))) : [],
+    [activeTab, keyword, platformAssets, platformCreatedByFilter, platformTagFilter, platformTypeFilter, showMogong],
   );
-  const filteredPlatformContainers = platformContainers.filter((asset) =>
-    platformTypeFilter !== 'vm' && (!normalizeKeyword(searchName) || asset.displayName.toLowerCase().includes(normalizeKeyword(searchName))) &&
-    (!platformCreatedByFilter || (asset.creator?.trim() || '—') === platformCreatedByFilter) && !platformTagFilter,
+  const filteredPlatformContainers = useMemo(() =>
+    activeTab === 'platform' && !showMogong && platformTypeFilter !== 'vm' && !platformTagFilter ? platformContainers.filter(asset =>
+      (!keyword || asset.displayName.toLowerCase().includes(keyword)) &&
+      (!platformCreatedByFilter || (asset.creator?.trim() || '—') === platformCreatedByFilter)) : [],
+    [activeTab, keyword, platformContainers, platformCreatedByFilter, platformTagFilter, platformTypeFilter, showMogong],
   );
-  const filteredMyAssets = myAssets.filter(
-    (asset) => matchesPlatformAssetSearch(asset, searchName) && (!myTagFilter || asset.tags.some((tag) => tag.id === myTagFilter)),
+  const filteredMyAssets = useMemo(() => activeTab === 'mine' ? myAssets.filter(
+    asset => matchesPlatformAssetSearch(asset, keyword) && (!myTagFilter || asset.tags.some(tag => tag.id === myTagFilter))) : [],
+    [activeTab, keyword, myAssets, myTagFilter],
   );
-  const filteredCustomSnapshots = (customScope?.snapshots ?? []).filter((snapshot) => matchesSnapshotSearch(snapshot, searchName));
-  const filteredPublicSnapshots = (publicScope?.snapshots ?? []).filter((snapshot) => matchesSnapshotSearch(snapshot, searchName));
+  const filteredCustomSnapshots = useMemo(() => activeTab === 'custom' && !showAcr
+    ? (customScope?.snapshots ?? []).filter(snapshot => matchesSnapshotSearch(snapshot, keyword)) : [],
+    [activeTab, customScope?.snapshots, keyword, showAcr],
+  );
+  const filteredPublicSnapshots = useMemo(() => activeTab === 'public'
+    ? (publicScope?.snapshots ?? []).filter(snapshot => matchesSnapshotSearch(snapshot, keyword)) : [],
+    [activeTab, keyword, publicScope?.snapshots],
+  );
 
   const activeItemsCount =
     activeTab === 'platform'
@@ -1773,14 +1787,16 @@ function CloudImageCenterScreen({
   const pagedCustomSnapshots = filteredCustomSnapshots.slice(activePagination.startIndex, activePagination.endIndex);
   const pagedPublicSnapshots = filteredPublicSnapshots.slice(activePagination.startIndex, activePagination.endIndex);
 
-  const collectedImageIds = buildCollectedImageIdSet(platformAssets);
-  const myAssetIds = new Set(myAssets.map((asset) => asset.id));
-  const visibleImageImportJobs = imageImportJobs.filter((job) => shouldShowImageImportJob(job, myAssetIds));
-  const importingAssetIds = new Set(
+  const collectedImageIds = useMemo(() => buildCollectedImageIdSet(platformAssets), [platformAssets]);
+  const visibleImageImportJobs = useMemo(() => {
+    const myAssetIds = new Set(myAssets.map(asset => asset.id));
+    return imageImportJobs.filter(job => shouldShowImageImportJob(job, myAssetIds));
+  }, [imageImportJobs, myAssets]);
+  const importingAssetIds = useMemo(() => new Set(
     imageImportJobs
       .filter((job) => job.status === 'importing')
       .flatMap((job) => [job.platformImageAssetId, job.imageId].filter((value): value is string => Boolean(value))),
-  );
+  ), [imageImportJobs]);
 
   function renderAssetRows(
     items: PlatformImageAsset[],

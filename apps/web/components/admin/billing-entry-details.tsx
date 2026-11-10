@@ -9,7 +9,7 @@ import { Button } from '../ui/button';
 import { Sheet, SheetClose, SheetContent, SheetDescription, SheetHeader, SheetTitle } from '../ui/sheet';
 import { Skeleton } from '../ui/skeleton';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '../ui/tabs';
-import { formatMoney } from './billing-legacy-screen';
+import { formatMoney } from './billing-workbench-utils';
 import { formatBillingResourceType } from './billing-pending-resources';
 import { StatusBadge } from './shared/status-badge';
 import { BillingDetailResize, billingDetailStyle } from './billing-detail-resize';

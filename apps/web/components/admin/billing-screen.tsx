@@ -18,7 +18,7 @@ import { TableCell, TableRow } from '../ui/table';
 import { AdminPaginationControls, getPagination, useAdminPageSize } from './admin-pagination';
 import { useAdminRouteIsActive } from './admin-page-cache';
 import { BillingAmounts, BillingDocumentBadge, BillingEntryDetails, billingDocumentLabels, canActivateBillingRow } from './billing-entry-details';
-import { downloadCsv, getDefaultRange, LegacyBillingScreen } from './billing-legacy-screen';
+import { downloadCsv, getDefaultRange } from './billing-workbench-utils';
 import { useCloudWorkspace } from './cloud-workspace-provider';
 import { ADMIN_TABLE_WIDTHS, AdminDataTable, AdminDataTableCell, AdminDataTableText, type AdminDataColumn } from './shared/admin-data-table';
 import { usePlatformTheme } from './platform-theme-menu';
@@ -40,6 +40,9 @@ const kinds:Record<BillingEntry['kind'],string>={single:'单实例',range:'编�
 const uses:Record<string,string>={creating:'创建中',active:'使用中',partially_released:'部分回收',released:'已回收',failed:'任务失败',allocation_ended:'费用归属结束'};
 const billStatuses=['','issued','partial','unissued','not_applicable','pending'] as const;
 const validBillingRange=({startAt,endAt}:BillingRange)=>Boolean(parseLocalDate(startAt,false)&&parseLocalDate(endAt,false)&&startAt<=endAt);
+const LegacyBillingScreen = dynamic(() => import('./billing-legacy-screen').then(module => module.LegacyBillingScreen), {
+  loading: () => <Skeleton aria-label="正在加载账单费用" className="h-20 w-full" />,
+});
 const ResourceAlertsPanel = dynamic(() => import('./resource-alerts-screen').then(module => module.ResourceAlertsPanel), {
   loading: () => <Skeleton aria-label="正在加载资源告警" className="h-20 w-full" />,
 });

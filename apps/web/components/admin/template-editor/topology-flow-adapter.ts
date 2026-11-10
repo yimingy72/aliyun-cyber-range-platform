@@ -1,7 +1,7 @@
 import type { TemplateEdge } from './template-editor-screen';
 import type { TemplateNode } from '../../../lib/scenario-graph';
 import type { TopologyFlowEdge, TopologyFlowNode, TopologyFlowPort, TopologyViewport } from './topology-flow-types';
-import { readNetworkRegions, readTopologyNetworks, topologyNodeSize } from './topology-network-model';
+import { indexTopologyEdges, readNetworkRegions, readTopologyNetworks, topologyNodeSize } from './topology-network-model';
 import { routeTopologyConnections, type PortSide, type RouteBox, type RoutePoint } from './topology-edge-routing';
 
 const nodeTypeByKind = {
@@ -36,12 +36,13 @@ function readFlowGeometry(nodes: TemplateNode[], edges: TemplateEdge[]) {
   const boxes = new Map(nodes.map((node, index) => [node.id, { id: node.id,
     ...(node.position ?? { x: 120 + index * 220, y: 180 }), ...topologyNodeSize(node, networks.memberships.get(node.id)) }]));
   const nodeMap = new Map(nodes.map(node => [node.id, node]));
+  const edgesByDirection = { source: indexTopologyEdges(edges, 'fromNodeId'), target: indexTopologyEdges(edges, 'toNodeId') };
   const ports = new Map<string, { source: TopologyFlowPort[]; target: TopologyFlowPort[] }>();
   for (const node of nodes) {
     const box = boxes.get(node.id)!;
     const result = { source: [] as TopologyFlowPort[], target: [] as TopologyFlowPort[] };
     for (const direction of ['source', 'target'] as const) {
-      const connected = edges.filter(edge => (direction === 'source' ? edge.fromNodeId : edge.toNodeId) === node.id).map(edge => {
+      const connected = (edgesByDirection[direction].get(node.id) ?? []).map(edge => {
         const peerId = direction === 'source' ? edge.toNodeId : edge.fromNodeId, peer = boxes.get(peerId)!;
         const positioned = node.position && nodeMap.get(peerId)?.position;
         const vertical = positioned && Math.abs(peer.y - box.y) >= 96;
@@ -126,10 +127,12 @@ export function toFlowEdges(
   const headings = readNetworkRegions(nodes, knownEdges).map(region => ({ id: `heading/${region.id}`, x: region.x + 16, y: region.y + 10,
     width: Math.min(region.width - 32, region.id.startsWith('zone/') ? 160 : 320), height: 40 }));
   const routes = routeTopologyConnections([...geometry.boxes.values(), ...headings], connections);
+  const nodesById = new Map(nodes.map(node => [node.id, node]));
+  const zonesById = new Map(geometry.networks.zones.map(zone => [zone.node.id, zone]));
 
   return knownEdges.map((topologyEdge) => {
-    const source = nodes.find(node => node.id === topologyEdge.fromNodeId), target = nodes.find(node => node.id === topologyEdge.toNodeId);
-    const network = geometry.networks.zones.find(zone => zone.node.id === source?.id);
+    const source = nodesById.get(topologyEdge.fromNodeId), target = nodesById.get(topologyEdge.toNodeId);
+    const network = zonesById.get(topologyEdge.fromNodeId);
     const nic = geometry.networks.memberships.get(topologyEdge.toNodeId)?.find(link => link.switchId === source?.id);
     const description = `${source?.label ?? topologyEdge.fromNodeId} → ${target?.label ?? topologyEdge.toNodeId}${nic?.nics.length ? ` · ${nic.nics.map(item => `网卡 ${item.ordinal}: ${item.privateIp}`).join(' / ')}` : ''}`;
 
