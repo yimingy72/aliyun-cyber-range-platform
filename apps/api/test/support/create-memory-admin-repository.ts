@@ -748,8 +748,11 @@ export function createMemoryAdminRepository(): AdminRepository {
       record.updatedAt = now();
       return clone(record);
     },
-    async deleteRangeTemplate(id: string) {
+    async deleteRangeTemplate(id: string, expectedRevision?: number) {
       const index = rangeTemplates.findIndex((template) => template.id === id);
+      if (expectedRevision !== undefined && (rangeTemplates[index]?.revision !== expectedRevision || rangeTemplates[index]?.visibility !== 'platform')) {
+        throw Object.assign(new Error('Template publication changed'), { code: 'P2025' });
+      }
 
       if (index >= 0) {
         rangeTemplates.splice(index, 1);
@@ -1652,15 +1655,17 @@ export function createMemoryAdminRepository(): AdminRepository {
 
       return clone(record);
     },
-    async updatePlatformImageAsset(id: string, input: { displayName: string }) {
+    async updatePlatformImageAsset(id: string, input: { displayName: string; visibility?: PlatformImageAssetRecord['visibility'] },
+      expected?: Pick<PlatformImageAssetRecord, 'ownerUserId' | 'visibility'>) {
       const record = findPlatformImageAssetOrThrow(id);
-
-      Object.assign(record, {
-        displayName: input.displayName,
-        updatedAt: now(),
-      });
-
+      if (expected && (expected.ownerUserId !== record.ownerUserId || expected.visibility !== record.visibility)) {
+        throw Object.assign(new Error('Image ownership or visibility changed'), { code: 'P2025' });
+      }
+      Object.assign(record, input, { updatedAt: now() });
       return clone(record);
+    },
+    async findImageImportOwner() {
+      return null;
     },
     async setPlatformImageAssetEnabled(id: string, enabled: boolean) {
       const record = findPlatformImageAssetOrThrow(id);

@@ -157,9 +157,13 @@ export class AdminAuthGuard implements CanActivate {
       return true;
     }
 
-    if (/^\/admin\/platform-images\/[^/]+\/(enable|disable)$/.test(pathname) && method === 'POST') {
+    if (/^\/admin\/platform-images\/[^/]+\/(publish|unpublish)$/.test(pathname) && method === 'POST') {
       return true;
     }
+
+    if (pathname === '/admin/image-catalog/mogong' && method === 'GET') return true;
+    if (/^\/admin\/image-catalog\/mogong\/\d+\/collect$/.test(pathname) && method === 'POST') return true;
+    if (/^\/admin\/platform-images\/[^/]+\/cloud-image$/.test(pathname) && method === 'DELETE') return true;
 
     if (pathname === '/admin/platform-image-tags' && method === 'GET') {
       return true;

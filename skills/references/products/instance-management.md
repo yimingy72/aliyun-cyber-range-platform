@@ -12,7 +12,7 @@
 | 创建/确保共享网络 | `single_instance_network_create` | — | 操作元数据 | `settings:write`、`instances:create`，仅管理员 |
 | 登记本轮网络回收 | `single_instance_network_cleanup_register` | `networkProfileId`、`runId`、带时区 `createdAfter`、明确 `ownerUserIds` | — | `settings:write`，仅管理员 |
 | 回收空闲共享网络 | `single_instance_network_destroy` | `networkProfileId`、`cleanupRunId` | 操作元数据 | `settings:write`、`instances:destroy`，仅管理员 |
-| 查询单实例/批次 | `single_instance_list` | — | `view: active\|history`，默认 `active` | `instances:read` |
+| 查询单实例/批次 | `single_instance_list` | — | `view: active\|history`，默认 `active`；`owner: mine\|all`，默认本人，全部仅管理员 | `instances:read` |
 | 查询单实例详情 | `single_instance_get` | `singleInstanceId` | — | `instances:read` |
 | 核验云端 ECS | `single_instance_cloud_resource_status` | `singleInstanceId` | — | `instances:read` |
 | 查询访问凭据 | `single_instance_get_access` | `singleInstanceId` | — | `instances:read`、`instances:credentials:read` |
@@ -24,7 +24,7 @@
 | 重启 | `single_instance_reboot` | `singleInstanceId` | 操作元数据 | `instances:control` |
 | 打开 VNC | `single_instance_open_vnc` | `singleInstanceId` | — | `instances:read`、`instances:credentials:read` |
 | 打包镜像 | `single_instance_pack_image` | `singleInstanceId` | `displayName`、`defaultHostName`、敏感 `defaultPassword`、`description`、操作元数据 | `instances:control`、`images:write` |
-| 导出凭据 CSV | `single_instance_batch_export_csv` | `batchId` | `view: active\|history` | `instances:read`、`instances:credentials:read` |
+| 导出凭据 CSV | `single_instance_batch_export_csv` | `batchId` | `view: active\|history`、`owner: mine\|all`（全部仅管理员） | `instances:read`、`instances:credentials:read` |
 
 ## 操作规则
 

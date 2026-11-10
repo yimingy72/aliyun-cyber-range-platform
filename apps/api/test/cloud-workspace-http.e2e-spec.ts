@@ -50,6 +50,11 @@ isolated('Cloud workspace HTTP selection and authorization (isolated PostgreSQL)
     ] });
     for (const [id, provider] of [['space-a', 'alibaba_cloud'], ['space-b', 'tencent_cloud']] as const) {
       await prisma.rangeTemplate.create({ data: { id: `template-${id}`, cloudWorkspaceId: id, name: `Template ${id}`, slug: 'same-template', version: '1', cloudProvider: provider, modulePathOrRef: 'fixture', ownerUserId: 'manager', visibility: 'platform', variableSchema: {}, outputSchema: {} } });
+      const publication = await prisma.rangeTemplateVersion.create({ data: {
+        cloudWorkspaceId: id, templateId: `template-${id}`, version: '1', status: 'published', modulePathOrRef: 'fixture',
+        variableSchema: {}, outputSchema: {},
+      } });
+      await prisma.rangeTemplate.update({ where: { id: `template-${id}` }, data: { currentPublishedVersionId: publication.id } });
     }
   }));
 

@@ -25,8 +25,8 @@ export class SingleInstancesController {
   ) {}
 
   @Get()
-  list(@Req() request: AuthenticatedAdminRequest, @Query('view') view?: 'active' | 'history') {
-    return this.singleInstancesService.list(request.adminUser, view);
+  list(@Req() request: AuthenticatedAdminRequest, @Query('view') view?: 'active' | 'history', @Query('owner') owner?: string) {
+    return this.singleInstancesService.list(request.adminUser, view, owner);
   }
 
   @Get('networks')

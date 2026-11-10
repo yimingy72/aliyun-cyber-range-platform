@@ -13,6 +13,7 @@ import type {
   ImageCatalogItem,
   ImageCatalogScopePayload,
   InstanceTypeAvailabilitySnapshot,
+  InstanceOwnerFilter,
   PlatformImageAsset,
   PlatformContainerImage,
   PlatformImageAssetListPayload,
@@ -289,13 +290,15 @@ export async function fetchRangeTemplateById(apiBaseUrl: string, token: string, 
 export async function fetchRangeInstances(
   apiBaseUrl: string,
   token: string,
-  options?: { view?: 'active' | 'history' },
+  options?: { view?: 'active' | 'history'; owner?: InstanceOwnerFilter },
 ) {
   const url = new URL(`${apiBaseUrl}/admin/ranges`);
 
   if (options?.view) {
     url.searchParams.set('view', options.view);
   }
+
+  if (options?.owner) url.searchParams.set('owner', options.owner);
 
   const response = await fetch(url, {
     headers: createAdminHeaders(token),
@@ -315,13 +318,15 @@ export async function fetchRangeInstanceDetail(apiBaseUrl: string, token: string
 export async function fetchSingleInstances(
   apiBaseUrl: string,
   token: string,
-  options?: { view?: 'active' | 'history' },
+  options?: { view?: 'active' | 'history'; owner?: InstanceOwnerFilter },
 ) {
   const url = new URL(`${apiBaseUrl}/admin/instances`);
 
   if (options?.view) {
     url.searchParams.set('view', options.view);
   }
+
+  if (options?.owner) url.searchParams.set('owner', options.owner);
 
   const response = await fetch(url, {
     headers: createAdminHeaders(token),
@@ -983,8 +988,8 @@ export async function createRangeTemplate(
   return readJson<Scenario>(response);
 }
 
-export async function cloneRangeTemplate(apiBaseUrl: string, token: string, id: string) {
-  const response = await fetch(`${apiBaseUrl}/admin/scenarios/${id}/clone`, {
+export async function cloneRangeTemplate(apiBaseUrl: string, token: string, id: string, view?: 'platform') {
+  const response = await fetch(`${apiBaseUrl}/admin/scenarios/${id}/clone${view ? '?view=platform' : ''}`, {
     method: 'POST',
     headers: createAdminHeaders(token),
   });
@@ -1287,22 +1292,13 @@ export async function unpublishPlatformImage(apiBaseUrl: string, token: string, 
   return readJson<PlatformImageAsset>(response);
 }
 
-export async function enablePlatformImage(apiBaseUrl: string, token: string, id: string) {
-  const response = await fetch(`${apiBaseUrl}/admin/platform-images/${id}/enable`, {
-    method: 'POST',
+export async function deleteOwnedPlatformImage(apiBaseUrl: string, token: string, id: string) {
+  const response = await fetch(`${apiBaseUrl}/admin/platform-images/${encodeURIComponent(id)}/cloud-image`, {
+    method: 'DELETE',
     headers: createAdminHeaders(token),
   });
 
-  return readJson<PlatformImageAsset>(response);
-}
-
-export async function disablePlatformImage(apiBaseUrl: string, token: string, id: string) {
-  const response = await fetch(`${apiBaseUrl}/admin/platform-images/${id}/disable`, {
-    method: 'POST',
-    headers: createAdminHeaders(token),
-  });
-
-  return readJson<PlatformImageAsset>(response);
+  return readJson<{ removed: boolean; snapshotId: string }>(response);
 }
 
 export async function removePlatformImage(apiBaseUrl: string, token: string, id: string) {

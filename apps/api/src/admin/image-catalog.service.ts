@@ -9,7 +9,6 @@ import {
   type ImageCatalogItemRecord,
   type PlatformImageAssetRecord,
   type PlatformImageTagRecord,
-  type ResourceVisibility,
   type UpsertImageSnapshotInput,
 } from './admin.repository';
 import type { SessionUserProfile } from './admin-user-auth';
@@ -181,7 +180,7 @@ export class ImageCatalogService {
     return {
       items: itemsWithCreatedBy.map((item) => {
         const snapshot = item.sourceSnapshotId ? sourceSnapshotsById.get(item.sourceSnapshotId) ?? null : null;
-        const assetView = this.toPlatformImageAssetView(item, currentUser);
+        const assetView = this.toPlatformImageAssetView(item, currentUser, view);
 
         return {
           ...assetView,
@@ -287,6 +286,14 @@ export class ImageCatalogService {
 
   async collectPlatformAsset(snapshotId: string, displayName: string, currentUser: SessionUserProfile, visibility: 'private' | 'platform' = 'platform') {
     if (currentUser.role !== 'admin') throw new ForbiddenException('Admin access required');
+    return this.collectAvailableAsset(snapshotId, displayName, currentUser, visibility);
+  }
+
+  collectMogongAsset(snapshotId: string, displayName: string, currentUser: SessionUserProfile) {
+    return this.collectAvailableAsset(snapshotId, displayName, currentUser, 'platform');
+  }
+
+  private async collectAvailableAsset(snapshotId: string, displayName: string, currentUser: SessionUserProfile, visibility: 'private' | 'platform') {
     const snapshot = await this.adminRepository.getImageSnapshotById(snapshotId);
 
     if (!snapshot) {
@@ -301,9 +308,13 @@ export class ImageCatalogService {
 
     if (!snapshot.isAvailable || snapshot.status === 'Missing' || await this.adminRepository.hasActiveImageImportForArtifact({ sourceSnapshotId: snapshot.id, imageId: snapshot.imageId }) || await this.packedImages?.hasPending({ imageId: snapshot.imageId, sourceSnapshotId: snapshot.id })) throw new ConflictException('来源镜像尚不可用或正在处理，不能收录。');
     const [existing] = await this.adminRepository.listPlatformImageAssets({ provider: snapshot.provider, accountUid: snapshot.accountUid, regionId: snapshot.regionId, imageId: snapshot.imageId });
-    if (existing) return this.withCreatorUsername(existing, currentUser);
+    if (existing) {
+      if (existing.visibility === 'private' && existing.ownerUserId !== currentUser.id) throw new NotFoundException('Image snapshot not found');
+      return this.withCreatorUsername(existing, currentUser);
+    }
     const [packed] = await this.adminRepository.listPackedImageArtifacts({ imageId: snapshot.imageId, cloudAccountUid: snapshot.accountUid ?? undefined, regionId: snapshot.regionId });
     if (packed && packed.status !== 'deleted') {
+      if (packed.ownerUserId !== currentUser.id) throw new NotFoundException('Image snapshot not found');
       if (visibility === 'private') throw new ConflictException('请先按原打包来源恢复镜像资产。');
       if (!this.packedImages) throw new ConflictException('打包来源恢复服务不可用，请稍后重试。');
       const asset = await this.packedImages.restoreAsset(packed.id, snapshotId, displayName);
@@ -322,59 +333,78 @@ export class ImageCatalogService {
 
   async updatePlatformAsset(id: string, input: UpdatePlatformImageDto, currentUser: SessionUserProfile) {
     const asset = await this.getScopedPlatformAssetOrThrow(id, currentUser);
-    const nextDisplayName = input.displayName ?? asset.displayName;
-    const nextVisibility = input.visibility;
-
-    if (input.displayName === undefined && nextVisibility === undefined) {
+    const visibility = input.visibility;
+    if (input.displayName === undefined && visibility === undefined) {
       throw new BadRequestException('At least one platform image update field is required');
     }
 
-    if (nextVisibility !== undefined && currentUser.role !== 'admin') {
-      throw new ForbiddenException('Admin access required to change platform image visibility');
+    if (visibility !== undefined) {
+      if (!asset.ownerUserId) throw new BadRequestException('没有个人归属的目录镜像不能发布或回退。');
+      if (visibility === 'platform') {
+        if (asset.ownerUserId !== currentUser.id) throw new ForbiddenException('仅镜像所有者可以发布。');
+        await this.assertPlatformAssetNotImporting(asset);
+        const source = await this.resolvePlatformAssetSnapshot(asset);
+        if (!asset.enabled || !source?.isAvailable) throw new ConflictException('来源镜像不可用，不能发布。');
+      } else if (asset.visibility === 'platform') {
+        await this.assertPlatformAssetNotReferencedByPublishedTemplates(asset);
+      }
     }
 
-    if (nextVisibility === undefined) {
-      const updatedAsset = await this.adminRepository.updatePlatformImageAsset(id, { displayName: nextDisplayName });
-      return this.withCreatorUsername(updatedAsset, currentUser);
+    try {
+      const updated = await this.adminRepository.updatePlatformImageAsset(id, {
+        displayName: input.displayName ?? asset.displayName,
+        ...(visibility !== undefined ? { visibility } : {}),
+      }, { ownerUserId: asset.ownerUserId, visibility: asset.visibility });
+      return this.withCreatorUsername(updated, currentUser);
+    } catch (error) {
+      if (error && typeof error === 'object' && 'code' in error && error.code === 'P2025') {
+        throw new ConflictException('镜像的归属或发布状态已变化，请刷新后重试。');
+      }
+      throw error;
     }
-
-    if (nextVisibility === asset.visibility && nextDisplayName === asset.displayName) {
-      return this.withCreatorUsername(asset, currentUser);
-    }
-
-    if (!asset.ownerUserId) {
-      throw new BadRequestException('Only owner-backed image assets can change visibility');
-    }
-
-    if (asset.visibility === 'platform' && nextVisibility === 'private') {
-      await this.assertPlatformAssetNotReferencedByPublishedTemplates(asset);
-    }
-
-    const updatedAsset = await this.recollectPlatformAssetWithVisibility(asset, nextDisplayName, nextVisibility);
-    return this.withCreatorUsername(updatedAsset, currentUser);
   }
 
-  async setPlatformAssetEnabled(id: string, enabled: boolean, currentUser: SessionUserProfile) {
-    const asset = await this.getScopedPlatformAssetOrThrow(id, currentUser);
-    await this.assertPlatformAssetNotImporting(asset);
-
-    if (!enabled) {
-      await this.assertPlatformAssetNotReferencedByPublishedTemplates(asset);
-    } else {
-      const source = asset.sourceSnapshotId && await this.adminRepository.getImageSnapshotById(asset.sourceSnapshotId);
-      if (!source || !source.isAvailable) throw new ConflictException('来源镜像不可用，不能启用。');
-    }
-
-    const updatedAsset = await this.adminRepository.setPlatformImageAssetEnabled(id, enabled);
-    return this.withCreatorUsername(updatedAsset, currentUser);
-  }
-
+  // Legacy catalog removal never deletes a cloud resource.
   async removePlatformAsset(id: string, currentUser: SessionUserProfile): Promise<void> {
     const asset = await this.getScopedPlatformAssetOrThrow(id, currentUser);
+    if (asset.ownerUserId && (asset.ownerUserId !== currentUser.id || asset.sourceScope !== 'public')) {
+      throw new ForbiddenException('用户镜像请在“我的镜像”删除，或从平台回退为私有。');
+    }
     await this.assertPlatformAssetNotImporting(asset);
     await this.assertPlatformAssetNotReferencedByPublishedTemplates(asset);
-
     await this.adminRepository.deletePlatformImageAsset(id);
+  }
+
+  async prepareOwnedImageDeletion(id: string, currentUser: SessionUserProfile) {
+    const asset = await this.getScopedPlatformAssetOrThrow(id, currentUser);
+    if (asset.ownerUserId !== currentUser.id) throw new ForbiddenException('只能删除自己创建的云镜像。');
+    const snapshot = asset.sourceSnapshotId && await this.adminRepository.getImageSnapshotById(asset.sourceSnapshotId);
+    const account = await this.selectedContext();
+    if (!snapshot || snapshot.scope !== 'custom' || snapshot.imageId !== asset.imageId ||
+      !account.accountUidResolved || !account.accountUid || !this.isSnapshotInScope(snapshot, account)) {
+      throw new ConflictException('无法核对该镜像的云账号或来源，未执行云端删除。');
+    }
+    await this.assertPlatformAssetNotImporting(asset);
+    const packedOwner = await this.readPackedImageOwner(snapshot, asset.id);
+    const importOwner = await this.adminRepository.findImageImportOwner(snapshot, asset.id);
+    if ([packedOwner, importOwner].some(owner => owner && owner !== currentUser.id) ||
+      (packedOwner !== currentUser.id && importOwner !== currentUser.id)) {
+      throw new ForbiddenException('仅支持删除来源可核验的本人导入或打包镜像。');
+    }
+    await this.assertCustomSnapshotNotInUse(snapshot, currentUser);
+    return { asset, snapshot, account };
+  }
+
+  async deleteOwnedImage(id: string, currentUser: SessionUserProfile) {
+    const { snapshot, account } = await this.prepareOwnedImageDeletion(id, currentUser);
+    return this.deleteCloudImage(snapshot, account);
+  }
+
+  private async readPackedImageOwner(snapshot: CloudImageSnapshotRecord, assetId?: string) {
+    const artifacts = await this.adminRepository.listPackedImageArtifacts({ sourceSnapshotId: snapshot.id });
+    return artifacts.find(artifact => artifact.imageId === snapshot.imageId && artifact.cloudAccountUid === snapshot.accountUid &&
+      artifact.regionId === snapshot.regionId && (artifact.cloudProvider ?? 'alibaba_cloud') === snapshot.provider &&
+      (!assetId || artifact.platformImageAssetId === assetId))?.ownerUserId ?? null;
   }
 
   async collectFromSnapshot(snapshotId: string, displayName: string) {
@@ -443,7 +473,10 @@ export class ImageCatalogService {
 
     await this.assertCustomSnapshotNotInUse(snapshot, currentUser);
     await this.assertImageSnapshotNotImporting(snapshot);
+    return this.deleteCloudImage(snapshot, accountContext);
+  }
 
+  private async deleteCloudImage(snapshot: CloudImageSnapshotRecord, accountContext: Awaited<ReturnType<ImageCatalogService['selectedContext']>>) {
     if (await this.describeImageById(snapshot.imageId, accountContext)) {
       if (accountContext.provider === 'tencent_cloud') {
         await deleteTencentImage(this.tencentCredentials(accountContext), snapshot.imageId);
@@ -499,7 +532,7 @@ export class ImageCatalogService {
       scope: 'custom',
       snapshots: [{ imageId: snapshot.imageId, sourceImageName: snapshot.sourceImageName, status: 'Deleted', isAvailable: false, lastSyncedAt: new Date() }],
     });
-    return { removed: true, snapshotId };
+    return { removed: true, snapshotId: snapshot.id };
   }
 
   private async listScope(scope: CloudImageScope): Promise<ImageCatalogScopePayload> {
@@ -565,7 +598,7 @@ export class ImageCatalogService {
     if (
       !asset ||
       !this.isPlatformAssetInScope(asset, accountContext) ||
-      (currentUser.role !== 'admin' && asset.ownerUserId !== currentUser.id)
+      (asset.ownerUserId !== currentUser.id && (currentUser.role !== 'admin' || asset.visibility !== 'platform'))
     ) {
       throw new NotFoundException('Platform image asset not found');
     }
@@ -633,34 +666,6 @@ export class ImageCatalogService {
     );
   }
 
-  private async recollectPlatformAssetWithVisibility(
-    asset: PlatformImageAssetRecord,
-    displayName: string,
-    visibility: ResourceVisibility,
-  ) {
-    const snapshot = await this.resolvePlatformAssetSnapshot(asset);
-
-    if (!snapshot) {
-      throw new BadRequestException('Platform image asset source snapshot is unavailable');
-    }
-
-    const updatedAsset = await this.adminRepository.collectPlatformImageAsset({
-      snapshotId: snapshot.id,
-      displayName,
-      defaultHostName: asset.defaultHostName,
-      defaultPassword: asset.defaultPassword,
-      description: asset.description,
-      ownerUserId: asset.ownerUserId,
-      visibility,
-    });
-
-    if (asset.enabled) {
-      return updatedAsset;
-    }
-
-    return this.adminRepository.setPlatformImageAssetEnabled(updatedAsset.id, false);
-  }
-
   private async withCreatorUsername(asset: PlatformImageAssetRecord, currentUser?: SessionUserProfile) {
     const [normalizedAsset] = await attachOwnerUsernamesAsCreatedBy(this.adminRepository, [asset]);
     return this.toPlatformImageAssetView(normalizedAsset, currentUser);
@@ -669,6 +674,7 @@ export class ImageCatalogService {
   private toPlatformImageAssetView(
     asset: PlatformImageAssetRecord & { createdBy?: string },
     currentUser?: SessionUserProfile,
+    listView?: PlatformImageView,
   ): PlatformImageAssetView {
     const { defaultPassword: _defaultPassword, tags, ...view } = asset;
     const tagViews = tags.map((tag) => this.toPlatformImageTagView(tag));
@@ -680,13 +686,15 @@ export class ImageCatalogService {
       };
     }
 
-    const canManage = currentUser.role === 'admin' || asset.ownerUserId === currentUser.id;
+    const owned = asset.ownerUserId === currentUser.id;
+    const moderator = currentUser.role === 'admin' && asset.visibility === 'platform';
+    const canManage = listView === 'platform' ? moderator : owned || moderator;
 
     return {
       ...view,
       tags: tagViews,
       canManage,
-      canChangeVisibility: currentUser.role === 'admin' && Boolean(asset.ownerUserId),
+      canChangeVisibility: canManage && Boolean(asset.ownerUserId),
     };
   }
 

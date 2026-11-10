@@ -54,8 +54,8 @@ export class ScenariosController {
   }
 
   @Post(':id/clone')
-  clone(@Req() request: AuthenticatedAdminRequest, @Param('id') id: string) {
-    return this.rangeTemplatesService.clone(id, request.adminUser);
+  clone(@Req() request: AuthenticatedAdminRequest, @Param('id') id: string, @Query('view') view?: string) {
+    return this.rangeTemplatesService.clone(id, request.adminUser, view === 'platform');
   }
 
   @Patch(':id')

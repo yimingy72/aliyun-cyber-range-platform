@@ -162,34 +162,10 @@ export const imageTools: ToolDefinition[] = [
     },
   },
   {
-    name: 'platform_image_enable',
-    title: '启用平台镜像',
-    description: '对应镜像中心的“启用”。允许该平台镜像用于后续创建，不影响已有实例；调用前必须取得用户确认。',
-    requiredScopes: ['images:write'],
-    inputSchema: imageAssetOperationInputSchema,
-    outputSchema: resourceOutputSchema,
-    call(context, args) {
-      const input = args as { platformImageAssetId: string; idempotencyKey?: string; confirmationId?: string };
-      return context.client.enablePlatformImage(input.platformImageAssetId, operation(input));
-    },
-  },
-  {
-    name: 'platform_image_disable',
-    title: '停用平台镜像',
-    description: '对应镜像中心的“停用”。阻止该镜像用于后续创建，不会销毁已有实例；调用前必须取得用户确认。',
-    requiredScopes: ['images:write'],
-    inputSchema: imageAssetOperationInputSchema,
-    outputSchema: resourceOutputSchema,
-    call(context, args) {
-      const input = args as { platformImageAssetId: string; idempotencyKey?: string; confirmationId?: string };
-      return context.client.disablePlatformImage(input.platformImageAssetId, operation(input));
-    },
-  },
-  {
     name: 'platform_image_publish',
     title: '发布平台镜像',
-    description: '对应镜像中心的“发布到平台”。仅管理员将有owner的镜像设为平台可见，供其他用户使用；调用前必须取得用户确认。',
-    requiredScopes: ['images:write'], adminOnly: true,
+    description: '对应镜像中心的“发布到平台”。所有者将自己的可用镜像设为平台可见，供其他用户使用；调用前必须取得用户确认。',
+    requiredScopes: ['images:write'],
     inputSchema: imageAssetOperationInputSchema,
     outputSchema: resourceOutputSchema,
     call(context, args) {
@@ -200,8 +176,8 @@ export const imageTools: ToolDefinition[] = [
   {
     name: 'platform_image_unpublish',
     title: '取消发布平台镜像',
-    description: '对应镜像中心的“取消发布”。仅管理员将有owner的镜像恢复为私有可见性；调用前必须取得用户确认。',
-    requiredScopes: ['images:write'], adminOnly: true,
+    description: '对应镜像中心的“取消发布”。所有者或管理员将已发布的用户镜像恢复为私有可见性；调用前必须取得用户确认。',
+    requiredScopes: ['images:write'],
     inputSchema: imageAssetOperationInputSchema,
     outputSchema: resourceOutputSchema,
     call(context, args) {
@@ -211,8 +187,8 @@ export const imageTools: ToolDefinition[] = [
   },
   {
     name: 'platform_image_remove',
-    title: '删除平台镜像',
-    description: '对应镜像中心的“删除平台镜像资产”。平台会拒绝仍被已发布拓扑引用或仍在导入中的镜像；该操作不可恢复，调用前必须取得用户确认。',
+    title: '移除镜像收录',
+    description: '仅移除管理员维护的无个人归属目录条目或本人的公共镜像收录，保留云镜像。发布镜像回退为私有请使用取消发布工具。',
     requiredScopes: ['images:write'],
     annotations: { destructiveHint: true, idempotentHint: false },
     inputSchema: imageAssetOperationInputSchema,
@@ -222,6 +198,19 @@ export const imageTools: ToolDefinition[] = [
       const id = input.platformImageAssetId;
       await context.client.removePlatformImage(id, operation(input));
       return { removed: true, platformImageAssetId: id };
+    },
+  },
+  {
+    name: 'platform_image_delete_owned',
+    title: '删除本人云镜像',
+    description: '对应“我的镜像”的删除。仅所有者可删除来源可核验的本人导入或打包云镜像及平台记录，保留关联快照；调用前必须取得用户确认。',
+    requiredScopes: ['images:write'],
+    annotations: { destructiveHint: true, idempotentHint: false },
+    inputSchema: imageAssetOperationInputSchema,
+    outputSchema: resourceOutputSchema,
+    call(context, args) {
+      const input = args as { platformImageAssetId: string; idempotencyKey?: string; confirmationId?: string };
+      return context.client.deleteOwnedPlatformImage(input.platformImageAssetId, operation(input));
     },
   },
   {

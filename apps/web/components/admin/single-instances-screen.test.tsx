@@ -863,7 +863,8 @@ describe('SingleInstancesScreen', () => {
     expect(screen.getByText('创建失败')).toBeTruthy();
     expect(screen.getByText('创建人')).toBeTruthy();
     expect(screen.getAllByText('admin').length).toBeGreaterThan(0);
-    expect(screen.queryByText('操作')).toBeNull();
+    expect(screen.getByRole('columnheader', { name: '操作' })).toBeTruthy();
+    expect(screen.getAllByRole('button', { name: /导出/ }).length).toBeGreaterThan(0);
     expect(screen.getByText(formatExpectedDateTime('2026-07-08T08:15:00.000Z'))).toBeTruthy();
     expect(screen.getByText(formatExpectedDateTime('2026-07-08T10:50:00.000Z'))).toBeTruthy();
     expect(screen.getByText(formatExpectedDateTime('2026-07-08T10:06:00.000Z'))).toBeTruthy();

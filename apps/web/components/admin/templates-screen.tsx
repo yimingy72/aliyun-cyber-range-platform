@@ -80,6 +80,7 @@ type CreateTemplateDraft = {
 };
 
 type LaunchInstanceDraft = {
+  usePublishedVersion?: boolean;
   templateId: string;
   templateName: string;
   name: string;
@@ -115,14 +116,14 @@ const EMPTY_LAUNCH_INSTANCE_DRAFT: LaunchInstanceDraft = {
 const TEMPLATE_COLUMNS: readonly AdminDataColumn[] = [
   { id: 'template', label: '靶场', priority: 'primary', width: '20rem' },
   { id: 'description', label: '靶场描述', priority: 'detail', minWidth: '18rem' },
-  { id: 'topology', label: '拓扑概览', priority: 'tertiary', width: '10rem' },
+  { id: 'topology', label: '拓扑概览', priority: 'tertiary', width: '11rem' },
   { id: 'status', label: '状态', priority: 'primary', width: ADMIN_TABLE_WIDTHS.status },
   { id: 'creator', label: '创建人', priority: 'tertiary', width: ADMIN_TABLE_WIDTHS.creator },
   { id: 'actions', label: '操作', priority: 'primary', width: ADMIN_TABLE_WIDTHS.actions },
 ];
 
 function readTemplateView(value: string | null): RangeTemplateView {
-  return value === 'platform' || value === 'all' ? value : 'mine';
+  return value === 'mine' ? 'mine' : 'platform';
 }
 
 function createNewTemplateDraftId() {
@@ -208,26 +209,20 @@ export function TemplatesScreen({
   const isPageActive = useAdminRouteIsActive('/admin/scenarios');
   const theme = usePlatformTheme();
   const compactWorkbench = theme !== 'classic';
-  const isDense = theme === 'data-dense';
-  const [selectedView, setActiveView] = useState<RangeTemplateView>(() => readTemplateView(searchParams.get('view')));
-  const activeView = selectedView === 'all' && !session.isAdmin ? 'mine' : selectedView;
+  const [activeView, setActiveView] = useState<RangeTemplateView>(() => readTemplateView(searchParams.get('view')));
   const screenCache = useAdminScreenCache();
   const cachedPlatformTemplates = screenCache?.read<Scenario[]>(apiBaseUrl, session.token, 'templates:platform');
   const cachedMyTemplates = screenCache?.read<Scenario[]>(apiBaseUrl, session.token, 'templates:mine');
-  const cachedAllTemplates = session.isAdmin ? screenCache?.read<Scenario[]>(apiBaseUrl, session.token, 'templates:all') : undefined;
-  const cachedActiveTemplates = activeView === 'all' ? cachedAllTemplates : activeView === 'platform' ? cachedPlatformTemplates : cachedMyTemplates;
+  const cachedActiveTemplates = activeView === 'platform' ? cachedPlatformTemplates : cachedMyTemplates;
   const [platformTemplates, setPlatformTemplates] = useState<Scenario[]>(() => cachedPlatformTemplates?.data ?? []);
-  const [allTemplates, setAllTemplates] = useState<Scenario[]>(() => cachedAllTemplates?.data ?? []);
   const [myTemplates, setMyTemplates] = useState<Scenario[]>(() => cachedMyTemplates?.data ?? []);
   const [loadedViews, setLoadedViews] = useState<Record<RangeTemplateView, boolean>>(() => ({
     platform: cachedPlatformTemplates !== null && cachedPlatformTemplates !== undefined,
     mine: cachedMyTemplates !== null && cachedMyTemplates !== undefined,
-    all: cachedAllTemplates !== null && cachedAllTemplates !== undefined,
   }));
   const [tableContentVersions, setTableContentVersions] = useState<Record<RangeTemplateView, number>>({
     platform: 0,
     mine: 0,
-    all: 0,
   });
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [revalidationErrorMessage, setRevalidationErrorMessage] = useState<string | null>(null);
@@ -254,12 +249,12 @@ export function TemplatesScreen({
   const [createDraft, setCreateDraft] = useState<CreateTemplateDraft>(EMPTY_CREATE_TEMPLATE_DRAFT);
   const [editDraft, setEditDraft] = useState<TemplateDraft>(EMPTY_TEMPLATE_DRAFT);
   const [launchDraft, setLaunchDraft] = useState<LaunchInstanceDraft>(EMPTY_LAUNCH_INSTANCE_DRAFT);
-  const launchFingerprint = JSON.stringify([launchScope, launchDraft.templateId, launchDraft.name.trim(), launchDraft.expiresAt.trim(), launchDraft.quantity]);
+  const launchFingerprint = JSON.stringify([launchScope, launchDraft.templateId, launchDraft.name.trim(), launchDraft.expiresAt.trim(), launchDraft.quantity, ...(launchDraft.usePublishedVersion ? ['platform'] : [])]);
   const canReplayLaunch = launchRequestRef.current?.fingerprint === launchFingerprint;
   const createNameRef = useRef<HTMLInputElement>(null);
   const editNameRef = useRef<HTMLInputElement>(null);
   const launchNameRef = useRef<HTMLInputElement>(null);
-  const [viewPages, setViewPages] = useState<Record<RangeTemplateView, number>>({ platform: 1, mine: 1, all: 1 });
+  const [viewPages, setViewPages] = useState<Record<RangeTemplateView, number>>({ platform: 1, mine: 1 });
   const { pageSize, setPageSize } = useAdminPageSize();
 
   function markTableContentUpdated(view: RangeTemplateView) {
@@ -283,9 +278,8 @@ export function TemplatesScreen({
     if (!session.token) {
       setPlatformTemplates([]);
       setMyTemplates([]);
-      setAllTemplates([]);
-      setLoadedViews({ platform: false, mine: false, all: false });
-      setTableContentVersions({ platform: 0, mine: 0, all: 0 });
+      setLoadedViews({ platform: false, mine: false });
+      setTableContentVersions({ platform: 0, mine: 0 });
       setErrorMessage(null);
       setRevalidationErrorMessage(null);
       setActionErrorMessage(null);
@@ -337,9 +331,7 @@ export function TemplatesScreen({
           return;
         }
 
-        if (activeView === 'all') {
-          setAllTemplates(nextTemplates);
-        } else if (activeView === 'platform') {
+        if (activeView === 'platform') {
           setPlatformTemplates(nextTemplates);
         } else {
           setMyTemplates(nextTemplates);
@@ -364,7 +356,7 @@ export function TemplatesScreen({
           return;
         }
 
-        const message = '靶场编排加载失败，请刷新页面后重试。';
+        const message = '编排中心加载失败，请刷新页面后重试。';
 
         if (hasActiveViewSnapshot) {
           setRevalidationErrorMessage(message);
@@ -389,7 +381,6 @@ export function TemplatesScreen({
     apiBaseUrl,
     isPageActive,
     loadAttempt,
-    loadedViews.all,
     loadedViews.mine,
     loadedViews.platform,
     router,
@@ -398,7 +389,7 @@ export function TemplatesScreen({
     session.token,
   ]);
 
-  const scenarios = activeView === 'all' ? allTemplates : activeView === 'platform' ? platformTemplates : myTemplates;
+  const scenarios = activeView === 'platform' ? platformTemplates : myTemplates;
 
   const creatorOptions = useMemo(() =>
     [...new Set(scenarios.map(templateCreator))]
@@ -435,7 +426,7 @@ export function TemplatesScreen({
 
   function handlePageSizeChange(nextValue: 20 | 50 | 100) {
     setPageSize(nextValue);
-    setViewPages({ platform: 1, mine: 1, all: 1 });
+    setViewPages({ platform: 1, mine: 1 });
   }
 
   function setActiveViewWithUrl(nextView: RangeTemplateView) {
@@ -444,11 +435,7 @@ export function TemplatesScreen({
     setActiveView(nextView);
 
     const nextSearchParams = new URLSearchParams(searchParams.toString());
-    if (nextView !== 'mine') {
-      nextSearchParams.set('view', nextView);
-    } else {
-      nextSearchParams.delete('view');
-    }
+    nextSearchParams.set('view', nextView);
 
     const nextQuery = nextSearchParams.toString();
     window.history.replaceState(
@@ -471,16 +458,14 @@ export function TemplatesScreen({
 
     return (
       scenarios.find((scenario) => scenario.id === editingTemplateId) ??
-      allTemplates.find((scenario) => scenario.id === editingTemplateId) ??
       myTemplates.find((scenario) => scenario.id === editingTemplateId) ??
       platformTemplates.find((scenario) => scenario.id === editingTemplateId) ??
       null
     );
-  }, [editingTemplateId, scenarios, allTemplates, myTemplates, platformTemplates]);
+  }, [editingTemplateId, scenarios, myTemplates, platformTemplates]);
 
   function syncOwnedTemplate(savedScenario: Scenario, options: { addToMyTemplates?: boolean } = {}) {
     screenCache?.invalidate(apiBaseUrl, session.token, 'templates:');
-    setAllTemplates((previous) => upsertScenario(previous, savedScenario));
     setMyTemplates((previous) =>
       previous.some((scenario) => scenario.id === savedScenario.id) || options.addToMyTemplates
         ? upsertScenario(previous, savedScenario)
@@ -493,7 +478,6 @@ export function TemplatesScreen({
 
   function removeTemplateFromViews(id: string) {
     screenCache?.invalidate(apiBaseUrl, session.token, 'templates:');
-    setAllTemplates((previous) => removeScenario(previous, id));
     setMyTemplates((previous) => removeScenario(previous, id));
     setPlatformTemplates((previous) => removeScenario(previous, id));
   }
@@ -555,8 +539,9 @@ export function TemplatesScreen({
     launchRequestRef.current = original;
     setLaunchAcceptedCount(original?.accepted.length ?? 0);
     setActionErrorMessage(original ? '创建结果尚未确认，请继续查询原请求；已受理的实例不会重复提交。' : null);
-    setLaunchDraft(original ? { templateId: original.payload.templateId, templateName: getScenarioDisplayName(template), name: original.payload.name, expiresAt: original.expiresAtInput, quantity: String(original.quantity) } : {
+    setLaunchDraft(original ? { templateId: original.payload.templateId, usePublishedVersion: original.payload.usePublishedVersion, templateName: getScenarioDisplayName(template), name: original.payload.name, expiresAt: original.expiresAtInput, quantity: String(original.quantity) } : {
       templateId: template.id,
+      usePublishedVersion: activeView === 'platform',
       templateName: getScenarioDisplayName(template),
       name: buildRangeInstanceName(template),
       expiresAt: '',
@@ -614,7 +599,7 @@ export function TemplatesScreen({
       closeEditDialog();
       setActionSuccessMessage('靶场信息已保存。');
     } catch (error: unknown) {
-      handleProtectedActionError(error, '靶场编排保存失败，请检查输入后重试。');
+      handleProtectedActionError(error, '编排中心保存失败，请检查输入后重试。');
     } finally {
       setIsSubmitting(false);
     }
@@ -682,7 +667,7 @@ export function TemplatesScreen({
       }
 
       const conflictMessage = getDeleteTemplateConflictMessage(error);
-      setActionErrorMessage(conflictMessage ?? '靶场编排删除失败，请稍后重试。');
+      setActionErrorMessage(conflictMessage ?? '编排中心删除失败，请稍后重试。');
     } finally {
       setIsSubmitting(false);
     }
@@ -698,7 +683,7 @@ export function TemplatesScreen({
     setIsSubmitting(true);
 
     try {
-      const savedTemplate = await cloneRangeTemplate(apiBaseUrl, session.token, scenario.id);
+      const savedTemplate = await cloneRangeTemplate(apiBaseUrl, session.token, scenario.id, ...(activeView === 'platform' ? ['platform'] as const : []));
       syncOwnedTemplate(savedTemplate, { addToMyTemplates: true });
       return savedTemplate;
     } catch (error: unknown) {
@@ -713,25 +698,10 @@ export function TemplatesScreen({
     setActionSuccessMessage('靶场模板副本已创建。');
   }
 
-  async function handleOpenTemplateEditor(template: Scenario) {
-    if (pendingEditorTemplateId) {
-      return;
-    }
-
-    if (workspace?.isReadOnly || canManageTemplate(template)) {
-      setPendingEditorTemplateId(template.id);
-      router.push(`/admin/scenarios/${template.id}`);
-      return;
-    }
-
+  function handleOpenTemplateEditor(template: Scenario) {
+    if (activeView !== 'mine' || pendingEditorTemplateId) return;
     setPendingEditorTemplateId(template.id);
-
-    try {
-      const savedTemplate = await cloneTemplateToOwnedScenario(template);
-      router.push(`/admin/scenarios/${savedTemplate.id}`);
-    } catch {
-      setPendingEditorTemplateId(null);
-    }
+    router.push(`/admin/scenarios/${template.id}`);
   }
 
   async function handleOpenGenerateInstance(template: Scenario) {
@@ -740,7 +710,7 @@ export function TemplatesScreen({
     }
 
     if (!template.id) {
-      setActionErrorMessage('当前靶场缺少有效标识，无法生成实例。');
+      setActionErrorMessage('当前靶场缺少有效标识，无法创建实例。');
       return;
     }
 
@@ -772,7 +742,8 @@ export function TemplatesScreen({
       if (!Number.isFinite(Date.parse(expiresAt))) { setActionErrorMessage('请选择有效的到期时间。'); return; }
       const expiryError = workspace?.provider === 'tencent_cloud' ? cloudExpiryError(expiresAt, workspace.provider) : null;
       if (expiryError) { setActionErrorMessage(expiryError); return; }
-      const payload = { templateId: launchDraft.templateId, name, expiresAt: new Date(expiresAt).toISOString() };
+      const payload = { templateId: launchDraft.templateId, name, expiresAt: new Date(expiresAt).toISOString(),
+        ...(launchDraft.usePublishedVersion ? { usePublishedVersion: true } : {}) };
       launchRequestRef.current = { fingerprint: launchFingerprint, key: crypto.randomUUID(), payload, quantity, expiresAtInput: launchDraft.expiresAt, accepted: [] };
     }
     const request = launchRequestRef.current!;
@@ -826,7 +797,7 @@ export function TemplatesScreen({
   const createTemplateAction = <Button disabled={!canProvision} onClick={() => setIsCreateDialogOpen(true)} type="button"><Plus aria-hidden="true" />新建拓扑</Button>;
 
   function canManageTemplate(template: Scenario) {
-    return !workspace?.isReadOnly && (template.canManage ?? session.isAdmin);
+    return !workspace?.isReadOnly && (template.canManage ?? Boolean(session.profile?.id && template.ownerUserId === session.profile.id));
   }
 
   return (
@@ -835,7 +806,7 @@ export function TemplatesScreen({
       {isPageActive ? <AdminActionNotice message={actionSuccessMessage} onDismiss={() => setActionSuccessMessage(null)} /> : null}
 
       <section className="admin-workbench-surface admin-pagination-surface">
-        <AdminPageHeader artwork="scenarios" description="管理可复用的演练蓝图" title="靶场编排" action={compactWorkbench ? createTemplateAction : undefined}
+        <AdminPageHeader artwork="scenarios" description="管理可复用的演练蓝图" title="编排中心" action={compactWorkbench ? createTemplateAction : undefined}
           overview={{ metrics: [
             { label: '已发布', tone: 'green', value: loadedViews[activeView] ? scenarios.filter(item => item.status === 'published').length : null },
             { label: '当前视图', tone: 'blue', value: loadedViews[activeView] ? scenarios.length : null },
@@ -849,7 +820,7 @@ export function TemplatesScreen({
             activeView={activeView}
             onSearchChange={setSearchName}
             onViewChange={(nextView) => {
-              if (nextView === 'mine' || nextView === 'platform' || (nextView === 'all' && session.isAdmin)) {
+              if (nextView === 'mine' || nextView === 'platform') {
                 setCreatorFilter('');
                 setActiveViewWithUrl(nextView);
               }
@@ -868,9 +839,8 @@ export function TemplatesScreen({
               />
             }
             views={[
-              { label: '我的拓扑', value: 'mine' },
               { label: '平台拓扑', value: 'platform' },
-              ...(session.isAdmin ? [{ label: '全部拓扑', value: 'all' }] : []),
+              { label: '我的拓扑', value: 'mine' },
             ]}
             compactViewAction
             action={!compactWorkbench ? <div className="flex flex-wrap gap-2">{createTemplateAction}</div> : undefined}
@@ -939,7 +909,7 @@ export function TemplatesScreen({
                               ? '请调整靶场名称或创建人。'
                               : activeView === 'mine'
                               ? '你可以新建一个靶场并开始编排。'
-                              : activeView === 'all' ? '当前云账号工作空间暂无拓扑。' : '平台暂时没有可用的已发布拓扑。'
+                              : '平台暂时没有可用的已发布拓扑。'
                           }
                           title="当前筛选条件下没有靶场"
                           variant="empty"
@@ -951,9 +921,10 @@ export function TemplatesScreen({
                   const rows = pagedTemplates.map((template) => {
                     const isPublished = isPublishedScenario(template);
                     const isShared = template.visibility === 'platform';
-                    const canManageCurrentTemplate = canManageTemplate(template);
+                    const mine = activeView === 'mine';
+                    const canManageCurrentTemplate = mine && canManageTemplate(template);
+                    const canModerate = !mine && session.isAdmin && isPublished && !workspace?.isReadOnly;
                     const canConsumeTemplate = canManageCurrentTemplate || isPublished;
-                    const canEnterTemplate = workspace?.isReadOnly || canManageCurrentTemplate || isShared;
 
                     return (
                       <TableRow key={template.id}>
@@ -967,7 +938,7 @@ export function TemplatesScreen({
                           {getScenarioDescription(template)}
                         </AdminDataTableCell>
                         <AdminDataTableCell column={topologyColumn!}>
-                          <div className="flex flex-wrap gap-1 text-xs text-muted-foreground">
+                          <div className="flex gap-1 whitespace-nowrap text-xs tabular-nums text-muted-foreground">
                             <span>区域 {readZoneCount(template)}</span>
                             <span>主机 {readHostCount(template)}</span>
                             <span>节点 {readNodeCount(template)}</span>
@@ -981,18 +952,19 @@ export function TemplatesScreen({
                         </AdminDataTableCell>
                         <AdminDataTableCell column={actionsColumn!}>
                           <div className="flex justify-start gap-1">
-                            <Button
-                              disabled={isSubmitting || pendingEditorTemplateId !== null || !canEnterTemplate}
-                              size="sm"
-                              type="button"
-                              onClick={() => void handleOpenTemplateEditor(template)}
-                            >
-                              {pendingEditorTemplateId === template.id ? '正在进入编排...' : '进入编排'}
-                            </Button>
-                            {isDense && canConsumeTemplate ? (
-                              <Button disabled={isSubmitting || !canLaunchRange} size="sm" type="button" variant="outline"
-                                onClick={() => void handleOpenGenerateInstance(template)}>生成实例</Button>
-                            ) : null}
+                            {mine ? (
+                              <Button
+                                disabled={isSubmitting || pendingEditorTemplateId !== null || (!canManageCurrentTemplate && !workspace?.isReadOnly)}
+                                size="sm"
+                                type="button"
+                                onClick={() => handleOpenTemplateEditor(template)}
+                              >
+                                {pendingEditorTemplateId === template.id ? '正在进入编排...' : '进入编排'}
+                              </Button>
+                            ) : (
+                              <Button disabled={isSubmitting || !canLaunchRange || !isPublished} size="sm" type="button" variant="outline"
+                                onClick={() => void handleOpenGenerateInstance(template)}>创建实例</Button>
+                            )}
                             {canConsumeTemplate ? (
                               <DropdownMenu>
                                 <DropdownMenuTrigger asChild>
@@ -1026,10 +998,13 @@ export function TemplatesScreen({
                                       )}
                                     </>
                                   ) : null}
-                                  {!isDense && <DropdownMenuItem disabled={!canLaunchRange} onSelect={() => void handleOpenGenerateInstance(template)}>
-                                    生成实例
+                                  {mine && <DropdownMenuItem disabled={!canLaunchRange} onSelect={() => void handleOpenGenerateInstance(template)}>
+                                    创建实例
                                   </DropdownMenuItem>}
-                                  {canManageCurrentTemplate ? (
+                                  {canModerate ? (
+                                    <DropdownMenuItem onSelect={() => void handleUnshareTemplate(template)}>回退为私有</DropdownMenuItem>
+                                  ) : null}
+                                  {canManageCurrentTemplate || canModerate ? (
                                     <DropdownMenuItem
                                       variant="destructive"
                                       onSelect={() => openConfirmDialog('delete', template)}
@@ -1143,8 +1118,8 @@ export function TemplatesScreen({
       </AdminDialog>
 
       <RangeInstanceCreateDialog
-        title="生成实例"
-        confirmLabel="确认生成"
+        title="创建实例"
+        confirmLabel="确认创建"
         initialFocusRef={launchNameRef}
         open={Boolean(launchDraft.templateId)}
         pending={isSubmitting}

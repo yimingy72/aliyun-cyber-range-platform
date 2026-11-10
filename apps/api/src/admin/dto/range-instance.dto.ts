@@ -1,4 +1,4 @@
-import { IsISO8601, IsInt, IsNotEmpty, IsOptional, IsString, MaxLength, Min } from 'class-validator';
+import { IsBoolean, IsISO8601, IsInt, IsNotEmpty, IsOptional, IsString, MaxLength, Min } from 'class-validator';
 
 export class CreateRangeInstanceDto {
   @IsString()
@@ -15,6 +15,10 @@ export class CreateRangeInstanceDto {
 }
 
 export class LaunchRangeInstanceDto {
+  @IsOptional()
+  @IsBoolean()
+  usePublishedVersion?: boolean;
+
   @IsString()
   @IsNotEmpty()
   templateId!: string;

@@ -18,11 +18,10 @@
 | 替换资产标签关联 | `platform_image_tags_set` | `platformImageAssetId`、完整 `tagIds` | 操作元数据 | `images:write`，owner或管理员 |
 | 收录云快照 | `platform_image_collect` | `snapshotId`、`displayName` | `visibility: private`、操作元数据 | `images:write`，仅管理员 |
 | 重命名 | `platform_image_rename` | `platformImageAssetId`、`displayName` | 操作元数据 | `images:write` |
-| 启用 | `platform_image_enable` | `platformImageAssetId` | 操作元数据 | `images:write` |
-| 停用 | `platform_image_disable` | `platformImageAssetId` | 操作元数据 | `images:write` |
-| 平台发布 | `platform_image_publish` | `platformImageAssetId` | 操作元数据 | `images:write`，仅管理员 |
-| 取消平台发布 | `platform_image_unpublish` | `platformImageAssetId` | 操作元数据 | `images:write`，仅管理员 |
-| 删除平台镜像资产 | `platform_image_remove` | `platformImageAssetId` | 操作元数据 | `images:write` |
+| 发布本人镜像 | `platform_image_publish` | `platformImageAssetId` | 操作元数据 | `images:write`，仅所有者 |
+| 回退已发布镜像 | `platform_image_unpublish` | `platformImageAssetId` | 操作元数据 | `images:write`，所有者或管理员 |
+| 移除目录收录 | `platform_image_remove` | `platformImageAssetId` | 操作元数据 | `images:write`，本人的公共镜像收录或管理员维护的无个人归属条目 |
+| 删除本人云镜像 | `platform_image_delete_owned` | `platformImageAssetId` | 操作元数据 | `images:write`，仅所有者 |
 | 查询镜像目录 | `image_catalog_list` | `scope: public\|custom` | — | `images:read` |
 | 查询 ACR 容器镜像目录 | `acr_image_catalog_list` | — | `page`、`pageSize: 20\|50\|100`、`search` | `images:read`，仅管理员 |
 | 同步 ACR 容器镜像目录 | `acr_image_catalog_sync` | — | — | `images:read`，仅管理员 |
@@ -41,9 +40,10 @@
 - 业务镜像名必须精确匹配一个当前可见、已启用的资产。无匹配、重名或停用时停止；转换后将资产的 `displayName` 写入 ECS `image`/`imageName`，将资产 `id` 写入 `platformImageAssetId`，将云镜像 ID 写入 `imageId` 与 `imageStrategy.imageId`。
 - “收录快照”先用 `image_catalog_list({ scope: 'custom' })` 或 `image_catalog_sync` 确认 `snapshotId`，由管理员再经确认调用 `platform_image_collect`。需要为私有模板收录依赖时传 `visibility: private`；已有资产的归属和可见性不会改变。
 - 收录只建立平台目录，不代表该云镜像或快照由平台创建，不写入平台创建标签、不接管其费用。平台打包/导入已有的费用账本保留原来源、owner 和回收时间，重新收录只更新目录关联。
-- `enable`/`disable` 控制能否用于后续创建；`publish`/`unpublish` 控制其他用户能否看见。两者不可混用，且都不销毁已有资源。
-- 收录、发布和取消发布仅管理员可执行。发布或取消发布前，必须检查资产返回的 `canChangeVisibility`。只有 owner-backed 资产可切换可见性；从公共或自定义云镜像目录收录的资产可能已固定为 `platform` 且 `canChangeVisibility: false`，此时不得调用发布/取消发布工具或重试，应如实说明平台限制。
-- `platform_image_remove` 仅移出平台目录，保留云镜像、快照和仍计费的台账；删除前确认未被已发布拓扑引用。
+- Web 中普通用户可浏览和收录墨攻目录内可用条目，云上镜像来源与墨攻目录同步继续仅管理员可用。
+- 所有者可在「我的镜像」发布和撤回本人镜像。管理员在「平台镜像」的「删除(回退为私有)」使用 `platform_image_unpublish`，镜像和云资源仍归原所有者。无个人归属的目录资产不能回退。镜像能否创建实例仍取决于来源可用性。
+- `platform_image_delete_owned` 仅供所有者删除来源可核验的本人导入或打包云镜像。云端确认删除后才移除资产和结清镜像资源台账，关联快照保留。
+- `platform_image_remove` 只移除符合权限的目录条目，保留云镜像、快照和仍计费的台账。
 - `image_catalog_custom_delete` 默认只允许管理员删除云镜像及关联平台资产，保留 backing snapshots 和快照费用。MCP 使用二阶段确认及相同的业务参数、操作元数据。
 - 云镜像删除保护当前模板草稿、当前仍公开的发布版本及未销毁实例的运行/草稿引用；仅历史版本引用不阻止删除。没有活动实例也可能存在有效模板引用，此时应在模板中替换镜像并检测保存；公开发布版本仍引用时，还需重新发布或回退为私有。仅删除平台目录的保护仍针对已发布拓扑。
 - MCP删除预确认也检查有效引用，阻塞时管理员会收到`references`（kind/id/name/ownerId/basis）以定位准确模板或实例；不包含凭据，也不访问云端。首次请求若返回确认要求只表示预检通过，不能当作已经删除；仅诊断引用时不要重放`confirmationId`。

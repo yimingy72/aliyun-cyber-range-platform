@@ -255,7 +255,7 @@ describe('RangeInstancesScreen', () => {
     expect(screen.getByLabelText('筛选实例名')).toBeTruthy();
     expect(screen.queryByText('1 条记录')).toBeNull();
     expect(screen.queryByText('运行期管理')).toBeNull();
-    expect(screen.queryByText('管理由靶场编排生成的运行实例，重点关注状态、创建时间和实例生命周期动作。')).toBeNull();
+    expect(screen.queryByText('管理由编排中心生成的运行实例，重点关注状态、创建时间和实例生命周期动作。')).toBeNull();
     expect(screen.getAllByText('实例 / 批次').length).toBeGreaterThan(0);
     expect(screen.getByText('创建人')).toBeTruthy();
     expect(screen.getAllByText('所属靶场').length).toBeGreaterThan(0);
@@ -417,7 +417,7 @@ describe('RangeInstancesScreen', () => {
     fireEvent.mouseDown(screen.getByRole('tab', { name: '实例列表' }), { button: 0 });
 
     expect(await screen.findByText('还没有编排实例')).toBeTruthy();
-    expect(screen.getByText('实例会在靶场编排页生成后进入这里。')).toBeTruthy();
+    expect(screen.getByText('实例会在编排中心页生成后进入这里。')).toBeTruthy();
   });
 
   it('triggers a destroy lifecycle action from the list row without sending triggeredBy', async () => {

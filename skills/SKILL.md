@@ -17,7 +17,7 @@ description: 通过 aliyun-cyber-range-platform MCP 操作阿里云或腾讯云�
 |---|---|---|
 | 镜像中心 | `image-center` | [镜像资产、云目录、标签和导入](./references/products/image-center.md) |
 | 实例管理 | `instance-management` | [独立主机、批次和共享网络](./references/products/instance-management.md) |
-| 靶场编排 | `range-authoring` | [模板查询、设计转换和模板管理](./references/products/range-authoring.md) |
+| 编排中心 | `range-authoring` | [模板查询、设计转换和模板管理](./references/products/range-authoring.md) |
 | 编排实例 | `range-instances` | [启动、运行拓扑草稿、预览应用、DNS 和回收](./references/products/range-instances.md) |
 | 用户管理 | `user-management` | [空间内用户、角色和状态](./references/products/user-management.md) |
 | 账单费用 | `billing` | [官方费用、平台归属和待核对状态](./references/products/billing.md) |

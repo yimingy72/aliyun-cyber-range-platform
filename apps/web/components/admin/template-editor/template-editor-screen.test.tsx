@@ -239,6 +239,7 @@ function normalizeTemplateFixture(template: React.ComponentProps<typeof ActualTe
   return legacyTemplate
     ? ({
         ...legacyTemplate,
+        canManage: legacyTemplate.canManage ?? true,
         status: legacyTemplate.status ?? (legacyTemplate.currentPublishedVersion ? 'published' : 'private'),
         revision: legacyTemplate.revision ?? 1,
         topologyGraph: legacyTemplate.topologyGraph ?? legacyTemplate.currentDraftVersion?.topologyGraph ?? null,
@@ -280,6 +281,7 @@ function buildUpdatedTemplateResponse(
   overrides: Record<string, unknown> = {},
 ) {
   return {
+    canManage: true,
     id: 'template-1',
     name: '企业攻防靶场',
     slug: 'enterprise-range',
@@ -4003,6 +4005,7 @@ describe('TemplateEditorScreen', () => {
   it('publishes after detection saves a normalized response and blocks subsequent local edits', async () => {
     validateAndSaveRangeTemplateMock.mockImplementationOnce(async (_url, _token, _id, payload) => ({
       ...savedTopologyFixture,
+      canManage: true,
       revision: 8,
       topologyGraph: {
         ...payload.topologyGraph,

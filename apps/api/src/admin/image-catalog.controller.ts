@@ -29,7 +29,7 @@ export class ImageCatalogController {
   }
 
   @Get('mogong')
-  async listMogong() {
+  async listMogong(@Req() request: AuthenticatedPlatformRequest) {
     const catalog = await readMogongImageCatalog();
     const { snapshots } = await this.imageCatalogService.listCustom();
     const imageIds = new Set(snapshots.filter((item) => item.provider === 'alibaba_cloud').map((item) => item.imageId));
@@ -37,7 +37,7 @@ export class ImageCatalogController {
     const items = catalog.items.filter((item) => item.active && (bound || item.imageId && imageIds.has(item.imageId))).map(({ containerReference, ...item }) => ({
       ...item, containerReferenceStatus: item.type === 'docker' ? containerReferenceStatus(containerReference) : null,
     }));
-    return { capturedAt: catalog.capturedAt, total: items.length, containersCollectable: bound && catalog.version === 2, syncAllowed: bound, items };
+    return { capturedAt: catalog.capturedAt, total: items.length, containersCollectable: bound && catalog.version === 2, syncAllowed: bound && request.adminUser.role === 'admin', items };
   }
 
   @Post('mogong/sync')
@@ -71,12 +71,12 @@ export class ImageCatalogController {
     const catalog = await readMogongImageCatalog();
     const image = catalog.items.find((item) => String(item.id) === id);
     if (!image) throw new NotFoundException('墨攻镜像不存在');
-    if (image.type === 'docker') return this.containerImages.collectOne(image.id, request.adminUser);
+    if (image.type === 'docker') return this.containerImages.collectOne(image.id);
     const { snapshots } = await this.imageCatalogService.listCustom();
     const snapshot = snapshots.find((item) => item.provider === 'alibaba_cloud' && item.imageId === image.imageId);
     if (!snapshot) throw new ConflictException('当前账号和地域的云镜像目录未匹配，请先同步云镜像');
     if (!isCollectableMogongImage(image)) throw new BadRequestException('该墨攻镜像已停用、废弃或不支持收录');
-    return this.imageCatalogService.collectPlatformAsset(snapshot.id, image.name, request.adminUser);
+    return this.imageCatalogService.collectMogongAsset(snapshot.id, image.name, request.adminUser);
   }
 
   @Post('public/sync')

@@ -1,3 +1,4 @@
+import { listAllInstanceOwners } from './instance-list-owner';
 import {
   BadRequestException,
   ConflictException,
@@ -47,10 +48,11 @@ export class SingleInstancesService {
     private readonly rangeInstanceNodeActionsService: RangeInstanceNodeActionsService,
   ) {}
 
-  async list(currentUser: SessionUserProfile, view: 'active' | 'history' = 'active') {
+  async list(currentUser: SessionUserProfile, view: 'active' | 'history' = 'active', owner?: string) {
+    const allOwners = listAllInstanceOwners(currentUser, owner);
     const instances = await this.adminRepository.listRangeInstances();
     const visibleInstances =
-      currentUser.role === 'admin'
+      allOwners
         ? instances
         : instances.filter((instance) => this.isOwnedBy(instance.ownerUserId, instance.createdBy, currentUser.id));
     const batches = await this.adminRepository.listSingleInstanceBatchesWithInstances();
@@ -61,7 +63,7 @@ export class SingleInstancesService {
         (!instance.singleInstanceBatchId || !batchIds.has(instance.singleInstanceBatchId)),
     );
     const visibleBatches =
-      currentUser.role === 'admin'
+      allOwners
         ? batches
         : batches
             .filter((entry) => this.isOwnedBy(entry.batch.ownerUserId, entry.batch.createdBy, currentUser.id))
@@ -618,7 +620,7 @@ export class SingleInstancesService {
   }
 
   private isOwnedBy(ownerUserId: string | null, createdBy: string | null, currentUserId: string) {
-    return ownerUserId === currentUserId || createdBy === currentUserId;
+    return (ownerUserId ?? createdBy) === currentUserId;
   }
 }
 

@@ -44,6 +44,7 @@ function createClientStub(): ClientStub {
     unpublishPlatformImage: vi.fn().mockResolvedValue({ id: 'img-1', visibility: 'private' }),
     enablePlatformImage: vi.fn().mockResolvedValue({ id: 'img-1', enabled: true }),
     disablePlatformImage: vi.fn().mockResolvedValue({ id: 'img-1', enabled: false }),
+    deleteOwnedPlatformImage: vi.fn(),
     removePlatformImage: vi.fn().mockResolvedValue(undefined),
     listImageCatalog: vi.fn().mockResolvedValue({ snapshots: [], catalogItems: [] }),
     syncImageCatalog: vi.fn().mockResolvedValue({ snapshots: [], catalogItems: [] }),
@@ -185,7 +186,7 @@ describe('mcp http e2e', () => {
     try {
       const names = (await client.listTools()).tools.map(tool => tool.name);
       expect(names).toContain('platform_image_tag_list'); expect(names).toContain('platform_image_tags_set');
-      for (const name of ['platform_image_tag_create', 'platform_image_tag_delete', 'platform_image_collect', 'platform_image_publish', 'platform_image_unpublish']) expect(names).not.toContain(name);
+      for (const name of ['platform_image_tag_create', 'platform_image_tag_delete', 'platform_image_collect']) expect(names).not.toContain(name);
       await expect(client.callTool({ name: 'platform_image_tag_create', arguments: { name: 'blocked' } })).resolves.toMatchObject({ isError: true });
       expect(platformClient.createPlatformImageTag).not.toHaveBeenCalled();
     } finally { await client.close(); }

@@ -46,14 +46,15 @@ export const rangeTools: ToolDefinition[] = [
   {
     name: 'range_instance_list',
     title: '查询编排实例',
-    description: '对应编排实例页的“实例列表/实例历史”。查询当前用户可见的综合靶场实例；view=active 查询未销毁实例，view=history 查询已销毁历史。',
+    description: '对应编排实例页的“实例列表/实例历史”。查询本人综合靶场实例（管理员可用 owner=all 查询当前空间全部）；view=active 查询未销毁实例，view=history 查询已销毁历史。',
     requiredScopes: ['ranges:read'],
     readOnlyHint: true,
     inputSchema: rangeListInputSchema,
     outputSchema: resourceListOutputSchema,
     async call(context, args) {
+      const { view = 'active', owner } = rangeListInputSchema.parse(args);
       return redactRangeInstanceSecrets(
-        await context.client.listRangeInstances((args as { view?: 'active' | 'history' }).view ?? 'active'),
+        await context.client.listRangeInstances(view, ...(owner ? [owner] as const : [])),
       );
     },
   },

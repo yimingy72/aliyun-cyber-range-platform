@@ -22,7 +22,8 @@ export type AdminSessionPayload = {
 
 export type AdminUserRole = AdminProfile['role'];
 export type ResourceVisibility = 'private' | 'platform';
-export type RangeTemplateView = 'platform' | 'mine' | 'all';
+export type RangeTemplateView = 'platform' | 'mine';
+export type InstanceOwnerFilter = 'mine' | 'all';
 export type PlatformImageView = 'platform' | 'mine';
 
 export type AdminUserStatus = 'active' | 'disabled';
@@ -321,6 +322,7 @@ export type RangeInstanceCreateInput = {
 };
 
 export type RangeInstanceLaunchInput = {
+  usePublishedVersion?: boolean;
   templateId: string;
   name: string;
   expiresAt: string;

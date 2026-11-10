@@ -963,11 +963,9 @@ export class PrismaAdminRepository implements AdminRepository {
     });
   }
 
-  async deleteRangeTemplate(id: string): Promise<void> {
+  async deleteRangeTemplate(id: string, expectedRevision?: number): Promise<void> {
     await this.prisma.rangeTemplate.delete({
-      where: {
-        id,
-      },
+      where: { id, ...(expectedRevision === undefined ? {} : { revision: expectedRevision, visibility: 'platform' }) },
     });
   }
 
@@ -2209,18 +2207,24 @@ export class PrismaAdminRepository implements AdminRepository {
     return toPlatformImageAssetRecord(asset as PlatformImageAssetWithTags);
   }
 
-  async updatePlatformImageAsset(id: string, input: { displayName: string }): Promise<PlatformImageAssetRecord> {
+  async updatePlatformImageAsset(id: string, input: { displayName: string; visibility?: PlatformImageAssetRecord['visibility'] },
+    expected?: Pick<PlatformImageAssetRecord, 'ownerUserId' | 'visibility'>): Promise<PlatformImageAssetRecord> {
     const asset = await this.prisma.platformImageAsset.update({
-      where: {
-        id,
-      },
-      data: {
-        displayName: input.displayName,
-      },
+      where: { id, ...expected },
+      data: input,
       include: platformImageAssetTagInclude,
     });
 
     return toPlatformImageAssetRecord(asset as PlatformImageAssetWithTags);
+  }
+
+  async findImageImportOwner(snapshot: CloudImageSnapshotRecord, assetId?: string): Promise<string | null> {
+    const job = await this.prisma.imageImportJob.findFirst({
+      where: { cloudProvider: snapshot.provider, cloudAccountUid: snapshot.accountUid, regionId: snapshot.regionId,
+        imageId: snapshot.imageId, sourceSnapshotId: snapshot.id, ...(assetId ? { platformImageAssetId: assetId } : {}) },
+      select: { ownerUserId: true },
+    });
+    return job?.ownerUserId ?? null;
   }
 
   async setPlatformImageAssetEnabled(id: string, enabled: boolean): Promise<PlatformImageAssetRecord> {

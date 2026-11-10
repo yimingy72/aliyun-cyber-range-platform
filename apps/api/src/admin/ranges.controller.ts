@@ -32,8 +32,8 @@ export class RangesController {
   ) {}
 
   @Get()
-  list(@Req() request: AuthenticatedAdminRequest, @Query('view') view?: 'active' | 'history') {
-    return this.rangeInstancesService.list(request.adminUser, view);
+  list(@Req() request: AuthenticatedAdminRequest, @Query('view') view?: 'active' | 'history', @Query('owner') owner?: string) {
+    return this.rangeInstancesService.list(request.adminUser, view, owner);
   }
 
   @Get(':id')

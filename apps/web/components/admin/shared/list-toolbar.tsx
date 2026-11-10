@@ -41,7 +41,7 @@ export function ListToolbar({ searchValue, activeView, onSearchChange, onViewCha
             value={searchValue}
           />
         </div>
-        <TabsList aria-label="靶场编排视图">
+        <TabsList aria-label="编排中心视图">
           <TabsTrigger value="mine">我的拓扑</TabsTrigger>
           <TabsTrigger value="platform">平台拓扑</TabsTrigger>
         </TabsList>

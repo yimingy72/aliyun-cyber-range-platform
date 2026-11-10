@@ -97,7 +97,7 @@ export const billingExportPlatformCsvInputSchema = billingWindowSchema.refine(bi
 export const billingExportUsersCsvInputSchema = billingWindowSchema.refine(billingWindowValid, billingWindowError);
 export const billingExportUserCsvInputSchema = billingWindowSchema.extend({ userId: identifier.describe('要导出费用明细的平台用户 ID。') }).refine(billingWindowValid, billingWindowError);
 
-export const rangeListInputSchema = z.strictObject({ view: viewSchema });
+export const rangeListInputSchema = z.strictObject({ view: viewSchema, owner: z.enum(['mine', 'all']).optional() });
 export const rangeInstanceIdInputSchema = z.strictObject({ rangeInstanceId: identifier });
 export const rangeInstanceGetInputSchema = rangeInstanceIdInputSchema.extend({
   includeNetworkDiagnostics: z.boolean().optional().describe('仅在需要核验网络时设为 true；只读查询该实例绑定账号和地域中的 ECS、网卡、安全组、ACL、NAT 与路由白名单事实，不接受云资源 ID。'),
@@ -158,7 +158,7 @@ export const rangeNodeOpenVncInputSchema = z.strictObject({
   nodeId: identifier.describe('编排实例详情中 ECS 节点的 ID。'),
 });
 
-export const singleInstanceListInputSchema = z.strictObject({ view: viewSchema });
+export const singleInstanceListInputSchema = z.strictObject({ view: viewSchema, owner: z.enum(['mine', 'all']).optional() });
 export const singleInstanceIdInputSchema = z.strictObject({ singleInstanceId: identifier });
 export const singleInstanceLaunchInputSchema = operationSchema.extend({
   name: identifier,
@@ -178,7 +178,7 @@ export const singleInstanceRetryInputSchema = operationSchema.extend({ singleIns
 export const singleInstanceRebootInputSchema = operationSchema.extend({ singleInstanceId: identifier });
 export const singleInstanceOpenVncInputSchema = z.strictObject({ singleInstanceId: identifier });
 export const singleInstancePackImageInputSchema = operationSchema.extend(singleInstanceActionFields);
-export const singleInstanceBatchExportCsvInputSchema = z.strictObject({ batchId: identifier, view: viewSchema });
+export const singleInstanceBatchExportCsvInputSchema = z.strictObject({ batchId: identifier, view: viewSchema, owner: z.enum(['mine', 'all']).optional() });
 
 export const adminUserListInputSchema = z.strictObject({});
 export const adminUserCreateInputSchema = operationSchema.extend({

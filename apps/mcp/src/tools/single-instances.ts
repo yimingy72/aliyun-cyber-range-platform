@@ -99,13 +99,14 @@ export const singleInstanceTools: ToolDefinition[] = [
   {
     name: 'single_instance_list',
     title: '查询独立实例',
-    description: '对应实例管理页的实例列表和历史。返回当前调用者可见的独立实例及其批次；view=active 查询当前实例，view=history 查询历史记录。',
+    description: '对应实例管理页的实例列表和历史。返回本人的独立实例及其批次（管理员可用 owner=all 查询当前空间全部）；view=active 查询当前实例，view=history 查询历史记录。',
     requiredScopes: ['instances:read'],
     readOnlyHint: true,
     inputSchema: singleInstanceListInputSchema,
     outputSchema: singleInstanceListOutputSchema,
     call(context, args) {
-      return context.client.listSingleInstances((args as { view?: 'active' | 'history' }).view ?? 'active').then(redactSingleInstanceCredentials);
+      const { view = 'active', owner } = singleInstanceListInputSchema.parse(args);
+      return context.client.listSingleInstances(view, ...(owner ? [owner] as const : [])).then(redactSingleInstanceCredentials);
     },
   },
   {
@@ -325,11 +326,10 @@ export const singleInstanceTools: ToolDefinition[] = [
     inputSchema: singleInstanceBatchExportCsvInputSchema,
     outputSchema: csvExportOutputSchema,
     async call(context, args) {
-      const input = args as { batchId: string; view?: 'active' | 'history' };
-      const lists = input.view ? [await context.client.listSingleInstances(input.view)] : await Promise.all([
-        context.client.listSingleInstances('active'),
-        context.client.listSingleInstances('history'),
-      ]);
+      const input = singleInstanceBatchExportCsvInputSchema.parse(args);
+      const list = (view: 'active' | 'history') =>
+        context.client.listSingleInstances(view, ...(input.owner ? [input.owner] as const : []));
+      const lists = input.view ? [await list(input.view)] : await Promise.all([list('active'), list('history')]);
       const matches=lists.flatMap(list=>list.batches).filter(entry=>entry.batch.id===input.batchId);
       const group=matches[0]?{batch:matches[0].batch,instances:[...new Map(matches.flatMap(entry=>entry.instances).map(instance=>[instance.id,instance])).values()]}:null;
 

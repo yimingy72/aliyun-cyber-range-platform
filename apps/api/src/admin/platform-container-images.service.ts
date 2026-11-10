@@ -33,9 +33,8 @@ export class PlatformContainerImagesService {
       imageReference: image.containerReference, referenceStatus: containerReferenceStatus(image.containerReference) };
   }
 
-  private writableWorkspace(currentUser: SessionUserProfile) {
+  private writableWorkspace() {
     const scope = getCurrentCloudWorkspaceScope();
-    if (currentUser.role !== 'admin') throw new ForbiddenException('Admin access required');
     if (!scope || 'system' in scope || scope.isReadOnly) throw new ForbiddenException('当前工作空间不可写。');
     return scope.cloudWorkspaceId;
   }
@@ -53,7 +52,8 @@ export class PlatformContainerImagesService {
   }
 
   async collectAll(expectedDigest: string, currentUser: SessionUserProfile) {
-    const workspaceId = this.writableWorkspace(currentUser);
+    if (currentUser.role !== 'admin') throw new ForbiddenException('Admin access required');
+    const workspaceId = this.writableWorkspace();
     const catalog = await this.source();
     if (mogongContainerDigest(catalog.items) !== expectedDigest) throw new ConflictException('墨攻目录已变化，请重新预览。');
     const items = catalog.items.filter(isCollectableMogongContainer).map(image => this.toRecord(image, workspaceId));
@@ -61,8 +61,8 @@ export class PlatformContainerImagesService {
     return { added: result.count, alreadyCollected: items.length - result.count, eligible: items.length };
   }
 
-  async collectOne(sourceId: number, currentUser: SessionUserProfile) {
-    const workspaceId = this.writableWorkspace(currentUser);
+  async collectOne(sourceId: number) {
+    const workspaceId = this.writableWorkspace();
     const catalog = await this.source();
     const image = catalog.items.find(item => item.id === sourceId);
     if (!image) throw new NotFoundException('墨攻镜像不存在。');
@@ -74,7 +74,8 @@ export class PlatformContainerImagesService {
   }
 
   async remove(id: string, currentUser: SessionUserProfile) {
-    this.writableWorkspace(currentUser);
+    if (currentUser.role !== 'admin') throw new ForbiddenException('Admin access required');
+    this.writableWorkspace();
     const result = await this.prisma.platformContainerImage.deleteMany({ where: { id } });
     if (!result.count) throw new NotFoundException('容器镜像资产不存在。');
     return { removed: true, id };
