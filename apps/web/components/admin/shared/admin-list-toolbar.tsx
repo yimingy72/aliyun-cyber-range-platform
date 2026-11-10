@@ -6,10 +6,14 @@ import { Search } from 'lucide-react';
 import { Input } from '@/components/ui/input';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { cn } from '@/lib/utils';
+import { usePlatformTheme } from '../platform-theme-menu';
+import { AdminWorkbenchControls } from './admin-workbench-controls';
+import { AdminWorkbenchIcon, type WorkbenchIconProps } from './admin-workbench-icon';
 
 export type AdminListToolbarView = {
   value: string;
   label: string;
+  celIcon?: WorkbenchIconProps;
 };
 
 interface AdminListToolbarBaseProps {
@@ -21,6 +25,9 @@ interface AdminListToolbarBaseProps {
   action?: ReactNode;
   searchControls?: ReactNode;
   compactViewAction?: boolean;
+  listTitle?: string;
+  celViewsInBand?: boolean;
+  celHeadingControls?: ReactNode;
 }
 
 type AdminListToolbarProps =
@@ -60,15 +67,17 @@ function SearchField({
 }
 
 function ToolbarLayout({ search, controls }: { search: ReactNode; controls?: ReactNode }) {
+  const actions = controls ? <div className="flex flex-wrap items-center gap-2">{controls}</div> : null;
   return (
     <div className="flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-center sm:justify-between">
       {search}
-      {controls ? <div className="flex flex-wrap items-center gap-2">{controls}</div> : null}
+      {actions}
     </div>
   );
 }
 
 export function AdminListToolbar(props: AdminListToolbarProps) {
+  const isCel = usePlatformTheme() === 'cel';
   const search = (
     <div className="flex min-w-0 flex-wrap items-center gap-2 sm:shrink-0" data-testid="admin-list-toolbar-search-controls">
       <SearchField {...props} compact={Boolean(props.searchControls)} />
@@ -77,31 +86,27 @@ export function AdminListToolbar(props: AdminListToolbarProps) {
   );
 
   if (props.views) {
+    const views = (
+      <TabsList aria-label={props.searchLabel + '视图'} variant="line">
+        {props.views.map(({ value, label, celIcon }) => (
+          <TabsTrigger key={value} value={value}>
+            {isCel && props.celViewsInBand && celIcon && <AdminWorkbenchIcon {...celIcon} />}
+            {label}
+          </TabsTrigger>
+        ))}
+      </TabsList>
+    );
+    const actions = props.action ? (
+      <div className={cn('flex shrink-0', props.compactViewAction ? 'justify-start' : 'w-36 justify-end')}
+        data-testid="admin-list-toolbar-view-action">{props.action}</div>
+    ) : null;
     return (
       <Tabs className="min-h-0 flex-1 gap-3" onValueChange={props.onViewChange} value={props.activeView}>
-        <ToolbarLayout
-          controls={
-            <>
-              <TabsList aria-label={`${props.searchLabel}视图`} variant="line">
-                {props.views.map((view) => (
-                  <TabsTrigger key={view.value} value={view.value}>
-                    {view.label}
-                  </TabsTrigger>
-                ))}
-              </TabsList>
-              <div
-                className={cn(
-                  'flex shrink-0',
-                  props.compactViewAction ? 'justify-start' : 'w-36 justify-end',
-                )}
-                data-testid="admin-list-toolbar-view-action"
-              >
-                {props.action}
-              </div>
-            </>
-          }
-          search={search}
-        />
+        {isCel ? <>
+          {props.celViewsInBand && <div className="cel-source-tabs">{views}</div>}
+          <AdminWorkbenchControls title={props.listTitle}
+            views={props.celViewsInBand ? props.celHeadingControls : views} actions={actions} filters={search} />
+        </> : <ToolbarLayout controls={<>{views}{actions}</>} search={search} />}
         <TabsContent className="admin-list-toolbar-panel flex min-h-0 flex-1 flex-col" value={props.activeView}>
           {props.children}
         </TabsContent>
@@ -111,7 +116,7 @@ export function AdminListToolbar(props: AdminListToolbarProps) {
 
   return (
     <>
-      <ToolbarLayout controls={props.action} search={search} />
+      {isCel ? <AdminWorkbenchControls title={props.listTitle} actions={props.action} filters={search} /> : <ToolbarLayout controls={props.action} search={search} />}
       {props.children}
     </>
   );

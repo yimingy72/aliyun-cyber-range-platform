@@ -20,7 +20,10 @@ export function PlatformBrand({ className, compact = false }: PlatformBrandProps
         src="/brand/platform-mark.svg"
         width={compact ? 24 : 28}
       />
-      <span className="truncate font-semibold">综合靶场平台</span>
+      <span className="truncate font-semibold">
+        综合靶场平台
+        <span className="cel-brand-wordmark hidden" lang="en">RANGE CONTROL</span>
+      </span>
     </span>
   );
 }

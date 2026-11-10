@@ -6,9 +6,9 @@ import { Label } from '@/components/ui/label';
 import { Combobox } from '@/components/ui/combobox';
 import { Textarea } from '@/components/ui/textarea';
 import { Button } from '@/components/ui/button';
+import { TopologyPropertyPanelShell } from './topology-property-panel-shell';
 
 import React, { type ReactNode, createContext, useContext, useEffect, useId, useRef, useState } from 'react';
-import { PanelRightClose } from 'lucide-react';
 import { nextAvailableGraphId, validateAliyunEcsPassword } from '@aliyun-cyber-range/scenario-runtime';
 import type { InstanceTypeAvailabilitySnapshot, PlatformImageAsset } from '../../../lib/admin-types';
 import type {
@@ -1405,23 +1405,7 @@ export function TemplatePropertyPanel({
   }
 
   return (
-    <aside className="template-editor-panel template-property-panel">
-      <div className="admin-section-header template-property-panel-header">
-        <h2>属性面板</h2>
-        {onClose ? (
-          <Button variant="ghost"
-            aria-label="收起节点属性"
-            className="template-property-panel-close"
-            onClick={onClose}
-            title="收起节点属性"
-            type="button"
-          >
-            <PanelRightClose aria-hidden="true" />
-          </Button>
-        ) : null}
-      </div>
-
-      <div ref={shellRef} className="template-property-shell">
+    <TopologyPropertyPanelShell kind="node" closeLabel="收起节点属性" onClose={onClose} contentRef={shellRef}>
         {selectedNode ? (
           <PropertyFields className="template-property-readonly-shell" disabled={readOnly}>
             <div className="template-property-stack">
@@ -1444,7 +1428,6 @@ export function TemplatePropertyPanel({
             <strong>选择节点后配置</strong>
           </div>
         )}
-      </div>
-    </aside>
+    </TopologyPropertyPanelShell>
   );
 }

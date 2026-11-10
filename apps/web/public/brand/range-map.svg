@@ -1,0 +1,26 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 394 212" fill="none">
+      <g stroke="#1a1a2e" stroke-width="3">
+        <path d="M20 159h57v-36h31m177-41h32V53h52M54 179h35m213 0h47" />
+        <path d="M15 154h11v11H15zM361 47h13v13h-13z" fill="#f1c40f" />
+        <path d="M72 119h10v10H72zM312 76h10v10h-10z" fill="#fafaf5" />
+        <path d="m65 37 4 12 12 4-12 4-4 12-4-12-12-4 12-4 4-12Z" fill="#fafaf5" />
+        <path d="m339 108 5 16 16 5-16 5-5 16-5-16-16-5 16-5 5-16Z" fill="#f1c40f" />
+        <path d="M51 84h18m-9-9v18m279 75h9m-4.5-4.5v9" />
+        <g transform="rotate(-7 198 104)">
+          <path d="M99 35h203v146H99z" fill="#1a1a2e" />
+          <path d="M95 31h203v146H95z" fill="#fafaf5" />
+          <path d="M95 31h203v29H95z" fill="#f1c40f" />
+          <path d="M108 44h8m162 0h8" />
+          <path d="M149 113h47V88h44m-44 25v30h44" />
+          <path d="M190 107h12v12h-12z" fill="#4ea8de" />
+          <path d="M116 94h44v41h-44z" fill="#1a1a2e" />
+          <path d="M112 90h44v41h-44z" fill="#4ea8de" />
+          <path d="M121 101h26v19h-26z" fill="#fafaf5" />
+          <path d="M121 114h26m-21-6h3" />
+          <path d="M240 75h36v27h-36z" fill="#2ecc71" />
+          <path d="M240 129h36v27h-36z" fill="#e63946" />
+          <path d="M248 86h20m-20 54h20" />
+        </g>
+      </g>
+      <text x="194" y="50" text-anchor="middle" fill="#1a1a2e" transform="rotate(-7 198 104)" font-family="monospace" font-weight="900" font-size="13">RANGE MAP</text>
+    </svg>

@@ -1,7 +1,10 @@
 import type { Metadata } from 'next';
 import type { ReactNode } from 'react';
 
+import { initializePlatformTheme } from '@/lib/platform-theme';
+
 import './globals.css';
+import './cel-theme.css';
 
 export const metadata: Metadata = {
   title: '云上综合靶场平台',
@@ -9,12 +12,12 @@ export const metadata: Metadata = {
   icons: {
     icon: [
       {
-        url: '/platform-favicon.ico?v=shield-v1',
-        type: 'image/x-icon',
+        url: '/platform-favicon.svg?v=cel-v1',
+        type: 'image/svg+xml',
         sizes: 'any',
       },
     ],
-    shortcut: '/platform-favicon.ico?v=shield-v1',
+    shortcut: '/platform-favicon.svg?v=cel-v1',
   },
 };
 
@@ -24,7 +27,8 @@ type RootLayoutProps = {
 
 export default function RootLayout({ children }: RootLayoutProps) {
   return (
-    <html lang="zh-CN">
+    <html lang="zh-CN" suppressHydrationWarning>
+      <head><script dangerouslySetInnerHTML={{ __html: initializePlatformTheme }} /></head>
       <body>{children}</body>
     </html>
   );

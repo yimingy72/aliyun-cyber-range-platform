@@ -50,6 +50,18 @@ describe('save runtime draft as new private template', () => {
    expect(f.worker.dispatch).not.toHaveBeenCalled(); expect(f.system.getExecutionAccountContext).toHaveBeenCalledWith();
   });
  });
+ it('keeps saved visual regions when copying the instance draft into a private template', async () => {
+  const f = await fixture();
+  const regions = [{ kind: 'manual', id: 'copy-area', title: '教学标注', color: '#247a51',
+    borderStyle: 'dashed', fill: 'none', x: 12, y: 24, width: 200, height: 100 }];
+  await f.run(async () => {
+   await f.repository.updateRangeInstance(f.instance.id, { draftTopologyGraph: { ...f.instance.draftTopologyGraph, regions } });
+   const result = await f.service.saveAsNewTemplate(f.instance.id, { name: 'Copy', expectedDraftRevision: 1 }, actor, 'copy-visual-regions');
+   const copy = await f.repository.getRangeTemplateById(result.templateId as string);
+   expect(copy?.currentDraftVersion?.topologyGraph?.regions).toEqual(regions);
+   expect(f.worker.dispatch).not.toHaveBeenCalled();
+  });
+ });
  it('accepts the normal request workspace scope without an execution context field', async () => {
   const f = await fixture();
   const { cloudAccountContextId: _context, ...requestScope } = scope;

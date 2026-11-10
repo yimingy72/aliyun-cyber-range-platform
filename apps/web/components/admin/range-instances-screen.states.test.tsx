@@ -80,6 +80,34 @@ describe('RangeInstancesScreen list states', () => {
 
   afterEach(() => {
     cleanup();
+    delete document.documentElement.dataset.platformTheme;
+  });
+
+  it('retains the active overview on a direct history visit and filters the live list from it', async () => {
+    document.documentElement.dataset.platformTheme = 'cel';
+    searchParamsState.value = 'view=history';
+    window.history.replaceState(null, '', '/admin/ranges?view=history');
+    const activeRows = createPendingPromise<Array<{ id: string; name: string; status: string }>>();
+    fetchRangeInstancesMock.mockImplementation((_url, _token, { view }) => view === 'history'
+      ? Promise.resolve([{ id: 'historical', name: '历史靶场', status: 'destroyed' }])
+      : activeRows.promise);
+    fetchProvisionJobsMock.mockResolvedValue([]);
+
+    render(<RangeInstancesScreen />);
+    const overview = screen.getByRole('group', { name: '按当前实例状态筛选' });
+    expect(overview.textContent).toContain('运行中—');
+    expect(await screen.findByText('历史靶场')).toBeTruthy();
+
+    activeRows.resolve([
+      { id: 'live', name: '运行靶场', status: 'running' },
+      { id: 'starting', name: '创建靶场', status: 'creating' },
+    ]);
+    const running = await screen.findByRole('button', { name: /运行中\s*01/ });
+    expect(screen.getByRole('group', { name: '按当前实例状态筛选' })).toBe(overview);
+    fireEvent.click(running);
+    expect(await screen.findByText('运行靶场')).toBeTruthy();
+    expect(screen.queryByText('创建靶场')).toBeNull();
+    expect(screen.getByRole('tab', { name: '实例列表' }).getAttribute('aria-selected')).toBe('true');
   });
 
   it('keeps range columns and a table-body empty state for no active instances', async () => {

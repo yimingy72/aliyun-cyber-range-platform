@@ -1,3 +1,4 @@
+import type { TopologyRegion } from '@aliyun-cyber-range/scenario-runtime';
 import type { HostDnsConfig } from '@aliyun-cyber-range/scenario-runtime';
 
 export const PHASE_ONE_NODE_KINDS = ['router', 'switch', 'ecs'] as const;
@@ -240,4 +241,5 @@ export type ScenarioGraphDraft = {
   schemaVersion: string;
   nodes: TemplateNode[];
   edges: ScenarioGraphEdge[];
+  regions?: TopologyRegion[];
 };

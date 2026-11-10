@@ -23,6 +23,10 @@ export function createTopologyHistory(present: TopologySnapshot): TopologyHistor
 }
 
 export function pushTopologySnapshot(history: TopologyHistory, next: TopologySnapshot): TopologyHistory {
+  // Ordinary node edits carry the visual layer through the same undo history.
+  if (next.regions === undefined && history.present.regions !== undefined) {
+    next = { ...next, regions: history.present.regions };
+  }
   return JSON.stringify(history.present) === JSON.stringify(next)
     ? history
     : {

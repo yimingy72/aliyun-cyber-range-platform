@@ -11,6 +11,7 @@ import {
   validateAliyunEcsPassword,
 } from '@aliyun-cyber-range/scenario-runtime';
 
+import { readTopologyRegions, topologyRegionFields, type TopologyRegion } from '@aliyun-cyber-range/scenario-runtime';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 
@@ -56,6 +57,7 @@ import {
 } from './topology-flow-history';
 import { layoutTopology, type TopologyLayoutSize } from './topology-flow-layout';
 import { TopologyFlowCanvas } from './topology-flow-canvas';
+import { clearTopologyObjects, hasSameTopologySelection } from './topology-flow-types';
 import type {
   TopologySelection,
   TopologySnapshot,
@@ -91,17 +93,6 @@ type NewTemplateDraft = RangeTemplate & {
   draftId: string;
 };
 
-function hasSameTopologySelection(left: TopologySelection, right: TopologySelection) {
-  if (left.nodeIds.length !== right.nodeIds.length || left.edgeIds.length !== right.edgeIds.length) {
-    return false;
-  }
-
-  const leftNodeIds = new Set(left.nodeIds);
-  const leftEdgeIds = new Set(left.edgeIds);
-
-  return right.nodeIds.every((nodeId) => leftNodeIds.has(nodeId))
-    && right.edgeIds.every((edgeId) => leftEdgeIds.has(edgeId));
-}
 
 function TemplatePropertyPanelPlaceholder() {
   return (
@@ -253,6 +244,7 @@ function readTopologyGraphFromCache(
             : SCENARIO_GRAPH_SCHEMA_VERSION,
         nodes: topologyGraph.nodes as DraftTopologyGraph['nodes'],
         edges: topologyGraph.edges as DraftTopologyGraph['edges'],
+        ...topologyRegionFields(topologyGraph.regions),
         ...(readTopologyViewport(topologyGraph.viewport)
           ? { viewport: readTopologyViewport(topologyGraph.viewport)! }
           : {}),
@@ -309,6 +301,7 @@ function readPersistedTopologyGraphSignature(template: RangeTemplate | null) {
     topologyGraph && Array.isArray((topologyGraph as { edges?: unknown }).edges)
       ? readEdgesFromRawTopologyGraph(topologyGraph)
       : [],
+    topologyGraph?.regions,
   );
 }
 
@@ -322,8 +315,8 @@ function readResolvedTopologyGraph(template: RangeTemplate | null, fallbackTempl
   );
 }
 
-function readGraphSignature(nodes: TemplateNode[], edges: TemplateEdge[]) {
-  return JSON.stringify({ nodes, edges });
+function readGraphSignature(nodes: TemplateNode[], edges: TemplateEdge[], regions?: unknown) {
+  return JSON.stringify({ nodes, edges, ...topologyRegionFields(regions) });
 }
 
 function readNodesFromRawTopologyGraph(topologyGraph: Record<string, unknown>) {
@@ -1128,6 +1121,7 @@ export function TemplateEditorScreen({
   const [edges, setEdges] = useState<TemplateEdge[]>(() =>
     readEdgesFromTemplate(readInitialTemplate(providedTemplate, templateId), templateId),
   );
+  const [regions, setRegions] = useState(() => readTopologyRegions(readResolvedTopologyGraph(readInitialTemplate(providedTemplate, templateId), templateId)?.regions));
   const [viewport, setViewport] = useState<TopologyViewport | null>(() =>
     readViewportFromTemplate(readInitialTemplate(providedTemplate, templateId), templateId),
   );
@@ -1160,11 +1154,11 @@ export function TemplateEditorScreen({
     null,
   );
   const topologyCacheKey = useMemo(() => readTopologyCacheKey(template, templateId), [template, templateId]);
-  const graphSignature = useMemo(() => readGraphSignature(nodes, edges), [edges, nodes]);
+  const graphSignature = useMemo(() => readGraphSignature(nodes, edges, regions), [edges, nodes, regions]);
   const savedGraphSignature = useMemo(() => {
     // Compare editor shapes, without treating a restored local draft as saved.
     const savedGraph = readTemplateTopologyGraph(template);
-    return readGraphSignature(readNodesFromTopologyGraph(savedGraph, template), readEdgesFromTopologyGraph(savedGraph));
+    return readGraphSignature(readNodesFromTopologyGraph(savedGraph, template), readEdgesFromTopologyGraph(savedGraph), savedGraph?.regions);
   }, [template]);
   const lastPersistedGraphRef = useRef('');
 
@@ -1175,7 +1169,7 @@ export function TemplateEditorScreen({
   const historyRef = useRef<TopologyHistory | null>(null);
 
   if (!historyRef.current) {
-    historyRef.current = createTopologyHistory({ nodes, edges, viewport });
+    historyRef.current = createTopologyHistory({ nodes, edges, viewport, ...topologyRegionFields(regions) });
   }
 
   const [, setHistoryState] = useState<TopologyHistory>(historyRef.current);
@@ -1186,9 +1180,11 @@ export function TemplateEditorScreen({
     const nextNodes = readNodesFromTemplate(nextTemplate, templateId);
     const nextEdges = readEdgesFromTemplate(nextTemplate, templateId);
     const nextViewport = readViewportFromTemplate(nextTemplate, templateId);
+    const nextRegions = readTopologyRegions(readResolvedTopologyGraph(nextTemplate, templateId)?.regions);
     setTemplate(nextTemplate);
     setNodes(nextNodes);
     setEdges(nextEdges);
+    setRegions(nextRegions);
     setViewport(nextViewport);
     setSelection({ nodeIds: [], edgeIds: [] });
     setIsPropertyPanelOpen(false);
@@ -1197,6 +1193,7 @@ export function TemplateEditorScreen({
       nodes: nextNodes,
       edges: nextEdges,
       viewport: nextViewport,
+      ...topologyRegionFields(nextRegions),
     });
     setHistoryState(historyRef.current);
   }
@@ -1211,6 +1208,7 @@ export function TemplateEditorScreen({
         schemaVersion: SCENARIO_GRAPH_SCHEMA_VERSION,
         nodes: currentNodes,
         edges: currentEdges,
+        ...topologyRegionFields(regions),
       } satisfies ScenarioGraphDraft, currentViewport) satisfies DraftTopologyGraph,
     };
   }
@@ -1451,7 +1449,7 @@ export function TemplateEditorScreen({
 
   const selectedNode = useMemo(
     () =>
-      selection.nodeIds.length === 1 && selection.edgeIds.length === 0
+      !selection.regionKey && selection.nodeIds.length === 1 && selection.edgeIds.length === 0
         ? nodes.find((node) => node.id === selection.nodeIds[0]) ?? null
         : null,
     [nodes, selection],
@@ -1531,10 +1529,11 @@ export function TemplateEditorScreen({
         schemaVersion: SCENARIO_GRAPH_SCHEMA_VERSION,
         nodes,
         edges,
+        ...topologyRegionFields(regions),
       } satisfies ScenarioGraphDraft, viewport),
       lastPersistedGraphRef.current,
     );
-  }, [edges, nodes, template, topologyCacheKey, viewport]);
+  }, [edges, nodes, regions, template, topologyCacheKey, viewport]);
   const linkedSwitchIdsByHostId = useMemo(() => {
     const nodeById = new Map(nodes.map((node) => [node.id, node]));
     const nextMap: Record<string, string[]> = {};
@@ -1559,8 +1558,14 @@ export function TemplateEditorScreen({
     setHistoryState(nextHistory);
     setNodes(next.nodes);
     setEdges(next.edges);
+    if (next.regions) setRegions(next.regions);
     setViewport(next.viewport);
     setStatusMessage(message);
+  }
+
+  function handleRegionsChange(nextRegions: TopologyRegion[]) {
+    if (!canEdit || isSubmitting) return;
+    commitSnapshot({ nodes, edges, viewport, regions: nextRegions }, '已更新画布区域。');
   }
 
   function restoreHistory(nextHistory: TopologyHistory, message: string) {
@@ -1572,8 +1577,9 @@ export function TemplateEditorScreen({
     setHistoryState(nextHistory);
     setNodes(nextHistory.present.nodes);
     setEdges(nextHistory.present.edges);
+    setRegions(nextHistory.present.regions ?? []);
     setViewport(nextHistory.present.viewport);
-    setSelection({ nodeIds: [], edgeIds: [] });
+    setSelection(clearTopologyObjects);
     setIsPropertyPanelOpen(false);
     setStatusMessage(message);
   }
@@ -1581,9 +1587,9 @@ export function TemplateEditorScreen({
   function handleSelectionChange(nextSelection: TopologySelection) {
     const nodeIds = [...new Set(nextSelection.nodeIds.filter((nodeId) => nodes.some((node) => node.id === nodeId)))];
     const edgeIds = [...new Set(nextSelection.edgeIds.filter((edgeId) => edges.some((edge) => edge.id === edgeId)))];
-    const nextSelectionState = { nodeIds, edgeIds };
+    const nextSelectionState = nextSelection.regionKey ? clearTopologyObjects(nextSelection) : { nodeIds, edgeIds };
     const selectionChanged = !hasSameTopologySelection(selection, nextSelectionState);
-    const isSingleNodeSelection = nodeIds.length === 1 && edgeIds.length === 0;
+    const isSingleNodeSelection = !nextSelection.regionKey && nodeIds.length === 1 && edgeIds.length === 0;
 
     setSelection((current) => {
       return hasSameTopologySelection(current, nextSelectionState) ? current : nextSelectionState;
@@ -2074,6 +2080,8 @@ export function TemplateEditorScreen({
           mode={canEdit ? 'edit' : 'readonly'}
           nodes={nodes}
           edges={edges}
+          regions={regions}
+          onRegionsChange={handleRegionsChange}
           viewport={viewport}
           onAddNode={handleAddNode}
           onConnect={handleFlowConnect}

@@ -1,3 +1,4 @@
+import type { TopologyRegion } from '@aliyun-cyber-range/scenario-runtime';
 import type { Edge, Node, Viewport } from '@xyflow/react';
 
 import type { TemplateEdge } from './template-editor-screen';
@@ -29,9 +30,24 @@ export type TopologySnapshot = {
   nodes: TemplateNode[];
   edges: TemplateEdge[];
   viewport: TopologyViewport | null;
+  regions?: TopologyRegion[];
 };
 
 export type TopologySelection = {
   nodeIds: string[];
   edgeIds: string[];
+  regionKey?: string;
 };
+
+export function hasSameTopologySelection(left: TopologySelection, right: TopologySelection) {
+  if (left.regionKey !== right.regionKey || left.nodeIds.length !== right.nodeIds.length || left.edgeIds.length !== right.edgeIds.length) {
+    return false;
+  }
+  const leftNodeIds = new Set(left.nodeIds);
+  const leftEdgeIds = new Set(left.edgeIds);
+  return right.nodeIds.every(id => leftNodeIds.has(id)) && right.edgeIds.every(id => leftEdgeIds.has(id));
+}
+
+export function clearTopologyObjects(selection: TopologySelection): TopologySelection {
+  return { nodeIds: [], edgeIds: [], ...(selection.regionKey ? { regionKey: selection.regionKey } : {}) };
+}

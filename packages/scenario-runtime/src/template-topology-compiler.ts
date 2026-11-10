@@ -1,3 +1,4 @@
+import { topologyRegionFields } from './topology-regions';
 import {
   buildScenarioTemplateSpecFromTopologyGraph,
 } from './topology-graph-to-scenario-template';
@@ -805,6 +806,7 @@ function cloneGraph(graph: ScenarioGraphDraft): ScenarioGraphDraft {
     schemaVersion: graph.schemaVersion || '2.0.0',
     nodes: graph.nodes ?? [],
     edges: graph.edges ?? [],
+    ...topologyRegionFields(graph.regions),
   });
 }
 

@@ -67,6 +67,7 @@ import { RangeChangePreviewDialog } from './range-change-preview-dialog';
 import { RangeNodeResetDialog } from './range-node-reset-dialog';
 import { ConfirmActionDialog } from './shared/confirm-action-dialog';
 import { Input } from '@/components/ui/input';
+import { topologyRegionFields, type TopologyRegion } from '@aliyun-cyber-range/scenario-runtime';
 import type { TemplateEdge } from './template-editor/template-editor-screen';
 import { readTopologyViewport, writeTopologyViewport } from './template-editor/topology-flow-adapter';
 import {
@@ -77,6 +78,7 @@ import {
   type TopologyHistory,
 } from './template-editor/topology-flow-history';
 import { layoutTopology, type TopologyLayoutSize } from './template-editor/topology-flow-layout';
+import { clearTopologyObjects, hasSameTopologySelection } from './template-editor/topology-flow-types';
 import type {
   TopologySelection,
   TopologySnapshot,
@@ -409,17 +411,6 @@ function readDefaultPackImageName(nodeLabel: string) {
   return `${nodeLabel || 'ecs'}-snapshot-${suffix}`;
 }
 
-function hasSameTopologySelection(left: TopologySelection, right: TopologySelection) {
-  if (left.nodeIds.length !== right.nodeIds.length || left.edgeIds.length !== right.edgeIds.length) {
-    return false;
-  }
-
-  const leftNodeIds = new Set(left.nodeIds);
-  const leftEdgeIds = new Set(left.edgeIds);
-
-  return right.nodeIds.every((nodeId) => leftNodeIds.has(nodeId))
-    && right.edgeIds.every((edgeId) => leftEdgeIds.has(edgeId));
-}
 
 function readDefaultNodeLabel(kind: TemplateNode['kind'], ordinal: number) {
   if (kind === 'router') {
@@ -770,6 +761,7 @@ function readTopologyGraphDraft(graph: Record<string, unknown> | null | undefine
     schemaVersion: typeof graph.schemaVersion === 'string' ? graph.schemaVersion : INSTANCE_TOPOLOGY_SCHEMA_VERSION,
     nodes,
     edges,
+    ...topologyRegionFields(graph.regions),
   }, readTopologyViewport(graph.viewport));
 }
 
@@ -1044,6 +1036,7 @@ export function RangeInstanceDetailScreen({
       nodes: parsed.nodes,
       edges: parsed.edges,
       viewport: readTopologyViewport(parsed.viewport),
+      ...topologyRegionFields(parsed.regions),
     };
     historyRef.current = createTopologyHistory(snapshot);
     persistedSnapshotRef.current = JSON.stringify(snapshot);
@@ -1053,6 +1046,7 @@ export function RangeInstanceDetailScreen({
       schemaVersion: parsed.schemaVersion,
       nodes: snapshot.nodes,
       edges: snapshot.edges,
+      ...topologyRegionFields(snapshot.regions),
     }, snapshot.viewport));
     setSelection({ nodeIds: [], edgeIds: [] });
   }
@@ -1320,7 +1314,7 @@ export function RangeInstanceDetailScreen({
   const topologyViewport = readTopologyViewport(topologyDraft?.viewport);
   const selectedTopologyNode = useMemo(
     () =>
-      selection.nodeIds.length === 1 && selection.edgeIds.length === 0
+      !selection.regionKey && selection.nodeIds.length === 1 && selection.edgeIds.length === 0
         ? topologyNodes.find((node) => node.id === selection.nodeIds[0]) ?? null
         : null,
     [selection, topologyNodes],
@@ -1353,6 +1347,7 @@ export function RangeInstanceDetailScreen({
   }, [topologyEdges, topologyNodes]);
   useEffect(() => {
     if (
+      !selection.regionKey &&
       selection.nodeIds.length === 0 &&
       selection.edgeIds.length === 0 &&
       topologyNodes.length > 0
@@ -1521,6 +1516,7 @@ export function RangeInstanceDetailScreen({
           schemaVersion: topologyDraft.schemaVersion,
           nodes: verifiedNodes,
           edges: topologyDraft.edges,
+          ...topologyRegionFields(topologyDraft.regions),
         },
         metadata: {
           name: metadata.name ?? detail.name ?? 'instance-draft',
@@ -1955,6 +1951,7 @@ export function RangeInstanceDetailScreen({
       nodes: topologyNodes,
       edges: topologyEdges,
       viewport: topologyViewport,
+      ...topologyRegionFields(topologyDraft?.regions),
     });
     const nextHistory = pushTopologySnapshot(baseHistory, snapshot);
     historyRef.current = nextHistory;
@@ -1964,9 +1961,14 @@ export function RangeInstanceDetailScreen({
       schemaVersion: INSTANCE_TOPOLOGY_SCHEMA_VERSION,
       nodes: nextHistory.present.nodes,
       edges: nextHistory.present.edges,
+      ...topologyRegionFields(nextHistory.present.regions),
     }, nextHistory.present.viewport));
     setSuccessMessage(null);
     setErrorMessage(null);
+  }
+
+  function handleRegionsChange(regions: TopologyRegion[]) {
+    commitTopologySnapshot({ nodes: topologyNodes, edges: topologyEdges, viewport: topologyViewport, regions }, '已更新画布区域。');
   }
 
   function restoreTopologyHistory(nextHistory: TopologyHistory, message: string) {
@@ -1981,15 +1983,16 @@ export function RangeInstanceDetailScreen({
       schemaVersion: INSTANCE_TOPOLOGY_SCHEMA_VERSION,
       nodes: nextHistory.present.nodes,
       edges: nextHistory.present.edges,
+      ...topologyRegionFields(nextHistory.present.regions),
     }, nextHistory.present.viewport));
-    setSelection({ nodeIds: [], edgeIds: [] });
+    setSelection(clearTopologyObjects);
     setChangePreview(null);
     setSuccessMessage(message);
     setErrorMessage(null);
   }
 
   function handleSelectionChange(nextSelection: TopologySelection) {
-    const validSelection: TopologySelection = {
+    const validSelection: TopologySelection = nextSelection.regionKey ? clearTopologyObjects(nextSelection) : {
       nodeIds: [...new Set(nextSelection.nodeIds.filter((nodeId) => topologyNodes.some((node) => node.id === nodeId)))],
       edgeIds: [...new Set(nextSelection.edgeIds.filter((edgeId) => topologyEdges.some((edge) => edge.id === edgeId)))],
     };
@@ -2218,6 +2221,7 @@ export function RangeInstanceDetailScreen({
       nodes: topologyNodes,
       edges: topologyEdges,
       viewport: topologyViewport,
+      ...topologyRegionFields(topologyDraft?.regions),
     });
     historyRef.current = {
       ...currentHistory,
@@ -2232,6 +2236,7 @@ export function RangeInstanceDetailScreen({
       schemaVersion: INSTANCE_TOPOLOGY_SCHEMA_VERSION,
       nodes: topologyNodes,
       edges: topologyEdges,
+      ...topologyRegionFields(topologyDraft?.regions),
     }, viewport));
   }
 
@@ -2288,7 +2293,7 @@ export function RangeInstanceDetailScreen({
                 </div>
                 <div className="range-instance-overview-item">
                   <span>当前状态</span>
-                  <strong>{detail.powerControl ? <InstancePowerBadge instance={detail} /> : getStatusLabel(detail.status)}</strong>
+                  <strong data-status={detail.powerControl ? undefined : detail.status}>{detail.powerControl ? <InstancePowerBadge instance={detail} /> : getStatusLabel(detail.status)}</strong>
                 </div>
                 <div className="range-instance-overview-item">
                   <span>创建人</span>
@@ -2447,6 +2452,8 @@ export function RangeInstanceDetailScreen({
                   deployedNodeIds={deployedNodeIds}
                   nodes={topologyNodes}
                   edges={topologyEdges}
+                  regions={topologyDraft?.regions}
+                  onRegionsChange={handleRegionsChange}
                   linkedSwitchIdsByHostId={linkedSwitchIdsByHostId}
                   instanceTypeAvailability={instanceTypeAvailability}
                   platformImageAssets={platformImageAssets}

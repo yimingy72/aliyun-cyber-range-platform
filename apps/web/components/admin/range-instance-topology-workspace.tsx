@@ -1,6 +1,7 @@
 'use client';
 
 import type { XYPosition } from '@xyflow/react';
+import type { TopologyRegion } from '@aliyun-cyber-range/scenario-runtime';
 import { useEffect, useState } from 'react';
 
 import { TopologyFlowCanvas } from './template-editor/topology-flow-canvas';
@@ -19,6 +20,8 @@ type NodePositionCommit = {
 type RangeInstanceTopologyWorkspaceProps = {
   nodes: TemplateNode[];
   edges: TemplateEdge[];
+  regions?: TopologyRegion[];
+  onRegionsChange?: (regions: TopologyRegion[]) => void;
   viewport?: TopologyViewport | null;
   selection?: TopologySelection;
   editable?: boolean;
@@ -57,6 +60,8 @@ const emptySelection: TopologySelection = {
 export function RangeInstanceTopologyWorkspace({
   nodes,
   edges,
+  regions,
+  onRegionsChange,
   viewport = null,
   selection,
   editable,
@@ -88,8 +93,8 @@ export function RangeInstanceTopologyWorkspace({
       ? { edgeIds: [], nodeIds: [selectedNodeId] }
       : emptySelection
   );
-  const selectedNode = nodes.find((node) => node.id === effectiveSelection.nodeIds[0])
-    ?? legacySelectedNode;
+  const selectedNode = effectiveSelection.regionKey ? null
+    : nodes.find((node) => node.id === effectiveSelection.nodeIds[0]) ?? legacySelectedNode;
   const [isPropertyPanelOpen, setIsPropertyPanelOpen] = useState(true);
   useEffect(() => { setIsPropertyPanelOpen(Boolean(selectedNode)); }, [selectedNode?.id]);
 
@@ -113,6 +118,8 @@ export function RangeInstanceTopologyWorkspace({
     <section className="range-instance-topology-grid" data-testid="range-instance-topology-grid">
       <TopologyFlowCanvas
         edges={edges}
+        regions={regions}
+        onRegionsChange={onRegionsChange}
         fullscreenTargetSelector=".range-instance-topology-grid"
         mode={isEditable ? 'edit' : 'readonly'}
         nodes={nodes}

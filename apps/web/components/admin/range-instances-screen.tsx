@@ -6,6 +6,9 @@ import { ChevronDown, ChevronRight, Download, Trash2 } from 'lucide-react';
 import { DropdownMenuItem } from '@/components/ui/dropdown-menu';
 
 import { Button } from '@/components/ui/button';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { instancePowerStatus } from '@/lib/instance-power-state';
+import { usePlatformTheme } from './platform-theme-menu';
 import { InstancePowerBadge, InstancePowerMenu } from './instance-power-menu';
 import { RangeInstanceCreateButton } from './range-instance-create-button';
 import { TableCell, TableRow } from '@/components/ui/table';
@@ -67,6 +70,23 @@ type ExtendedProvisionJob = ProvisionJob & {
 };
 
 type RangeListMode = 'active' | 'history';
+
+const activeStatusFilters = [
+  { value: 'running', label: '运行中', tone: 'green' },
+  { value: 'creating', label: '创建中', tone: 'blue' },
+  { value: 'destroy_failed', label: '销毁失败', tone: 'red' },
+] as const;
+const historyStatusFilters = [
+  { value: 'destroyed', label: '已销毁' },
+  { value: 'create_failed', label: '创建失败' },
+] as const;
+
+function matchesStatus(instance: RangeInstance, filter: string) {
+  if (filter === 'all') return true;
+  if (filter === 'creating') return instance.status === 'creating' || instance.status === 'pending_create';
+  if (filter === 'running') return instancePowerStatus(instance) === 'running';
+  return instance.status === filter;
+}
 
 type RangeListRecord<T> = Record<RangeListMode, T>;
 
@@ -215,6 +235,10 @@ export function RangeInstancesScreen({
     history: cachedHistorySnapshot?.data.jobs ?? [],
   }));
   const [searchName, setSearchName] = useState('');
+  const [selectedStatus, setSelectedStatus] = useState('all');
+  const isCel = usePlatformTheme() === 'cel';
+  const statusFilter = isCel ? selectedStatus : 'all';
+  const hasListFilters = isCel && (Boolean(searchName.trim()) || statusFilter !== 'all');
   const [listErrors, setListErrors] = useState<RangeListRecord<string | null>>({
     active: null,
     history: null,
@@ -300,95 +324,53 @@ export function RangeInstancesScreen({
 
     const token = session.token;
     let isActive = true;
-    const cachedSnapshot = screenCache?.read<RangeListSnapshot>(apiBaseUrl, token, `range-instances:${listMode}`);
+    function loadView(view: RangeListMode, force = false) {
+      const cachedSnapshot = screenCache?.read<RangeListSnapshot>(apiBaseUrl, token, 'range-instances:' + view);
+      function applySnapshot(snapshot: RangeListSnapshot) {
+        setInstancesByView((current) => ({ ...current, [view]: snapshot.instances }));
+        setJobsByView((current) => ({ ...current, [view]: snapshot.jobs }));
+        setLoadedViews((current) => ({ ...current, [view]: true }));
+      }
 
-    setListErrors((current) => ({
-      ...current,
-      [listMode]: null,
-    }));
+      setListErrors((current) => ({ ...current, [view]: null }));
+      if (cachedSnapshot?.isFresh && !force) {
+        applySnapshot(cachedSnapshot.data);
+        setLoadingViews((current) => ({ ...current, [view]: false }));
+        return;
+      }
 
-    if (cachedSnapshot?.isFresh && loadAttempt === 0) {
-      setInstancesByView((current) => ({
-        ...current,
-        [listMode]: cachedSnapshot.data.instances,
-      }));
-      setJobsByView((current) => ({
-        ...current,
-        [listMode]: cachedSnapshot.data.jobs,
-      }));
-      setLoadedViews((current) => ({
-        ...current,
-        [listMode]: true,
-      }));
-      setLoadingViews((current) => ({
-        ...current,
-        [listMode]: false,
-      }));
-
-      return () => {
-        isActive = false;
-      };
+      setLoadingViews((current) => ({ ...current, [view]: true }));
+      void reloadRangeInstanceRows(token, view, force)
+        .then((nextSnapshot) => {
+          if (!isActive) return;
+          applySnapshot(nextSnapshot);
+          markTableContentUpdated(view);
+          if (force) setLoadAttempt(0);
+        })
+        .catch((error: unknown) => {
+          if (!isActive) return;
+          if (isUnauthorizedAdminError(error)) {
+            session.logout();
+            router.replace('/admin/login');
+            return;
+          }
+          setListErrors((current) => ({
+            ...current,
+            [view]: '靶场实例加载失败，请刷新页面后重试。',
+          }));
+        })
+        .finally(() => {
+          if (isActive) setLoadingViews((current) => ({ ...current, [view]: false }));
+        });
     }
 
-    setLoadingViews((current) => ({
-      ...current,
-      [listMode]: true,
-    }));
-
-    void reloadRangeInstanceRows(token, listMode, loadAttempt > 0)
-      .then((nextSnapshot) => {
-        if (!isActive) {
-          return;
-        }
-
-        setInstancesByView((current) => ({
-          ...current,
-          [listMode]: nextSnapshot.instances,
-        }));
-        setJobsByView((current) => ({
-          ...current,
-          [listMode]: nextSnapshot.jobs,
-        }));
-        setLoadedViews((current) => ({
-          ...current,
-          [listMode]: true,
-        }));
-        markTableContentUpdated(listMode);
-        if (loadAttempt > 0) {
-          setLoadAttempt(0);
-        }
-      })
-      .catch((error: unknown) => {
-        if (!isActive) {
-          return;
-        }
-
-        if (isUnauthorizedAdminError(error)) {
-          session.logout();
-          router.replace('/admin/login');
-          return;
-        }
-
-        setListErrors((current) => ({
-          ...current,
-          [listMode]: '靶场实例加载失败，请刷新页面后重试。',
-        }));
-      })
-      .finally(() => {
-        if (!isActive) {
-          return;
-        }
-
-        setLoadingViews((current) => ({
-          ...current,
-          [listMode]: false,
-        }));
-      });
+    loadView(listMode, loadAttempt > 0);
+    if (isCel && listMode === 'history') loadView('active');
 
     return () => {
       isActive = false;
     };
-  }, [apiBaseUrl, isPageActive, listMode, loadAttempt, router, screenCache, session.isReady, session.token]);
+  }, [apiBaseUrl, isCel, isPageActive, listMode, loadAttempt, router, screenCache, session.isReady, session.token]);
 
   const currentJobs = jobsByView[listMode];
   const currentInstances = instancesByView[listMode];
@@ -415,7 +397,10 @@ export function RangeInstancesScreen({
 
     return matchingModeInstances;
   }, [currentInstances, listMode]);
-  const visibleGroups = useMemo(() => groupRangeInstances(visibleListInstances, searchName), [visibleListInstances, searchName]);
+  const visibleGroups = useMemo(() =>
+    groupRangeInstances(visibleListInstances, searchName)
+      .filter((group) => group.instances.some((instance) => matchesStatus(instance, statusFilter))),
+  [visibleListInstances, searchName, statusFilter]);
 
   useEffect(() => {
     if (!session.token || !isPageActive || listMode !== 'active' || isSubmittingAction !== null
@@ -447,7 +432,7 @@ export function RangeInstancesScreen({
       ...current,
       [listMode]: 1,
     }));
-  }, [listMode, searchName]);
+  }, [listMode, searchName, statusFilter]);
 
   const activePagination = getPagination(visibleGroups.length, listPages[listMode], pageSize);
   const pagedGroups = visibleGroups.slice(activePagination.startIndex, activePagination.endIndex);
@@ -649,6 +634,7 @@ export function RangeInstancesScreen({
     }
 
     setListMode(nextListMode);
+    setSelectedStatus('all');
 
     const nextSearchParams = new URLSearchParams(searchParams.toString());
     if (nextListMode === 'history') {
@@ -677,17 +663,37 @@ export function RangeInstancesScreen({
     setLoadAttempt((current) => current + 1);
   }
 
+  const createAction = <RangeInstanceCreateButton apiBaseUrl={apiBaseUrl} onCreated={retryListLoad} />;
+
   return (
-    <div className="admin-screen admin-pagination-screen">
+    <div className="admin-screen admin-pagination-screen range-list-screen">
       {actionErrorMessage ? <p className="admin-error" role="alert">{actionErrorMessage}</p> : null}
       {actionNotice ? <p className="text-sm text-muted-foreground" role="status">{actionNotice}</p> : null}
 
       <section className="admin-workbench-surface admin-pagination-surface">
-        <AdminPageHeader description="查看靶场实例状态和生命周期。" title="编排实例" />
+        <AdminPageHeader artwork="ranges"
+          action={isCel ? createAction : undefined}
+          description={isCel ? '查看每套靶场的运行状态、访问入口和生命周期。' : '查看靶场实例状态和生命周期。'}
+          title="编排实例"
+          overview={{
+            label: '按当前实例状态筛选',
+            metrics: activeStatusFilters.map(({ value, label, tone }) => ({
+              label: value === 'destroy_failed' ? '待处理' : label,
+              tone,
+              value: loadedViews.active ? instancesByView.active.filter((instance) => matchesStatus(instance, value)).length : null,
+              pressed: listMode === 'active' && statusFilter === value,
+              onClick: () => {
+                setListModeWithUrl('active');
+                setSelectedStatus(listMode === 'active' && statusFilter === value ? 'all' : value);
+              },
+            })),
+          }}
+        />
 
         <div className="mt-4 flex min-h-0 flex-1 flex-col">
           <AdminListToolbar
-            action={<RangeInstanceCreateButton apiBaseUrl={apiBaseUrl} onCreated={retryListLoad} />}
+            listTitle="实例清单"
+            action={!isCel ? createAction : undefined}
             activeView={listMode}
             onSearchChange={setSearchName}
             onViewChange={(value) => {
@@ -695,6 +701,17 @@ export function RangeInstancesScreen({
                 setListModeWithUrl(value);
               }
             }}
+            searchControls={isCel ? (
+              <Select value={statusFilter} onValueChange={setSelectedStatus}>
+                <SelectTrigger aria-label="筛选实例状态" className="min-w-36"><SelectValue /></SelectTrigger>
+                <SelectContent align="start" className="cel-range-status-options" position="popper">
+                  <SelectItem value="all">全部状态</SelectItem>
+                  {(listMode === 'active' ? activeStatusFilters : historyStatusFilters).map(({ value, label }) =>
+                    <SelectItem key={value} value={value}>{label}</SelectItem>,
+                  )}
+                </SelectContent>
+              </Select>
+            ) : undefined}
             searchLabel="筛选实例名"
             searchPlaceholder="搜索实例名"
             searchValue={searchName}
@@ -765,11 +782,11 @@ export function RangeInstancesScreen({
                       <AdminDataTableState
                         columns={tableColumns}
                         description={
-                          listMode === 'history'
+                          hasListFilters ? '试试其他关键词，或查看全部状态。' : listMode === 'history'
                             ? '实例完成销毁或创建失败后，会自动沉淀到这里。'
                             : '实例会在靶场编排页生成后进入这里。'
                         }
-                        title={listMode === 'history' ? '还没有历史实例' : '还没有编排实例'}
+                        title={hasListFilters ? '没有符合条件的实例' : listMode === 'history' ? '还没有历史实例' : '还没有编排实例'}
                         variant="empty"
                       />
                     );
