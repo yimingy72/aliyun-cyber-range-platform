@@ -62,10 +62,17 @@ describe('墨攻镜像收录', () => {
     expect(repo.collectPlatformImageAsset).not.toHaveBeenCalled();
   });
 
+  it('lets an ordinary user collect a matching VM without gaining cloud catalog privileges', async () => {
+    const { controller } = setup();
+    const user = { adminUser: { ...admin, role: 'user' } } as never;
+    await expect(controller.listMogong(user)).resolves.toMatchObject({ syncAllowed: false });
+    await expect(controller.collectMogong(user, '1')).resolves.toMatchObject({ visibility: 'platform', ownerUserId: null });
+  });
+
   it('only shows active entries matched to the current cloud catalog in an unbound workspace', async () => {
     const { controller, repo } = setup();
     repo.listImageSnapshots.mockResolvedValueOnce([snapshot, { ...snapshot, imageId: 'm-disabled' }]);
-    const result = await controller.listMogong();
+    const result = await controller.listMogong(request);
     expect(result.items.map((item) => item.id)).toEqual([1]);
     expect(result.items[0].creator).toBe('张三');
     expect(result.total).toBe(1);
@@ -78,7 +85,7 @@ describe('墨攻镜像收录', () => {
     process.env.MOGONG_CATALOG_WORKSPACE_ID = 'bound-space';
     jest.mocked(readFile).mockResolvedValueOnce(JSON.stringify({ ...catalog, version: 2, items: catalog.items.map(item => ({ ...item, containerReference: item.type === 'docker' ? 'registry.example/team/private:1' : null })) }) as never);
     try {
-      const result = await runInCloudWorkspace({ cloudWorkspaceId: 'bound-space', provider: 'alibaba_cloud', accountUid: '123' }, () => controller.listMogong());
+      const result = await runInCloudWorkspace({ cloudWorkspaceId: 'bound-space', provider: 'alibaba_cloud', accountUid: '123' }, () => controller.listMogong(request));
       expect(result.items.map((item) => item.id)).toEqual([1, 3, 4]);
       expect(result.total).toBe(3);
       expect(result.containersCollectable).toBe(true);
@@ -91,13 +98,13 @@ describe('墨攻镜像收录', () => {
   it('accepts an older snapshot without creator information', async () => {
     const { controller } = setup();
     jest.mocked(readFile).mockResolvedValueOnce(JSON.stringify({ ...catalog, items: catalog.items.map(({ creator: _creator, ...item }) => item) }) as never);
-    expect((await controller.listMogong()).items[0].creator).toBeNull();
+    expect((await controller.listMogong(request)).items[0].creator).toBeNull();
   });
 
   it('fails closed when the private source snapshot is missing or incomplete', async () => {
     const { controller, repo } = setup();
     jest.mocked(readFile).mockRejectedValueOnce(new Error('missing'));
-    await expect(controller.listMogong()).rejects.toBeInstanceOf(ServiceUnavailableException);
+    await expect(controller.listMogong(request)).rejects.toBeInstanceOf(ServiceUnavailableException);
     jest.mocked(readFile).mockResolvedValueOnce('{"capturedAt":"2026-10-28T00:00:00Z","total":2,"items":[]}' as never);
     await expect(controller.collectMogong(request, '1')).rejects.toBeInstanceOf(ServiceUnavailableException);
     expect(repo.collectPlatformImageAsset).not.toHaveBeenCalled();

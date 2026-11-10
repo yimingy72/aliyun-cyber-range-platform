@@ -160,7 +160,7 @@ beforeEach(() => {
   replaceMock.mockReset();
   routerMock.push = pushMock;
   routerMock.replace = replaceMock;
-  window.history.replaceState(null, '', '/admin/scenarios');
+  window.history.replaceState(null, '', '/admin/scenarios?view=mine');
   sessionState.profile = {
     id: 'admin-user',
     username: 'admin',
@@ -179,65 +179,34 @@ function openTemplateActionMenu(row: HTMLElement) {
 }
 
 function selectTemplateView(view: 'mine' | 'platform') {
-  const selectedTab = screen.getByRole('tab', { selected: true });
-
-  if (selectedTab.textContent === (view === 'mine' ? '我的拓扑' : '平台拓扑')) {
-    return;
-  }
-
-  fireEvent.keyDown(selectedTab, {
-    key: view === 'platform' ? 'ArrowRight' : 'ArrowLeft',
-  });
+  fireEvent.mouseDown(screen.getByRole('tab', { name: view === 'mine' ? '我的拓扑' : '平台拓扑' }), { button: 0, ctrlKey: false });
 }
 
 describe('TemplatesScreen', () => {
-  it.each(['private', 'platform'] as const)('audit-ui: submits the displayed all-view revision for %s visibility', async visibility => {
-    const template = { ...bootstrapPayload.rangeTemplates[1], id: 'other-owner', ownerUserId: 'another-user',
-      name: 'All view target', canManage: true, visibility, status: visibility === 'platform' ? 'published' : 'private', revision: 7 };
+  it.each(['admin', 'user'] as const)('defaults %s to published topology with moderation only for administrators', async role => {
+    sessionState.profile = { id: 'viewer', username: 'viewer', role };
     window.history.replaceState(null, '', '/admin/scenarios?view=all');
-    fetchRangeTemplatesMock.mockImplementation(async (_url, _token, view) => view === 'all' ? [template] : []);
-    const action = visibility === 'platform' ? unshareRangeTemplateMock : shareRangeTemplateMock;
-    action.mockResolvedValue({ ...template, revision: 8, visibility: visibility === 'platform' ? 'private' : 'platform' });
+    const template = { ...bootstrapPayload.rangeTemplates[0], ownerUserId: 'other-owner', canManage: false, revision: 7 };
+    fetchRangeTemplatesMock.mockImplementation(async (_url, _token, view) => view === 'platform' ? [template] : []);
+    unshareRangeTemplateMock.mockResolvedValue({ ...template, visibility: 'private', status: 'private', revision: 8 });
     render(<TemplatesScreen />);
-    openTemplateActionMenu(await screen.findByRole('row', { name: /All view target/ }));
-    fireEvent.click(screen.getByRole('menuitem', { name: visibility === 'platform' ? '回退为私有' : '发布到平台' }));
-    await waitFor(() => expect(action).toHaveBeenCalledWith('http://localhost:3001', 'dev-admin-token', template.id, { expectedRevision: 7 }));
-    expect(fetchRangeTemplatesMock.mock.calls.every(call => call[2] === 'all')).toBe(true);
-  });
-  it('shows all workspace drafts to administrators and opens another owner template for management', async () => {
-    const draft = { ...bootstrapPayload.rangeTemplates[1], id: 'other-owner-draft', name: 'test1-test1', ownerUserId: 'other-user', createdBy: 'other-user', canManage: true };
-    fetchRangeTemplatesMock.mockImplementation(async (_url: string, _token: string, view: string) => view === 'all' ? [draft] : []);
-    updateRangeTemplateMock.mockResolvedValue({ ...draft, name: 'updated-test1', revision: 6 });
-    render(<TemplatesScreen />);
-    await waitFor(() => expect(fetchRangeTemplatesMock).toHaveBeenCalledWith('http://localhost:3001', 'dev-admin-token', 'mine'));
-    fireEvent.mouseDown(screen.getByRole('tab', { name: '全部拓扑' }), { button: 0, ctrlKey: false });
-    const row = await screen.findByRole('row', { name: /test1-test1/ });
-    expect(fetchRangeTemplatesMock).toHaveBeenLastCalledWith('http://localhost:3001', 'dev-admin-token', 'all');
-    expect(window.location.search).toBe('?view=all');
-    openTemplateActionMenu(row);
-    expect(screen.getByRole('menuitem', { name: '删除模板' })).toBeTruthy();
-    fireEvent.click(screen.getByRole('menuitem', { name: '编辑信息' }));
-    expect(screen.getByRole('textbox', { name: '靶场名' })).toHaveProperty('value', 'test1-test1');
-    fireEvent.change(screen.getByRole('textbox', { name: '靶场名' }), { target: { value: 'updated-test1' } });
-    fireEvent.click(screen.getByRole('button', { name: '保存信息' }));
-    await screen.findByRole('row', { name: /updated-test1/ });
-    expect(updateRangeTemplateMock).toHaveBeenCalledWith('http://localhost:3001', 'dev-admin-token', draft.id, expect.objectContaining({ name: 'updated-test1', expectedRevision: 5 }));
-    fireEvent.mouseDown(screen.getByRole('tab', { name: '我的拓扑' }), { button: 0, ctrlKey: false });
-    await waitFor(() => expect(screen.queryByRole('row', { name: /updated-test1/ })).toBeNull());
-  });
-
-  it('restores the administrator all view from its URL while ordinary users cannot request it', async () => {
-    window.history.replaceState(null, '', '/admin/scenarios?view=all');
-    fetchRangeTemplatesMock.mockResolvedValue([]);
-    const mounted = render(<TemplatesScreen />);
-    await waitFor(() => expect(fetchRangeTemplatesMock).toHaveBeenCalledWith('http://localhost:3001', 'dev-admin-token', 'all'));
-    mounted.unmount();
-    fetchRangeTemplatesMock.mockClear();
-    sessionState.profile = { id: 'ordinary', username: 'ordinary', role: 'user' };
-    render(<TemplatesScreen />);
-    await waitFor(() => expect(fetchRangeTemplatesMock).toHaveBeenCalledWith('http://localhost:3001', 'dev-admin-token', 'mine'));
+    const row = await screen.findByRole('row', { name: /企业攻防靶场/ });
+    expect(screen.getByRole('tab', { name: '平台拓扑', selected: true })).toBeTruthy();
     expect(screen.queryByRole('tab', { name: '全部拓扑' })).toBeNull();
-    expect(fetchRangeTemplatesMock).not.toHaveBeenCalledWith(expect.anything(), expect.anything(), 'all');
+    expect(within(row).queryByRole('button', { name: '进入编排' })).toBeNull();
+    expect(within(row).getByRole('button', { name: '创建实例' })).toBeTruthy();
+    openTemplateActionMenu(row);
+    expect(screen.getByRole('menuitem', { name: '复制模板' })).toBeTruthy();
+    expect(screen.queryByRole('menuitem', { name: '编辑信息' })).toBeNull();
+    if (role === 'admin') {
+      expect(screen.getByRole('menuitem', { name: '删除模板' })).toBeTruthy();
+      fireEvent.click(screen.getByRole('menuitem', { name: '回退为私有' }));
+      await waitFor(() => expect(unshareRangeTemplateMock).toHaveBeenCalledWith('http://localhost:3001', 'dev-admin-token', template.id, { expectedRevision: 7 }));
+      await waitFor(() => expect(screen.queryByRole('row', { name: /企业攻防靶场/ })).toBeNull());
+    } else {
+      expect(screen.queryByRole('menuitem', { name: '删除模板' })).toBeNull();
+      expect(screen.queryByRole('menuitem', { name: '回退为私有' })).toBeNull();
+    }
   });
 
   it('restores a fresh cached view after returning to the page', async () => {
@@ -270,7 +239,7 @@ describe('TemplatesScreen', () => {
 
     render(<TemplatesScreen apiBaseUrl="http://localhost:3001" />);
 
-    expect(await screen.findByRole('heading', { name: '靶场编排', level: 1 })).toBeTruthy();
+    expect(await screen.findByRole('heading', { name: '编排中心', level: 1 })).toBeTruthy();
     await screen.findByText('企业攻防靶场');
 
     expect(screen.getByRole('tablist', { name: '筛选靶场名视图' })).toBeTruthy();
@@ -537,26 +506,6 @@ describe('TemplatesScreen', () => {
     expect(screen.queryByRole('menuitem', { name: '发布版本' })).toBeNull();
   });
 
-  it('still lets admins manage templates from the 平台拓扑 view', async () => {
-    fetchRangeTemplatesMock.mockImplementation(async (_apiBaseUrl: string, _token: string, view: 'platform' | 'mine') =>
-      view === 'platform' ? [bootstrapPayload.rangeTemplates[0]] : [bootstrapPayload.rangeTemplates[1]],
-    );
-
-    render(<TemplatesScreen apiBaseUrl="http://localhost:3001" />);
-
-    await screen.findByRole('tab', { name: '平台拓扑' });
-    selectTemplateView('platform');
-    await screen.findByText('企业攻防靶场');
-    const row = screen.getByRole('row', { name: /企业攻防靶场/ });
-
-    openTemplateActionMenu(row);
-
-    expect(screen.getByRole('menuitem', { name: '编辑信息' })).toBeTruthy();
-    expect(screen.queryByRole('menuitem', { name: '取消发布' })).toBeNull();
-    expect(screen.getByRole('menuitem', { name: '回退为私有' })).toBeTruthy();
-    expect(screen.getByRole('menuitem', { name: '删除模板' })).toBeTruthy();
-  });
-
   it('uses the server management capability for an ordinary user whose OIDC subject differs from the platform user ID', async () => {
     sessionState.profile = {
       id: 'oidc-subject-bob',
@@ -628,7 +577,7 @@ describe('TemplatesScreen', () => {
     });
   });
 
-  it('clones published platform templates into 我的拓扑 when ordinary users click 进入编排', async () => {
+  it('clones published platform templates into 我的拓扑 only when an ordinary user chooses 复制模板', async () => {
     sessionState.profile = {
       id: 'user-bob',
       username: 'bob',
@@ -651,14 +600,11 @@ describe('TemplatesScreen', () => {
     selectTemplateView('platform');
     await screen.findByText('企业攻防靶场');
     const row = screen.getByRole('row', { name: /企业攻防靶场/ });
-    expect((within(row).getByRole('button', { name: '进入编排' }) as HTMLButtonElement).disabled).toBe(false);
-
-    fireEvent.click(within(row).getByRole('button', { name: '进入编排' }));
-
-    await waitFor(() => {
-      expect(cloneRangeTemplateMock).toHaveBeenCalledWith('http://localhost:3001', 'dev-admin-token', 'template-1');
-      expect(pushMock).toHaveBeenCalledWith('/admin/scenarios/template-clone-1');
-    });
+    expect(within(row).queryByRole('button', { name: '进入编排' })).toBeNull();
+    openTemplateActionMenu(row);
+    fireEvent.click(screen.getByRole('menuitem', { name: '复制模板' }));
+    await waitFor(() => expect(cloneRangeTemplateMock).toHaveBeenCalledWith('http://localhost:3001', 'dev-admin-token', 'template-1', 'platform'));
+    expect(pushMock).not.toHaveBeenCalled();
   });
 
   it('keeps the selected row in a pending state while entering an editable topology', async () => {
@@ -703,56 +649,6 @@ describe('TemplatesScreen', () => {
     await waitFor(() => {
       expect(within(screen.getByRole('row', { name: /办公网横向移动靶场/ })).getByRole('button', { name: '进入编排' })).toBeTruthy();
     });
-  });
-
-  it('lets admins edit a platform template they do not own without moving it into 我的拓扑', async () => {
-    const sharedPlatformTemplate = {
-      ...bootstrapPayload.rangeTemplates[0],
-      ownerUserId: 'user-alice',
-      createdBy: 'alice',
-    };
-
-    fetchRangeTemplatesMock.mockImplementation(async (_apiBaseUrl: string, _token: string, view: 'platform' | 'mine') =>
-      view === 'platform' ? [sharedPlatformTemplate] : [bootstrapPayload.rangeTemplates[1]],
-    );
-    updateRangeTemplateMock.mockResolvedValue({
-      ...sharedPlatformTemplate,
-      description: 'admin updated platform template',
-    });
-
-    render(<TemplatesScreen apiBaseUrl="http://localhost:3001" />);
-
-    await screen.findByRole('tab', { name: '平台拓扑' });
-    selectTemplateView('platform');
-    await screen.findByText('企业攻防靶场');
-    const row = screen.getByRole('row', { name: /企业攻防靶场/ });
-
-    openTemplateActionMenu(row);
-    fireEvent.click(screen.getByRole('menuitem', { name: '编辑信息' }));
-
-    const editDialog = screen.getByRole('dialog', { name: '编辑靶场' });
-    fireEvent.change(within(editDialog).getByLabelText('靶场描述'), {
-      target: { value: 'admin updated platform template' },
-    });
-    fireEvent.click(within(editDialog).getByRole('button', { name: '保存信息' }));
-
-    await waitFor(() => {
-      expect(updateRangeTemplateMock).toHaveBeenCalledWith(
-        'http://localhost:3001',
-        'dev-admin-token',
-        'template-1',
-        expect.objectContaining({
-          description: 'admin updated platform template',
-        }),
-      );
-    });
-
-    selectTemplateView('mine');
-    await waitFor(() => {
-      expect(screen.getByRole('tab', { name: '我的拓扑' }).getAttribute('aria-selected')).toBe('true');
-      expect(screen.queryByRole('row', { name: /企业攻防靶场/ })).toBeNull();
-    });
-    expect(screen.getByRole('row', { name: /办公网横向移动靶场/ })).toBeTruthy();
   });
 
   it("does not render another user's unpublished platform template in 平台拓扑 for ordinary users", async () => {
@@ -1063,11 +959,11 @@ describe('TemplatesScreen', () => {
     render(<TemplatesScreen apiBaseUrl="http://localhost:3001" />);
     await screen.findByText('办公网横向移动靶场');
     openTemplateActionMenu(screen.getByRole('row', { name: /办公网横向移动靶场/ }));
-    fireEvent.click(screen.getByRole('menuitem', { name: '生成实例' }));
-    const dialog = screen.getByRole('dialog', { name: '生成实例' });
+    fireEvent.click(screen.getByRole('menuitem', { name: '创建实例' }));
+    const dialog = screen.getByRole('dialog', { name: '创建实例' });
     fireEvent.change(within(dialog).getByLabelText('到期时间'), { target: { value: '2100-01-01T12:00' } });
     fireEvent.change(within(dialog).getByLabelText('编排实例数量'), { target: { value: '2' } });
-    fireEvent.click(within(dialog).getByRole('button', { name: '确认生成' }));
+    fireEvent.click(within(dialog).getByRole('button', { name: '确认创建' }));
     await waitFor(() => expect(pushMock).toHaveBeenCalledWith('/admin/ranges'));
     expect(launchRangeInstanceMock.mock.calls.map(call => call[2].name)).toEqual(['办公网横向移动靶场 实例-1', '办公网横向移动靶场 实例-2']);
   });
@@ -1090,9 +986,9 @@ describe('TemplatesScreen', () => {
     const draftRow = screen.getByRole('row', { name: /办公网横向移动靶场/ });
 
     openTemplateActionMenu(draftRow);
-    fireEvent.click(screen.getByRole('menuitem', { name: '生成实例' }));
+    fireEvent.click(screen.getByRole('menuitem', { name: '创建实例' }));
 
-    const dialog = screen.getByRole('dialog', { name: '生成实例' });
+    const dialog = screen.getByRole('dialog', { name: '创建实例' });
     expect(within(dialog).getByLabelText('实例名')).toBeTruthy();
     expect(within(dialog).getByLabelText('到期时间')).toBeTruthy();
 
@@ -1102,7 +998,7 @@ describe('TemplatesScreen', () => {
     fireEvent.change(within(dialog).getByLabelText('到期时间'), {
       target: { value: '2026-07-09T20:30' },
     });
-    fireEvent.click(within(dialog).getByRole('button', { name: '确认生成' }));
+    fireEvent.click(within(dialog).getByRole('button', { name: '确认创建' }));
 
     await waitFor(() => {
       expect(launchRangeInstanceMock).toHaveBeenCalledWith(
@@ -1126,10 +1022,10 @@ describe('TemplatesScreen', () => {
     render(<TemplatesScreen apiBaseUrl="http://localhost:3001" />);
     await screen.findByText('办公网横向移动靶场');
     openTemplateActionMenu(screen.getByRole('row', { name: /办公网横向移动靶场/ }));
-    fireEvent.click(screen.getByRole('menuitem', { name: '生成实例' }));
-    const dialog = screen.getByRole('dialog', { name: '生成实例' });
+    fireEvent.click(screen.getByRole('menuitem', { name: '创建实例' }));
+    const dialog = screen.getByRole('dialog', { name: '创建实例' });
     fireEvent.change(within(dialog).getByLabelText('到期时间'), { target: { value: '2100-01-01T12:00' } });
-    fireEvent.click(within(dialog).getByRole('button', { name: '确认生成' }));
+    fireEvent.click(within(dialog).getByRole('button', { name: '确认创建' }));
     await screen.findByText(/创建结果尚未确认/);
     const firstRequest = launchRangeInstanceMock.mock.calls[0];
     expect(firstRequest[3]).toMatch(/^[0-9a-f-]{36}$/);
@@ -1151,16 +1047,16 @@ describe('TemplatesScreen', () => {
       render(<TemplatesScreen apiBaseUrl="http://localhost:3001" />);
       await screen.findByText('办公网横向移动靶场');
       openTemplateActionMenu(screen.getByRole('row', { name: /办公网横向移动靶场/ }));
-      fireEvent.click(screen.getByRole('menuitem', { name: '生成实例' }));
-      const dialog = screen.getByRole('dialog', { name: '生成实例' });
+      fireEvent.click(screen.getByRole('menuitem', { name: '创建实例' }));
+      const dialog = screen.getByRole('dialog', { name: '创建实例' });
       fireEvent.change(within(dialog).getByLabelText('实例名'), { target: { value: 'original-intent' } });
       fireEvent.change(within(dialog).getByLabelText('到期时间'), { target: { value: '2026-10-11T08:11' } });
-      fireEvent.click(within(dialog).getByRole('button', { name: '确认生成' }));
+      fireEvent.click(within(dialog).getByRole('button', { name: '确认创建' }));
       await screen.findByText(/创建结果尚未确认/);
       const original = launchRangeInstanceMock.mock.calls[0];
       now.mockReturnValue(new Date('2026-10-11T08:02:00Z').getTime());
       fireEvent.change(within(dialog).getByLabelText('实例名'), { target: { value: 'different-intent' } });
-      fireEvent.click(within(dialog).getByRole('button', { name: '确认生成' }));
+      fireEvent.click(within(dialog).getByRole('button', { name: '确认创建' }));
       await screen.findByText('腾讯云实例到期时间至少需要在 10 分钟后。');
       expect(launchRangeInstanceMock).toHaveBeenCalledTimes(1);
       fireEvent.change(within(dialog).getByLabelText('实例名'), { target: { value: 'original-intent' } });
@@ -1177,10 +1073,10 @@ describe('TemplatesScreen', () => {
     const mounted = render(<TemplatesScreen apiBaseUrl="http://localhost:3001" />);
     await screen.findByText('办公网横向移动靶场');
     openTemplateActionMenu(screen.getByRole('row', { name: /办公网横向移动靶场/ }));
-    fireEvent.click(screen.getByRole('menuitem', { name: '生成实例' }));
-    const dialog = screen.getByRole('dialog', { name: '生成实例' });
+    fireEvent.click(screen.getByRole('menuitem', { name: '创建实例' }));
+    const dialog = screen.getByRole('dialog', { name: '创建实例' });
     fireEvent.change(within(dialog).getByLabelText('到期时间'), { target: { value: '2100-01-01T12:00' } });
-    fireEvent.click(within(dialog).getByRole('button', { name: '确认生成' }));
+    fireEvent.click(within(dialog).getByRole('button', { name: '确认创建' }));
     await waitFor(() => expect(launchRangeInstanceMock).toHaveBeenCalledTimes(1));
     mounted.unmount();
     await act(async () => { if (outcome === 'success') resolve({ id: 'old-space-range' }); else reject(new AdminApiError(401)); });
@@ -1202,16 +1098,16 @@ describe('TemplatesScreen', () => {
 
     await screen.findByText('办公网横向移动靶场');
     openTemplateActionMenu(screen.getByRole('row', { name: /办公网横向移动靶场/ }));
-    fireEvent.click(screen.getByRole('menuitem', { name: '生成实例' }));
+    fireEvent.click(screen.getByRole('menuitem', { name: '创建实例' }));
 
-    const dialog = screen.getByRole('dialog', { name: '生成实例' });
+    const dialog = screen.getByRole('dialog', { name: '创建实例' });
     fireEvent.change(within(dialog).getByLabelText('实例名'), {
       target: { value: '办公网横向移动靶场-待提交实例' },
     });
     fireEvent.change(within(dialog).getByLabelText('到期时间'), {
       target: { value: '2026-07-09T20:30' },
     });
-    fireEvent.click(within(dialog).getByRole('button', { name: '确认生成' }));
+    fireEvent.click(within(dialog).getByRole('button', { name: '确认创建' }));
 
     await waitFor(() => {
       expect((within(dialog).getByRole('button', { name: '取消' }) as HTMLButtonElement).disabled).toBe(true);
@@ -1223,7 +1119,7 @@ describe('TemplatesScreen', () => {
     fireEvent.pointerDown(document.body);
     fireEvent.click(within(dialog).getByRole('button', { name: '关闭弹窗' }));
 
-    expect(screen.getByRole('dialog', { name: '生成实例' })).toBeTruthy();
+    expect(screen.getByRole('dialog', { name: '创建实例' })).toBeTruthy();
 
     resolveLaunch?.({
       id: 'range-101',
@@ -1234,7 +1130,7 @@ describe('TemplatesScreen', () => {
 
     await waitFor(() => {
       expect(pushMock).toHaveBeenCalledWith('/admin/ranges/range-101');
-      expect(screen.queryByRole('dialog', { name: '生成实例' })).toBeNull();
+      expect(screen.queryByRole('dialog', { name: '创建实例' })).toBeNull();
     });
   });
 

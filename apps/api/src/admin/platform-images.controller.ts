@@ -55,22 +55,6 @@ export class PlatformImagesController {
     });
   }
 
-  @Post(':id/enable')
-  @UseGuards(AdminAuthGuard)
-  enable(@Req() request: AuthenticatedAdminRequest, @Param('id') id: string) {
-    return this.mcpWrite(request, 'platform_image_enable', { platformImageAssetId: id }, id, () =>
-      this.imageCatalogService.setPlatformAssetEnabled(id, true, request.adminUser),
-    );
-  }
-
-  @Post(':id/disable')
-  @UseGuards(AdminAuthGuard)
-  disable(@Req() request: AuthenticatedAdminRequest, @Param('id') id: string) {
-    return this.mcpWrite(request, 'platform_image_disable', { platformImageAssetId: id }, id, () =>
-      this.imageCatalogService.setPlatformAssetEnabled(id, false, request.adminUser),
-    );
-  }
-
   @Post(':id/publish')
   @HttpCode(200)
   @UseGuards(AdminAuthGuard)
@@ -96,6 +80,24 @@ export class PlatformImagesController {
     return this.mcpWrite(request, 'platform_image_remove', { platformImageAssetId: id }, id, () =>
       this.imageCatalogService.removePlatformAsset(id, request.adminUser),
     );
+  }
+
+  @Delete(':id/cloud-image')
+  @HttpCode(200)
+  @UseGuards(AdminAuthGuard)
+  deleteOwnedImage(@Req() request: AuthenticatedAdminRequest, @Param('id') id: string) {
+    const execute = () => this.imageCatalogService.deleteOwnedImage(id, request.adminUser);
+    if (request.authContext.source !== 'mcp') return execute();
+    return this.operationControlService.executeConfirmed({
+      context: request.authContext, metadata: readOperationRequestMetadata(request),
+      toolName: 'platform_image_delete_owned', arguments: { platformImageAssetId: id }, targetType: 'platform_image', targetId: id,
+      resolveConfirmation: async () => {
+        const { asset, snapshot } = await this.imageCatalogService.prepareOwnedImageDeletion(id, request.adminUser);
+        return { targetId: id, targetSnapshot: { imageId: snapshot.imageId, snapshotId: snapshot.id },
+          summary: { targetName: asset.displayName, destructive: true } };
+      },
+      execute: async () => ({ result: await execute() }),
+    });
   }
 
   private mcpWrite<TResult>(

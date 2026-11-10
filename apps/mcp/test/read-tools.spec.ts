@@ -218,6 +218,7 @@ function createClientStub(): ClientStub {
     unpublishPlatformImage: vi.fn().mockResolvedValue({ id: 'img-1', visibility: 'private' }),
     enablePlatformImage: vi.fn().mockResolvedValue({ id: 'img-1', enabled: true }),
     disablePlatformImage: vi.fn().mockResolvedValue({ id: 'img-1', enabled: false }),
+    deleteOwnedPlatformImage: vi.fn(),
     removePlatformImage: vi.fn().mockResolvedValue(undefined),
     listImageCatalog: vi.fn().mockResolvedValue({ snapshots: [{ id: 'snapshot-1' }], catalogItems: [] }),
     syncImageCatalog: vi.fn().mockResolvedValue({ snapshots: [{ id: 'snapshot-1' }], catalogItems: [] }),
@@ -307,7 +308,7 @@ describe('tool registry', () => {
   it('filters admin-only image tools using the authenticated role without granting new scopes', async () => {
     const client = createClientStub(); const registry = createToolRegistry(client);
     const names = registry.listTools(['images:read', 'images:write'], 'user').map(tool => tool.name);
-    for (const name of ['platform_image_collect', 'platform_image_publish', 'platform_image_unpublish', 'platform_image_tag_create', 'platform_image_tag_delete']) expect(names).not.toContain(name);
+    for (const name of ['platform_image_collect', 'platform_image_tag_create', 'platform_image_tag_delete']) expect(names).not.toContain(name);
     expect(names).toContain('platform_image_tag_list'); expect(names).toContain('platform_image_tags_set');
     await expect(registry.callTool('platform_image_tag_create', ['images:write'], { name: 'blocked' }, 'user')).rejects.toThrow('Forbidden tool');
     expect(client.createPlatformImageTag).not.toHaveBeenCalled();

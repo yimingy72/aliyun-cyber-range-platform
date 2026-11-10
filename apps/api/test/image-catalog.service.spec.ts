@@ -68,6 +68,7 @@ describe('ImageCatalogService import operation guard', () => {
       listRangeTemplates: jest.fn().mockResolvedValue([]),
       getRangeTemplateVersionById: jest.fn().mockResolvedValue(null),
       listBillingLedgerResources: jest.fn().mockResolvedValue([]),
+      findImageImportOwner: jest.fn().mockResolvedValue(null),
       findBillingLedgerResource: jest.fn().mockResolvedValue(null),
       createBillingLedgerResource: jest.fn().mockImplementation(async (input) => ({ id: `ledger-${input.cloudResourceType}`, ...input })),
       updateBillingLedgerResource: jest.fn(),
@@ -80,6 +81,7 @@ describe('ImageCatalogService import operation guard', () => {
       getAccountContext: jest.fn().mockResolvedValue({
         provider: 'alibaba_cloud',
         accountUid: '1234567890',
+        accountUidResolved: true,
         defaultRegion: 'cn-hangzhou',
         accessKeyId: 'test-access-key',
         accessKeySecret: 'test-access-secret',
@@ -98,10 +100,10 @@ describe('ImageCatalogService import operation guard', () => {
     global.fetch = originalFetch;
   });
 
-  it('rejects enable and disable requests while the asset belongs to an active import', async () => {
+  it('rejects publishing while the asset belongs to an active import', async () => {
     const { service, adminRepositoryMock } = createService();
 
-    await expect(service.setPlatformAssetEnabled('asset-1', true, OWNER)).rejects.toThrow('正在导入');
+    await expect(service.updatePlatformAsset('asset-1', { visibility: 'platform' }, OWNER)).rejects.toThrow('正在导入');
 
     expect(adminRepositoryMock.hasActiveImageImportForArtifact).toHaveBeenCalledWith({
       platformImageAssetId: 'asset-1',
@@ -176,27 +178,31 @@ describe('ImageCatalogService import operation guard', () => {
       expect.objectContaining({
         id: asset.id,
         canManage: true,
-        canChangeVisibility: false,
+        canChangeVisibility: true,
       }),
     ]);
   });
 
-  it('rejects an ordinary owner changing image visibility through the generic update route', async () => {
-    const { service, adminRepositoryMock } = createService();
+  it('lets the owner publish and an administrator retract without granting access to the private image', async () => {
+    const { service, adminRepositoryMock, asset, snapshot } = createService();
+    snapshot.isAvailable = true; asset.enabled = true;
     adminRepositoryMock.hasActiveImageImportForArtifact.mockResolvedValue(false);
-
-    await expect(
-      service.updatePlatformAsset('asset-1', { visibility: 'platform' }, OWNER),
-    ).rejects.toThrow('Admin access required');
-
-    expect(adminRepositoryMock.collectPlatformImageAsset).not.toHaveBeenCalled();
+    adminRepositoryMock.updatePlatformImageAsset.mockImplementation(async (_id, update) => Object.assign(asset, update));
+    await expect(service.updatePlatformAsset(asset.id, { displayName: 'Other name' }, ADMIN)).rejects.toThrow('not found');
+    await expect(service.updatePlatformAsset(asset.id, { visibility: 'platform' }, OWNER))
+      .resolves.toMatchObject({ visibility: 'platform', ownerUserId: OWNER.id });
+    await expect(service.deleteOwnedImage(asset.id, ADMIN)).rejects.toThrow('只能删除自己创建');
+    await expect(service.updatePlatformAsset(asset.id, { visibility: 'private' }, ADMIN))
+      .resolves.toMatchObject({ visibility: 'private', ownerUserId: OWNER.id });
+    await expect(service.updatePlatformAsset(asset.id, { displayName: 'Other name' }, ADMIN)).rejects.toThrow('not found');
+    expect(adminRepositoryMock.deletePlatformImageAssetsBySnapshotId).not.toHaveBeenCalled();
   });
 
   it('rejects asset operations when an active import has only persisted its Alibaba Cloud ImageId', async () => {
     const { service, adminRepositoryMock } = createService();
     adminRepositoryMock.hasActiveImageImportForArtifact.mockImplementation(async (input) => input.imageId === 'm-importing-image');
 
-    await expect(service.setPlatformAssetEnabled('asset-1', true, OWNER)).rejects.toThrow('正在导入');
+    await expect(service.updatePlatformAsset('asset-1', { visibility: 'platform' }, OWNER)).rejects.toThrow('正在导入');
 
     expect(adminRepositoryMock.hasActiveImageImportForArtifact).toHaveBeenCalledWith(
       expect.objectContaining({ imageId: 'm-importing-image' }),
@@ -207,53 +213,34 @@ describe('ImageCatalogService import operation guard', () => {
   it('rejects asset deletion while the asset belongs to an active import', async () => {
     const { service, adminRepositoryMock } = createService();
 
-    await expect(service.removePlatformAsset('asset-1', OWNER)).rejects.toThrow('正在导入');
+    await expect(service.deleteOwnedImage('asset-1', OWNER)).rejects.toThrow('正在导入');
 
     expect(adminRepositoryMock.deletePlatformImageAsset).not.toHaveBeenCalled();
   });
 
-  it('removes only the platform directory entry while preserving its cloud image and snapshots', async () => {
-    const { service, adminRepositoryMock } = createService();
-    adminRepositoryMock.hasActiveImageImportForArtifact.mockResolvedValue(false);
-    global.fetch = jest.fn().mockResolvedValue({
-      ok: true,
-      json: async () => ({}),
-    });
-
-    await service.removePlatformAsset('asset-1', OWNER);
-
-    expect(global.fetch).not.toHaveBeenCalled();
-    expect(adminRepositoryMock.deletePlatformImageAsset).toHaveBeenCalledWith('asset-1');
-    expect(adminRepositoryMock.deletePlatformImageAssetsBySnapshotId).not.toHaveBeenCalled();
-  });
-
-  it('removes a custom asset whose re-synced snapshot is not linked back to that asset', async () => {
+  it('removes a personal public-image registration without deleting the shared cloud image', async () => {
     const { service, adminRepositoryMock, asset } = createService();
-    asset.sourceSnapshotId = null;
+    asset.sourceScope = 'public';
     adminRepositoryMock.hasActiveImageImportForArtifact.mockResolvedValue(false);
-    global.fetch = jest.fn().mockResolvedValue({
-      ok: true,
-      json: async () => ({}),
-    });
-
-    await service.removePlatformAsset('asset-1', OWNER);
-
-    expect(adminRepositoryMock.deletePlatformImageAssetsBySnapshotId).not.toHaveBeenCalled();
-    expect(adminRepositoryMock.deletePlatformImageAsset).toHaveBeenCalledWith('asset-1');
+    global.fetch = jest.fn();
+    await service.removePlatformAsset(asset.id, OWNER);
+    expect(adminRepositoryMock.deletePlatformImageAsset).toHaveBeenCalledWith(asset.id);
+    expect(global.fetch).not.toHaveBeenCalled();
   });
 
-  it('removes an unreferenced custom asset when its cloud snapshot is already unavailable', async () => {
-    const { service, adminRepositoryMock } = createService();
+  it('deletes only a proven personal cloud image and removes the directory record after confirmation', async () => {
+    const { service, adminRepositoryMock, asset, snapshot } = createService();
     adminRepositoryMock.hasActiveImageImportForArtifact.mockResolvedValue(false);
-    adminRepositoryMock.getImageSnapshotById.mockResolvedValue(null);
-    adminRepositoryMock.listImageSnapshots.mockResolvedValue([]);
     global.fetch = jest.fn();
-
-    await expect(service.removePlatformAsset('asset-1', OWNER)).resolves.toBeUndefined();
-
-    expect(adminRepositoryMock.deletePlatformImageAsset).toHaveBeenCalledWith('asset-1');
+    await expect(service.deleteOwnedImage(asset.id, OWNER)).rejects.toThrow('来源可核验');
     expect(global.fetch).not.toHaveBeenCalled();
-    expect(adminRepositoryMock.deletePlatformImageAssetsBySnapshotId).not.toHaveBeenCalled();
+    adminRepositoryMock.findImageImportOwner.mockResolvedValue(OWNER.id);
+    const describe = jest.spyOn(service as any, 'describeImageById').mockResolvedValueOnce({ ImageId: snapshot.imageId }).mockResolvedValueOnce(null);
+    const rpc = jest.spyOn(service as any, 'performAliyunRpcRequest').mockResolvedValue({});
+    await expect(service.deleteOwnedImage(asset.id, OWNER)).resolves.toMatchObject({ removed: true });
+    expect(rpc).toHaveBeenCalledWith(expect.objectContaining({ action: 'DeleteImage', parameters: { ImageId: snapshot.imageId, Force: 'false' } }));
+    expect(describe).toHaveBeenCalledTimes(2);
+    expect(adminRepositoryMock.deletePlatformImageAssetsBySnapshotId).toHaveBeenCalledWith(snapshot.id);
   });
 
   it('rejects custom image deletion while its import is still active', async () => {
@@ -290,7 +277,7 @@ describe('ImageCatalogService import operation guard', () => {
     expect(adminRepositoryMock.collectPlatformImageAsset).not.toHaveBeenCalled();
   });
 
-  it('rejects disabling an image while a published topology references it', async () => {
+  it('rejects the owner retracting a mirror referenced in compiled published topology', async () => {
     const { service, adminRepositoryMock, asset } = createService();
     asset.visibility = 'platform';
     asset.enabled = true;
@@ -309,7 +296,7 @@ describe('ImageCatalogService import operation guard', () => {
       },
     ]);
 
-    await expect(service.setPlatformAssetEnabled('asset-1', false, OWNER)).rejects.toThrow('已发布');
+    await expect(service.updatePlatformAsset('asset-1', { visibility: 'private' }, OWNER)).rejects.toThrow('已发布');
 
     expect(adminRepositoryMock.setPlatformImageAssetEnabled).not.toHaveBeenCalled();
   });
@@ -339,7 +326,8 @@ describe('ImageCatalogService import operation guard', () => {
       },
     ]);
 
-    await expect(service.removePlatformAsset('asset-1', OWNER)).rejects.toThrow('已发布');
+    adminRepositoryMock.findImageImportOwner.mockResolvedValue(OWNER.id);
+    await expect(service.deleteOwnedImage('asset-1', OWNER)).rejects.toThrow('已发布');
 
     expect(adminRepositoryMock.deletePlatformImageAsset).not.toHaveBeenCalled();
   });

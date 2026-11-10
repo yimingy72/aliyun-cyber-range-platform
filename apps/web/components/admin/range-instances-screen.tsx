@@ -56,6 +56,8 @@ import { AdminPageHeader } from './shared/admin-page-header';
 import { StatusBadge } from './shared/status-badge';
 import { TableLoadingState } from './shared/table-loading-state';
 import { useAdminSession } from './use-admin-session';
+import type { InstanceOwnerFilter } from '../../lib/admin-types';
+import { InstanceOwnerSelect } from './shared/instance-owner-select';
 
 type RangeInstancesScreenProps = {
   apiBaseUrl?: string;
@@ -203,9 +205,20 @@ function getDurationLabel(start?: string | null, end?: string | null) {
   return `${minutes} 分钟`;
 }
 
-export function RangeInstancesScreen({
+export function RangeInstancesScreen(props: RangeInstancesScreenProps) {
+  const session = useAdminSession();
+  const [selectedOwner, setSelectedOwner] = useState<InstanceOwnerFilter>('mine');
+  const owner = session.isAdmin ? selectedOwner : 'mine';
+  return <RangeInstancesScreenList key={`${session.profile?.id ?? ''}:${session.profile?.role ?? ''}:${owner}`} {...props}
+    owner={owner} onOwnerChange={session.isAdmin ? setSelectedOwner : undefined} />;
+}
+
+function RangeInstancesScreenList({
   apiBaseUrl = 'http://localhost:3001',
-}: RangeInstancesScreenProps) {
+  owner,
+  onOwnerChange,
+}: RangeInstancesScreenProps & { owner: InstanceOwnerFilter; onOwnerChange?: (owner: InstanceOwnerFilter) => void }) {
+  const ownerSuffix = owner === 'all' ? ':all' : '';
   const router = useRouter();
   const searchParams = useSearchParams();
   const session = useAdminSession();
@@ -225,8 +238,8 @@ export function RangeInstancesScreen({
   const pageActiveRef = useRef(isPageActive); pageActiveRef.current = isPageActive;
   const [listMode, setListMode] = useState<RangeListMode>(() => readRangeListMode(searchParams.get('view')));
   const screenCache = useAdminScreenCache();
-  const cachedActiveSnapshot = screenCache?.read<RangeListSnapshot>(apiBaseUrl, session.token, 'range-instances:active');
-  const cachedHistorySnapshot = screenCache?.read<RangeListSnapshot>(apiBaseUrl, session.token, 'range-instances:history');
+  const cachedActiveSnapshot = screenCache?.read<RangeListSnapshot>(apiBaseUrl, session.token, `range-instances:active${ownerSuffix}`);
+  const cachedHistorySnapshot = screenCache?.read<RangeListSnapshot>(apiBaseUrl, session.token, `range-instances:history${ownerSuffix}`);
   const [instancesByView, setInstancesByView] = useState<RangeListRecord<ExtendedRangeInstance[]>>(() => ({
     active: cachedActiveSnapshot?.data.instances ?? [],
     history: cachedHistorySnapshot?.data.instances ?? [],
@@ -290,20 +303,22 @@ export function RangeInstancesScreen({
       const [nextInstances, nextJobs] = await Promise.all([
         fetchRangeInstances(apiBaseUrl, token, {
           view: nextListMode === 'history' ? 'history' : 'active',
+          ...(owner === 'all' ? { owner } : {}),
         }),
         nextListMode === 'history'
           ? fetchProvisionJobs(apiBaseUrl, token, { instanceMode: 'range' })
           : Promise.resolve([] as ProvisionJob[]),
       ]);
 
+      const ids = new Set(nextInstances.map(instance => instance.id));
       return {
         instances: nextInstances as ExtendedRangeInstance[],
-        jobs: nextJobs as ExtendedProvisionJob[],
+        jobs: nextJobs.filter(job => ids.has(job.rangeInstanceId)) as ExtendedProvisionJob[],
       };
     };
 
     return screenCache
-      ? screenCache.load(apiBaseUrl, token, `range-instances:${nextListMode}`, load, { force })
+      ? screenCache.load(apiBaseUrl, token, `range-instances:${nextListMode}${ownerSuffix}`, load, { force })
       : load();
   }
 
@@ -326,7 +341,7 @@ export function RangeInstancesScreen({
     const token = session.token;
     let isActive = true;
     function loadView(view: RangeListMode, force = false) {
-      const cachedSnapshot = screenCache?.read<RangeListSnapshot>(apiBaseUrl, token, 'range-instances:' + view);
+      const cachedSnapshot = screenCache?.read<RangeListSnapshot>(apiBaseUrl, token, `range-instances:${view}${ownerSuffix}`);
       function applySnapshot(snapshot: RangeListSnapshot) {
         setInstancesByView((current) => ({ ...current, [view]: snapshot.instances }));
         setJobsByView((current) => ({ ...current, [view]: snapshot.jobs }));
@@ -702,8 +717,9 @@ export function RangeInstancesScreen({
                 setListModeWithUrl(value);
               }
             }}
-            searchControls={compactWorkbench ? (
-              <Select value={statusFilter} onValueChange={setSelectedStatus}>
+            searchControls={<>
+              {onOwnerChange ? <InstanceOwnerSelect owner={owner} onChange={onOwnerChange} /> : null}
+              {compactWorkbench ? <Select value={statusFilter} onValueChange={setSelectedStatus}>
                 <SelectTrigger aria-label="筛选实例状态" className="min-w-36"><SelectValue /></SelectTrigger>
                 <SelectContent align="start" className="cel-range-status-options" position="popper">
                   <SelectItem value="all">全部状态</SelectItem>
@@ -711,8 +727,8 @@ export function RangeInstancesScreen({
                     <SelectItem key={value} value={value}>{label}</SelectItem>,
                   )}
                 </SelectContent>
-              </Select>
-            ) : undefined}
+              </Select> : null}
+            </>}
             searchLabel="筛选实例名"
             searchPlaceholder="搜索实例名"
             searchValue={searchName}
@@ -785,7 +801,7 @@ export function RangeInstancesScreen({
                         description={
                           hasListFilters ? '试试其他关键词，或查看全部状态。' : listMode === 'history'
                             ? '实例完成销毁或创建失败后，会自动沉淀到这里。'
-                            : '实例会在靶场编排页生成后进入这里。'
+                            : '实例会在编排中心页生成后进入这里。'
                         }
                         title={hasListFilters ? '没有符合条件的实例' : listMode === 'history' ? '还没有历史实例' : '还没有编排实例'}
                         variant="empty"

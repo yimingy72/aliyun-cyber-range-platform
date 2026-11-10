@@ -1110,12 +1110,14 @@ export function TemplateEditorScreen({
 }: TemplateEditorScreenProps) {
   const session = useAdminSession();
   const workspace = useCloudWorkspace()?.workspace;
-  const canEdit = !workspace || (!workspace.isReadOnly && workspace.capabilities.provisioning);
   const router = useRouter();
   const screenCache = useAdminScreenCache();
   const [template, setTemplate] = useState<RangeTemplate | null>(() =>
     readInitialTemplate(providedTemplate, templateId),
   );
+  const canEdit = (!workspace || (!workspace.isReadOnly && workspace.capabilities.provisioning)) &&
+    (templateId === 'new' || template?.canManage === true ||
+      Boolean(session.profile?.id && template?.ownerUserId === session.profile.id));
   const [nodes, setNodes] = useState<TemplateNode[]>(() =>
     readNodesFromTemplate(readInitialTemplate(providedTemplate, templateId), templateId),
   );
@@ -2008,7 +2010,7 @@ export function TemplateEditorScreen({
     return (
       <section className="admin-panel admin-login-panel">
         <h2>请先登录管理员后台</h2>
-        <p className="admin-empty">当前没有有效会话，无法打开靶场编排页。</p>
+        <p className="admin-empty">当前没有有效会话，无法打开编排中心页。</p>
         <Link href="/admin/login">返回登录页</Link>
       </section>
     );
@@ -2020,7 +2022,7 @@ export function TemplateEditorScreen({
         <section className="admin-panel">
           <AdminNotice tone="error" className="mb-3">编排模板加载失败：{loadError}</AdminNotice>
           <Button type="button" onClick={() => setLoadAttempt((attempt) => attempt + 1)}>重试加载</Button>
-          <Link href="/admin/scenarios">返回靶场编排</Link>
+          <Link href="/admin/scenarios">返回编排中心</Link>
         </section>
       );
     }

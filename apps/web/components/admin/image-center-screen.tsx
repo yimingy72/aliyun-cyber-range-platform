@@ -32,8 +32,6 @@ import {
   deletePlatformImageTag,
   createImageImport,
   deleteCustomImageSnapshot,
-  disablePlatformImage,
-  enablePlatformImage,
   fetchCustomImageCatalogScope,
   fetchCloudAccountContexts,
   fetchImageImportJobs,
@@ -43,6 +41,7 @@ import {
   fetchPublicImageCatalogScope,
   publishPlatformImage,
   removePlatformImage,
+  deleteOwnedPlatformImage,
   removePlatformContainerImage,
   renamePlatformImage,
   retryImageImport,
@@ -112,7 +111,7 @@ type ImageCenterMetadata = {
   platformImageTags: PlatformImageTag[];
 };
 type ImageCenterConfirmState =
-  | { type: 'remove-platform'; asset: PlatformImageAsset }
+  | { type: 'remove-platform' | 'unpublish-platform'; asset: PlatformImageAsset }
   | { type: 'remove-container'; asset: PlatformContainerImage }
   | { type: 'delete-custom'; snapshot: ImageSnapshot; deleteOwnedSnapshots: boolean }
   | null;
@@ -144,6 +143,8 @@ const ASSET_COLUMNS: readonly AdminDataColumn[] = [
   { id: 'createdBy', label: '创建人', priority: 'tertiary', width: ADMIN_TABLE_WIDTHS.creator },
   { id: 'actions', label: '操作', priority: 'primary', width: ADMIN_TABLE_WIDTHS.actions },
 ];
+
+const PLATFORM_COLUMNS = ASSET_COLUMNS.filter(column => column.id !== 'status');
 
 const CLOUD_IMAGE_COLUMNS: readonly AdminDataColumn[] = [
   { id: 'name', label: '镜像名', priority: 'primary' },
@@ -243,15 +244,6 @@ function formatCloudImageStatusText(status?: string | null, isAvailable?: boolea
 
 function formatImageStatus(snapshot: ImageSnapshot) {
   return formatCloudImageStatusText(snapshot.status, snapshot.isAvailable);
-}
-
-function formatAssetStatus(asset: PlatformImageAsset) {
-  if (asset.sourceSnapshotAvailable == null) return '来源待确认';
-  if (asset.sourceSnapshotAvailable === false) {
-    return formatCloudImageStatusText(asset.sourceSnapshotStatus, asset.sourceSnapshotAvailable);
-  }
-
-  return asset.enabled ? '已启用' : '已禁用';
 }
 
 function canCreateInstanceFromAsset(asset: PlatformImageAsset) {
@@ -1573,32 +1565,6 @@ function CloudImageCenterScreen({
     }
   }
 
-  async function handleTogglePlatformAsset(asset: PlatformImageAsset) {
-    if (!session.token) {
-      return;
-    }
-
-    const actionKey = `${asset.enabled ? 'disable' : 'enable'}:platform:${asset.id}`;
-
-    try {
-      setActionErrorMessage('');
-      beginAction(actionKey);
-      const nextAsset = asset.enabled
-        ? await disablePlatformImage(apiBaseUrl, session.token, asset.id)
-        : await enablePlatformImage(apiBaseUrl, session.token, asset.id);
-      syncAssetAcrossViews(nextAsset);
-    } catch (error) {
-      if (isUnauthorizedAdminError(error)) {
-        session.logout();
-        return;
-      }
-
-      setActionErrorMessage(error instanceof Error ? error.message : '平台镜像状态更新失败');
-    } finally {
-      endAction(actionKey);
-    }
-  }
-
   async function handlePublishPlatformAsset(asset: PlatformImageAsset) {
     if (!session.token) {
       return;
@@ -1635,13 +1601,14 @@ function CloudImageCenterScreen({
       beginAction(actionKey);
       const nextAsset = await unpublishPlatformImage(apiBaseUrl, session.token, asset.id);
       syncAssetAcrossViews(nextAsset);
+      closeConfirmDialog();
     } catch (error) {
       if (isUnauthorizedAdminError(error)) {
         session.logout();
         return;
       }
 
-      setActionErrorMessage(error instanceof Error ? error.message : '镜像已回退为私有失败');
+      setActionErrorMessage(error instanceof Error ? error.message : '镜像回退为私有失败');
     } finally {
       endAction(actionKey);
     }
@@ -1657,7 +1624,8 @@ function CloudImageCenterScreen({
     try {
       setActionErrorMessage('');
       beginAction(actionKey);
-      await removePlatformImage(apiBaseUrl, session.token, asset.id);
+      if (asset.sourceScope === 'public') await removePlatformImage(apiBaseUrl, session.token, asset.id);
+      else await deleteOwnedPlatformImage(apiBaseUrl, session.token, asset.id);
       removeAssetFromViews(asset.id);
       closeConfirmDialog();
     } catch (error) {
@@ -1803,39 +1771,37 @@ function CloudImageCenterScreen({
   function renderAssetRows(
     items: PlatformImageAsset[],
     columns: readonly AdminDataColumn[],
-    options: {
-      allowManagement: boolean | ((asset: PlatformImageAsset) => boolean);
-      allowVisibilityToggle?: boolean | ((asset: PlatformImageAsset) => boolean);
-    },
+    view: 'platform' | 'mine',
   ) {
     return items.map((asset) => {
-      const [nameColumn, typeColumn, imageIdColumn, tagsColumn, statusColumn, createdByColumn, actionsColumn] = columns;
+      const [nameColumn, typeColumn, imageIdColumn, tagsColumn] = columns;
+      const statusColumn = columns.find(column => column.id === 'status');
+      const createdByColumn = columns.find(column => column.id === 'createdBy');
+      const actionsColumn = columns.find(column => column.id === 'actions');
       const renameActionKey = `rename:platform:${asset.id}`;
-      const toggleActionKey = `${asset.enabled ? 'disable' : 'enable'}:platform:${asset.id}`;
       const visibilityActionKey = `${asset.visibility === 'platform' ? 'unpublish' : 'publish'}:platform:${asset.id}`;
       const taggingActionKey = `tags:platform:${asset.id}`;
       const removeActionKey = `remove:platform:${asset.id}`;
-      const isPending = [renameActionKey, toggleActionKey, visibilityActionKey, taggingActionKey, removeActionKey].some((key) =>
+      const isPending = [renameActionKey, visibilityActionKey, taggingActionKey, removeActionKey].some((key) =>
         pendingActionKeys.includes(key),
       );
-      const canManageAsset = !workspace?.isReadOnly &&
-        (typeof options.allowManagement === 'function' ? options.allowManagement(asset) : options.allowManagement);
-      const canToggleVisibility =
-        typeof options.allowVisibilityToggle === 'function'
-          ? options.allowVisibilityToggle(asset)
-          : options.allowVisibilityToggle ?? false;
-      const canManageTags = !workspace?.isReadOnly && ((activeTab === 'platform' && session.isAdmin) || (activeTab === 'mine' && canManageAsset));
+      const canManageAsset = !workspace?.isReadOnly && (view === 'platform'
+        ? session.isAdmin && asset.canManage !== false : asset.canManage !== false);
+      const canToggleVisibility = asset.canChangeVisibility ?? Boolean(asset.ownerUserId);
+      const canManageTags = canManageAsset;
       const isImportingAsset =
         importingAssetIds.has(asset.id) ||
         importingAssetIds.has(asset.imageId) ||
         /^Creating\b/i.test(asset.sourceSnapshotStatus?.trim() ?? '');
       const canCreate = !workspace?.isReadOnly && (!workspace || workspace.capabilities.provisioning) && canCreateInstanceFromAsset(asset);
-      const statusVariant = asset.sourceSnapshotAvailable !== true || !asset.enabled ? 'secondary' : 'default';
 
       return (
         <TableRow key={asset.id}>
           <AdminDataTableCell className="font-medium" column={nameColumn!}>
             <AdminDataTableText>{asset.displayName}</AdminDataTableText>
+            {view === 'mine' && isImportingAsset ? <span className="block text-xs text-muted-foreground">
+              {asset.sourceSnapshotStatus ? formatCloudImageStatusText(asset.sourceSnapshotStatus, false) : '导入中'}
+            </span> : null}
           </AdminDataTableCell>
           <AdminDataTableCell column={typeColumn!}>虚拟机</AdminDataTableCell>
           <AdminDataTableCell className="font-mono text-xs text-muted-foreground" column={imageIdColumn!}>
@@ -1851,9 +1817,11 @@ function CloudImageCenterScreen({
               onSave={savePlatformImageTags}
             />
           </AdminDataTableCell>
-          <AdminDataTableCell column={statusColumn!}>
-            <Badge data-dense-tone={isImportingAsset ? 'warning' : statusVariant === 'default' ? 'success' : undefined} variant={statusVariant}>{formatAssetStatus(asset)}</Badge>
-          </AdminDataTableCell>
+          {statusColumn ? <AdminDataTableCell column={statusColumn}>
+            <Badge data-dense-tone={asset.visibility === 'platform' ? 'success' : undefined} variant={asset.visibility === 'platform' ? 'default' : 'secondary'}>
+              {asset.visibility === 'platform' ? '已发布' : '私有'}
+            </Badge>
+          </AdminDataTableCell> : null}
           <AdminDataTableCell column={createdByColumn!}>{getPlatformAssetCreator(asset)}</AdminDataTableCell>
           <AdminDataTableCell column={actionsColumn!}>
             <div className="inline-flex flex-nowrap! items-center justify-start gap-1">
@@ -1878,28 +1846,26 @@ function CloudImageCenterScreen({
                         </Button>
                       </DropdownMenuTrigger>
                       <DropdownMenuContent align="end">
-                        {canToggleVisibility ? (
+                        {view === 'mine' && canToggleVisibility ? (
                           <DropdownMenuItem
-                            disabled={isPending || (!asset.enabled && asset.sourceSnapshotAvailable !== true)}
-                            onSelect={() =>
-                              void (asset.visibility === 'platform'
-                                ? handleUnpublishPlatformAsset(asset)
-                                : handlePublishPlatformAsset(asset))
-                            }
+                            disabled={isPending || (asset.visibility !== 'platform' && !canCreateInstanceFromAsset(asset))}
+                            onSelect={() => void (asset.visibility === 'platform'
+                              ? handleUnpublishPlatformAsset(asset)
+                              : handlePublishPlatformAsset(asset))}
                           >
                             {asset.visibility === 'platform' ? '回退为私有' : '发布到平台'}
                           </DropdownMenuItem>
                         ) : null}
                         <DropdownMenuItem onSelect={() => openRenameDialog(asset)}>重命名</DropdownMenuItem>
-                        <DropdownMenuItem onSelect={() => void handleTogglePlatformAsset(asset)}>
-                          {asset.enabled ? '禁用' : '启用'}
-                        </DropdownMenuItem>
-                        <DropdownMenuItem
-                          variant="destructive"
-                          onSelect={() => setConfirmState({ type: 'remove-platform', asset })}
-                        >
-                          删除
-                        </DropdownMenuItem>
+                        {view === 'platform' ? (canToggleVisibility ? (
+                          <DropdownMenuItem variant="destructive" onSelect={() => setConfirmState({ type: 'unpublish-platform', asset })}>
+                            删除(回退为私有)
+                          </DropdownMenuItem>
+                        ) : null) : (
+                          <DropdownMenuItem variant="destructive" onSelect={() => setConfirmState({ type: 'remove-platform', asset })}>
+                            {asset.sourceScope === 'public' ? '移除收录' : '删除'}
+                          </DropdownMenuItem>
+                        )}
                       </DropdownMenuContent>
                     </DropdownMenu>
                   ) : null}
@@ -1913,22 +1879,19 @@ function CloudImageCenterScreen({
   }
 
   function renderContainerRows(items: PlatformContainerImage[], columns: readonly AdminDataColumn[]) {
-    const [nameColumn, typeColumn, imageIdColumn, tagsColumn, statusColumn, createdByColumn, actionsColumn] = columns;
+    const [nameColumn, typeColumn, imageIdColumn, tagsColumn, createdByColumn, actionsColumn] = columns;
     return items.map((asset) => (
       <TableRow key={`container:${asset.id}`}>
         <AdminDataTableCell className="font-medium" column={nameColumn!}><AdminDataTableText>{asset.displayName}</AdminDataTableText></AdminDataTableCell>
-        <AdminDataTableCell column={typeColumn!}>容器</AdminDataTableCell>
+        <AdminDataTableCell column={typeColumn!}><span title={asset.acrMatch ? acrMatchLabels[asset.acrMatch] : undefined}>容器</span></AdminDataTableCell>
         <AdminDataTableCell column={imageIdColumn!}>—</AdminDataTableCell>
         <AdminDataTableCell column={tagsColumn!}>—</AdminDataTableCell>
-        <AdminDataTableCell column={statusColumn!}><Badge data-dense-tone={asset.acrMatch === 'matched' ? 'success' : 'warning'} variant={asset.acrMatch === 'matched' ? 'default' : 'secondary'} title={asset.referenceStatus === 'needs_review' ? '源仓库引用待核验' : undefined}>
-          {asset.acrMatch ? acrMatchLabels[asset.acrMatch] : asset.referenceStatus === 'needs_review' ? '引用待核验' : '待支持实例'}
-        </Badge></AdminDataTableCell>
         <AdminDataTableCell column={createdByColumn!}>{asset.creator || '—'}</AdminDataTableCell>
         <AdminDataTableCell column={actionsColumn!}>
           {session.isAdmin && !workspace?.isReadOnly ? (
             <DropdownMenu>
               <DropdownMenuTrigger asChild><Button aria-label={`更多操作 ${asset.displayName}`} disabled={pendingActionKeys.includes(`remove:container:${asset.id}`)} size="icon-sm" type="button" variant="ghost"><MoreHorizontal aria-hidden="true" /></Button></DropdownMenuTrigger>
-              <DropdownMenuContent align="end"><DropdownMenuItem variant="destructive" onSelect={() => setConfirmState({ type: 'remove-container', asset })}>删除</DropdownMenuItem></DropdownMenuContent>
+              <DropdownMenuContent align="end"><DropdownMenuItem variant="destructive" onSelect={() => setConfirmState({ type: 'remove-container', asset })}>移除收录</DropdownMenuItem></DropdownMenuContent>
             </DropdownMenu>
           ) : null}
         </AdminDataTableCell>
@@ -2020,7 +1983,7 @@ function CloudImageCenterScreen({
         : activeTab === 'custom'
           ? `${providerName}自定义镜像`
           : `${providerName}公共镜像`;
-  const activeColumns = activeTab === 'platform' || activeTab === 'mine' ? ASSET_COLUMNS : CLOUD_IMAGE_COLUMNS;
+  const activeColumns = activeTab === 'platform' ? PLATFORM_COLUMNS : activeTab === 'mine' ? ASSET_COLUMNS : CLOUD_IMAGE_COLUMNS;
   const activeTabError = tabErrors[activeTab] ?? '';
   const activeRevalidationError = revalidationErrors[activeTab] ?? '';
   const isActiveTabLoading = (!loadedTabs[activeTab] || activeTab === 'platform' && !containersLoaded) && !activeTabError;
@@ -2106,7 +2069,7 @@ function CloudImageCenterScreen({
             compactViewAction
             onSearchChange={setSearchName}
             onViewChange={(view) => {
-              if (view === 'mogong' && session.isAdmin && provider === 'alibaba_cloud') {
+              if (view === 'mogong' && provider === 'alibaba_cloud') {
                 setShowMogong(true);
                 return;
               }
@@ -2121,7 +2084,7 @@ function CloudImageCenterScreen({
             views={[
               { label: '平台镜像', value: 'platform', celIcon: imageSourceIcons.platform },
               { label: '我的镜像', value: 'mine', celIcon: imageSourceIcons.mine },
-              ...(session.isAdmin && provider === 'alibaba_cloud' ? [{ label: '墨攻镜像中心', value: 'mogong', celIcon: imageSourceIcons.mogong }] : []),
+              ...(provider === 'alibaba_cloud' ? [{ label: '墨攻镜像中心', value: 'mogong', celIcon: imageSourceIcons.mogong }] : []),
               ...(session.isAdmin ? [{ label: '云上镜像来源', value: 'cloud', celIcon: imageSourceIcons.cloud }] : []),
             ]}
             searchControls={compactWorkbench && isCloudView ? undefined : (
@@ -2179,8 +2142,8 @@ function CloudImageCenterScreen({
             )}
             action={
               <div className={session.isAdmin ? 'cel-image-toolbar-actions flex w-56 flex-wrap items-center gap-2' : 'flex flex-wrap items-center gap-2'}>
-                {session.isAdmin ? <Button disabled={workspace?.isReadOnly || pendingActionKeys.length > 0} onClick={() => { setTagManagerError(''); setTagManagerOpen(true); }} size="sm" type="button" variant="outline">管理标签</Button> : null}
-                {showMogong ? <div data-slot="image-toolbar-portal" ref={setMogongActionHost} /> : showAcr ? <div data-slot="image-toolbar-portal" ref={setAcrActionHost} /> : activeTab === 'platform' || activeTab === 'mine' ? (
+                {session.isAdmin && activeTab !== 'mine' ? <Button disabled={workspace?.isReadOnly || pendingActionKeys.length > 0} onClick={() => { setTagManagerError(''); setTagManagerOpen(true); }} size="sm" type="button" variant="outline">管理标签</Button> : null}
+                {showMogong ? <div data-slot="image-toolbar-portal" ref={setMogongActionHost} /> : showAcr ? <div data-slot="image-toolbar-portal" ref={setAcrActionHost} /> : (activeTab === 'mine' || activeTab === 'platform' && session.isAdmin) ? (
                   <Button
                     disabled={!canImportImages || pendingActionKeys.includes('create:image-import')}
                     title={imageImportUnavailableMessage ?? undefined}
@@ -2225,6 +2188,7 @@ function CloudImageCenterScreen({
                 token={session.token}
                 search={searchName}
                 readOnly={Boolean(workspace?.isReadOnly)}
+                canSync={session.isAdmin}
                 refreshRevision={mogongRefreshRevision}
                 logout={session.logout}
                 onCollected={(asset) => { syncAssetAcrossViews(asset); setMogongRefreshRevision((value) => value + 1); }}
@@ -2342,11 +2306,7 @@ function CloudImageCenterScreen({
                             <>
                               {revalidationErrorRow}
                               {actionErrorRow}
-                              {renderAssetRows(pagedPlatformAssets, columns, {
-                                allowManagement: (asset) => asset.canManage ?? session.isAdmin,
-                                allowVisibilityToggle: (asset) =>
-                                  asset.canChangeVisibility ?? (session.isAdmin && Boolean(asset.ownerUserId)),
-                              })}
+                              {renderAssetRows(pagedPlatformAssets, columns, 'platform')}
                               {renderContainerRows(pagedPlatformContainers, columns)}
                             </>
                           );
@@ -2357,10 +2317,7 @@ function CloudImageCenterScreen({
                             <>
                               {revalidationErrorRow}
                               {actionErrorRow}
-                              {renderAssetRows(pagedMyAssets, columns, {
-                                allowManagement: true,
-                                allowVisibilityToggle: (asset) => asset.canChangeVisibility ?? session.isAdmin,
-                              })}
+                              {renderAssetRows(pagedMyAssets, columns, 'mine')}
                             </>
                           );
                         }
@@ -2626,13 +2583,27 @@ function CloudImageCenterScreen({
             </ImageCenterDialog>
           ) : null}
 
+          {confirmState?.type === 'unpublish-platform' ? (
+            <AdminConfirmationDialog
+              confirmLabel="确认回退为私有"
+              description={`“${confirmState.asset.displayName}”将从平台镜像列表移除，镜像仍保留在所有者的“我的镜像”。`}
+              open
+              pending={pendingActionKeys.includes(`unpublish:platform:${confirmState.asset.id}`)}
+              title="删除(回退为私有)"
+              onConfirm={() => void handleUnpublishPlatformAsset(confirmState.asset)}
+              onOpenChange={(open) => !open && closeConfirmDialog()}
+            />
+          ) : null}
+
           {confirmState?.type === 'remove-platform' ? (
             <AdminConfirmationDialog
-              confirmLabel="确认删除"
-              description={`删除“${confirmState.asset.displayName}”后会将其移出平台收录目录，但不会删除${providerName}上的原始镜像。`}
+              confirmLabel={confirmState.asset.sourceScope === 'public' ? '确认移除' : '确认删除'}
+              description={confirmState.asset.sourceScope === 'public'
+                ? `移除“${confirmState.asset.displayName}”的个人收录，公共云镜像仍保留。`
+                : `将删除“${confirmState.asset.displayName}”在${providerName}的云镜像及其平台记录。云端删除不可恢复，关联快照保留。`}
               open
               pending={pendingActionKeys.includes(`remove:platform:${confirmState.asset.id}`)}
-              title="确认删除镜像"
+              title={confirmState.asset.sourceScope === 'public' ? '移除镜像收录' : '删除云镜像'}
               onConfirm={() => void handleRemovePlatformAsset(confirmState.asset)}
               onOpenChange={(open) => !open && closeConfirmDialog()}
             />

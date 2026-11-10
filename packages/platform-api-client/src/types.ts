@@ -1,4 +1,5 @@
-export type RangeTemplateView = 'platform' | 'mine' | 'all';
+export type RangeTemplateView = 'platform' | 'mine';
+export type InstanceOwnerFilter = 'mine' | 'all';
 export type PlatformImageView = 'platform' | 'mine';
 export type InstanceView = 'active' | 'history';
 export type InstanceMode = 'single' | 'range';
@@ -460,15 +461,14 @@ export type PlatformApiClientLike = {
   renamePlatformImage(id: string, displayName: string, operation?: OperationRequest): Promise<PlatformImageAsset>;
   publishPlatformImage(id: string, operation?: OperationRequest): Promise<PlatformImageAsset>;
   unpublishPlatformImage(id: string, operation?: OperationRequest): Promise<PlatformImageAsset>;
-  enablePlatformImage(id: string, operation?: OperationRequest): Promise<PlatformImageAsset>;
-  disablePlatformImage(id: string, operation?: OperationRequest): Promise<PlatformImageAsset>;
+  deleteOwnedPlatformImage(id: string, operation?: OperationRequest): Promise<{ removed: boolean; snapshotId: string }>;
   removePlatformImage(id: string, operation?: OperationRequest): Promise<void>;
   listImageCatalog(scope: ImageCatalogScope): Promise<ImageCatalogScopePayload>;
   syncImageCatalog(scope: ImageCatalogScope): Promise<ImageCatalogScopePayload>;
   removeCustomImageSnapshot(snapshotId: string, options?: { deleteOwnedSnapshots?: boolean }, operation?: OperationRequest): Promise<Record<string, unknown> | void>;
   listImageImportJobs(): Promise<ImageImportJobListPayload>;
   retryImageImport(id: string): Promise<ImageImportJob>;
-  listRangeInstances(view?: InstanceView): Promise<RangeInstance[]>;
+  listRangeInstances(view?: InstanceView, owner?: InstanceOwnerFilter): Promise<RangeInstance[]>;
   getRangeInstance(id: string, options?: GetRangeInstanceOptions): Promise<RangeInstance>;
   validateRangeInstanceNodePackImage?(rangeInstanceId: string, nodeId: string, payload: Pick<RangeInstanceNodeActionPayload, 'displayName' | 'description'>): Promise<Record<string, unknown>>;
   getRangeInstanceAccess(id: string): Promise<RangeAccessPayload>;
@@ -501,7 +501,7 @@ export type PlatformApiClientLike = {
   createSingleInstanceNetwork?(operation?:OperationRequest):Promise<Record<string,unknown>>;
   registerSingleInstanceNetworkCleanup?(id:string,payload:{runId:string;createdAfter:string;ownerUserIds:string[]}):Promise<Record<string,unknown>>;
   destroySingleInstanceNetwork?(id:string,cleanupRunId:string,operation?:OperationRequest):Promise<Record<string,unknown>>;
-  listSingleInstances(view?: InstanceView): Promise<SingleInstanceListPayload>;
+  listSingleInstances(view?: InstanceView, owner?: InstanceOwnerFilter): Promise<SingleInstanceListPayload>;
   getSingleInstance(id: string): Promise<RangeInstance | null>;
   getSingleInstanceCloudResourceStatus(id: string): Promise<SingleInstanceCloudResourceStatus>;
   getSingleInstanceAccess(id: string): Promise<RangeAccessPayload>;

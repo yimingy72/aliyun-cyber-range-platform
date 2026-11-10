@@ -14,7 +14,7 @@
 
 | 操作 | MCP 工具 | 必填参数 | 可选参数 | Scope |
 |---|---|---|---|---|
-| 实例列表/实例历史 | `range_instance_list` | — | `view: active\|history`，默认 `active` | `ranges:read` |
+| 实例列表/实例历史 | `range_instance_list` | — | `view: active\|history`，默认 `active`；`owner: mine\|all`，默认本人，全部仅管理员 | `ranges:read` |
 | 查看详情 | `range_instance_get` | `rangeInstanceId` | `includeNetworkDiagnostics: boolean` | `ranges:read` |
 | 获取访问入口 | `range_instance_get_access` | `rangeInstanceId` | — | `ranges:read`、`instances:credentials:read` |
 | 生成实例 | `range_instance_launch` | `templateId`、`name`、带时区 ISO-8601 `expiresAt` | 操作元数据 | `ranges:create` |

@@ -47,7 +47,7 @@ it('updates the visible list once for concurrent sync requests and limits sync t
   const results = await runInCloudWorkspace(scope, () => Promise.all([controller.syncMogong(), controller.syncMogong()]));
   expect(results).toEqual([{ capturedAt, total: 1 }, { capturedAt, total: 1 }]);
   expect(request.mock.calls).toEqual([['POST', '/snapshot']]);
-  expect((await runInCloudWorkspace(scope, () => controller.listMogong())).items.map(item => item.name)).toEqual(['新墨攻镜像']);
+  expect((await runInCloudWorkspace(scope, () => controller.listMogong({ adminUser: { role: 'admin' } } as never))).items.map(item => item.name)).toEqual(['新墨攻镜像']);
   expect(await readFile(path, 'utf8')).not.toContain('must not be stored');
 });
 

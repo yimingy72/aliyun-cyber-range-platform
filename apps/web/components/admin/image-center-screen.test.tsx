@@ -49,9 +49,8 @@ const {
   renamePlatformImageMock,
   publishPlatformImageMock,
   unpublishPlatformImageMock,
-  enablePlatformImageMock,
-  disablePlatformImageMock,
   removePlatformImageMock,
+  deleteOwnedPlatformImageMock,
   setPlatformImageTagsMock,
   deleteCustomImageSnapshotMock,
   logoutMock,
@@ -81,9 +80,8 @@ const {
   renamePlatformImageMock: vi.fn(),
   publishPlatformImageMock: vi.fn(),
   unpublishPlatformImageMock: vi.fn(),
-  enablePlatformImageMock: vi.fn(),
-  disablePlatformImageMock: vi.fn(),
   removePlatformImageMock: vi.fn(),
+  deleteOwnedPlatformImageMock: vi.fn(),
   setPlatformImageTagsMock: vi.fn(),
   deleteCustomImageSnapshotMock: vi.fn(),
   logoutMock: vi.fn(),
@@ -125,9 +123,8 @@ vi.mock('../../lib/admin-api', async () => {
     renamePlatformImage: renamePlatformImageMock,
     publishPlatformImage: publishPlatformImageMock,
     unpublishPlatformImage: unpublishPlatformImageMock,
-    enablePlatformImage: enablePlatformImageMock,
-    disablePlatformImage: disablePlatformImageMock,
     removePlatformImage: removePlatformImageMock,
+    deleteOwnedPlatformImage: deleteOwnedPlatformImageMock,
     setPlatformImageTags: setPlatformImageTagsMock,
     deleteCustomImageSnapshot: deleteCustomImageSnapshotMock,
   };
@@ -265,6 +262,8 @@ const myImagesPayload: PlatformImageAssetListPayload = {
       imageId: 'm-owned-001',
       displayName: 'My Ubuntu 22.04',
       createdBy: 'test',
+      ownerUserId: 'admin-user',
+      visibility: 'private',
       sourceSnapshotId: 'custom-snapshot-1',
       sourceScope: 'custom',
       enabled: true,
@@ -312,8 +311,6 @@ beforeEach(() => {
   renamePlatformImageMock.mockReset();
   publishPlatformImageMock.mockReset();
   unpublishPlatformImageMock.mockReset();
-  enablePlatformImageMock.mockReset();
-  disablePlatformImageMock.mockReset();
   removePlatformImageMock.mockReset();
   setPlatformImageTagsMock.mockReset();
   deleteCustomImageSnapshotMock.mockReset();
@@ -398,27 +395,8 @@ beforeEach(() => {
       enabled: true,
     }),
   );
-  enablePlatformImageMock.mockResolvedValue(
-    createPlatformImageAsset({
-      id: 'platform-image-2',
-      imageId: 'm-custom-002',
-      displayName: 'Disabled Platform Image',
-      sourceSnapshotId: 'custom-snapshot-2',
-      sourceScope: 'custom',
-      enabled: true,
-    }),
-  );
-  disablePlatformImageMock.mockResolvedValue(
-    createPlatformImageAsset({
-      id: 'platform-image-1',
-      imageId: 'm-custom-001',
-      displayName: 'Blue Team Ubuntu 22.04',
-      sourceSnapshotId: 'custom-snapshot-1',
-      sourceScope: 'custom',
-      enabled: false,
-    }),
-  );
   removePlatformImageMock.mockResolvedValue(undefined);
+  deleteOwnedPlatformImageMock.mockReset();
   createPlatformImageTagMock.mockResolvedValue({ id: 'tag-new', name: '渗透测试' });
   setPlatformImageTagsMock.mockResolvedValue(
     createPlatformImageAsset({
@@ -449,10 +427,9 @@ describe('ImageCenterScreen', () => {
     render(<ImageCenterScreen />);
     const row = (await screen.findByText('容器靶机')).closest('tr')!;
     expect(within(row).getByText('容器')).toBeTruthy();
-    expect(within(row).getByText('待支持实例')).toBeTruthy();
     expect(within(row).queryByRole('button', { name: /创建实例/ })).toBeNull();
     fireEvent.keyDown(within(row).getByRole('button', { name: '更多操作 容器靶机' }), { key: 'ArrowDown' });
-    fireEvent.click(screen.getByRole('menuitem', { name: '删除' }));
+    fireEvent.click(screen.getByRole('menuitem', { name: '移除收录' }));
     fireEvent.click(await screen.findByRole('button', { name: '确认删除' }));
     await waitFor(() => expect(removePlatformContainerImageMock).toHaveBeenCalledWith(expect.any(String), 'dev-admin-token', 'container-1'));
     expect(screen.queryByText('容器靶机')).toBeNull();
@@ -470,7 +447,7 @@ describe('ImageCenterScreen', () => {
     fireEvent.keyDown(screen.getByRole('combobox', { name: '按镜像类型筛选' }), { key: 'ArrowDown' });
     fireEvent.click(await screen.findByRole('option', { name: '容器', exact: true }));
     expect(screen.queryByText('Alibaba Cloud Linux 3')).toBeNull();
-    expect(screen.getByText('ACR 已匹配')).toBeTruthy();
+    expect(screen.getByTitle('ACR 已匹配')).toBeTruthy();
     fireEvent.mouseDown(screen.getByRole('tab', { name: '云上镜像来源' }));
     await selectCloudSource('ACR 容器镜像');
     const table = await screen.findByRole('table', { name: 'ACR 容器镜像' });
@@ -480,7 +457,7 @@ describe('ImageCenterScreen', () => {
     expect(syncCustomImagesMock).not.toHaveBeenCalled();
   });
 
-  it('opens the administrator-only 墨攻镜像中心', async () => {
+  it('opens 墨攻镜像中心', async () => {
     render(<ImageCenterScreen />);
     const actionSlot = screen.getByTestId('admin-list-toolbar-view-action');
     const actionGroup = actionSlot.firstElementChild;
@@ -567,7 +544,7 @@ describe('ImageCenterScreen', () => {
     expect(within(table).getByRole('columnheader', { name: '镜像 ID' })).toBeTruthy();
     expect(within(table).getByRole('columnheader', { name: '创建人' })).toBeTruthy();
     expect(within(table).getByRole('columnheader', { name: '标签' })).toBeTruthy();
-    expect(within(table).getByRole('columnheader', { name: '状态' })).toBeTruthy();
+    expect(within(table).queryByRole('columnheader', { name: '状态' })).toBeNull();
     expect(within(table).getByRole('columnheader', { name: '操作' })).toBeTruthy();
     expect(within(table).getByText('当前没有平台镜像。')).toBeTruthy();
   });
@@ -622,7 +599,7 @@ describe('ImageCenterScreen', () => {
       column.getAttribute('style'),
     );
 
-    expect(mineWidths).toEqual(platformWidths);
+    expect(mineWidths.filter((_width, index) => index !== 4)).toEqual(platformWidths);
     expect(platformWidths.at(-1) ?? '').toContain('width: 11rem');
 
     fireEvent.mouseDown(screen.getByRole('tab', { name: '云上镜像来源' }));
@@ -1432,7 +1409,7 @@ describe('ImageCenterScreen', () => {
     expect(screen.queryByRole('button', { name: '更多操作' })).toBeNull();
   });
 
-  it('keeps 我的镜像 rows compact by moving rename enable and delete into 更多操作', async () => {
+  it('keeps 我的镜像 actions in 更多操作 without manual enable or disable', async () => {
     render(<ImageCenterScreen apiBaseUrl="http://localhost:3001" />);
 
     fireEvent.mouseDown(await screen.findByRole('tab', { name: '我的镜像' }));
@@ -1445,7 +1422,7 @@ describe('ImageCenterScreen', () => {
 
     expect(screen.getByRole('menuitem', { name: '发布到平台' })).toBeTruthy();
     expect(screen.getByRole('menuitem', { name: '重命名' })).toBeTruthy();
-    expect(screen.getByRole('menuitem', { name: '禁用' })).toBeTruthy();
+    expect(screen.queryByRole('menuitem', { name: '禁用' })).toBeNull();
     expect(screen.getByRole('menuitem', { name: '删除' })).toBeTruthy();
   });
 
@@ -1482,11 +1459,8 @@ describe('ImageCenterScreen', () => {
     expect(screen.queryByRole('button', { name: '回退为私有 Owned Platform Image' })).toBeNull();
     expect(screen.queryByRole('button', { name: '重命名 Owned Platform Image' })).toBeNull();
 
-    fireEvent.keyDown(screen.getByRole('button', { name: '更多操作' }), { key: 'ArrowDown' });
-
-    expect(screen.getByRole('menuitem', { name: '重命名' })).toBeTruthy();
-    expect(screen.getByRole('menuitem', { name: '禁用' })).toBeTruthy();
-    expect(screen.getByRole('menuitem', { name: '删除' })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: '更多操作' })).toBeNull();
+    expect(screen.queryByRole('columnheader', { name: '状态' })).toBeNull();
   });
 
   it('routes 创建实例 from image rows into the single instance screen with a preselected image', async () => {
@@ -1540,7 +1514,8 @@ describe('ImageCenterScreen', () => {
     await waitFor(() => expect(setPlatformImageTagsMock).toHaveBeenCalledOnce());
     expect(within(menu).queryByRole('menuitem', { name: '保存标签' })).toBeNull();
     await waitFor(() => expect(within(row).getByText('关键资产')).toBeTruthy());
-    expect(within(row).getByText('已启用')).toBeTruthy();
+    fireEvent.keyDown(menu, { key: 'Escape' });
+    await waitFor(() => expect(within(row).getByRole('button', { name: /创建实例/ })).toBeTruthy());
     expect(within(row).queryByText('来源待确认')).toBeNull();
   });
 
@@ -1554,7 +1529,7 @@ describe('ImageCenterScreen', () => {
     fireEvent.keyDown(within(row).getByRole('button', { name: '编辑标签 Alibaba Cloud Linux 3' }), { key: 'ArrowDown' });
     fireEvent.click(screen.getByRole('menuitemcheckbox', { name: '关键资产' }));
     await waitFor(() => expect(setPlatformImageTagsMock).toHaveBeenCalledOnce());
-    expect(within(row).getByText('来源待确认')).toBeTruthy();
+    expect(within(row).queryByRole('button', { name: /创建实例/ })).toBeNull();
     expect(within(row).queryByText('已启用')).toBeNull();
   });
 
@@ -1674,91 +1649,31 @@ describe('ImageCenterScreen', () => {
     expect(await screen.findByText('Ubuntu 24.04 LTS')).toBeTruthy();
   });
 
-  it('supports rename, disable, enable, and remove actions for platform assets', async () => {
-    fetchPlatformImagesMock.mockImplementation(async (_apiBaseUrl: string, _token: string, view: 'platform' | 'mine' = 'platform') =>
-      view === 'mine'
-        ? myImagesPayload
-        : ({
-            items: [
-              createPlatformImageAsset({
-                id: 'platform-image-1',
-                imageId: 'm-custom-001',
-                displayName: 'Blue Team Ubuntu 22.04',
-                sourceSnapshotId: 'custom-snapshot-1',
-                sourceScope: 'custom',
-                enabled: true,
-              }),
-              createPlatformImageAsset({
-                id: 'platform-image-2',
-                imageId: 'm-custom-002',
-                displayName: 'Disabled Platform Image',
-                sourceSnapshotId: 'custom-snapshot-2',
-                sourceScope: 'custom',
-                enabled: false,
-              }),
-            ],
-          } satisfies PlatformImageAssetListPayload),
-    );
-    render(<ImageCenterScreen apiBaseUrl="http://localhost:3001" />);
-
-    const platformTab = await screen.findByRole('tab', { name: '平台镜像' });
-    fireEvent.click(platformTab);
-
-    const enabledRow = (await screen.findByText('Blue Team Ubuntu 22.04')).closest('tr') as HTMLElement;
-    fireEvent.keyDown(within(enabledRow).getByRole('button', { name: '更多操作' }), { key: 'ArrowDown' });
-    fireEvent.click(screen.getByRole('menuitem', { name: '重命名' }));
-    const renameDialog = screen.getByRole('dialog', { name: '编辑镜像名称' });
-    fireEvent.change(within(renameDialog).getByLabelText('镜像名'), {
-      target: { value: 'Blue Team Ubuntu 22.04 Renamed' },
+  it('retracts a published image on the platform tab without deleting the owner’s cloud image', async () => {
+    const asset = createPlatformImageAsset({
+      id: 'published', imageId: 'm-published', displayName: 'Published VM', sourceScope: 'custom', ownerUserId: 'admin-user',
+      visibility: 'platform', canManage: true, canChangeVisibility: true,
     });
-    fireEvent.click(within(renameDialog).getByRole('button', { name: '保存信息' }));
-
-    await waitFor(() => {
-      expect(renamePlatformImageMock).toHaveBeenCalledWith(
-        'http://localhost:3001',
-        'dev-admin-token',
-        'platform-image-1',
-        'Blue Team Ubuntu 22.04 Renamed',
-      );
-    });
-
-    expect(await screen.findByText('Blue Team Ubuntu 22.04 Renamed')).toBeTruthy();
-
-    const renamedRow = (await screen.findByText('Blue Team Ubuntu 22.04 Renamed')).closest('tr') as HTMLElement;
-    fireEvent.keyDown(within(renamedRow).getByRole('button', { name: '更多操作' }), { key: 'ArrowDown' });
-    fireEvent.click(screen.getByRole('menuitem', { name: '禁用' }));
-
-    await waitFor(() => {
-      expect(disablePlatformImageMock).toHaveBeenCalledWith(
-        'http://localhost:3001',
-        'dev-admin-token',
-        'platform-image-1',
-      );
-    });
-
-    const disabledRow = (await screen.findByText('Disabled Platform Image')).closest('tr') as HTMLElement;
-    fireEvent.keyDown(within(disabledRow).getByRole('button', { name: '更多操作' }), { key: 'ArrowDown' });
-    fireEvent.click(screen.getByRole('menuitem', { name: '启用' }));
-
-    await waitFor(() => {
-      expect(enablePlatformImageMock).toHaveBeenCalledWith(
-        'http://localhost:3001',
-        'dev-admin-token',
-        'platform-image-2',
-      );
-    });
-
-    const enabledRowAgain = (await screen.findByText('Disabled Platform Image')).closest('tr') as HTMLElement;
-    fireEvent.keyDown(within(enabledRowAgain).getByRole('button', { name: '更多操作' }), { key: 'ArrowDown' });
-    fireEvent.click(screen.getByRole('menuitem', { name: '删除' }));
-    const removeDialog = screen.getByRole('dialog', { name: '确认删除镜像' });
-    fireEvent.click(within(removeDialog).getByRole('button', { name: '确认删除' }));
-
-    await waitFor(() => {
-      expect(removePlatformImageMock).toHaveBeenCalledWith('http://localhost:3001', 'dev-admin-token', 'platform-image-2');
-    });
-
-    expect(screen.queryByText('Disabled Platform Image')).toBeNull();
+    let visibility: 'platform' | 'private' = 'platform';
+    fetchPlatformImagesMock.mockImplementation(async (_url, _token, view) => ({
+      items: view === 'mine' || visibility === 'platform' ? [{ ...asset, visibility }] : [],
+    }));
+    unpublishPlatformImageMock.mockImplementation(async () => { visibility = 'private'; return { ...asset, visibility }; });
+    render(<ImageCenterScreen />);
+    const row = (await screen.findByText('Published VM')).closest('tr')!;
+    expect(screen.queryByRole('columnheader', { name: '状态' })).toBeNull();
+    fireEvent.keyDown(within(row).getByRole('button', { name: '更多操作' }), { key: 'ArrowDown' });
+    expect(screen.getByRole('menuitem', { name: '重命名' })).toBeTruthy();
+    expect(screen.queryByRole('menuitem', { name: '禁用' })).toBeNull();
+    expect(screen.queryByRole('menuitem', { name: '回退为私有', exact: true })).toBeNull();
+    fireEvent.click(screen.getByRole('menuitem', { name: '删除(回退为私有)' }));
+    fireEvent.click(screen.getByRole('button', { name: '确认回退为私有' }));
+    await waitFor(() => expect(screen.queryByText('Published VM')).toBeNull());
+    expect(unpublishPlatformImageMock).toHaveBeenCalledWith('http://localhost:3001', 'dev-admin-token', asset.id);
+    expect(deleteOwnedPlatformImageMock).not.toHaveBeenCalled();
+    fireEvent.mouseDown(screen.getByRole('tab', { name: '我的镜像' }));
+    const ownRow = (await screen.findByText('Published VM')).closest('tr')!;
+    expect(within(ownRow).getByText('私有')).toBeTruthy();
   });
 
   it('shows 发布到平台 and 回退为私有 actions inside 我的镜像 and calls the matching helpers', async () => {
@@ -1833,61 +1748,27 @@ describe('ImageCenterScreen', () => {
     });
   });
 
-  it('does not show publish or unpublish actions to ordinary owners', async () => {
-    sessionState.profile = {
-      id: 'owner-user',
-      username: 'owner-user',
-      role: 'user',
-    };
-    fetchPlatformImagesMock.mockImplementation(async (_apiBaseUrl: string, _token: string, view: 'platform' | 'mine' = 'platform') =>
-      view === 'mine'
-        ? ({
-            items: [
-              createPlatformImageAsset({
-                id: 'owned-platform-image',
-                imageId: 'm-owned-platform',
-                displayName: 'Owned Platform Image',
-                sourceSnapshotId: 'custom-snapshot-owner',
-                sourceScope: 'custom',
-                ownerUserId: 'owner-user',
-                visibility: 'platform',
-                enabled: true,
-              }),
-            ],
-          } satisfies PlatformImageAssetListPayload)
-        : ({
-            items: [
-              createPlatformImageAsset({
-                id: 'owned-platform-image',
-                imageId: 'm-owned-platform',
-                displayName: 'Owned Platform Image',
-                sourceSnapshotId: 'custom-snapshot-owner',
-                sourceScope: 'custom',
-                ownerUserId: 'owner-user',
-                visibility: 'platform',
-                enabled: true,
-              }),
-              createPlatformImageAsset({
-                id: 'other-platform-image',
-                imageId: 'm-other-platform',
-                displayName: 'Other Platform Image',
-                sourceSnapshotId: 'custom-snapshot-other',
-                sourceScope: 'custom',
-                ownerUserId: 'other-user',
-                visibility: 'platform',
-                enabled: true,
-              }),
-            ],
-          } satisfies PlatformImageAssetListPayload),
-    );
-
-    render(<ImageCenterScreen apiBaseUrl="http://localhost:3001" />);
-
-    const ownedRow = (await screen.findByText('Owned Platform Image')).closest('tr') as HTMLElement;
-    expect(within(ownedRow).queryByRole('button', { name: '回退为私有 Owned Platform Image' })).toBeNull();
-
-    const otherRow = screen.getByText('Other Platform Image').closest('tr') as HTMLElement;
-    expect(within(otherRow).queryByRole('button', { name: '回退为私有 Other Platform Image' })).toBeNull();
+  it('lets an ordinary owner publish and delete the image from 我的镜像', async () => {
+    sessionState.profile = { id: 'owner', username: 'owner', role: 'user' };
+    const asset = createPlatformImageAsset({
+      id: 'my-upload', imageId: 'm-upload', displayName: 'My upload', sourceScope: 'custom', ownerUserId: 'owner',
+      visibility: 'private', canManage: true, canChangeVisibility: true,
+    });
+    fetchPlatformImagesMock.mockImplementation(async (_url, _token, view) => ({ items: view === 'mine' ? [asset] : [] }));
+    publishPlatformImageMock.mockResolvedValue({ ...asset, visibility: 'platform' });
+    deleteOwnedPlatformImageMock.mockResolvedValue({ removed: true });
+    render(<ImageCenterScreen />);
+    fireEvent.mouseDown(await screen.findByRole('tab', { name: '我的镜像' }));
+    const row = (await screen.findByText('My upload')).closest('tr')!;
+    expect(within(row).getByText('私有')).toBeTruthy();
+    fireEvent.keyDown(within(row).getByRole('button', { name: '更多操作' }), { key: 'ArrowDown' });
+    fireEvent.click(screen.getByRole('menuitem', { name: '发布到平台' }));
+    await waitFor(() => expect(within(row).getByText('已发布')).toBeTruthy());
+    fireEvent.keyDown(within(row).getByRole('button', { name: '更多操作' }), { key: 'ArrowDown' });
+    fireEvent.click(screen.getByRole('menuitem', { name: '删除' }));
+    fireEvent.click(screen.getByRole('button', { name: '确认删除' }));
+    await waitFor(() => expect(deleteOwnedPlatformImageMock).toHaveBeenCalledWith('http://localhost:3001', 'dev-admin-token', asset.id));
+    expect(removePlatformImageMock).not.toHaveBeenCalled();
   });
 
   it('deletes a custom image from the cloud tab', async () => {
@@ -2217,72 +2098,6 @@ describe('ImageCenterScreen', () => {
     expect(await screen.findByRole('button', { name: '更多操作' })).toBeTruthy();
   });
 
-  it('still lets ordinary owners manage their own published image from 平台镜像', async () => {
-    sessionState.profile = {
-      id: 'oidc-subject-alice',
-      username: 'alice',
-      role: 'user',
-    };
-    fetchPlatformImagesMock.mockImplementation(async (_apiBaseUrl: string, _token: string, view: 'platform' | 'mine' = 'platform') =>
-      view === 'mine'
-        ? ({
-            items: [
-              createPlatformImageAsset({
-                id: 'owner-image-1',
-                imageId: 'm-owned-001',
-                displayName: 'Alice Shared Ubuntu',
-                ownerUserId: 'platform-user-alice',
-                canManage: true,
-                sourceSnapshotId: 'custom-snapshot-1',
-                sourceScope: 'custom',
-                enabled: true,
-              }),
-            ],
-          } satisfies PlatformImageAssetListPayload)
-        : ({
-            items: [
-              createPlatformImageAsset({
-                id: 'owner-image-1',
-                imageId: 'm-owned-001',
-                displayName: 'Alice Shared Ubuntu',
-                ownerUserId: 'platform-user-alice',
-                canManage: true,
-                sourceSnapshotId: 'custom-snapshot-1',
-                sourceScope: 'custom',
-                enabled: true,
-              }),
-              createPlatformImageAsset({
-                id: 'platform-image-2',
-                imageId: 'm-platform-002',
-                displayName: 'Other Shared Ubuntu',
-                ownerUserId: 'user-2',
-                canManage: false,
-                sourceSnapshotId: 'public-snapshot-1',
-                sourceScope: 'public',
-                enabled: true,
-              }),
-            ],
-          } satisfies PlatformImageAssetListPayload),
-    );
-
-    render(<ImageCenterScreen apiBaseUrl="http://localhost:3001" />);
-
-    fireEvent.mouseDown(await screen.findByRole('tab', { name: '平台镜像' }));
-
-    const ownedRow = (await screen.findByText('Alice Shared Ubuntu')).closest('tr') as HTMLElement;
-    expect(within(ownedRow).queryByRole('button', { name: '重命名 Alice Shared Ubuntu' })).toBeNull();
-    fireEvent.keyDown(within(ownedRow).getByRole('button', { name: '更多操作' }), { key: 'ArrowDown' });
-    expect(screen.getByRole('menuitem', { name: '重命名' })).toBeTruthy();
-    expect(screen.getByRole('menuitem', { name: '禁用' })).toBeTruthy();
-    expect(screen.getByRole('menuitem', { name: '删除' })).toBeTruthy();
-
-    const otherRow = screen.getByText('Other Shared Ubuntu').closest('tr') as HTMLElement;
-    expect(within(otherRow).queryByRole('button', { name: '回退为私有 Other Shared Ubuntu' })).toBeNull();
-  });
-});
-
-
-describe('image user-flow regressions', () => {
   it('still shows a current metadata read failure after reopening the page', async () => {
     const message = 'Current metadata request failed with status 502';
     fetchCloudAccountContextsMock.mockRejectedValue(new AdminApiError(502, message));
@@ -2368,8 +2183,8 @@ describe('image user-flow regressions', () => {
     expect(within(screen.getByRole('table', { name: '阿里云自定义镜像' })).queryByText(customSnapshot.sourceImageName)).toBeNull();
     expect(screen.getByRole('table', { name: '阿里云自定义镜像' }).getAttribute('aria-busy')).toBeNull();
   });
-  it.each([['disable', false], ['rename', false], ['remove', false], ['disable', true]] as const)('audit-ui: discards an old platform list after %s (failed read: %s) and finishes refreshing', async (action, failedRead) => {
-    const asset = createPlatformImageAsset({ id: 'platform-image-1', imageId: 'm-custom-001', displayName: 'Original asset', visibility: 'platform' });
+  it.each([['rename', false], ['retract', false], ['retract', true]] as const)('audit-ui: discards an old platform list after %s (failed read: %s) and finishes refreshing', async (action, failedRead) => {
+    const asset = createPlatformImageAsset({ id: 'platform-image-1', imageId: 'm-custom-001', displayName: 'Original asset', visibility: 'platform', ownerUserId: 'admin-user' });
     let resolveOldList!: (value: PlatformImageAssetListPayload) => void;
     let rejectOldList!: (error: Error) => void;
     let reads = 0;
@@ -2379,9 +2194,8 @@ describe('image user-flow regressions', () => {
       if (reads === 2) return new Promise((resolve, reject) => { resolveOldList = resolve; rejectOldList = reject; });
       return { items: [asset] };
     });
-    disablePlatformImageMock.mockResolvedValue({ ...asset, enabled: false });
     renamePlatformImageMock.mockResolvedValue({ ...asset, displayName: 'Renamed asset' });
-    removePlatformImageMock.mockResolvedValue(undefined);
+    unpublishPlatformImageMock.mockResolvedValue({ ...asset, visibility: 'private' });
     const now = Date.now();
     const clock = vi.spyOn(Date, 'now').mockReturnValue(now);
     function Page({ pathname }: { pathname: string }) {
@@ -2398,17 +2212,15 @@ describe('image user-flow regressions', () => {
       await waitFor(() => expect(reads).toBe(2));
       const row = screen.getByRole('row', { name: /Original asset/ });
       fireEvent.keyDown(within(row).getByRole('button', { name: '更多操作' }), { key: 'ArrowDown' });
-      fireEvent.click(screen.getByRole('menuitem', { name: action === 'disable' ? '禁用' : action === 'rename' ? '重命名' : '删除' }));
+      fireEvent.click(screen.getByRole('menuitem', { name: action === 'rename' ? '重命名' : '删除(回退为私有)' }));
       if (action === 'rename') {
         const dialog = screen.getByRole('dialog', { name: '编辑镜像名称' });
         fireEvent.change(within(dialog).getByLabelText('镜像名'), { target: { value: 'Renamed asset' } });
         fireEvent.click(within(dialog).getByRole('button', { name: '保存信息' }));
         await screen.findByText('Renamed asset');
-      } else if (action === 'remove') {
-        fireEvent.click(screen.getByRole('button', { name: '确认删除' }));
-        await waitFor(() => expect(screen.queryByText('Original asset')).toBeNull());
       } else {
-        await waitFor(() => expect(screen.queryByRole('button', { name: '创建实例 Original asset' })).toBeNull());
+        fireEvent.click(screen.getByRole('button', { name: '确认回退为私有' }));
+        await waitFor(() => expect(screen.queryByText('Original asset')).toBeNull());
       }
       await act(async () => {
         if (failedRead) rejectOldList(new Error('old list failure'));
@@ -2418,10 +2230,8 @@ describe('image user-flow regressions', () => {
       if (action === 'rename') {
         expect(screen.getByText('Renamed asset')).toBeTruthy();
         expect(screen.queryByText('Original asset')).toBeNull();
-      } else if (action === 'remove') {
-        expect(screen.queryByText('Original asset')).toBeNull();
       } else {
-        expect(screen.queryByRole('button', { name: '创建实例 Original asset' })).toBeNull();
+        expect(screen.queryByText('Original asset')).toBeNull();
       }
       await waitFor(() => expect(screen.getByRole('table', { name: '平台镜像' }).getAttribute('aria-busy')).toBeNull());
     } finally { clock.mockRestore(); }

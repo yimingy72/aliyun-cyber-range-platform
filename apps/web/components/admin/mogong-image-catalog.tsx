@@ -47,13 +47,14 @@ function imageStatus(image: MogongImage, snapshot: ImageSnapshot | undefined, co
   return collected ? '已收录' : privateAsset ? '私有镜像待发布' : '可收录';
 }
 
-export function MogongImageCatalogView({ apiBaseUrl, actionHost, filterHost, token, search, readOnly, refreshRevision, logout, onCollected, onContainerCollected }: {
+export function MogongImageCatalogView({ apiBaseUrl, actionHost, filterHost, token, search, readOnly, canSync = true, refreshRevision, logout, onCollected, onContainerCollected }: {
   apiBaseUrl: string;
   actionHost: HTMLElement | null;
   filterHost?: HTMLElement | null;
   token: string;
   search: string;
   readOnly: boolean;
+  canSync?: boolean;
   refreshRevision: number;
   logout: () => void;
   onCollected: (asset: PlatformImageAsset) => void;
@@ -181,7 +182,7 @@ export function MogongImageCatalogView({ apiBaseUrl, actionHost, filterHost, tok
         />
       ) : undefined}
     >
-      {actionHost ? createPortal(
+      {actionHost && canSync ? createPortal(
         <Button disabled={readOnly || catalog?.syncAllowed === false || pending !== null || loading} onClick={() => void handleSync()} size="sm" type="button" variant="outline">
           <RefreshCw aria-hidden="true" />{pending === 'sync' ? '同步中…' : '同步墨攻镜像'}
         </Button>,

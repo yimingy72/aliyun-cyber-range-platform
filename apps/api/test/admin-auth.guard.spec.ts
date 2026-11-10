@@ -12,29 +12,15 @@ describe('AdminAuthGuard', () => {
     ).toBe(true);
   });
 
-  it('does not treat cloud image source routes as authenticated-user routes', () => {
+  it('keeps cloud source access admin-only while allowing users to browse and collect from 墨攻', () => {
     const guard = new AdminAuthGuard({} as never, {} as never);
-
-    expect(
-      (guard as unknown as { isAuthenticatedUserRoute: (pathname: string, method: string) => boolean }).isAuthenticatedUserRoute(
-        '/admin/image-catalog/public',
-        'GET',
-      ),
-    ).toBe(false);
-
-    expect(
-      (guard as unknown as { isAuthenticatedUserRoute: (pathname: string, method: string) => boolean }).isAuthenticatedUserRoute(
-        '/admin/image-catalog/custom',
-        'GET',
-      ),
-    ).toBe(false);
-
-    expect(
-      (guard as unknown as { isAuthenticatedUserRoute: (pathname: string, method: string) => boolean }).isAuthenticatedUserRoute(
-        '/admin/image-catalog/mogong',
-        'GET',
-      ),
-    ).toBe(false);
+    const allowsUser = (path: string, method: string) =>
+      (guard as unknown as { isAuthenticatedUserRoute: (pathname: string, method: string) => boolean }).isAuthenticatedUserRoute(path, method);
+    expect(allowsUser('/admin/image-catalog/public', 'GET')).toBe(false);
+    expect(allowsUser('/admin/image-catalog/custom', 'GET')).toBe(false);
+    expect(allowsUser('/admin/image-catalog/mogong', 'GET')).toBe(true);
+    expect(allowsUser('/admin/image-catalog/mogong/12/collect', 'POST')).toBe(true);
+    expect(allowsUser('/admin/image-catalog/mogong/sync', 'POST')).toBe(false);
   });
 
   it('rejects legacy non-jwt bearer tokens', async () => {

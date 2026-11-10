@@ -256,7 +256,7 @@ describe('AdminWorkspaceShell', () => {
     const navigationDialog = await screen.findByRole('dialog');
 
     expect(within(navigationDialog).getByTestId('platform-brand-mark').className).toContain('size-6');
-    expect(within(navigationDialog).getByRole('link', { name: /靶场编排/i }).getAttribute('href')).toBe(
+    expect(within(navigationDialog).getByRole('link', { name: /编排中心/i }).getAttribute('href')).toBe(
       '/admin/scenarios',
     );
     expect(within(navigationDialog).getByRole('link', { name: /基础配置/i }).getAttribute('href')).toBe(
@@ -276,7 +276,7 @@ describe('AdminWorkspaceShell', () => {
     clickLinkWithoutBrowserNavigation(screen.getByRole('link', { name: /镜像中心/i }));
 
     expect(screen.getByRole('link', { name: /镜像中心/i }).getAttribute('aria-busy')).toBe('true');
-    expect(screen.getByRole('link', { name: /靶场编排/i }).getAttribute('aria-current')).toBe('page');
+    expect(screen.getByRole('link', { name: /编排中心/i }).getAttribute('aria-current')).toBe('page');
 
     pathnameState.value = '/admin/image-center';
     rerender(
@@ -301,10 +301,10 @@ describe('AdminWorkspaceShell', () => {
     );
 
     await screen.findByText('workspace content');
-    const currentLink = screen.getByRole('link', { name: /靶场编排/i });
+    const currentLink = screen.getByRole('link', { name: /编排中心/i });
     clickLinkWithoutBrowserNavigation(currentLink);
 
-    expect(screen.getByRole('link', { name: /靶场编排/i }).getAttribute('aria-busy')).toBeNull();
+    expect(screen.getByRole('link', { name: /编排中心/i }).getAttribute('aria-busy')).toBeNull();
   });
 
   it('keeps the compact navigation drawer open for modified clicks', async () => {
@@ -347,7 +347,7 @@ describe('AdminWorkspaceShell', () => {
     expect(within(sidebarBrand).getByTestId('platform-brand-mark').getAttribute('src')).toBe('/brand/platform-mark.svg');
     expect(within(navigation).getByRole('link', { name: /镜像中心/i }).getAttribute('href')).toBe('/admin/image-center');
     expect(within(navigation).getByRole('link', { name: /实例管理/i }).getAttribute('href')).toBe('/admin/instances');
-    expect(within(navigation).getByRole('link', { name: /靶场编排/i }).getAttribute('href')).toBe('/admin/scenarios');
+    expect(within(navigation).getByRole('link', { name: /编排中心/i }).getAttribute('href')).toBe('/admin/scenarios');
     expect(within(navigation).getByRole('link', { name: /编排实例/i }).getAttribute('href')).toBe('/admin/ranges');
     expect(within(navigation).getByRole('link', { name: /用户管理/i }).getAttribute('href')).toBe('/admin/users');
     expect(within(navigation).getByRole('link', { name: /账单费用/i }).getAttribute('href')).toBe('/admin/billing');

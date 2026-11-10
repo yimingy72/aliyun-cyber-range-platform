@@ -21,7 +21,8 @@ export function RangeInstanceCreateButton({ apiBaseUrl, onCreated }: { apiBaseUr
   const active = useAdminRouteIsActive('/admin/ranges');
   const router = useRouter();
   const cache = useAdminScreenCache();
-  const canCreate = !workspace || (!workspace.isReadOnly && workspace.capabilities.provisioning);
+  const canCreate = !workspace || (!workspace.isReadOnly && workspace.capabilities.provisioning &&
+    (workspace.capabilities.rangeProvisioning ?? workspace.provider === 'alibaba_cloud'));
   const [open, setOpen] = useState(false);
   const [pending, setPending] = useState(false);
   const [loading, setLoading] = useState(false);

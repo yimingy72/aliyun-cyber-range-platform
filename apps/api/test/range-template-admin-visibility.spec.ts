@@ -1,4 +1,4 @@
-import { ForbiddenException, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ForbiddenException, NotFoundException } from '@nestjs/common';
 import { RangeTemplatesService } from '../src/admin/range-templates.service';
 import { runInCloudWorkspace } from '../src/auth/cloud-workspace-scope';
 import { createMemoryAdminRepository } from './support/create-memory-admin-repository';
@@ -8,7 +8,7 @@ const workspaceB = { cloudWorkspaceId: 'workspace-b', provider: 'tencent_cloud' 
 const admin = { id: 'admin', role: 'admin' as const };
 const owner = { id: 'owner', role: 'user' as const };
 
-it('lets administrators discover and manage other owners private drafts only in the selected workspace', async () => {
+it('lets administrators moderate publications without accessing other users’ private drafts', async () => {
   const repository = createMemoryAdminRepository();
   const input = { name: 'test1-test1', slug: 'private-draft', version: 'v1', createdBy: owner.id,
     ownerUserId: owner.id, visibility: 'private' as const, modulePathOrRef: 'fixture-module',
@@ -19,15 +19,20 @@ it('lets administrators discover and manage other owners private drafts only in 
   const service = new RangeTemplatesService(repository);
 
   await runInCloudWorkspace(workspaceA, async () => {
-    const all = await service.list(admin, 'all');
-    expect(all.map(item => item.id).sort()).toEqual([own.id, draft.id].sort());
-    expect(all.find(item => item.id === draft.id)).toMatchObject({ name: 'test1-test1', visibility: 'private', status: 'private', canManage: true });
-    expect(all.find(item => item.id === draft.id)).not.toHaveProperty('topologyGraph');
+    await expect(service.list(admin, 'all')).rejects.toBeInstanceOf(BadRequestException);
     expect((await service.list(admin, 'mine')).map(item => item.id)).toEqual([own.id]);
     expect(await service.list(admin, 'platform')).toEqual([]);
-    await expect(service.getById(draft.id, admin)).resolves.toMatchObject({ id: draft.id, canManage: true });
+    await expect(service.getById(draft.id, admin)).rejects.toBeInstanceOf(ForbiddenException);
+    await expect(service.delete(draft.id, admin)).rejects.toBeInstanceOf(ForbiddenException);
+    const published = await repository.publishRangeTemplateToPlatform(draft.id, draft.revision);
+    expect(await service.list(admin, 'platform')).toEqual([expect.objectContaining({ id: draft.id, canManage: false })]);
+    await expect(service.getById(draft.id, admin)).resolves.toMatchObject({ id: draft.id, canManage: false });
+    await expect(service.updateMetadata(draft.id, { name: 'changed', expectedRevision: published.revision }, admin))
+      .rejects.toBeInstanceOf(ForbiddenException);
+    await expect(service.returnToPrivate(draft.id, published.revision, admin)).resolves.toMatchObject({ id: draft.id, visibility: 'private' });
+    await expect(service.getById(draft.id, admin)).rejects.toBeInstanceOf(ForbiddenException);
     await expect(service.getById(foreign.id, admin)).rejects.toBeInstanceOf(NotFoundException);
-    await expect(service.list(owner, 'all')).rejects.toBeInstanceOf(ForbiddenException);
+    await expect(service.list(owner, 'all')).rejects.toBeInstanceOf(BadRequestException);
     expect((await service.list(owner, 'mine')).map(item => item.id)).toEqual([draft.id]);
     await expect(service.getById(own.id, owner)).rejects.toBeInstanceOf(ForbiddenException);
   });

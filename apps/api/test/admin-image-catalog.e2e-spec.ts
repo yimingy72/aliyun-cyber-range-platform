@@ -628,7 +628,7 @@ describe('Admin image catalog APIs', () => {
     });
   });
 
-  it('supports collect rename enable disable and delete for platform image assets', async () => {
+  it('supports collect rename and directory removal for unowned platform assets', async () => {
     repository = createMemoryAdminRepository();
 
     await repository.reconcileImageSnapshots({
@@ -695,28 +695,7 @@ describe('Admin image catalog APIs', () => {
     await request(app.getHttpServer())
       .post(`/admin/platform-images/${assetId}/disable`)
       .set('authorization', `Bearer ${adminToken}`)
-      .expect(201)
-      .expect(({ body }) => {
-        expect(body).toEqual(
-          expect.objectContaining({
-            id: assetId,
-            enabled: false,
-          }),
-        );
-      });
-
-    await request(app.getHttpServer())
-      .post(`/admin/platform-images/${assetId}/enable`)
-      .set('authorization', `Bearer ${adminToken}`)
-      .expect(201)
-      .expect(({ body }) => {
-        expect(body).toEqual(
-          expect.objectContaining({
-            id: assetId,
-            enabled: true,
-          }),
-        );
-      });
+      .expect(404);
 
     await request(app.getHttpServer())
       .delete(`/admin/platform-images/${assetId}`)
@@ -734,7 +713,7 @@ describe('Admin image catalog APIs', () => {
     expect((global.fetch as jest.Mock).mock.calls.map(([input]) => new URL(String(input)).searchParams.get('Action'))).not.toContain('DeleteImage');
   });
 
-  it('requires admin privileges to publish a private image asset', async () => {
+  it('allows the owner to publish a private image asset', async () => {
     repository = createMemoryAdminRepository();
 
     await repository.createPlatformUser({
@@ -781,7 +760,7 @@ describe('Admin image catalog APIs', () => {
     await request(app.getHttpServer())
       .post(`/admin/platform-images/${asset.id}/publish`)
       .set('authorization', `Bearer ${ownerToken}`)
-      .expect(403);
+      .expect(200);
 
     const platformResponse = await request(app.getHttpServer())
       .get('/admin/platform-images?view=platform')
@@ -789,11 +768,11 @@ describe('Admin image catalog APIs', () => {
       .expect(200);
 
     expect(platformResponse.body).toEqual({
-      items: [],
+      items: [expect.objectContaining({ id: asset.id, visibility: 'platform', canManage: false })],
     });
   });
 
-  it('requires admin privileges to unpublish a platform image asset back to private', async () => {
+  it('allows the owner to unpublish their platform image', async () => {
     repository = createMemoryAdminRepository();
 
     await repository.createPlatformUser({
@@ -840,22 +819,15 @@ describe('Admin image catalog APIs', () => {
     await request(app.getHttpServer())
       .post(`/admin/platform-images/${asset.id}/unpublish`)
       .set('authorization', `Bearer ${ownerToken}`)
-      .expect(403);
+      .expect(200);
 
     const platformResponse = await request(app.getHttpServer())
       .get('/admin/platform-images?view=platform')
       .set('authorization', `Bearer ${ownerToken}`)
       .expect(200);
 
-    expect(platformResponse.body).toEqual({
-      items: [
-        expect.objectContaining({
-          id: asset.id,
-          ownerUserId: 'image-owner-2',
-          visibility: 'platform',
-        }),
-      ],
-    });
+    expect(platformResponse.body).toEqual({ items: [] });
+    expect(await repository.getPlatformImageAssetById(asset.id)).toMatchObject({ visibility: 'private', ownerUserId: 'image-owner-2' });
   });
 
   it('prevents a non-owner user from publishing or unpublishing another user image asset', async () => {
@@ -930,12 +902,12 @@ describe('Admin image catalog APIs', () => {
     await request(app.getHttpServer())
       .post(`/admin/platform-images/${privateAsset.id}/publish`)
       .set('authorization', `Bearer ${viewerToken}`)
-      .expect(403);
+      .expect(404);
 
     await request(app.getHttpServer())
       .post(`/admin/platform-images/${platformAsset.id}/unpublish`)
       .set('authorization', `Bearer ${viewerToken}`)
-      .expect(403);
+      .expect(404);
 
     const assets = await repository.listPlatformImageAssets({
       accountScopeKey: toAccountScopeKey('1234567890'),
@@ -957,7 +929,7 @@ describe('Admin image catalog APIs', () => {
     );
   });
 
-  it('allows an owner to remove their platform asset while keeping its cloud image', async () => {
+  it('keeps an owned custom image when the legacy directory removal is requested', async () => {
     repository = createMemoryAdminRepository();
     global.fetch = jest.fn().mockResolvedValue(createJsonResponse({ RequestId: 'delete-ok' }));
 
@@ -1006,8 +978,7 @@ describe('Admin image catalog APIs', () => {
     await request(app.getHttpServer())
       .delete(`/admin/platform-images/${asset.id}`)
       .set('authorization', `Bearer ${ownerToken}`)
-      .expect(204)
-      .expect('');
+      .expect(403);
 
     const [remainingSnapshot] = await repository.listImageSnapshots({
       provider: 'alibaba_cloud',
@@ -1023,7 +994,7 @@ describe('Admin image catalog APIs', () => {
     });
 
     expect(remainingSnapshot?.id).toBe(snapshot.id);
-    expect(remainingAssets).toEqual([]);
+    expect(remainingAssets).toEqual([expect.objectContaining({ id: asset.id })]);
     expect(global.fetch).not.toHaveBeenCalled();
   });
 
@@ -1365,7 +1336,7 @@ describe('Admin image catalog APIs', () => {
     );
   });
 
-  it('DELETE /admin/platform-images/:id retains the cloud image and cached source', async () => {
+  it('requires the owned cloud deletion action for an administrator’s custom image', async () => {
     repository = createMemoryAdminRepository();
     global.fetch = jest.fn().mockResolvedValue(createJsonResponse({ RequestId: 'delete-ok' }));
 
@@ -1403,8 +1374,7 @@ describe('Admin image catalog APIs', () => {
     await request(app.getHttpServer())
       .delete(`/admin/platform-images/${asset.id}`)
       .set('authorization', `Bearer ${adminToken}`)
-      .expect(204)
-      .expect('');
+      .expect(403);
 
     const remainingSnapshots = await repository.listImageSnapshots({
       provider: 'alibaba_cloud',
@@ -1415,7 +1385,7 @@ describe('Admin image catalog APIs', () => {
     const remainingAsset = await repository.getPlatformImageAssetById(asset.id);
 
     expect(remainingSnapshots).toEqual([snapshot]);
-    expect(remainingAsset).toBeNull();
+    expect(remainingAsset).toMatchObject({ id: asset.id });
     expect(global.fetch).not.toHaveBeenCalled();
   });
 

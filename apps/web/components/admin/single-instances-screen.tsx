@@ -69,6 +69,8 @@ import { AdminActionNotice } from './shared/admin-action-notice';
 import { StatusBadge } from './shared/status-badge';
 import { TableLoadingState } from './shared/table-loading-state';
 import { useAdminSession } from './use-admin-session';
+import type { InstanceOwnerFilter } from '../../lib/admin-types';
+import { InstanceOwnerSelect } from './shared/instance-owner-select';
 import { Button } from '@/components/ui/button';
 import { TableRow } from '@/components/ui/table';
 
@@ -102,6 +104,7 @@ const historyInstanceColumns = [
   { id: 'ended-at', label: '结束时间', priority: 'secondary', width: ADMIN_TABLE_WIDTHS.dateTime },
   { id: 'duration', label: '运行时长', priority: 'detail', width: '8rem' },
   { id: 'created-by', label: '创建人', priority: 'tertiary', width: ADMIN_TABLE_WIDTHS.creator },
+  { id: 'actions', label: '操作', priority: 'primary', width: ADMIN_TABLE_WIDTHS.actions },
 ] as const satisfies readonly AdminDataColumn[];
 
 type CreateDialogState = {
@@ -521,10 +524,21 @@ function SingleInstanceDialog({
   );
 }
 
-export function SingleInstancesScreen({
+export function SingleInstancesScreen(props: SingleInstancesScreenProps) {
+  const session = useAdminSession();
+  const [selectedOwner, setSelectedOwner] = useState<InstanceOwnerFilter>('mine');
+  const owner = session.isAdmin ? selectedOwner : 'mine';
+  return <SingleInstancesScreenList key={`${session.profile?.id ?? ''}:${session.profile?.role ?? ''}:${owner}`} {...props}
+    owner={owner} onOwnerChange={session.isAdmin ? setSelectedOwner : undefined} />;
+}
+
+function SingleInstancesScreenList({
   apiBaseUrl = 'http://localhost:3001',
   pollIntervalMs = 5000,
-}: SingleInstancesScreenProps) {
+  owner,
+  onOwnerChange,
+}: SingleInstancesScreenProps & { owner: InstanceOwnerFilter; onOwnerChange?: (owner: InstanceOwnerFilter) => void }) {
+  const ownerSuffix = owner === 'all' ? ':all' : '';
   const router = useRouter();
   const searchParams = useSearchParams();
   const session = useAdminSession();
@@ -535,8 +549,8 @@ export function SingleInstancesScreen({
   const compactWorkbench = usePlatformTheme() !== 'classic';
   const [listMode, setListMode] = useState<ListMode>(() => readListMode(searchParams.get('view')));
   const screenCache = useAdminScreenCache();
-  const cachedActiveRows = screenCache?.read<SingleInstanceRows>(apiBaseUrl, session.token, 'single-instances:active');
-  const cachedHistoryRows = screenCache?.read<SingleInstanceRows>(apiBaseUrl, session.token, 'single-instances:history');
+  const cachedActiveRows = screenCache?.read<SingleInstanceRows>(apiBaseUrl, session.token, `single-instances:active${ownerSuffix}`);
+  const cachedHistoryRows = screenCache?.read<SingleInstanceRows>(apiBaseUrl, session.token, `single-instances:history${ownerSuffix}`);
   const cachedPlatformImages = screenCache?.read<PlatformImageAssetListPayload>(
     apiBaseUrl,
     session.token,
@@ -621,6 +635,7 @@ export function SingleInstancesScreen({
       const [nextPayload, nextJobs] = await Promise.all([
         fetchSingleInstances(apiBaseUrl, token, {
           view: nextListMode === 'history' ? 'history' : 'active',
+          ...(owner === 'all' ? { owner } : {}),
         }),
         nextListMode === 'history'
           ? fetchProvisionJobs(apiBaseUrl, token, { instanceMode: 'single' })
@@ -639,14 +654,14 @@ export function SingleInstancesScreen({
     };
 
     return screenCache
-      ? screenCache.load(apiBaseUrl, token, `single-instances:${nextListMode}`, load, { force })
+      ? screenCache.load(apiBaseUrl, token, `single-instances:${nextListMode}${ownerSuffix}`, load, { force })
       : load();
   }
 
   async function refreshSingleInstanceRows(token: string, nextListMode: ListMode, force = false, quiet = false) {
     const requestId = listRequestIdRef.current + 1;
     const hasCurrentSnapshot = loadedListModeRef.current === nextListMode;
-    const cachedRows = screenCache?.read<SingleInstanceRows>(apiBaseUrl, token, `single-instances:${nextListMode}`);
+    const cachedRows = screenCache?.read<SingleInstanceRows>(apiBaseUrl, token, `single-instances:${nextListMode}${ownerSuffix}`);
     listRequestIdRef.current = requestId;
     setListErrorMessage(null);
 
@@ -1426,10 +1441,10 @@ export function SingleInstancesScreen({
     });
   }
 
-  function handleBatchExport(group: SingleInstanceBatchGroup) {
+  function exportInstances(name: string, rows: RangeInstance[]) {
     exportBatchInstancesCsv(
-      group.batch.name,
-      group.instances.map((instance) => {
+      name,
+      rows.map((instance) => {
         const credential = readPrimaryCredential(instance);
 
         return {
@@ -1607,6 +1622,13 @@ export function SingleInstancesScreen({
         <AdminDataTableCell className="text-xs tabular-nums" column={columns[6]}>{formatDateTime(endedAt)}</AdminDataTableCell>
         <AdminDataTableCell className="text-xs tabular-nums" column={columns[7]}>{formatDuration(startedAt, endedAt)}</AdminDataTableCell>
         <AdminDataTableCell column={columns[8]}>{instance.createdBy?.trim() || 'admin'}</AdminDataTableCell>
+        <AdminDataTableCell column={columns[9]}>
+          <div className="flex items-center gap-1 whitespace-nowrap">
+            {readPrimaryCredential(instance) ? renderCredentials(instance) : null}
+            <Button aria-label={`导出实例 ${instance.name ?? instance.id}`} onClick={() => exportInstances(instance.name ?? instance.id, [instance])}
+              size="sm" type="button" variant="outline">导出</Button>
+          </div>
+        </AdminDataTableCell>
       </>
     );
   }
@@ -1671,6 +1693,7 @@ export function SingleInstancesScreen({
               action={compactWorkbench ? undefined : createInstanceAction}
               onSearchChange={setSearchName}
               onViewChange={(nextView) => setListModeWithUrl(nextView === 'history' ? 'history' : 'active')}
+              searchControls={onOwnerChange ? <InstanceOwnerSelect owner={owner} onChange={onOwnerChange} /> : undefined}
               searchLabel="筛选实例名"
               searchPlaceholder="搜索实例名"
               searchValue={searchName}
@@ -1793,6 +1816,10 @@ export function SingleInstancesScreen({
                                       {formatDuration(group.batch.createdAt, group.batch.expiresAt)}
                                     </AdminDataTableCell>
                                     <AdminDataTableCell column={columns[8]}>{group.batch.createdBy?.trim() || 'admin'}</AdminDataTableCell>
+                                    <AdminDataTableCell column={columns[9]}>
+                                      <Button aria-label={`导出批次 ${group.batch.name}`} onClick={() => exportInstances(group.batch.name, group.instances)}
+                                        size="sm" type="button" variant="outline">导出</Button>
+                                    </AdminDataTableCell>
                                   </>
                                 ) : (
                                   <>
@@ -1803,7 +1830,7 @@ export function SingleInstancesScreen({
                                     <AdminDataTableCell column={columns[8]}>{group.batch.createdBy?.trim() || 'admin'}</AdminDataTableCell>
                                     <AdminDataTableCell column={columns[9]}>
                                       <div className="inline-flex flex-nowrap! items-center justify-start gap-1 whitespace-nowrap" data-slot="instance-batch-actions">
-                                        <Button onClick={() => handleBatchExport(group)} size="sm" type="button" variant="outline">
+                                        <Button onClick={() => exportInstances(group.batch.name, group.instances)} size="sm" type="button" variant="outline">
                                           导出
                                         </Button>
                                         <InstancePowerMenu apiBaseUrl={apiBaseUrl} token={session.token} scopeKey={`${launchScope}:${session.profile?.role}`} target={{ kind: 'single_batch', id: group.batch.id }} name={group.batch.name || group.batch.id}

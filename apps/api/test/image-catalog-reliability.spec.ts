@@ -80,7 +80,7 @@ describe('Image catalog preservation and collection', () => {
     await service.syncCustomImages();
     expect(await repository.getImageSnapshotById(sourceId)).toMatchObject({ status: 'Missing', isAvailable: false });
     expect(await repository.getPlatformImageAssetById(assetId)).toMatchObject({ sourceSnapshotId: sourceId, ownerUserId: owner.id, defaultHostName: 'private-host', enabled: false });
-    await expect(service.setPlatformAssetEnabled(assetId, true, owner)).rejects.toThrow('来源镜像不可用');
+    await expect(service.updatePlatformAsset(assetId, { visibility: 'platform' }, owner)).rejects.toThrow('来源镜像不可用');
     await expect(service.collectPlatformAsset(sourceId, 'retry', admin)).rejects.toThrow('不可用');
   });
   it('prepares owned cleanup against its captured account even after the active account changes', async () => {
@@ -94,7 +94,8 @@ describe('Image catalog preservation and collection', () => {
   });
 
   it('keeps vanished platform assets manageable for admins while excluding them from ordinary user choices', async () => {
-    await service.updatePlatformAsset(assetId, { visibility: 'platform' }, admin);
+    await repository.setPlatformImageAssetEnabled(assetId, true);
+    await service.updatePlatformAsset(assetId, { visibility: 'platform' }, owner);
     await repository.reconcileImageSnapshots({ provider: account.provider, accountUid: account.accountUid, regionId: account.defaultRegion, scope: 'custom', snapshots: [] });
     await expect(service.listPlatformAssets(admin, 'platform')).resolves.toMatchObject({ items: [expect.objectContaining({ id: assetId, enabled: false, sourceSnapshotAvailable: false, canManage: true })] });
     await expect(service.listPlatformAssets(owner, 'platform')).resolves.toEqual({ items: [] });
@@ -102,14 +103,14 @@ describe('Image catalog preservation and collection', () => {
 
   it('does not clear owner, private visibility, defaults or disabled state on repeated collection', async () => {
     const before = await repository.getPlatformImageAssetById(assetId);
-    await service.collectPlatformAsset(sourceId, 'admin replacement name', admin);
+    await expect(service.collectPlatformAsset(sourceId, 'admin replacement name', admin)).rejects.toThrow('not found');
     expect(await repository.getPlatformImageAssetById(assetId)).toEqual(before);
     expect(fetchMock).not.toHaveBeenCalled();
   });
-  it('removes only the directory record, keeping the source and charged snapshot ledger', async () => {
+  it('rejects directory-only removal of a custom user asset, preserving the source and ledger', async () => {
     const ledger = await repository.createBillingLedgerResource({ cloudAccountUid: account.accountUid, regionId: account.defaultRegion, cloudResourceId: 's-kept', cloudResourceType: 'snapshot', billingScope: 'user', ownerUserId: owner.id, platformImageAssetId: assetId, billingStartAt: new Date(), tagsSnapshot: {} });
-    await service.removePlatformAsset(assetId, owner);
-    expect(await repository.getPlatformImageAssetById(assetId)).toBeNull();
+    await expect(service.removePlatformAsset(assetId, owner)).rejects.toThrow('我的镜像');
+    expect(await repository.getPlatformImageAssetById(assetId)).toMatchObject({ id: assetId });
     expect((await repository.getImageSnapshotById(sourceId))!.isAvailable).toBe(true);
     expect((await repository.listBillingLedgerResources()).find(row => row.id === ledger.id)!.releasedAt).toBeNull();
     expect(fetchMock).not.toHaveBeenCalled();
@@ -153,7 +154,7 @@ describe('Image catalog preservation and collection', () => {
         expect.objectContaining({ id: retained.image.id, releasedAt: null }),
         expect.objectContaining({ id: retained.snapshot.id, releasedAt: null }),
       ]));
-      await expect(service.setPlatformAssetEnabled(assetId, true, owner)).rejects.toThrow('来源镜像不可用');
+      await expect(service.updatePlatformAsset(assetId, { visibility: 'platform' }, owner)).rejects.toThrow('来源镜像不可用');
       await expect(service.collectPlatformAsset(sourceId, 'retry', admin)).rejects.toThrow('不可用');
       await service.syncCustomImages();
       expect(await repository.getImageSnapshotById(sourceId)).toMatchObject({ status: 'Deleting', isAvailable: false });

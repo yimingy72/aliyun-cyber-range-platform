@@ -66,7 +66,7 @@ const navigationItems: readonly AdminNavigationItem[] = [
   },
   {
     href: '/admin/scenarios',
-    label: '靶场编排',
+    label: '编排中心',
     shortLabel: '编排', icon: Workflow,
   },
   {

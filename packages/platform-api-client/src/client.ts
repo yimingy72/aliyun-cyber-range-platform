@@ -32,6 +32,7 @@ import type {
   InstanceMode,
   InstanceTypeAvailabilitySnapshot,
   InstanceView,
+  InstanceOwnerFilter,
   ImageCatalogScope,
   ImageCatalogScopePayload,
   ImageImportJob,
@@ -239,18 +240,9 @@ export class PlatformApiClient implements PlatformApiClientLike {
     });
   }
 
-  enablePlatformImage(id: string, operation?: OperationRequest) {
-    return this.request<PlatformImageAsset>(`/admin/platform-images/${encodeURIComponent(id)}/enable`, {
-      method: 'POST',
-      body: '{}',
-      operation,
-    });
-  }
-
-  disablePlatformImage(id: string, operation?: OperationRequest) {
-    return this.request<PlatformImageAsset>(`/admin/platform-images/${encodeURIComponent(id)}/disable`, {
-      method: 'POST',
-      body: '{}',
+  deleteOwnedPlatformImage(id: string, operation?: OperationRequest) {
+    return this.request<{ removed: boolean; snapshotId: string }>(`/admin/platform-images/${encodeURIComponent(id)}/cloud-image`, {
+      method: 'DELETE',
       operation,
     });
   }
@@ -291,8 +283,8 @@ export class PlatformApiClient implements PlatformApiClientLike {
     });
   }
 
-  listRangeInstances(view: InstanceView = 'active') {
-    return this.request<RangeInstance[]>(`/admin/ranges?view=${encodeURIComponent(view)}`);
+  listRangeInstances(view: InstanceView = 'active', owner?: InstanceOwnerFilter) {
+    return this.request<RangeInstance[]>(`/admin/ranges?view=${encodeURIComponent(view)}${owner ? `&owner=${owner}` : ''}`);
   }
 
   getRangeInstance(id: string, options?: GetRangeInstanceOptions) {
@@ -391,8 +383,8 @@ export class PlatformApiClient implements PlatformApiClientLike {
     return this.request<Record<string,unknown>>(`/admin/instances/networks/${encodeURIComponent(id)}/destroy`,{method:'POST',body:JSON.stringify({cleanupRunId}),operation});
   }
 
-  listSingleInstances(view: InstanceView = 'active') {
-    return this.request<SingleInstanceListPayload>(`/admin/instances?view=${encodeURIComponent(view)}`);
+  listSingleInstances(view: InstanceView = 'active', owner?: InstanceOwnerFilter) {
+    return this.request<SingleInstanceListPayload>(`/admin/instances?view=${encodeURIComponent(view)}${owner ? `&owner=${owner}` : ''}`);
   }
 
   async getSingleInstance(id: string) {

@@ -10,6 +10,7 @@ import { rangePackedImageArtifactSummaries } from './packed-image-diagnostic';
 import { readPackedImageSourceSnapshots } from './packed-image-source-observation';
 import { assertTencentOwnedInstance, describeTencentInstances } from './tencent-cloud-resources';
 
+import { listAllInstanceOwners } from './instance-list-owner';
 import { BadRequestException, ConflictException, ForbiddenException, Inject, Injectable, NotFoundException, Optional, ServiceUnavailableException } from '@nestjs/common';
 import {
   type ScenarioGraphDraft,
@@ -63,10 +64,11 @@ export class RangeInstancesService {
     @Optional() private readonly rangeNetworkDiagnosticsService?: RangeNetworkDiagnosticsService,
   ) {}
 
-  async list(currentUser?: AuthenticatedUser, view: 'active' | 'history' = 'active') {
+  async list(currentUser?: AuthenticatedUser, view: 'active' | 'history' = 'active', owner?: string) {
+    const allOwners = listAllInstanceOwners(currentUser, owner);
     const instances = await this.adminRepository.listRangeInstances();
     const scopedInstances =
-      currentUser && currentUser.role !== 'admin'
+      currentUser && !allOwners
         ? instances.filter((instance) => instance.ownerUserId === currentUser.id)
         : instances;
     const templates = await this.adminRepository.listRangeTemplates();
@@ -169,7 +171,7 @@ export class RangeInstancesService {
       throw new NotFoundException('Range template not found');
     }
 
-    const sourceTemplateVersion = await this.rangeTemplatesService.resolveTemplateConsumptionVersion(template, currentUser);
+    const sourceTemplateVersion = await this.rangeTemplatesService.resolveTemplateConsumptionVersion(template, currentUser, input.usePublishedVersion);
 
     if (!sourceTemplateVersion) {
       throw new ConflictException('Range template does not have an active template version');
@@ -267,8 +269,8 @@ export class RangeInstancesService {
       throw new ConflictException('模板云厂商与当前已验证账号不一致。');
     }
 
-    const sourceTemplateVersion = await this.rangeTemplatesService.resolveTemplateConsumptionVersion(template, currentUser);
-    const allowTemplateFallback = !this.isPlatformTemplateConsumer(template, currentUser);
+    const sourceTemplateVersion = await this.rangeTemplatesService.resolveTemplateConsumptionVersion(template, currentUser, input.usePublishedVersion);
+    const allowTemplateFallback = !input.usePublishedVersion && !this.isPlatformTemplateConsumer(template, currentUser);
 
     if (!sourceTemplateVersion) {
       throw new ConflictException('Range template does not have an active template version');
@@ -974,7 +976,7 @@ export class RangeInstancesService {
     template: NonNullable<Awaited<ReturnType<AdminRepository['getRangeTemplateById']>>>,
     currentUser?: AuthenticatedUser,
   ) {
-    return Boolean(currentUser) && currentUser!.role !== 'admin' && template.ownerUserId !== currentUser!.id;
+    return Boolean(currentUser && template.ownerUserId !== currentUser.id);
   }
 
   private async attachRecoverySummary(instance: Awaited<ReturnType<AdminRepository['getRangeInstanceById']>>) {

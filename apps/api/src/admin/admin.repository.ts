@@ -1251,7 +1251,7 @@ export interface AdminRepository {
   saveRangeTemplateTopology(id: string, input: SaveRangeTemplateTopologyInput): Promise<RangeTemplateRecord>;
   publishRangeTemplateToPlatform(id: string, expectedRevision: number): Promise<RangeTemplateRecord>;
   unshareRangeTemplate(id: string, expectedRevision: number): Promise<RangeTemplateRecord>;
-  deleteRangeTemplate(id: string): Promise<void>;
+  deleteRangeTemplate(id: string, expectedRevision?: number): Promise<void>;
   createSingleInstanceBatch(input: CreateSingleInstanceBatchInput): Promise<SingleInstanceBatchRecord>;
   getSingleInstanceBatchById(id: string): Promise<SingleInstanceBatchRecord | null>;
   getSingleInstanceBatchWithInstancesById(id: string): Promise<SingleInstanceBatchWithInstancesRecord | null>;
@@ -1322,7 +1322,9 @@ export interface AdminRepository {
   getPlatformImageAssetById(id: string): Promise<PlatformImageAssetRecord | null>;
   listPlatformImageAssets(filter?: ListPlatformImageAssetsFilter): Promise<PlatformImageAssetRecord[]>;
   collectPlatformImageAsset(input: CollectPlatformImageAssetInput): Promise<PlatformImageAssetRecord>;
-  updatePlatformImageAsset(id: string, input: { displayName: string }): Promise<PlatformImageAssetRecord>;
+  updatePlatformImageAsset(id: string, input: { displayName: string; visibility?: ResourceVisibility },
+    expected?: Pick<PlatformImageAssetRecord, 'ownerUserId' | 'visibility'>): Promise<PlatformImageAssetRecord>;
+  findImageImportOwner(snapshot: CloudImageSnapshotRecord, assetId?: string): Promise<string | null>;
   setPlatformImageAssetEnabled(id: string, enabled: boolean): Promise<PlatformImageAssetRecord>;
   listPlatformImageTags(): Promise<PlatformImageTagRecord[]>;
   listPlatformImageTagsByIds(ids: string[]): Promise<PlatformImageTagRecord[]>;
