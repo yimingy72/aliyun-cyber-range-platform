@@ -11,6 +11,10 @@ const downstreamVerifiers = new WeakMap<McpConfig, OidcJwtVerifier>();
 type Principal = { issuer: string; subject: string; allowedScopes?: string[] };
 
 export async function resolvePlatformApiToken(config: McpConfig, auth?: AuthInfo) {
+  if (process.env.PLATFORM_AUTH_MODE === 'keycloak') {
+    if (typeof auth?.extra?.platformDelegation !== 'string') throw new PlatformAuthenticationError(401, 'Missing verified MCP delegation');
+    return auth.extra.platformDelegation;
+  }
   if (auth?.extra?.authType !== 'oidc' || typeof auth.extra.issuer !== 'string' || typeof auth.extra.subject !== 'string') {
     throw new PlatformAuthenticationError(401, 'Missing verified OIDC identity');
   }

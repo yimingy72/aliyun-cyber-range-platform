@@ -34,6 +34,11 @@ export class BillingController {
     return this.billingService.listUsers(query);
   }
 
+  @Get('workspace-members')
+  listWorkspaceMembers() {
+    return this.billingService.listWorkspaceMembers();
+  }
+
   @Get('user-groups')
   listUserGroups(@Query() query: BillingWindowDto) {
     return this.billingService.listUserGroups(query);

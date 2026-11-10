@@ -189,6 +189,10 @@ export class BillingService {
   private readonly platformBillingStartedAt = readPlatformBillingStartedAt();
   constructor(@Inject(ADMIN_REPOSITORY) private readonly adminRepository: AdminRepository) {}
 
+  async listWorkspaceMembers() {
+    return (await this.adminRepository.listPlatformUsers()).map(({ id, username }) => ({ id, username }));
+  }
+
   private async readPlatformItems(input: BillingWindowInput) {
     const window = resolveBillingWindow(input);
     const [items, proof] = await Promise.all([

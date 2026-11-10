@@ -176,7 +176,9 @@ function AdminWorkspaceShellContent({ children }: AdminWorkspaceShellProps) {
   const renewingRef = useRef(false);
   const loggingOutRef = useRef(false);
   const hasRenderedWorkspaceRef = useRef(false);
-  const visibleNavigationItems = navigationItems.filter((item) => !item.requiresAdmin || session.isAdmin);
+  const visibleNavigationItems = navigationItems.filter((item) =>
+    (!item.requiresAdmin || session.isAdmin) &&
+    !(item.href === '/admin/users' && process.env.NEXT_PUBLIC_PLATFORM_AUTH_MODE === 'keycloak'));
   const currentSection = pathname === '/admin/resource-alerts' ? '资源告警' : visibleNavigationItems.find((item) => isNavigationItemActive(pathname, item.href))?.label;
   const tokenExpiresAt = session.token ? readAdminOidcTokenExpiresAt(session.token) : null;
   const shouldRenewNow = Boolean(

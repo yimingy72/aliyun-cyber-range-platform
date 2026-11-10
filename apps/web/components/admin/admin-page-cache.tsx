@@ -35,7 +35,9 @@ const retainedScreens = {
   '/admin/instances': deferAdminScreen(() => import('./single-instances-screen').then(module => module.SingleInstancesScreen)),
   '/admin/scenarios': deferAdminScreen(() => import('./templates-screen').then(module => module.TemplatesScreen)),
   '/admin/ranges': deferAdminScreen(() => import('./range-instances-screen').then(module => module.RangeInstancesScreen)),
-  '/admin/users': deferAdminScreen(() => import('./users-screen').then(module => module.UsersScreen)),
+  ...(process.env.NEXT_PUBLIC_PLATFORM_AUTH_MODE === 'keycloak' ? {} : {
+    '/admin/users': deferAdminScreen(() => import('./users-screen').then(module => module.UsersScreen)),
+  }),
   '/admin/billing': deferAdminScreen(() => import('./billing-screen').then(module => module.BillingScreen)),
   '/admin/settings/cloud': deferAdminScreen(() => import('./settings/settings-screen').then(module => module.SettingsScreen)),
 };

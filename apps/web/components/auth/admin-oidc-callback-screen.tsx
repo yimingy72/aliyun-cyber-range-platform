@@ -12,6 +12,8 @@ import {
 } from '../../lib/admin-oidc';
 import { writeAdminSession } from '../../lib/admin-auth-storage';
 import { Button } from '../ui/button';
+import { fetchAuthenticatedAdminProfile } from '../../lib/admin-api';
+import { resolveAdminApiBaseUrl } from '../../lib/admin-api-base-url';
 
 type AdminOidcCallbackScreenProps = {
   oidcIssuer: string;
@@ -55,6 +57,10 @@ export function AdminOidcCallbackScreen({ oidcIssuer, oidcClientId }: AdminOidcC
       });
       if (!isMounted) return;
       const session = tokenResponse ? parseAdminOidcSessionPayload(tokenResponse) : null;
+      if (session && process.env.NEXT_PUBLIC_PLATFORM_AUTH_MODE === 'keycloak') {
+        session.profile = await fetchAuthenticatedAdminProfile(resolveAdminApiBaseUrl(), session.token);
+      }
+      if (!isMounted) return;
 
       if (!session || !writeAdminSession(session)) {
         if (isMounted) {

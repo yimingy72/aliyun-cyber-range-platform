@@ -10,6 +10,7 @@ import type { McpConfig } from './config';
 import { authenticateRequest } from './auth';
 import { PlatformAuthenticationError, resolvePlatformApiToken } from './platform-session';
 import { createSdkServer, pickRole } from './sdk-server';
+import { createOAuthBroker } from './oauth-broker';
 
 type HttpAppDependencies = {
   authenticateRequest?: typeof authenticateRequest;
@@ -20,6 +21,7 @@ type HttpAppDependencies = {
 export function createHttpApp(config: McpConfig, dependencies: HttpAppDependencies = {}) {
   const authenticate = dependencies.authenticateRequest ?? authenticateRequest;
   const publicUrl = config.publicUrl ? new URL(config.publicUrl) : undefined;
+  const oauthBroker = process.env.PLATFORM_AUTH_MODE === 'keycloak' ? createOAuthBroker(config) : undefined;
   if (publicUrl && (publicUrl.username || publicUrl.password || publicUrl.search || publicUrl.hash || publicUrl.pathname !== '/mcp' || !['http:', 'https:'].includes(publicUrl.protocol))) {
     throw new Error('MCP_PUBLIC_URL must be an absolute HTTP(S) /mcp URL');
   }
@@ -33,10 +35,11 @@ export function createHttpApp(config: McpConfig, dependencies: HttpAppDependenci
       res.end();
       return;
     }
+    if (oauthBroker && await oauthBroker(req, res)) return;
 
     if (req.url === '/.well-known/oauth-protected-resource/mcp' && req.method === 'GET' && publicUrl && config.oidcIssuer) {
       res.setHeader('content-type', 'application/json');
-      res.end(JSON.stringify({ resource: publicUrl.href, authorization_servers: [config.oidcIssuer], bearer_methods_supported: ['header'] }));
+      res.end(JSON.stringify({ resource: publicUrl.href, authorization_servers: [oauthBroker ? publicUrl.origin : config.oidcIssuer], bearer_methods_supported: ['header'] }));
       return;
     }
 
@@ -70,15 +73,36 @@ export function createHttpApp(config: McpConfig, dependencies: HttpAppDependenci
         sendError(res, 400, -32600, 'Invalid cloud workspace header');
         return;
       }
+      if (process.env.PLATFORM_AUTH_MODE === 'keycloak' && workspace && auth.extra?.isPlatformManager !== true &&
+        workspace !== auth.extra?.cloudWorkspaceId) {
+        res.setHeader('WWW-Authenticate', bearerChallenge(config, 'insufficient_scope'));
+        sendError(res, 403, -32001, 'Insufficient platform permissions');
+        return;
+      }
       (req as typeof req & { auth?: AuthInfo }).auth = auth;
 
-      const client =
-        dependencies.client ??
-        new PlatformApiClient({
-          baseUrl: config.platformApiBaseUrl,
-          token: await (dependencies.resolvePlatformApiToken ?? resolvePlatformApiToken)(config, auth),
-          cloudWorkspaceId: workspace as string | undefined,
+      let client = dependencies.client;
+      if (!client) {
+        const resolveToken = dependencies.resolvePlatformApiToken ?? resolvePlatformApiToken;
+        let token = await resolveToken(config, auth);
+        let issued = Date.now();
+        client = new PlatformApiClient({
+          baseUrl: config.platformApiBaseUrl, token, cloudWorkspaceId: workspace as string | undefined,
+          ...(oauthBroker ? { fetch: async (input, init) => {
+            if (Date.now() - issued >= 5000) {
+              const current = await authenticate(req);
+              if (!current || current.extra?.userId !== auth.extra?.userId) {
+                throw new PlatformAuthenticationError(401, 'MCP caller is no longer authorized');
+              }
+              token = await resolveToken(config, current);
+              issued = Date.now();
+            }
+            const headers = new Headers(init?.headers);
+            headers.set('Authorization', 'Bearer ' + token);
+            return fetch(input, { ...init, headers, redirect: 'error' });
+          } } : {}),
         });
+      }
 
       server = createSdkServer(client, auth.scopes, pickRole(auth));
       transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });

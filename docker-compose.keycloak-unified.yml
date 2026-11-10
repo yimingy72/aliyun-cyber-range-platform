@@ -1,0 +1,53 @@
+# Opt-in overlay for a freshly imported or explicitly staged unified realm.
+# Do not use it to overwrite a live realm. See docs/operations/keycloak-unified-migration.md.
+x-unified-auth: &unified-auth
+  PLATFORM_AUTH_MODE: keycloak
+  OIDC_UNIFIED_CLIENT_ID: cyber-range
+  OIDC_UNIFIED_CLIENT_SECRET: ${OIDC_UNIFIED_CLIENT_SECRET:?set the Keycloak confidential client secret}
+  OIDC_TOKEN_ENDPOINT: http://keycloak:8080/realms/cyber-range/protocol/openid-connect/token
+
+services:
+  keycloak:
+    environment:
+      OIDC_UNIFIED_CLIENT_SECRET: ${OIDC_UNIFIED_CLIENT_SECRET:?set the Keycloak confidential client secret}
+      OIDC_UNIFIED_WEB_REDIRECT_URI: ${OIDC_UNIFIED_WEB_ORIGIN:?set the external web origin}/admin/callback
+      OIDC_UNIFIED_WEB_ORIGIN: ${OIDC_UNIFIED_WEB_ORIGIN:?set the external web origin}
+      OIDC_MCP_PUBLIC_ORIGIN: ${OIDC_MCP_PUBLIC_ORIGIN:?set the external MCP origin}
+    volumes: !override
+      - ./infra/keycloak-unified:/opt/keycloak/data/import:ro
+      - ./infra/keycloak/themes:/opt/keycloak/themes:ro
+  keycloak-bootstrap:
+    # The imported client already has its read-only service account permissions.
+    # Never run the legacy client provisioning script against the unified realm.
+    entrypoint: [/bin/sh, -ec]
+    command:
+      - |
+        for attempt in $$(seq 1 45); do
+          if (echo >/dev/tcp/keycloak/8080) 2>/dev/null; then exit 0; fi
+          sleep 2
+        done
+        exit 1
+  api:
+    environment:
+      <<: *unified-auth
+      OIDC_UNIFIED_CLIENT_UUID: ${OIDC_UNIFIED_CLIENT_UUID:-bc0e793f-4d21-4c8c-8d49-16d664b2ec50}
+      OIDC_WORKSPACE_GROUP_MAP: ${OIDC_WORKSPACE_GROUP_MAP:-}
+      OIDC_MCP_DELEGATION_KEY: ${OIDC_MCP_DELEGATION_KEY:?set a separate high-entropy delegation key}
+  web:
+    build:
+      args:
+        NEXT_PUBLIC_PLATFORM_AUTH_MODE: keycloak
+        NEXT_PUBLIC_OIDC_CLIENT_ID: cyber-range
+    environment:
+      <<: *unified-auth
+      NEXT_PUBLIC_PLATFORM_AUTH_MODE: keycloak
+      NEXT_PUBLIC_OIDC_CLIENT_ID: cyber-range
+      OIDC_UNIFIED_WEB_REDIRECT_URI: ${OIDC_UNIFIED_WEB_ORIGIN:?set the external web origin}/admin/callback
+  mcp:
+    environment:
+      <<: *unified-auth
+      MCP_PUBLIC_URL: ${OIDC_MCP_PUBLIC_ORIGIN:?set the external MCP origin}/mcp
+      OIDC_MCP_DELEGATION_KEY: ${OIDC_MCP_DELEGATION_KEY:?set a separate high-entropy delegation key}
+      OIDC_MCP_BROKER_KEY: ${OIDC_MCP_BROKER_KEY:?set a 32-byte hex encryption key}
+      OIDC_MCP_ALLOWED_REDIRECTS: ${OIDC_MCP_ALLOWED_REDIRECTS:-}
+      OIDC_MCP_EXTERNAL_CLIENTS: ${OIDC_MCP_EXTERNAL_CLIENTS:-}
