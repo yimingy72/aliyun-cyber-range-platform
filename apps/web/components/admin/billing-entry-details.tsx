@@ -1,5 +1,6 @@
 'use client';
 
+import { AdminNotice } from './shared/admin-notice';
 import { useEffect, useId, useRef, useState, type MouseEvent } from 'react';
 import { ChevronDown, RefreshCw, X } from 'lucide-react';
 import { formatAdminDateTime, isUnauthorizedAdminError } from '@/lib/admin-screen';
@@ -25,7 +26,7 @@ export function BillingAmounts({amounts,emptyLabel='—'}:{amounts:BillingAmount
 }
 export function BillingDocumentBadge({entry}:{entry:BillingEntry}) {
   const status=entryBillingStatus(entry);
-  return <Badge variant={status==='issued'?'secondary':status==='partial'?'default':'outline'} title={status==='unissued'?'尚未取得可确认归属的官方费用明细':status==='not_applicable'?'已确认创建在计费资源产生前失败':status==='pending'?entry.issueMessage??'计费资源或查询结果待核验':undefined}>{billingDocumentLabels[status]}</Badge>;
+  return <Badge data-dense-tone={status==='issued'?'success':status==='partial'||status==='pending'?'warning':undefined} variant={status==='issued'?'secondary':status==='partial'?'default':'outline'} title={status==='unissued'?'尚未取得可确认归属的官方费用明细':status==='not_applicable'?'已确认创建在计费资源产生前失败':status==='pending'?entry.issueMessage??'计费资源或查询结果待核验':undefined}>{billingDocumentLabels[status]}</Badge>;
 }
 export function BillingReconciliationBadge({status}:{status:BillingEntry['reconciliationStatus']}) {
   return <Badge variant={status==='current'?'secondary':'outline'}>{billingReconciliationLabels[status]}</Badge>;
@@ -194,7 +195,7 @@ export function BillingEntryDetails({context,entry,range,revision,container,onOp
       </SheetHeader>
       <BillingDetailResize panel={panel} panelId={panelId}/>
       <div className="min-h-0 flex-1 overflow-auto p-3 sm:p-4" aria-label="账单详情内容" aria-busy={loading||undefined}>
-        {error?<div role="alert" className="mb-4 flex items-center justify-between gap-3 text-sm"><span className="text-destructive">详情加载失败{detail?'，暂时显示上次数据':'。'}</span><Button type="button" variant="outline" size="sm" onClick={()=>setAttempt(value=>value+1)}>重试详情</Button></div>:null}
+        {error?<AdminNotice tone="error" className="mb-4" actions={<Button type="button" variant="outline" size="sm" onClick={()=>setAttempt(value=>value+1)}>重试详情</Button>}>详情加载失败{detail?'，暂时显示上次数据':'。'}</AdminNotice>:null}
         {!detail&&loading?<div aria-label="正在加载费用明细" className="grid gap-3"><Skeleton className="h-8 w-64"/>{[0,1,2,3].map(id=><Skeleton key={id} className="h-12 w-full"/>)}</div>:null}
         {detail?<Tabs defaultValue="charges" className="gap-3">
           <TabsList variant="line" className="h-8 w-full justify-start gap-0 border-b border-border sm:gap-2"><TabsTrigger className="flex-1 px-1 sm:flex-none sm:px-3" value="charges">费用明细</TabsTrigger><TabsTrigger className="flex-1 px-1 sm:flex-none sm:px-3" value="resources">关联资源</TabsTrigger><TabsTrigger className="flex-1 px-1 sm:flex-none sm:px-3" value="events">操作记录</TabsTrigger></TabsList>

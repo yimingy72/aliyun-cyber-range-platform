@@ -1,5 +1,6 @@
 'use client';
 
+import { AdminNotice } from '../admin/shared/admin-notice';
 import { ArrowRight, LogIn, ShieldCheck } from 'lucide-react';
 import { useState } from 'react';
 
@@ -58,7 +59,7 @@ export function AdminLoginScreen({ oidcIssuer, oidcClientId }: AdminLoginScreenP
           </header>
 
           <div aria-label="管理员登录表单" className="admin-login-form">
-            {errorMessage ? <p className="form-error" role="alert">{errorMessage}</p> : null}
+            {errorMessage ? <AdminNotice tone="error">{errorMessage}</AdminNotice> : null}
 
             <Button
               className="admin-login-command"

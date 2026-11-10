@@ -1,5 +1,6 @@
 'use client';
 
+import { AdminNotice } from './shared/admin-notice';
 import { ADMIN_TABLE_WIDTHS } from './shared/admin-data-table';
 
 import React, { useEffect, useRef, useState } from 'react';
@@ -94,8 +95,8 @@ function ExpiryDialogContent({ apiBaseUrl, token, target, name, disabled, onClos
         <Button type="button" disabled={pending || disabled || !confirmed} onClick={() => void act(submit)}>{pending ? '正在提交…' : uncertain ? '核对提交结果' : '确认修改'}</Button></>
         : <Button type="button" disabled={pending || disabled || !view || !date || processing} onClick={() => void act(prepare)}>{pending ? '正在核验…' : '预览修改'}</Button>}</>}>
     <div className="space-y-4">
-      {error ? <p role="alert" className="whitespace-pre-wrap text-sm text-destructive">{error}</p> : null}
-      {notice ? <p role="status" className="text-sm">{notice}</p> : null}
+      {error ? <AdminNotice tone="error" className="whitespace-pre-wrap">{error}</AdminNotice> : null}
+      {notice ? <AdminNotice tone="info">{notice}</AdminNotice> : null}
       {uncertain ? <p className="text-sm text-destructive">提交结果未确认，请核对原提交结果或查看下方任务，勿重新建立请求。</p> : null}
       {!view ? <p role="status">正在读取当前回收时间…</p> : null}
       {!preview ? <>

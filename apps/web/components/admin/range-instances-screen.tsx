@@ -1,5 +1,6 @@
 'use client';
 
+import { AdminNotice } from './shared/admin-notice';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { ChevronDown, ChevronRight, Download, Trash2 } from 'lucide-react';
@@ -236,9 +237,9 @@ export function RangeInstancesScreen({
   }));
   const [searchName, setSearchName] = useState('');
   const [selectedStatus, setSelectedStatus] = useState('all');
-  const isCel = usePlatformTheme() === 'cel';
-  const statusFilter = isCel ? selectedStatus : 'all';
-  const hasListFilters = isCel && (Boolean(searchName.trim()) || statusFilter !== 'all');
+  const compactWorkbench = usePlatformTheme() !== 'classic';
+  const statusFilter = compactWorkbench ? selectedStatus : 'all';
+  const hasListFilters = compactWorkbench && (Boolean(searchName.trim()) || statusFilter !== 'all');
   const [listErrors, setListErrors] = useState<RangeListRecord<string | null>>({
     active: null,
     history: null,
@@ -365,12 +366,12 @@ export function RangeInstancesScreen({
     }
 
     loadView(listMode, loadAttempt > 0);
-    if (isCel && listMode === 'history') loadView('active');
+    if (compactWorkbench && listMode === 'history') loadView('active');
 
     return () => {
       isActive = false;
     };
-  }, [apiBaseUrl, isCel, isPageActive, listMode, loadAttempt, router, screenCache, session.isReady, session.token]);
+  }, [apiBaseUrl, compactWorkbench, isPageActive, listMode, loadAttempt, router, screenCache, session.isReady, session.token]);
 
   const currentJobs = jobsByView[listMode];
   const currentInstances = instancesByView[listMode];
@@ -667,13 +668,13 @@ export function RangeInstancesScreen({
 
   return (
     <div className="admin-screen admin-pagination-screen range-list-screen">
-      {actionErrorMessage ? <p className="admin-error" role="alert">{actionErrorMessage}</p> : null}
-      {actionNotice ? <p className="text-sm text-muted-foreground" role="status">{actionNotice}</p> : null}
+      {actionErrorMessage ? <AdminNotice tone="error" className="mb-3">{actionErrorMessage}</AdminNotice> : null}
+      {actionNotice ? <AdminNotice tone="info" className="mb-3">{actionNotice}</AdminNotice> : null}
 
       <section className="admin-workbench-surface admin-pagination-surface">
         <AdminPageHeader artwork="ranges"
-          action={isCel ? createAction : undefined}
-          description={isCel ? '查看每套靶场的运行状态、访问入口和生命周期。' : '查看靶场实例状态和生命周期。'}
+          action={compactWorkbench ? createAction : undefined}
+          description={compactWorkbench ? '查看每套靶场的运行状态、访问入口和生命周期。' : '查看靶场实例状态和生命周期。'}
           title="编排实例"
           overview={{
             label: '按当前实例状态筛选',
@@ -690,10 +691,10 @@ export function RangeInstancesScreen({
           }}
         />
 
-        <div className="mt-4 flex min-h-0 flex-1 flex-col">
+        <div className="admin-workbench-list mt-4 flex min-h-0 flex-1 flex-col">
           <AdminListToolbar
             listTitle="实例清单"
-            action={!isCel ? createAction : undefined}
+            action={!compactWorkbench ? createAction : undefined}
             activeView={listMode}
             onSearchChange={setSearchName}
             onViewChange={(value) => {
@@ -701,7 +702,7 @@ export function RangeInstancesScreen({
                 setListModeWithUrl(value);
               }
             }}
-            searchControls={isCel ? (
+            searchControls={compactWorkbench ? (
               <Select value={statusFilter} onValueChange={setSelectedStatus}>
                 <SelectTrigger aria-label="筛选实例状态" className="min-w-36"><SelectValue /></SelectTrigger>
                 <SelectContent align="start" className="cel-range-status-options" position="popper">
@@ -994,7 +995,7 @@ export function RangeInstancesScreen({
           包含节点登录账号和密码（敏感）
         </label>
         {includeCredentials ? <p className="mt-2 text-xs text-destructive">CSV 将包含明文登录凭据，请妥善保管；仅在本次导出中读取，不写入列表缓存。</p> : null}
-        {exportError ? <p className="mt-3 text-sm text-destructive" role="alert">{exportError}</p> : null}
+        {exportError ? <AdminNotice tone="error" className="mt-3">{exportError}</AdminNotice> : null}
       </AdminDialog> : null}
     </div>
   );

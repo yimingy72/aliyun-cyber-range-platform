@@ -1,5 +1,6 @@
 'use client';
 
+import { AdminNotice } from './shared/admin-notice';
 import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
 import { Combobox } from '@/components/ui/combobox';
@@ -531,7 +532,7 @@ export function SingleInstancesScreen({
   const provider = workspace?.provider ?? 'alibaba_cloud';
   const canProvision = !workspace || (!workspace.isReadOnly && workspace.capabilities.provisioning);
   const isPageActive = useAdminRouteIsActive('/admin/instances');
-  const isCel = usePlatformTheme() === 'cel';
+  const compactWorkbench = usePlatformTheme() !== 'classic';
   const [listMode, setListMode] = useState<ListMode>(() => readListMode(searchParams.get('view')));
   const screenCache = useAdminScreenCache();
   const cachedActiveRows = screenCache?.read<SingleInstanceRows>(apiBaseUrl, session.token, 'single-instances:active');
@@ -1645,14 +1646,12 @@ export function SingleInstancesScreen({
     <div className="admin-screen admin-workbench-screen single-instance-screen admin-pagination-screen">
       {isPageActive ? <AdminActionNotice message={packSuccessMessage} onDismiss={() => setPackSuccessMessage(null)} /> : null}
       {errorMessage ? (
-        <p className="mb-3 text-sm text-destructive" role="alert">
-          {errorMessage}
-        </p>
+        <AdminNotice tone="error" className="mb-3">{errorMessage}</AdminNotice>
       ) : null}
 
       <section className="admin-workbench-surface admin-pagination-surface">
         <AdminPageHeader artwork="instances" description="创建并管理训练实例、批次与生命周期。" title="实例管理"
-          action={<>{isCel && createInstanceAction}<Button type="button" variant="outline" onClick={() => { setPackTaskId(null); setPackTasksSourceId(undefined); setPackTasksOpen(true); }}>镜像导出</Button></>}
+          action={<>{compactWorkbench && createInstanceAction}<Button type="button" variant="outline" onClick={() => { setPackTaskId(null); setPackTasksSourceId(undefined); setPackTasksOpen(true); }}>镜像导出</Button></>}
           overview={{ metrics: listMode === 'active' ? [
             { label: '运行中', tone: 'green', value: countOverview(instance => instancePowerStatus(instance) === 'running') },
             { label: '创建中', tone: 'blue', value: countOverview(instance => ['pending_create', 'creating'].includes(instance.status)) },
@@ -1665,11 +1664,11 @@ export function SingleInstancesScreen({
         {isPageActive && packTasksOpen ? <PackedImageTasksDialog key={`${session.profile?.id}:${workspace?.id}:${session.token}`} apiBaseUrl={apiBaseUrl} token={session.token} open onOpenChange={setPackTasksOpen} sourceRangeInstanceId={packTasksSourceId} initialTaskId={packTaskId} /> : null}
         {!canProvision && workspace ? <p className="mt-4 text-sm text-muted-foreground">{workspace.isReadOnly ? "当前账号工作空间为只读历史。" : `${cloudProviderLabel(workspace.provider)}实例创建仍在开发。`}</p> : null}
 
-        <div className="mt-4 flex min-h-0 flex-1 flex-col gap-4">
+        <div className="admin-workbench-list mt-4 flex min-h-0 flex-1 flex-col gap-4">
             <AdminListToolbar
             listTitle="实例清单"
               activeView={listMode}
-              action={isCel ? undefined : createInstanceAction}
+              action={compactWorkbench ? undefined : createInstanceAction}
               onSearchChange={setSearchName}
               onViewChange={(nextView) => setListModeWithUrl(nextView === 'history' ? 'history' : 'active')}
               searchLabel="筛选实例名"
@@ -1907,11 +1906,11 @@ export function SingleInstancesScreen({
             <AdminFormField className="sm:col-span-6" label="备注" htmlFor="single-instance-remark">
               <Textarea className="min-h-14" id="single-instance-remark" aria-label="备注" placeholder="可选，填写用途或备注" value={createForm.remark} onChange={(event) => updateCreateForm('remark', event.target.value)} rows={2} />
             </AdminFormField>
-            {createFormError ? <p className="text-sm text-destructive sm:col-span-6" role="alert">{createFormError}</p> : null}
-            {imageLoadError ? <p className="text-sm text-destructive sm:col-span-6" role="alert">镜像加载失败。<Button type="button" variant="link" onClick={() => setImageLoadAttempt(attempt => attempt + 1)}>重试</Button></p>
+            {createFormError ? <AdminNotice tone="error" className="sm:col-span-6">{createFormError}</AdminNotice> : null}
+            {imageLoadError ? <AdminNotice tone="error" className="sm:col-span-6" actions={<Button type="button" size="sm" variant="outline" onClick={() => setImageLoadAttempt(attempt => attempt + 1)}>重试</Button>}>镜像加载失败。</AdminNotice>
               : !hasLoadedPlatformImages ? <p className="text-xs text-muted-foreground sm:col-span-6" role="status">正在加载可用镜像…</p>
               : !enabledPlatformImages.length ? <p className="text-xs text-muted-foreground sm:col-span-6">请先前往镜像中心收录或启用平台镜像后，再创建实例。</p> : null}
-            {instanceTypeAvailability && !instanceTypeAvailability.exactAvailable ? <p className="text-xs text-muted-foreground sm:col-span-6">{instanceTypeAvailability.warning ?? `默认可用区暂无 ${createForm.cpu} 核 / ${createForm.memory} G 的精确可售规格。`}</p> : null}
+            {instanceTypeAvailability && !instanceTypeAvailability.exactAvailable ? <AdminNotice tone="warning" className="sm:col-span-6">{instanceTypeAvailability.warning ?? `默认可用区暂无 ${createForm.cpu} 核 / ${createForm.memory} G 的精确可售规格。`}</AdminNotice> : null}
           </form>
         </SingleInstanceDialog>
 
@@ -1936,7 +1935,7 @@ export function SingleInstancesScreen({
           onClose={() => setPackImageDialog(null)}
         >
           <div className="single-instance-dialog-body">
-            {packImageError ? <p className="mb-3 text-sm text-destructive" role="alert">{packImageError}</p> : null}
+            {packImageError ? <AdminNotice tone="error" className="mb-3">{packImageError}</AdminNotice> : null}
             {packImageError ? <Button type="button" variant="outline" disabled={pendingActionInstanceId === packImageDialog.instanceId} onClick={() => { setPackTasksSourceId(packImageDialog.instanceId); setPackImageDialog(null); setPackTasksOpen(true); }}>查看导出记录</Button> : null}
             <div className="single-instance-dialog-grid">
               <div className="single-instance-form-row single-instance-form-row-full">

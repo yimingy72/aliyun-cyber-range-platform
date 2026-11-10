@@ -1,5 +1,6 @@
 'use client';
 
+import { AdminNotice } from './shared/admin-notice';
 import { ADMIN_TABLE_WIDTHS } from './shared/admin-data-table';
 
 import React, { useEffect, useRef, useState } from 'react';
@@ -141,9 +142,9 @@ export function PackedImageTasksDialog({ apiBaseUrl, token, open, onOpenChange, 
           <Button type="button" variant="outline" size="sm" disabled={loading || Boolean(pendingId)} onClick={() => setAttempt(value => value + 1)}><RefreshCw aria-hidden="true" />{loading ? '刷新中…' : '刷新'}</Button>
         </div>
       </div>
-      {error ? <p role="alert" className="text-sm text-destructive">{error}</p> : null}
-      {notice ? <p role="status" className="text-sm text-emerald-700">{notice}</p> : null}
-      {initialMissing ? <p role="alert" className="text-sm text-destructive">当前工作空间未找到任务 {initialTaskId}，请核对账号与访问权限。</p> : null}
+      {error ? <AdminNotice tone="error">{error}</AdminNotice> : null}
+      {notice ? <AdminNotice tone="info">{notice}</AdminNotice> : null}
+      {initialMissing ? <AdminNotice tone="warning" role="alert">当前工作空间未找到任务 {initialTaskId}，请核对账号与访问权限。</AdminNotice> : null}
       {selected ? <section id="packed-image-task-detail" className="space-y-5" aria-label="镜像导出详情">
         <div className="flex flex-wrap items-start justify-between gap-3 border-b pb-4">
           <div className="min-w-0 flex-1 space-y-2">

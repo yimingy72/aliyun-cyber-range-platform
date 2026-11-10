@@ -1,5 +1,6 @@
 'use client';
 
+import { AdminNotice } from './shared/admin-notice';
 import type { RangeInstanceChangePreview } from '@/lib/admin-types';
 import { Button } from '@/components/ui/button';
 import { AdminDialog } from './shared/admin-dialog';
@@ -18,7 +19,7 @@ export function RangeChangePreviewDialog({ preview, pending, onClose, onConfirm 
       <div className="flex flex-wrap gap-3 border-b border-border pb-3">
         <span>新增网络 <strong>{preview.addedNetworks?.length ?? 0}</strong></span><span>新增主机 <strong>{preview.addedHosts.length}</strong></span><span>回收主机 <strong>{preview.deletedHosts.length}</strong></span><span>修改规则 <strong>{preview.ruleChanges.length}</strong></span>
       </div>
-      {!hasChanges ? <p role="status">没有需要应用的配置变化。</p> : null}
+      {!hasChanges ? <AdminNotice>没有需要应用的配置变化。</AdminNotice> : null}
       {preview.addedNetworks?.length ? <section><h3 className="mb-2 font-medium">新增网络</h3><ul className="grid gap-2">{preview.addedNetworks.map(network => <li key={network.nodeId}>{network.name} <span className="text-xs text-muted-foreground">{network.cidr}</span></li>)}</ul></section> : null}
       {preview.addedHosts.length ? <section><h3 className="mb-2 font-medium">新增主机</h3><ul className="grid gap-2">{preview.addedHosts.map(host => <li key={host.id}>{host.name} <span className="text-xs text-muted-foreground">({host.nodeId})</span></li>)}</ul><p className="mt-2 text-xs text-muted-foreground">新增资源会产生费用，结束时间与本编排一致。</p></section> : null}
       {preview.deletedHosts.length ? <section><h3 className="mb-2 font-medium text-destructive">回收主机</h3><ul className="grid gap-3">{preview.deletedHosts.map(host => <li key={host.id}>

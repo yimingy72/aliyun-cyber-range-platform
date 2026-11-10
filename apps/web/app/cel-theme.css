@@ -814,11 +814,6 @@ html[data-platform-theme='cel'] {
     color: var(--cel-ink);
     font-weight: 800;
   }
-  & .admin-login-form .form-error {
-    border: var(--cel-outline);
-    border-radius: 0;
-    color: var(--destructive);
-  }
 
   @media (width < 1024px) {
     & .admin-workspace .admin-topbar { padding-inline: 14px; }

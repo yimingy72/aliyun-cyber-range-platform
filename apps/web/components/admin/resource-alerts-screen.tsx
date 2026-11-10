@@ -1,5 +1,6 @@
 'use client';
 
+import { AdminNotice } from './shared/admin-notice';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { RefreshCw } from 'lucide-react';
 import type { ResourceAlert, ResourceAlertStatus, ResourcePatrol, ResourceReclaimPreview } from '@aliyun-cyber-range/platform-api-client';
@@ -134,9 +135,9 @@ export function ResourceAlertsPanel({ apiBaseUrl = '/api' }: { apiBaseUrl?: stri
       </div>
       <Button size="sm" disabled={busy || patrol?.managerUserId === session.profile.id} variant="ghost" onClick={() => void followMe()}>跟随我的账号</Button>
     </div>
-    {patrol?.lastScanError ? <p className="mb-3 text-sm text-destructive" role="alert">巡检失败：{patrol.lastScanError} 现有告警已保留。</p> : null}
-    {error ? <p className="mb-3 text-sm text-destructive" role="alert">{error}</p> : null}
-    <AdminActionNotice message={notice} onDismiss={() => setNotice(null)} />
+    {patrol?.lastScanError ? <AdminNotice tone="error" className="mb-3">巡检失败：{patrol.lastScanError} 现有告警已保留。</AdminNotice> : null}
+    {error ? <AdminNotice tone="error" className="mb-3">{error}</AdminNotice> : null}
+    <AdminActionNotice message={notice} tone="info" onDismiss={() => setNotice(null)} />
     <AdminDataTable columns={columns} label="资源告警列表" isRefreshing={loading && rows !== null}>
       {cols => rows === null && !error ? <TableLoadingState columnCount={cols.length} rowCount={5} label="读取资源告警" /> : !visible.length ? <AdminDataTableState columns={cols} variant={error ? 'error' : 'empty'} title={error ? '检查未完成' : '暂无平台资源告警'} description={error ?? '范围仅限已证明由平台创建的资源；检查状态见上方。'} onRetry={error ? () => void refresh() : undefined} /> :
         visible.map(row => <TableRow key={row.id}>
@@ -149,7 +150,7 @@ export function ResourceAlertsPanel({ apiBaseUrl = '/api' }: { apiBaseUrl?: stri
     <AdminDialog open={Boolean(review)} title="确认残留资源回收" description="只回收以下准确资源；来源和占用会在确认后再次核验。" pending={busy} onOpenChange={open => { if (!open) setReview(null); }}
       footer={<><Button disabled={busy} variant="outline" onClick={() => setReview(null)}>取消</Button><Button disabled={busy || !review?.preview.reclaimable} variant="destructive" onClick={() => void confirm()}>确认回收</Button></>}>
       {review ? <><p className="mb-3 text-sm">{review.preview.accountUid} · {review.preview.regionId}</p>
-        {review.preview.reason ? <p className="mb-3 text-sm text-destructive" role="alert">{review.preview.reason}</p> : null}
+        {review.preview.reason ? <AdminNotice tone="error" className="mb-3">{review.preview.reason}</AdminNotice> : null}
         <ul className="grid gap-2 text-sm">{review.preview.resources.map(item => <li className="break-all" key={`${item.type}:${item.id}`}>{types[item.type] ?? item.type} · {item.id}</li>)}</ul>
       </> : null}
     </AdminDialog>

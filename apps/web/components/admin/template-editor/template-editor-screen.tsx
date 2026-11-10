@@ -1,5 +1,6 @@
 'use client';
 
+import { AdminNotice, type AdminNoticeTone } from '../shared/admin-notice';
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import dynamic from 'next/dynamic';
 import Link from 'next/link';
@@ -1127,7 +1128,10 @@ export function TemplateEditorScreen({
   );
   const [selection, setSelection] = useState<TopologySelection>({ nodeIds: [], edgeIds: [] });
   const [isPropertyPanelOpen, setIsPropertyPanelOpen] = useState(false);
-  const [statusMessage, setStatusMessage] = useState('');
+  const [feedback, setFeedback] = useState<{ message: string; tone: AdminNoticeTone } | null>(null);
+  function setStatusMessage(message: string, tone: AdminNoticeTone = 'info') {
+    setFeedback(message ? { message, tone } : null);
+  }
   const [loadError, setLoadError] = useState<string | null>(null);
   const [loadAttempt, setLoadAttempt] = useState(0);
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -1439,7 +1443,7 @@ export function TemplateEditorScreen({
           return;
         }
 
-        setStatusMessage(error instanceof Error ? error.message : '平台镜像加载失败');
+        setStatusMessage(error instanceof Error ? error.message : '平台镜像加载失败', 'error');
       });
 
     return () => {
@@ -1630,13 +1634,13 @@ export function TemplateEditorScreen({
       try {
         switchCidr = nextAvailableSwitchCidr(nodes);
       } catch (error) {
-        setStatusMessage(error instanceof Error ? error.message : '没有可用的交换机网段');
+        setStatusMessage(error instanceof Error ? error.message : '没有可用的交换机网段', 'error');
         return;
       }
     }
 
     if (kind === 'router' && nodes.some((node) => node.kind === 'router')) {
-      setStatusMessage('当前拓扑只允许一个 Router。');
+      setStatusMessage('当前拓扑只允许一个 Router。', 'warning');
       return;
     }
 
@@ -1722,7 +1726,7 @@ export function TemplateEditorScreen({
     const targetNode = nodes.find((node) => node.id === connection.target) ?? null;
 
     if (!sourceNode || !targetNode) {
-      setStatusMessage('连线节点不存在，请重新选择。');
+      setStatusMessage('连线节点不存在，请重新选择。', 'warning');
       return;
     }
 
@@ -1741,7 +1745,7 @@ export function TemplateEditorScreen({
     const validation = validateManualEdge({ sourceNode, targetNode, edges });
 
     if (!validation.ok) {
-      setStatusMessage(validation.reason);
+      setStatusMessage(validation.reason, 'warning');
       return;
     }
 
@@ -1785,7 +1789,7 @@ export function TemplateEditorScreen({
     );
 
     if (deletedNodes.length === 0 && deletedEdges.length === 0) {
-      setStatusMessage('请先选择一个节点或连线，再执行删除。');
+      setStatusMessage('请先选择一个节点或连线，再执行删除。', 'warning');
       return;
     }
 
@@ -1857,7 +1861,7 @@ export function TemplateEditorScreen({
     try {
       commitSnapshot({ nodes: layoutTopology(nodes, edges, canvas), edges, viewport }, '');
     } catch {
-      setStatusMessage('自动布局失败，请保留当前节点位置。');
+      setStatusMessage('自动布局失败，请保留当前节点位置。', 'error');
     }
   }
 
@@ -1877,7 +1881,7 @@ export function TemplateEditorScreen({
     const invalidCustomPasswordMessage = readInvalidCustomPasswordMessage(nodes, platformImageAssets);
 
     if (invalidCustomPasswordMessage) {
-      setStatusMessage(invalidCustomPasswordMessage);
+      setStatusMessage(invalidCustomPasswordMessage, 'error');
       return;
     }
 
@@ -1906,7 +1910,7 @@ export function TemplateEditorScreen({
       payload = buildValidatedDraftPayload(template, validatedNodes, edges, viewport);
     } catch (error) {
       if (!isCurrentRequest()) return;
-      setStatusMessage(readPersistTopologyErrorMessage(error));
+      setStatusMessage(readPersistTopologyErrorMessage(error), 'error');
       setIsSubmitting(false);
       return;
     }
@@ -1939,14 +1943,14 @@ export function TemplateEditorScreen({
 
       applyTemplateState(nextTemplate);
       screenCache?.invalidate(apiBaseUrl, session.token, 'templates:');
-      setStatusMessage('拓扑检测通过，已保存');
+      setStatusMessage('拓扑检测通过，已保存', 'success');
 
       if (template.id === 'new') {
         router.replace(`/admin/scenarios/${nextTemplate.id}`);
       }
     } catch (error) {
       if (!isCurrentRequest()) return;
-      setStatusMessage(readPersistTopologyErrorMessage(error));
+      setStatusMessage(readPersistTopologyErrorMessage(error), 'error');
     } finally {
       if (isCurrentRequest()) setIsSubmitting(false);
     }
@@ -1960,12 +1964,12 @@ export function TemplateEditorScreen({
     const invalidCustomPasswordMessage = readInvalidCustomPasswordMessage(nodes, platformImageAssets);
 
     if (invalidCustomPasswordMessage) {
-      setStatusMessage(invalidCustomPasswordMessage);
+      setStatusMessage(invalidCustomPasswordMessage, 'error');
       return;
     }
 
     if (template.id === 'new' || graphSignature !== savedGraphSignature) {
-      setStatusMessage('请先点击“检测与保存”，再发布到平台。');
+      setStatusMessage('请先点击“检测与保存”，再发布到平台。', 'warning');
       return;
     }
 
@@ -1991,10 +1995,10 @@ export function TemplateEditorScreen({
 
       applyTemplateState(nextTemplate);
       screenCache?.invalidate(apiBaseUrl, session.token, 'templates:');
-      setStatusMessage('拓扑已发布到平台。');
+      setStatusMessage('拓扑已发布到平台。', 'success');
     } catch (error) {
       if (!isCurrentRequest()) return;
-      setStatusMessage(readPublishErrorMessage(error));
+      setStatusMessage(readPublishErrorMessage(error), 'error');
     } finally {
       if (isCurrentRequest()) setIsSubmitting(false);
     }
@@ -2014,7 +2018,7 @@ export function TemplateEditorScreen({
     if (loadError) {
       return (
         <section className="admin-panel">
-          <p role="alert">编排模板加载失败：{loadError}</p>
+          <AdminNotice tone="error" className="mb-3">编排模板加载失败：{loadError}</AdminNotice>
           <Button type="button" onClick={() => setLoadAttempt((attempt) => attempt + 1)}>重试加载</Button>
           <Link href="/admin/scenarios">返回靶场编排</Link>
         </section>
@@ -2032,15 +2036,10 @@ export function TemplateEditorScreen({
             <Badge className="template-editor-toolbar-status" variant={template.status === 'published' ? 'default' : 'outline'}>
               {template.status === 'published' ? '已发布' : '私有'}
             </Badge>
-            {statusMessage ? (
-              <p
-                aria-live="polite"
-                className="template-editor-toolbar-secondary template-editor-feedback"
-                role="status"
-                title={statusMessage}
-              >
-                {statusMessage}
-              </p>
+            {feedback ? (
+              <AdminNotice className="template-editor-feedback" tone={feedback.tone} role="status" title={feedback.message}>
+                {feedback.message}
+              </AdminNotice>
             ) : null}
           </div>
         </div>

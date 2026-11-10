@@ -13,7 +13,11 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>${msg("loginTitle",(realm.displayName!''))}</title>
     <link rel="icon" type="image/svg+xml" href="${url.resourcesPath}/img/platform-favicon.svg" />
-    <script>try { if (localStorage.getItem('range-platform-theme') === 'classic') delete document.documentElement.dataset.platformTheme; } catch {}</script>
+    <script>try {
+      const savedTheme = localStorage.getItem('range-platform-theme');
+      if (savedTheme === 'classic') delete document.documentElement.dataset.platformTheme;
+      else if (savedTheme === 'data-dense') document.documentElement.dataset.platformTheme = savedTheme;
+    } catch {}</script>
     <#if properties.stylesCommon?has_content>
         <#list properties.stylesCommon?split(' ') as style>
             <link href="${url.resourcesCommonPath}/${style}" rel="stylesheet" />
@@ -57,7 +61,7 @@
 
       <div class="cr-login-body">
         <#if displayMessage && message?has_content && (message.type != 'warning' || !isAppInitiatedAction??)>
-          <div class="cr-alert cr-alert-${(message.type = 'error')?then('danger', message.type)}">
+          <div class="cr-alert cr-alert-${(message.type = 'error')?then('danger', message.type)}" role="${(message.type = 'error')?then('alert', 'status')}">
               <span class="cr-alert-text">${kcSanitize(message.summary)?no_esc}</span>
           </div>
         </#if>

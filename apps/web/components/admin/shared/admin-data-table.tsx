@@ -1,13 +1,14 @@
 'use client';
 
 import { type ComponentProps, type CSSProperties, type ReactNode, useCallback, useLayoutEffect, useState } from 'react';
-import { CircleAlert, Inbox } from 'lucide-react';
+import { Inbox } from 'lucide-react';
 
 import { AsyncContentState } from '@/components/admin/shared/async-content-state';
 import { Button } from '@/components/ui/button';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import { cn } from '@/lib/utils';
+import { AdminNotice } from './admin-notice';
 
 export const ADMIN_TABLE_WIDTHS = {
   creator: '7rem',
@@ -147,8 +148,9 @@ export function AdminDataTable({ label, columns, children, contentVersion, isRef
             {columns.map((column) => (
               <col
                 className={columnPriorityColumnClassName(column.priority)}
+                data-dense-column={column.id}
                 key={column.id}
-                style={column.width ? { width: column.width } : undefined}
+                style={column.width ? { width: column.width, '--admin-column-width': column.width } as CSSProperties : undefined}
               />
             ))}
           </colgroup>
@@ -211,6 +213,7 @@ export function AdminDataTableCell({ column, className, children, ...props }: Ad
   return (
     <TableCell
       data-column-id={column.id}
+      data-numeric={typeof children === 'number' || undefined}
       className={cn(
         'min-w-0 overflow-hidden px-3 whitespace-nowrap',
         columnPriorityClassName(column.priority),
@@ -233,13 +236,11 @@ export function AdminDataTableState({
   action,
   onRetry,
 }: AdminDataTableStateProps) {
-  const Icon = variant === 'empty' ? Inbox : CircleAlert;
-
   return (
     <TableRow className="hover:bg-transparent">
       <TableCell className="h-56 px-3 py-6 align-middle whitespace-normal" colSpan={columns.length}>
         <div className="mx-auto flex max-w-md flex-col items-center text-center">
-          <Icon aria-hidden="true" className="size-5 text-muted-foreground" />
+          {variant === 'empty' ? <Inbox aria-hidden="true" className="size-5 text-muted-foreground" /> : null}
           <AsyncContentState
             action={action}
             description={description}
@@ -262,17 +263,14 @@ export function AdminDataTableRevalidationNotice({
   return (
     <TableRow className="hover:bg-transparent">
       <TableCell className="px-3 py-2" colSpan={columns.length}>
-        <div className="flex flex-wrap items-center justify-between gap-2 text-sm" role="alert">
-          <span className="text-destructive">
-            <span>{description}</span>
-            <span> 正在显示上次成功加载的数据。</span>
-          </span>
-          {onRetry ? (
+        <AdminNotice tone="warning" role="alert" actions={onRetry ? (
             <Button aria-label={retryAriaLabel} onClick={onRetry} size="sm" type="button" variant="outline">
               重试加载
             </Button>
-          ) : null}
-        </div>
+          ) : null}>
+          <span>{description}</span>
+          <span> 正在显示上次成功加载的数据。</span>
+        </AdminNotice>
       </TableCell>
     </TableRow>
   );

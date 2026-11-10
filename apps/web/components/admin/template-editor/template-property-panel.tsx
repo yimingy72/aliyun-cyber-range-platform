@@ -1,5 +1,6 @@
 'use client';
 
+import { AdminNotice } from '../shared/admin-notice';
 import { Input } from '@/components/ui/input';
 import { Checkbox } from '@/components/ui/checkbox';
 import { Label } from '@/components/ui/label';
@@ -486,9 +487,7 @@ function renderHostFields(
           }
         />
         {instanceTypeAvailability?.warning ? (
-          <div className="template-property-warning-note" role="status">
-            {instanceTypeAvailability.warning}
-          </div>
+          <AdminNotice tone="warning">{instanceTypeAvailability.warning}</AdminNotice>
         ) : null}
       </PropertyGroup>
 
@@ -757,7 +756,7 @@ function renderHostFields(
           />
         </PropertyField>
         {selectedNode.dns ? <>
-          {dnsUnavailable ? <div className="template-property-warning-note" role="alert">当前镜像不是 Windows，无法应用自定义 DNS。请选择 Windows 镜像或自动获取 DNS。</div>
+          {dnsUnavailable ? <AdminNotice tone="warning" role="alert">当前镜像不是 Windows，无法应用自定义 DNS。请选择 Windows 镜像或自动获取 DNS。</AdminNotice>
             : !selectedImageOs ? <small className="template-property-field-hint">镜像操作系统尚未确认。保存时会校验 Windows 镜像，自定义 DNS 不会应用到未知系统。</small> : null}
           <PropertyField label="DNS 服务器" hint="每行一个 IPv4 地址，最多 4 个，按优先顺序填写。域成员应使用域控 DNS。">
             <DnsServerField
@@ -799,7 +798,7 @@ function renderHostFields(
               })}
             />
           </PropertyField>
-          {dnsErrors.length > 0 ? <div className="template-property-warning-note" role="alert">{dnsErrors.join('；')}</div> : null}
+          {dnsErrors.length > 0 ? <AdminNotice tone="error">{dnsErrors.join('；')}</AdminNotice> : null}
           <small className="template-property-field-hint">实例详情会单独显示 DNS 验证结果。配置失败不会自动重建实例。</small>
         </> : <small className="template-property-field-hint">使用网络自动下发的 DNS，无需修改主机配置。</small>}
       </PropertyGroup>
@@ -1232,7 +1231,7 @@ function renderSwitchFields(
                 />
               </PropertyField>
               {dnatPortConflictsByMappingKey.has(mapping.key) ? (
-                <p className="template-property-warning-note" role="alert">
+                <AdminNotice tone="error">
                   公网端口 {mapping.externalPort} 已被
                   {' '}
                   {dnatPortConflictsByMappingKey
@@ -1241,7 +1240,7 @@ function renderSwitchFields(
                     .map((usage) => `${usage.switchLabel} 的 DNAT 规则 ${usage.mappingIndex + 1}`)
                     .join('、')}
                   使用。当前拓扑共享 DNAT IP，公网端口必须唯一。
-                </p>
+                </AdminNotice>
               ) : null}
               <PropertyField label="内网端口">
                 <Input

@@ -1,5 +1,6 @@
 'use client';
 
+import { AdminNotice } from './shared/admin-notice';
 import { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { RefreshCw } from 'lucide-react';
@@ -96,7 +97,7 @@ export function AcrImageCatalogView({ apiBaseUrl, token, search, actionHost, rea
         <Button aria-label={syncing ? '正在同步 ACR 镜像' : '同步 ACR 镜像'} disabled={readOnly || syncing} onClick={() => void sync()} size="sm" type="button" variant="outline">
           <RefreshCw aria-hidden="true" />{syncing ? '同步中…' : '同步 ACR'}
         </Button>, actionHost) : null}
-      {failure && catalog?.syncedAt ? <p role="alert" className="mb-3 text-sm text-destructive">{failure} 当前仍显示上次成功同步的目录。</p> : null}
+      {failure && catalog?.syncedAt ? <AdminNotice tone="error" className="mb-3">{failure} 当前仍显示上次成功同步的目录。</AdminNotice> : null}
       {catalog?.syncedAt ? <p className="mb-2 text-xs text-muted-foreground">
         {catalog.regionCount} 个地域 · {catalog.instanceCount} 个实例 · {catalog.repositoryCount} 个仓库 · {catalog.imageCount} 个镜像标签
       </p> : null}

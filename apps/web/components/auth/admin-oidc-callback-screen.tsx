@@ -1,5 +1,6 @@
 'use client';
 
+import { AdminNotice } from '../admin/shared/admin-notice';
 import { useRouter, useSearchParams } from 'next/navigation';
 import Link from 'next/link';
 import { useEffect, useState } from 'react';
@@ -86,7 +87,7 @@ export function AdminOidcCallbackScreen({ oidcIssuer, oidcClientId }: AdminOidcC
             <h1 className="admin-login-title" id="admin-login-title">综合靶场平台</h1>
           </header>
           <div className="admin-login-form">
-            <p className="form-error" role="alert">{errorMessage}</p>
+            <AdminNotice tone="error">{errorMessage}</AdminNotice>
             <Button asChild className="admin-login-command" size="lg">
               <Link href="/admin/login">重新登录</Link>
             </Button>
