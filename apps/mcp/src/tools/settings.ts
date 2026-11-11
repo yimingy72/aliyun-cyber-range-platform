@@ -50,7 +50,7 @@ export const settingsTools: ToolDefinition[] = [
   },
   {
     name: 'cloud_account_bind', title: '绑定或更新云厂商账号',
-    description: '由平台超管使用明确的厂商、账号凭据和地域绑定独立工作空间。保存不切换当前数据；编辑时传目标cloudWorkspaceId，凭据必须属于该账号。平台确认后才验证与保存。',
+    description: '由管理员使用明确的厂商、账号凭据和地域绑定独立工作空间。保存不切换当前数据；编辑时传目标cloudWorkspaceId，凭据必须属于该账号。平台确认后才验证与保存。',
     requiredScopes: ['settings:write'], adminOnly: true,
     inputSchema: operationSchema.extend({ provider: z.enum(['alibaba_cloud', 'tencent_cloud']), cloudWorkspaceId: z.string().trim().min(1).max(192).optional(),
       displayName: z.string().trim().min(1).max(80).optional(), regionId: z.string().trim().min(1), zoneId: z.string().trim().min(1),
@@ -64,7 +64,7 @@ export const settingsTools: ToolDefinition[] = [
   },
   {
     name: 'cloud_account_remove', title: '删除云账号绑定',
-    description: '仅平台超管可删除非当前账号绑定。清除已保存凭据，保留数据与账单历史；重新绑定同厂商同主账号可恢复。未回收资源、失败实例及清理任务会阻止删除。不会调用云端资源删除。',
+    description: '仅管理员可删除非当前账号绑定。清除已保存凭据，保留数据与账单历史；重新绑定同厂商同主账号可恢复。未回收资源、失败实例及清理任务会阻止删除。不会调用云端资源删除。',
     requiredScopes: ['settings:write'], adminOnly: true, annotations: { destructiveHint: true, idempotentHint: true },
     inputSchema: operationSchema.extend({ cloudWorkspaceId: z.string().trim().min(1).max(192) }).strict(),
     outputSchema: resultOutputSchema(z.object({ id: z.string(), provider: z.enum(['alibaba_cloud', 'tencent_cloud']), accountUid: z.string(),

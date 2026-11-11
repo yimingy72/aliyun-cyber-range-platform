@@ -23,11 +23,11 @@ const preview = z.object({ alertId: id, cloudWorkspaceId: id, provider, accountU
   reclaimable: z.boolean(), reason: z.string().nullable() });
 export const resourceAlertTools: ToolDefinition[] = [
   { name: 'resource_patrol_get', title: '查询后台资源巡检目标', adminOnly: true, readOnlyHint: true,
-    description: '仅平台超管可查看后台巡检所跟随的指定超管、其当前账号及最近扫描完成度。浏览器关闭仍扫描。只巡检指定账号，已受理作业仍用原冻结账号；检查失败不能解释为没有残留。',
+    description: '仅管理员可查看后台巡检所跟随的指定超管、其当前账号及最近扫描完成度。浏览器关闭仍扫描。只巡检指定账号，已受理作业仍用原冻结账号；检查失败不能解释为没有残留。',
     requiredScopes: ['settings:read'], inputSchema: z.strictObject({}), outputSchema: resultOutputSchema(patrol),
     async call(context) { return patrol.parse(await context.client.getResourcePatrol()); } },
   { name: 'resource_patrol_manager_set', title: '指定后台巡检跟随的超管', adminOnly: true,
-    description: '指定准确平台超管用户 ID，省略时使用当前经过认证的超管。后台默认每1小时只扫描其持久化的当前工作账号及平台实际用过的地域。不修改云资源、期限或已受理作业。账号切换后旧扫描结果不算新账号检查结果。',
+    description: '指定准确管理员用户 ID，省略时使用当前经过认证的管理员。后台默认每1小时只扫描其持久化的当前工作账号及平台实际用过的地域。不修改云资源、期限或已受理作业。账号切换后旧扫描结果不算新账号检查结果。',
     requiredScopes: ['settings:write'], annotations: { idempotentHint: true }, inputSchema: z.strictObject({ managerUserId: id.optional() }),
     outputSchema: resultOutputSchema(patrol),
     async call(context, args) { return patrol.parse(await context.client.setResourcePatrolManager(args.managerUserId as string | undefined)); } },

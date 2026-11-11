@@ -172,7 +172,7 @@ export class SystemConfigService {
     }
     const scope = getCurrentCloudWorkspaceScope();
     if (scope && !('system' in scope)) {
-      if (!scope.isPlatformManager) throw new ForbiddenException('仅平台超管可更新云账号配置。');
+      if (!scope.isPlatformManager) throw new ForbiddenException('仅管理员可更新云账号配置。');
       const current = await this.getAccountContext();
       const next = { provider: 'alibaba_cloud' as const,
         regionId: payload.defaultRegion !== undefined ? normalizeValue(payload.defaultRegion) : current.defaultRegion,

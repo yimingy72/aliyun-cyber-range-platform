@@ -38,7 +38,7 @@ export class BillingOssBindingController {
   private async mutate(request: AuthenticatedPlatformRequest, toolName: string, args: Record<string, unknown>, targetId: string,
     resolveConfirmation: () => Promise<{ targetId: string | null; targetSnapshot: Record<string, unknown>; summary: Record<string, unknown> }>,
     execute: () => Promise<Record<string, unknown>>) {
-    if (!request.adminUser.isPlatformManager) throw new ForbiddenException('仅平台超管可声明或终止专用桶费用归属。');
+    if (!request.adminUser.isPlatformManager) throw new ForbiddenException('仅管理员可声明或终止专用桶费用归属。');
     const metadata = readOperationRequestMetadata(request);
     if (request.authContext.source === 'mcp') return this.operations.executeConfirmed({
       context: request.authContext, metadata, toolName, arguments: args, targetType: 'billing_oss_bucket_binding', targetId,

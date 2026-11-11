@@ -110,10 +110,10 @@ beta = [r['id'] for r in use_api(operator,'/admin/scenarios?view=platform',works
 assert beta == ['fixture-template-beta'], beta
 admin=web_token('fixture-admin')
 assert use_api(admin,'/admin/session')['role']=='admin'
-assert not use_api(admin,'/admin/session')['isPlatformManager']
-use_api(admin,'/admin/scenarios',expect=403,workspace='fixture-beta')
+assert use_api(admin,'/admin/session')['isPlatformManager']
+assert [r['id'] for r in use_api(admin,'/admin/scenarios?view=platform',workspace='fixture-beta')]==['fixture-template-beta']
 use_api(admin,'/admin/users',expect=404)
-assert any(r['id']=='fixture-legacy-owner' for r in use_api(admin,'/admin/billing/workspace-members'))
+assert any(r['id']=='fixture-legacy-owner' for r in use_api(admin,'/admin/billing/workspace-members',workspace='fixture-alpha'))
 use_api(owner,'/admin/billing/workspace-members',expect=403)
 use_mcp(admin,expect=401)
 
@@ -130,18 +130,23 @@ assert 'range_template_list' in [t['name'] for t in use_mcp(json.loads(renewed)[
 session,_=mcp_token('fixture-admin')
 gateway=session['access_token']
 assert any(t['name'].startswith('billing_') for t in use_mcp(gateway)['result']['tools'])
+assert not use_mcp(gateway,method='tools/call',params={'name':'range_template_list','arguments':{'view':'platform'}},workspace='fixture-beta')['result'].get('isError')
 root,_=req(browser(),kc+'/realms/master/protocol/openid-connect/token',data={'grant_type':'password','client_id':'admin-cli','username':'fixture-admin-root','password':password},form=True)
 headers={'Authorization':'Bearer '+json.loads(root)['access_token']}
 registered=json.loads(req(browser(),kc+'/admin/realms/cyber-range/clients',headers=headers)[0])
 assert {r['clientId'] for r in registered} == {'account','account-console','admin-cli','broker','realm-management','security-admin-console','cyber-range'}
 role_url=f'{kc}/admin/realms/cyber-range/clients/{cid}/roles/'
 roles={r:json.loads(req(browser(),role_url+r,headers=headers)[0]) for r in ('user','admin')}
+assert {r['name'] for r in json.loads(req(browser(),f'{kc}/admin/realms/cyber-range/clients/{cid}/roles',headers=headers)[0])}=={'user','admin'}
 user_url=f'{kc}/admin/realms/cyber-range/users/bc0e793f-4d21-4c8c-8d49-16d664b2ec63'
 path=f'{user_url}/role-mappings/clients/{cid}'
 req(browser(),path,method='POST',data=[roles['user']],headers=headers,expect=204)
 req(browser(),path,method='DELETE',data=[roles['admin']],headers=headers,expect=204)
 try:
-    assert use_api(admin,'/admin/session')['role']=='user'
+    downgraded=use_api(admin,'/admin/session')
+    assert downgraded['role']=='user' and not downgraded['isPlatformManager']
+    use_api(admin,'/admin/scenarios',expect=403,workspace='fixture-beta')
+    use_mcp(gateway,expect=403,workspace='fixture-beta')
     assert not any(t['name'].startswith('billing_') for t in use_mcp(gateway)['result']['tools'])
     req(browser(),user_url,method='PUT',data={'enabled':False},headers=headers,expect=204)
     use_api(admin,'/admin/session',expect=401)
@@ -151,4 +156,4 @@ finally:
     req(browser(),path,method='POST',data=[roles['admin']],headers=headers,expect=204)
     req(browser(),path,method='DELETE',data=[roles['user']],headers=headers,expect=204)
 
-print('Verified real Web code exchange, stable owner, new user, group and admin/operator boundaries, MCP scope narrowing/refresh, audience separation, immediate downgrade and disable.')
+print('Verified real Web code exchange, stable owner, new user, workspace isolation and unified administrator permissions, MCP scope narrowing/refresh, audience separation, immediate downgrade and disable.')

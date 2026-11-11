@@ -300,7 +300,7 @@ export class ResourceAlertsService {
     return row;
   }
   private assertManager(user: SessionUserProfile) {
-    if (user.isPlatformManager !== true) throw new ForbiddenException('仅平台超管可查看巡检配置和回收资源告警。');
+    if (user.isPlatformManager !== true) throw new ForbiddenException('仅管理员可查看巡检配置和回收资源告警。');
   }
   private view(row: StoredResourceAlert): ResourceAlertView {
     const { evidence: _evidence, updatedAt: _updatedAt, ...view } = row;

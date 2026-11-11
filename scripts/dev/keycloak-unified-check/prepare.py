@@ -13,7 +13,7 @@ for i, name, roles, groups in [
     (2, 'fixture-unassigned', ['user'], []),
     (3, 'fixture-admin', ['admin'], ['/fixture-alpha']),
     (4, 'fixture-owner', ['user'], ['/fixture-alpha']),
-    (5, 'fixture-super', ['admin', 'platform-operator'], []),
+    (5, 'fixture-super', ['admin'], []),
 ]:
     realm['users'].append({
         'id': f'bc0e793f-4d21-4c8c-8d49-16d664b2ec6{i}', 'username': name, 'enabled': True,

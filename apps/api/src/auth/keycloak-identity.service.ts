@@ -42,7 +42,7 @@ export class KeycloakIdentityService {
     const workspaceIds = [...new Set(groups.flatMap(group => (
       typeof group.id === 'string' && Object.hasOwn(config.workspaces, group.id) ? [config.workspaces[group.id]] : []
     )))];
-    return { username: account.username as string, role, workspaceIds, platformOperator: role === 'admin' && roles.some(entry => entry.name === 'platform-operator') } as const;
+    return { username: account.username as string, role, workspaceIds } as const;
   }
 
   private async getServiceToken(config: Configuration) {

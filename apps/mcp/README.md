@@ -17,7 +17,7 @@
 
 1. Gateway 校验 issuer、签名、有效期与 `MCP_OIDC_AUDIENCE`。
 2. 使用 confidential client 交换 `PLATFORM_API_AUDIENCE` token，绑定原 subject，不接受共用身份 fallback。
-3. 每次请求重新验证平台用户状态/角色，并创建独立 API client/空间上下文，不共享用户 session token。工具 scope、平台角色/启用状态、资源 owner/visibility、云账号工作空间分别校验；scope 不授予管理员或平台超管身份。
+3. 每次请求重新验证平台用户状态/角色，并创建独立 API client/空间上下文，不共享用户 session token。工具 scope、平台角色/启用状态、资源 owner/visibility、云账号工作空间分别校验；scope 不授予管理员身份，客户端 admin 统一包含平台级管理权限。
 4. `tools/list` 只反映当前权限下可调用的集合；调用时仍重新校验。工具 annotations 是客户端提示，不代替授权。
 
 兼容只有身份 scope 的旧 OAuth token，业务权限仍受当前角色限制；token 一旦声明业务 scope，则只使用其与当前角色权限的交集，未知 scope 不授予权限，Token Exchange 不能扩权。

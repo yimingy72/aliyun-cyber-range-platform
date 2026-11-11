@@ -118,7 +118,7 @@ export function ResourceAlertsPanel({ apiBaseUrl = '/api' }: { apiBaseUrl?: stri
     } finally { mutation.current = false; setBusy(false); }
   }
   if (!session.isReady || !session.token) return null;
-  if (!session.profile?.isPlatformManager) return <p className="admin-empty">仅平台超管可查看和处理资源告警。</p>;
+  if (!session.profile?.isPlatformManager) return <p className="admin-empty">仅管理员可查看和处理资源告警。</p>;
   const visible = (rows ?? []).filter(row => filter === 'all' || (filter === 'open' ? row.status !== 'resolved' : row.status === filter));
   return <section aria-label="资源告警" className="mt-3 grid min-w-0 gap-3">
     <div className="flex flex-wrap items-center gap-2">
@@ -128,7 +128,7 @@ export function ResourceAlertsPanel({ apiBaseUrl = '/api' }: { apiBaseUrl?: stri
     </div>
     <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-muted-foreground">
       <div className="min-w-0">
-        <span>后台巡检：{patrol?.managerUsername ?? '未指定超管'}</span>
+        <span>后台巡检：{patrol?.managerUsername ?? '未指定管理员'}</span>
         {patrol?.accountUid ? <span className="ml-3">{patrol.accountUid} · 每 1 小时</span> : null}
         {patrol?.lastScanAt && patrol.lastCompleted ? <span className="ml-3 text-muted-foreground">最近检查 {formatAdminDateTime(patrol.lastScanAt)}</span> : null}
         {patrol && ['pending', 'not_configured', 'unavailable'].includes(patrol.status) ? <span className="ml-3 text-amber-800">{patrol.status === 'pending' ? '当前账号待检查' : '巡检尚未就绪'}</span> : null}

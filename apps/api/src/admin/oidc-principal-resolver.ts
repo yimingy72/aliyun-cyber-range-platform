@@ -25,9 +25,10 @@ export class OidcPrincipalResolver {
       const identity = await this.identity.resolve(input.subject, browserToken);
       return runInSystemCloudWorkspaceScope(async () => {
         const existing = await this.repository.getPlatformUserByOidcIdentity(input.issuer, input.subject);
-        // A Keycloak role alone cannot elevate any other identity into the existing platform operator.
-        if (existing?.isPlatformManager && identity.platformOperator) {
-          return { ...existing, role: identity.role, status: 'active' as const };
+        if (identity.role === 'admin') {
+          const user = existing ?? await this.createIdentity(input, identity.username, null, true);
+          // Keep persisted home-workspace and ownership records unchanged when an existing user is promoted.
+          return { ...user, role: 'admin' as const, isPlatformManager: true, cloudWorkspaceId: null, status: 'active' as const };
         }
         const [workspaceId] = identity.workspaceIds;
         if (identity.workspaceIds.length !== 1 || !workspaceId ||
@@ -59,5 +60,19 @@ export class OidcPrincipalResolver {
     }
 
     return user;
+  }
+
+  private async createIdentity(input: ResolveOidcPrincipalInput, username: string, cloudWorkspaceId: string | null, isPlatformManager: boolean) {
+    try {
+      return await this.repository.createPlatformUser({
+        id: randomUUID(), username, cloudWorkspaceId, isPlatformManager, passwordHash: '',
+        oidcIssuer: input.issuer, oidcSubject: input.subject, role: isPlatformManager ? 'admin' : 'user',
+      });
+    } catch (error) {
+      if ((error as { code?: string }).code !== 'P2002') throw error;
+      const created = await this.repository.getPlatformUserByOidcIdentity(input.issuer, input.subject);
+      if (!created) throw new ForbiddenException('Existing platform account requires an explicit identity binding');
+      return created;
+    }
   }
 }

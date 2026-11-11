@@ -101,7 +101,7 @@ export class BillingOssBindingService {
   private assertManager() {
     const scope = getCurrentCloudWorkspaceScope();
     if (!scope || 'system' in scope || scope.isPlatformManager !== true || !scope.actorUserId || scope.isReadOnly) {
-      throw new ForbiddenException('仅平台超管可声明或终止专用桶费用归属。');
+      throw new ForbiddenException('仅管理员可声明或终止专用桶费用归属。');
     }
     return scope;
   }

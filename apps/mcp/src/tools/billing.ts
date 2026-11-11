@@ -105,7 +105,7 @@ export const billingTools: ToolDefinition[] = [
   },
   {
     name: 'billing_oss_bucket_bind', title: '登记阿里云平台专用 OSS 桶费用归属',
-    description: '仅平台超管可声明当前配置桶专供平台使用，并指定固定生效时间。核对官方桶Owner、地域和出生信息，费用起点不能早于平台计费起点。只认完整生效账日的官方桶级分账，地域汇总和其他桶费用不计入；明细缺失保留待对账并由定时同步补齐。混用桶不可声明为专用。不会创建或删除云资源。',
+    description: '仅管理员可声明当前配置桶专供平台使用，并指定固定生效时间。核对官方桶Owner、地域和出生信息，费用起点不能早于平台计费起点。只认完整生效账日的官方桶级分账，地域汇总和其他桶费用不计入；明细缺失保留待对账并由定时同步补齐。混用桶不可声明为专用。不会创建或删除云资源。',
     requiredScopes: ['billing:sync', 'settings:write'], adminOnly: true, annotations: { idempotentHint: true },
     inputSchema: operationSchema.extend({ bucketName: z.string().regex(/^[a-z0-9][a-z0-9-]{1,61}[a-z0-9]$/), effectiveStartAt: z.iso.datetime({ offset: true }), dedicated: z.literal(true) }).strict(),
     outputSchema: resultOutputSchema(ossBindingSchema),
@@ -116,7 +116,7 @@ export const billingTools: ToolDefinition[] = [
   },
   {
     name: 'billing_oss_bucket_create', title: '创建阿里云平台专用 OSS 导入桶',
-    description: '仅平台超管可为当前阿里云账号创建私有Standard专用导入桶，配置浏览器上传并留存原生创建/身份/计费来源。持久记录原名称和nonce，未知结果只查询原桶，不循环新建。失败幂等键返回原失败；恢复应发起新的确认请求和幂等键，但服务复用原桶意图，不能生成替代桶。核验原子标签、出生区间和官方身份后只从实际出生时间计费；明细缺失继续待对账。此桶供平台持续使用，不自动删除。按明确授权完成平台两阶段确认。',
+    description: '仅管理员可为当前阿里云账号创建私有Standard专用导入桶，配置浏览器上传并留存原生创建/身份/计费来源。持久记录原名称和nonce，未知结果只查询原桶，不循环新建。失败幂等键返回原失败；恢复应发起新的确认请求和幂等键，但服务复用原桶意图，不能生成替代桶。核验原子标签、出生区间和官方身份后只从实际出生时间计费；明细缺失继续待对账。此桶供平台持续使用，不自动删除。按明确授权完成平台两阶段确认。',
     requiredScopes: ['billing:sync', 'settings:write'], adminOnly: true, annotations: { idempotentHint: true, destructiveHint: false },
     inputSchema: operationSchema.extend({ dedicated: z.literal(true) }).strict(), outputSchema: resultOutputSchema(ossBindingSchema),
     async call(context, args) {
@@ -125,7 +125,7 @@ export const billingTools: ToolDefinition[] = [
   },
   {
     name: 'billing_oss_bucket_binding_end', title: '结束阿里云专用 OSS 桶费用归属',
-    description: '仅平台超管可结束准确ledgerId的专用归属声明。结束时间由服务器确定，保留历史已核验费用与审计；不删除存储桶或对象。结束后不自动恢复或认领完整性未知的部分账日。',
+    description: '仅管理员可结束准确ledgerId的专用归属声明。结束时间由服务器确定，保留历史已核验费用与审计；不删除存储桶或对象。结束后不自动恢复或认领完整性未知的部分账日。',
     requiredScopes: ['billing:sync', 'settings:write'], adminOnly: true, annotations: { idempotentHint: true },
     inputSchema: operationSchema.extend({ ledgerId: z.string().trim().min(1).max(192) }).strict(), outputSchema: resultOutputSchema(ossBindingSchema),
     async call(context, args) { return ossBindingSchema.parse(await context.client.endOssBillingBinding(args.ledgerId as string, operation(args))); },
