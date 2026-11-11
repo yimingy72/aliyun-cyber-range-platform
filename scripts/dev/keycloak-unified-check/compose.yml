@@ -2,7 +2,7 @@ name: range-unified-acceptance
 x-auth: &auth
   DATABASE_URL: postgresql://fixture:fixture@db:5432/fixture?schema=public
   PLATFORM_AUTH_MODE: keycloak
-  OIDC_ISSUER: http://127.0.0.1:13464/realms/cyber-range
+  OIDC_ISSUER: http://127.0.0.1:13463/realms/cyber-range
   OIDC_JWKS_URL: http://keycloak:8080/realms/cyber-range/protocol/openid-connect/certs
   OIDC_TOKEN_ENDPOINT: http://keycloak:8080/realms/cyber-range/protocol/openid-connect/token
   OIDC_UNIFIED_CLIENT_SECRET: fixture-confidential-client-secret-local
@@ -21,19 +21,19 @@ services:
       timeout: 2s
       retries: 20
   keycloak:
-    image: quay.io/keycloak/keycloak:26.8.2
-    command: [start-dev, --import-realm, --hostname, 'http://127.0.0.1:13464']
+    image: range-keycloak-unified:keycloak
+    build:
+      context: ./infra/keycloak
+    command: [start-dev, --import-realm, --hostname, 'http://127.0.0.1:13463', --proxy-headers, xforwarded]
     environment:
       KC_BOOTSTRAP_ADMIN_USERNAME: fixture-admin-root
       KC_BOOTSTRAP_ADMIN_PASSWORD: fixture-only-2026-strong
       OIDC_UNIFIED_CLIENT_SECRET: fixture-confidential-client-secret-local
-      OIDC_UNIFIED_WEB_REDIRECT_URI: http://127.0.0.1:13461/admin/callback
-      OIDC_UNIFIED_WEB_ORIGIN: http://127.0.0.1:13461
+      OIDC_UNIFIED_WEB_REDIRECT_URI: http://127.0.0.1:13463/admin/callback
+      OIDC_UNIFIED_WEB_ORIGIN: http://127.0.0.1:13463
       OIDC_MCP_PUBLIC_ORIGIN: http://127.0.0.1:13463
-    ports: ['127.0.0.1:13464:8080']
     volumes:
       - ./.tmp/unified-auth/realm-cyber-range.json:/opt/keycloak/data/import/realm-cyber-range.json:ro
-      - ./infra/keycloak/themes:/opt/keycloak/themes:ro
   api:
     image: range-keycloak-unified:api
     build:
@@ -53,7 +53,6 @@ services:
     depends_on:
       db:
         condition: service_healthy
-    ports: ['127.0.0.1:13462:3001']
   web:
     image: range-keycloak-unified:web
     build:
@@ -62,14 +61,13 @@ services:
       args:
         NEXT_PUBLIC_PLATFORM_AUTH_MODE: keycloak
         NEXT_PUBLIC_OIDC_CLIENT_ID: cyber-range
-        NEXT_PUBLIC_OIDC_ISSUER: http://127.0.0.1:13464/realms/cyber-range
-        NEXT_PUBLIC_API_BASE_URL: http://127.0.0.1:13462
+        NEXT_PUBLIC_OIDC_ISSUER: http://127.0.0.1:13463/realms/cyber-range
+        NEXT_PUBLIC_API_BASE_URL: http://127.0.0.1:13463/api
     entrypoint: [pnpm, --filter, '@aliyun-cyber-range/web', start]
     environment:
       <<: *auth
       NODE_ENV: production
-      OIDC_UNIFIED_WEB_REDIRECT_URI: http://127.0.0.1:13461/admin/callback
-    ports: ['127.0.0.1:13461:3000']
+      OIDC_UNIFIED_WEB_REDIRECT_URI: http://127.0.0.1:13463/admin/callback
   mcp:
     image: range-keycloak-unified:mcp
     build:
@@ -84,7 +82,8 @@ services:
       MCP_PUBLIC_URL: http://127.0.0.1:13463/mcp
       PLATFORM_API_BASE_URL: http://api:3001
       OIDC_MCP_BROKER_KEY: '64ac925ee7f0ce09dfbc0be020c13e9076d9cf978bc9e2e5eadf145cb40f2062'
-    ports: ['127.0.0.1:13463:13463']
-    networks:
-      default:
-        aliases: [mcp.localhost]
+  gateway:
+    image: caddy:2.10-alpine
+    ports: ['127.0.0.1:13463:80']
+    volumes:
+      - ./scripts/dev/keycloak-unified-check/Caddyfile:/etc/caddy/Caddyfile:ro

@@ -22,6 +22,21 @@
 
 ## 并行验证、切换与回滚
 
+### 更新公网登录和 MCP 授权主题
+
+从同一发布提交构建 Keycloak 和 MCP 镜像。Keycloak 只在现有版本的基础镜像上加入主题文件，不执行领域导入或变更认证配置：
+
+```sh
+docker build -t "cyber-range-release-keycloak:$release" infra/keycloak
+docker build -t "cyber-range-release-mcp:$release" -f apps/mcp/Dockerfile .
+```
+
+公网已有领域的发布清单要同时固定新 MCP 镜像与 `KEYCLOAK_THEME_IMAGE=cyber-range-release-keycloak:<提交>`，并在原 Keycloak 升级覆盖之后应用 [主题发布覆盖文件](../../deploy/current-system/docker-compose.keycloak-theme-release.yml)。保留该覆盖文件在后续发布清单中：它移除旧的主题和导入挂载，保证重建时使用镜像内的文件。更新前核对合并配置中 Keycloak 的启动命令没有 `--import-realm`、没有挂载覆盖 `/opt/keycloak/themes`，并继续使用原数据库。保留上一版发布清单与镜像以便回滚。
+
+只重建 Keycloak 和 MCP 服务。检查实际 Keycloak 容器中的模板、脚本和样式与发布提交一致；新进程会重新生成模板缓存。用新浏览器会话走首页和 MCP 登录，检查 HTML 引用的版本化 CSS、脚本、授权卡片和回跳页都能加载，再验证 Web 登录及 MCP 授权。反向代理、证书、issuer、回调和管理入口访问规则沿用当前配置。
+
+### 统一认证切换
+
 1. **保全现网。** 备份 Keycloak 数据库和靶场数据库，保留当前镜像、Compose 配置、旧客户端及密钥。公网此前只改过 `platform-web`、`platform-admin`、`mcp-gateway`、`smoke-conf`、`mcp-smoke-sa` 的显示名称和说明，`platform-api` 保留原名；这些名称不参与迁移。两个测试客户端只应保留在需要旧链路回归的测试环境。
 2. **增加新客户端与映射。** 在同一领域**新增** `cyber-range`，保留同一 issuer 和现有用户的 subject。用领域 JSON 中的客户端角色、可选范围和只读服务账号作模板；不要对已有领域执行覆盖导入。逐项核对现有业务用户绑定、启停、角色和归属，尤其是禁用账号与超管，不能通过用户名重建映射。无法核验的历史记录保留原归属且不得获得访问。
 3. **并行试运行。** 给 Web 和 MCP 使用独立测试入口，用各自准确的 HTTPS 回调、受众和预览 API。先应用可兼容旧镜像的新增表迁移。由服务端管理 `OIDC_UNIFIED_CLIENT_SECRET`、`OIDC_MCP_DELEGATION_KEY`（独立随机密钥）和 `OIDC_MCP_BROKER_KEY`（独立 32 字节 hex 密钥）；固定 `OIDC_UNIFIED_CLIENT_UUID` 到实际注册 ID。Caddy 把 `/mcp/oauth/*` 和 `/.well-known/oauth-authorization-server` 交给网关，把 `/auth/oidc/token` 交给 Web，原管理端访问限制不变。内部 API 走 Compose 网络，不能把内部凭据记录到日志。公网开放注册前为注册和授权端点设置入口速率限制，监控登录错误率和 OAuth 记录容量。
@@ -31,13 +46,13 @@
 
 ## 隔离 Docker 验收
 
-以下命令从仓库根目录执行，仅使用本机端口 13461–13465 和测试数据。镜像由仓库 Dockerfile 构建；已有刚验证过的本地镜像时可用 `--no-build`。不要在真实数据库执行测试 SQL。
+以下命令从仓库根目录执行，仅使用本机端口 13463（同源入口）和 13465（Codex 回跳），以及测试数据。镜像由仓库 Dockerfile 构建；已有刚验证过的本地镜像时可用 `--no-build`。不要在真实数据库执行测试 SQL。
 
 ```sh
 check=scripts/dev/keycloak-unified-check
 python3 "$check/prepare.py"
 docker compose --project-directory "$PWD" -f "$check/compose.yml" up -d --build
-# /health、Keycloak discovery 和 /admin/login 就绪后初始化夹具
+# /api/health、Keycloak discovery 和 /admin/login 就绪后初始化夹具
 docker compose --project-directory "$PWD" -f "$check/compose.yml" exec -T db psql -v ON_ERROR_STOP=1 -U fixture -d fixture < "$check/fixtures.sql"
 python3 "$check/verify.py"
 ```

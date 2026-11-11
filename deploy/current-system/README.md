@@ -112,7 +112,7 @@ docker compose -f docker-compose.yml up -d --no-deps --force-recreate api provis
 注意：
 
 - 当前部署标签默认对齐到 `2026-07-19`（可通过 `CYBER_RANGE_IMAGE_TAG` 覆盖）
-- 离线包需要包含 PostgreSQL、Keycloak、API、worker、Web 和 MCP 镜像
+- 离线包需要包含 PostgreSQL、上游 Keycloak、带平台主题的 Keycloak、API、worker、Web 和 MCP 镜像。使用 `infra/keycloak/Dockerfile` 构建主题镜像，并以 `KEYCLOAK_THEME_IMAGE` 指定离线镜像标签。
 - 如果你要部署“当前代码”，请先在当前机器重新导出一份新的离线包，再拷贝到目标机器
 
 1. 进入目录：
@@ -167,7 +167,7 @@ docker compose -f docker-compose.images.yml up -d
   - `packages/`
   - `infra/`
   - `deploy/current-system/`
-- Keycloak 的 realm、主题和 bootstrap 脚本通过仓库根目录挂载；镜像版 compose 不需要重新构建应用镜像，但仍需要完整仓库源码。
+- Keycloak 主题随发布镜像交付。新部署的 realm 导入和 bootstrap 脚本仍通过仓库挂载；已有领域的公网部署按 [主题发布说明](../../docs/operations/keycloak-unified-migration.md#更新公网登录和-mcp-授权主题) 固定镜像和覆盖文件。
 - 如果使用已导出的镜像：
   - 优先使用 `docker-compose.images.yml`
   - 不依赖源码构建应用镜像

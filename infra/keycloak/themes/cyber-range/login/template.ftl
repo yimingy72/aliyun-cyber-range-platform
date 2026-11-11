@@ -13,11 +13,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>${msg("loginTitle",(realm.displayName!''))}</title>
     <link rel="icon" type="image/svg+xml" href="${url.resourcesPath}/img/platform-favicon.svg" />
-    <script>try {
-      const savedTheme = localStorage.getItem('range-platform-theme');
-      if (savedTheme === 'classic') delete document.documentElement.dataset.platformTheme;
-      else if (savedTheme === 'data-dense') document.documentElement.dataset.platformTheme = savedTheme;
-    } catch {}</script>
+    <script src="${url.resourcesPath}/js/platform-theme.js?v=1"></script>
     <#if properties.stylesCommon?has_content>
         <#list properties.stylesCommon?split(' ') as style>
             <link href="${url.resourcesCommonPath}/${style}" rel="stylesheet" />
