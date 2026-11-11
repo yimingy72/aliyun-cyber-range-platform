@@ -8,10 +8,10 @@ import { RefreshCw } from 'lucide-react';
 
 import { Button } from '@/components/ui/button';
 import { TableRow } from '@/components/ui/table';
-import { collectMogongImage, fetchCustomImageCatalogScope, fetchMogongImageCatalog, fetchPlatformContainerImages, fetchPlatformImages, syncMogongImages, type MogongImageCatalog } from '../../lib/admin-api';
+import { collectMogongImage, fetchMogongImageCatalog, fetchPlatformContainerImages, fetchPlatformImages, syncMogongImages, type MogongImageCatalog } from '../../lib/admin-api';
 import { isUnauthorizedAdminError } from '../../lib/admin-screen';
 import { useAdminScreenCache } from '../../lib/admin-screen-cache';
-import type { ImageCatalogScopePayload, ImageSnapshot, PlatformContainerImage, PlatformImageAsset } from '../../lib/admin-types';
+import type { PlatformContainerImage, PlatformImageAsset } from '../../lib/admin-types';
 import { AdminPaginationControls, getPagination, useAdminPageSize } from './admin-pagination';
 import { ADMIN_TABLE_WIDTHS, AdminDataTable, AdminDataTableCell, AdminDataTableState, AdminDataTableText, type AdminDataColumn } from './shared/admin-data-table';
 import { AdminPaginatedList } from './shared/admin-paginated-list';
@@ -27,11 +27,11 @@ const columns: readonly AdminDataColumn[] = [
 ];
 
 type MogongImage = MogongImageCatalog['items'][number];
-type MogongCache = { catalog: MogongImageCatalog; cloud: ImageCatalogScopePayload; platform: PlatformImageAsset[]; mine: PlatformImageAsset[]; containers: PlatformContainerImage[] };
+type MogongCache = { catalog: MogongImageCatalog; platform: PlatformImageAsset[]; mine: PlatformImageAsset[]; containers: PlatformContainerImage[] };
 const imageTypes = [{ label: '容器', value: 'docker' }, { label: '虚拟机', value: 'vm' }];
 const creatorKey = (creator: string | null) => creator ? `creator:${creator}` : 'missing';
 
-function imageStatus(image: MogongImage, snapshot: ImageSnapshot | undefined, collected: boolean, privateAsset: boolean, containersCollectable: boolean) {
+function imageStatus(image: MogongImage, collected: boolean, privateAsset: boolean, containersCollectable: boolean) {
   if (!image.active) return '墨攻已停用';
   if (/废弃|弃用|已淘汰|已废止/i.test(image.name)) return '墨攻已废弃';
   if (image.status !== 'successful') return '墨攻处理未完成';
@@ -42,8 +42,8 @@ function imageStatus(image: MogongImage, snapshot: ImageSnapshot | undefined, co
   }
   if (image.type !== 'vm') return '不支持的镜像类型';
   if (!image.imageId) return '无阿里云镜像 ID';
-  if (!snapshot) return '云目录未匹配';
-  if (!snapshot.isAvailable) return '云镜像不可用';
+  if (image.cloudImageAvailable == null) return '云目录未匹配';
+  if (!image.cloudImageAvailable) return '云镜像不可用';
   return collected ? '已收录' : privateAsset ? '私有镜像待发布' : '可收录';
 }
 
@@ -63,7 +63,6 @@ export function MogongImageCatalogView({ apiBaseUrl, actionHost, filterHost, tok
   const screenCache = useAdminScreenCache();
   const cached = screenCache?.read<MogongCache>(apiBaseUrl, token, 'image-center:mogong');
   const [catalog, setCatalog] = useState<MogongImageCatalog | null>(() => cached?.data.catalog ?? null);
-  const [cloud, setCloud] = useState<ImageCatalogScopePayload | null>(() => cached?.data.cloud ?? null);
   const [collectedIds, setCollectedIds] = useState<Set<string>>(() => new Set(cached?.data.platform.map(asset => asset.imageId) ?? []));
   const [privateIds, setPrivateIds] = useState<Set<string>>(() => new Set(cached?.data.mine.filter(asset => asset.visibility === 'private').map(asset => asset.imageId) ?? []));
   const [collectedContainerIds, setCollectedContainerIds] = useState<Set<number>>(() => new Set(cached?.data.containers.map(asset => asset.sourceId) ?? []));
@@ -85,18 +84,17 @@ export function MogongImageCatalogView({ apiBaseUrl, actionHost, filterHost, tok
     setLoading(!existing);
     setError('');
     const load = async (): Promise<MogongCache> => {
-      const [nextCatalog, nextCloud, platform, mine, containers] = await Promise.all([
-        fetchMogongImageCatalog(apiBaseUrl, token), fetchCustomImageCatalogScope(apiBaseUrl, token),
+      const [nextCatalog, platform, mine, containers] = await Promise.all([
+        fetchMogongImageCatalog(apiBaseUrl, token),
         fetchPlatformImages(apiBaseUrl, token, 'platform'), fetchPlatformImages(apiBaseUrl, token, 'mine'),
         fetchPlatformContainerImages(apiBaseUrl, token),
       ]);
-      return { catalog: nextCatalog, cloud: nextCloud, platform: platform.items, mine: mine.items, containers: containers.items };
+      return { catalog: nextCatalog, platform: platform.items, mine: mine.items, containers: containers.items };
     };
     const request = screenCache ? screenCache.load(apiBaseUrl, token, 'image-center:mogong', load, { force: attempt > 0 }) : load();
     request.then((data) => {
       if (!active || requestVersion.current !== version) return;
       setCatalog(data.catalog);
-      setCloud(data.cloud);
       setCollectedIds(new Set(data.platform.map((asset) => asset.imageId)));
       setPrivateIds(new Set(data.mine.filter((asset) => asset.visibility === 'private').map((asset) => asset.imageId)));
       setCollectedContainerIds(new Set(data.containers.map((asset) => asset.sourceId)));
@@ -119,7 +117,7 @@ export function MogongImageCatalogView({ apiBaseUrl, actionHost, filterHost, tok
     setSyncNotice('');
     try {
       const next = await syncMogongImages(apiBaseUrl, token);
-      if (cloud) setCatalog(await fetchMogongImageCatalog(apiBaseUrl, token));
+      if (catalog) setCatalog(await fetchMogongImageCatalog(apiBaseUrl, token));
       else setAttempt((value) => value + 1);
       setSyncNotice(`已同步 ${next.total.toLocaleString('zh-CN')} 条墨攻镜像。`);
     } catch (err) {
@@ -167,7 +165,6 @@ export function MogongImageCatalogView({ apiBaseUrl, actionHost, filterHost, tok
     (!normalizedSearch || [item.name, item.imageId ?? ''].some((value) => value.toLowerCase().includes(normalizedSearch))),
   );
   const pagination = getPagination(items.length, page, pageSize);
-  const snapshots = new Map((cloud?.snapshots ?? []).filter((snapshot) => snapshot.provider === 'alibaba_cloud').map((snapshot) => [snapshot.imageId, snapshot]));
 
   return (
     <AdminPaginatedList
@@ -200,12 +197,11 @@ export function MogongImageCatalogView({ apiBaseUrl, actionHost, filterHost, tok
       <AdminDataTable columns={columns} label="墨攻镜像中心">
         {(visibleColumns) => {
           if (loading) return <TableLoadingState columnCount={visibleColumns.length} label="正在加载墨攻镜像" rowCount={5} />;
-          if (!catalog || !cloud) return <AdminDataTableState columns={visibleColumns} description={error} onRetry={() => setAttempt((value) => value + 1)} title="无法加载墨攻镜像" variant="error" />;
+          if (!catalog) return <AdminDataTableState columns={visibleColumns} description={error} onRetry={() => setAttempt((value) => value + 1)} title="无法加载墨攻镜像" variant="error" />;
           if (!items.length) return <AdminDataTableState columns={visibleColumns} description={normalizedSearch || typeFilter || creatorFilter ? '请调整搜索词、镜像类型或创建人。' : '同步墨攻镜像后重试。'} title="没有匹配的墨攻镜像" variant="empty" />;
           return items.slice(pagination.startIndex, pagination.endIndex).map((item) => {
-            const snapshot = item.imageId ? snapshots.get(item.imageId) : undefined;
             const isCollected = item.type === 'docker' ? collectedContainerIds.has(item.id) : Boolean(item.imageId && collectedIds.has(item.imageId));
-            const status = imageStatus(item, snapshot, isCollected, Boolean(item.imageId && privateIds.has(item.imageId)), catalog.containersCollectable);
+            const status = imageStatus(item, isCollected, Boolean(item.imageId && privateIds.has(item.imageId)), catalog.containersCollectable);
             const canCollect = status === '可收录' || status === '引用待核验';
             const [nameColumn, typeColumn, imageIdColumn, creatorColumn, actionColumn] = visibleColumns;
             return (

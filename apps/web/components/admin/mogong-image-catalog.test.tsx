@@ -16,16 +16,11 @@ import { AdminScreenCacheProvider } from '../../lib/admin-screen-cache';
 import { clearAdminSession, writeAdminSession } from '../../lib/admin-auth-storage';
 import { setCloudWorkspaceSelection } from '../../lib/cloud-workspace-selection';
 
-const snapshots = [
-  { id: 'cloud-1', provider: 'alibaba_cloud', imageId: 'm-ready', isAvailable: true },
-  { id: 'cloud-2', provider: 'alibaba_cloud', imageId: 'm-disabled', isAvailable: true },
-  { id: 'cloud-3', provider: 'alibaba_cloud', imageId: 'm-retired', isAvailable: true },
-];
 const catalog = { capturedAt: '2026-10-28T00:00:00Z', total: 4, containersCollectable: true, syncAllowed: true, items: [
-  { id: 1, name: '可用靶机', type: 'vm', imageId: 'm-ready', active: true, status: 'successful', creator: '张三' },
-  { id: 3, name: '靶机-废弃', type: 'vm', imageId: 'm-retired', active: true, status: 'successful', creator: null },
-  { id: 4, name: '容器靶机', type: 'docker', imageId: null, active: true, status: 'successful', creator: '李四', containerReferenceStatus: 'recorded' },
-  { id: 5, name: '未匹配靶机', type: 'vm', imageId: 'm-missing', active: true, status: 'successful', creator: null },
+  { id: 1, name: '可用靶机', type: 'vm', imageId: 'm-ready', active: true, status: 'successful', creator: '张三', cloudImageAvailable: true },
+  { id: 3, name: '靶机-废弃', type: 'vm', imageId: 'm-retired', active: true, status: 'successful', creator: null, cloudImageAvailable: true },
+  { id: 4, name: '容器靶机', type: 'docker', imageId: null, active: true, status: 'successful', creator: '李四', containerReferenceStatus: 'recorded', cloudImageAvailable: null },
+  { id: 5, name: '未匹配靶机', type: 'vm', imageId: 'm-missing', active: true, status: 'successful', creator: null, cloudImageAvailable: null },
 ] };
 const props = { apiBaseUrl: 'http://api', token: 'token', search: '', readOnly: false, refreshRevision: 0, logout: vi.fn(), onCollected: vi.fn(), onContainerCollected: vi.fn() };
 let actionHost: HTMLDivElement;
@@ -35,7 +30,7 @@ beforeEach(() => {
   document.body.appendChild(actionHost);
   vi.clearAllMocks();
   api.fetchMogongImageCatalog.mockResolvedValue(catalog);
-  api.fetchCustomImageCatalogScope.mockResolvedValue({ snapshots, catalogItems: [] });
+  api.fetchCustomImageCatalogScope.mockRejectedValue(new Error('Admin access required'));
   api.fetchPlatformImages.mockResolvedValue({ items: [] });
   api.fetchPlatformContainerImages.mockResolvedValue({ items: [] });
   api.syncMogongImages.mockResolvedValue({ total: 5, capturedAt: '2026-11-05T00:00:00Z' });
@@ -44,6 +39,15 @@ beforeEach(() => {
 afterEach(() => { cleanup(); actionHost.remove(); setCloudWorkspaceSelection('cache-user', null); clearAdminSession(); });
 
 describe('墨攻镜像中心', () => {
+  it('lets a member load the catalog without requesting the administrator-only cloud sources', async () => {
+    api.fetchMogongImageCatalog.mockResolvedValueOnce({ ...catalog, syncAllowed: false });
+    render(<MogongImageCatalogView {...props} actionHost={actionHost} canSync={false} />);
+    expect(await screen.findByRole('button', { name: '收录到平台 可用靶机' })).toBeTruthy();
+    expect(screen.queryByText('无法加载墨攻镜像')).toBeNull();
+    expect(screen.queryByRole('button', { name: '同步墨攻镜像' })).toBeNull();
+    expect(api.fetchCustomImageCatalogScope).not.toHaveBeenCalled();
+  });
+
   it('collects only eligible cloud-matched entries and updates the platform view', async () => {
     render(<MogongImageCatalogView {...props} actionHost={actionHost} />);
     await screen.findByText('可用靶机');
@@ -66,7 +70,7 @@ describe('墨攻镜像中心', () => {
 
   it('loads newly synced Mogong entries and retains the current cloud availability checks', async () => {
     api.fetchMogongImageCatalog.mockResolvedValueOnce(catalog).mockResolvedValueOnce({
-      ...catalog, total: 5, items: [...catalog.items, { ...catalog.items[0], id: 7, name: '新墨攻镜像', imageId: 'm-new' }],
+      ...catalog, total: 5, items: [...catalog.items, { ...catalog.items[0], id: 7, name: '新墨攻镜像', imageId: 'm-new', cloudImageAvailable: false }],
     });
     const { rerender } = render(<MogongImageCatalogView {...props} actionHost={actionHost} />);
     await screen.findByText('未匹配靶机');
@@ -74,7 +78,7 @@ describe('墨攻镜像中心', () => {
     expect(await screen.findByText('新墨攻镜像')).toBeTruthy();
     expect(screen.getByRole('status').textContent).toContain('已同步 5 条墨攻镜像');
     expect(api.syncMogongImages).toHaveBeenCalledWith('http://api', 'token');
-    expect(api.fetchCustomImageCatalogScope).toHaveBeenCalledTimes(1);
+    expect(within(screen.getByText('新墨攻镜像').closest('tr')!).getByText('云镜像不可用')).toBeTruthy();
     expect(screen.queryByRole('button', { name: '收录到平台 新墨攻镜像' })).toBeNull();
     rerender(<MogongImageCatalogView {...props} actionHost={actionHost} search="m-missing" />);
     expect(screen.getByText('未匹配靶机')).toBeTruthy();

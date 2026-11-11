@@ -59,7 +59,7 @@ export type MogongImageCatalog = {
   total: number;
   containersCollectable: boolean;
   syncAllowed: boolean;
-  items: Array<{ id: number; name: string; type: string; imageId: string | null; active: boolean; status: string; creator: string | null; containerReferenceStatus: 'recorded' | 'needs_review' | null }>;
+  items: Array<{ id: number; name: string; type: string; imageId: string | null; active: boolean; status: string; creator: string | null; containerReferenceStatus: 'recorded' | 'needs_review' | null; cloudImageAvailable: boolean | null }>;
 };
 
 export async function fetchMogongImageCatalog(apiBaseUrl: string, token: string) {
