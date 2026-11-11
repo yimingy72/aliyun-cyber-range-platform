@@ -25,7 +25,7 @@ export class CloudWorkspacesController {
 
   @Delete(':id')
   async remove(@Req() request: AuthenticatedPlatformRequest, @Param('id') id: string) {
-    if (!request.adminUser.isPlatformManager) throw new ForbiddenException('仅平台超管可删除云账号绑定。');
+    if (!request.adminUser.isPlatformManager) throw new ForbiddenException('仅管理员可删除云账号绑定。');
     const metadata = readOperationRequestMetadata(request);
     const toolName = 'cloud_account_remove';
     if (request.authContext.source === 'mcp') {

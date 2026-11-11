@@ -46,7 +46,7 @@ export class BillingReconciliationService {
         if (input.ledgerIds && (!Array.isArray(input.ledgerIds) || !input.ledgerIds.length || input.ledgerIds.length > 100 || input.ledgerIds.some(id => !visibleIds.has(id))
             || new Set(input.ledgerIds).size !== input.ledgerIds.length)) throw new BadRequestException('资源不在当前账号、账期或所选账目范围。');
         if (data.settings.mode === 'legacy'&&!data.scope.isPlatformManager)
-            throw new ForbiddenException('请由平台超管先启用资源对账。');
+            throw new ForbiddenException('请由管理员先启用资源对账。');
         if (data.settings.mode === 'legacy')
             await this.store.setMode('shadow', data.settings.generation);
         const ids = [...(input.ledgerIds ?? visibleIds)].sort();
@@ -143,7 +143,7 @@ export class BillingReconciliationService {
     async mode(mode: BillingMode, expectedGeneration: number) {
         const scope = getCurrentCloudWorkspaceScope();
         if (!scope || 'system' in scope || !scope.isPlatformManager)
-            throw new ForbiddenException('仅平台超管可切换账单写入方式。');
+            throw new ForbiddenException('仅管理员可切换账单写入方式。');
         if (!['legacy', 'shadow', 'resource'].includes(mode) || !Number.isInteger(expectedGeneration))
             throw new BadRequestException('账单模式或执行版本无效。');
         return this.store.setMode(mode, expectedGeneration);

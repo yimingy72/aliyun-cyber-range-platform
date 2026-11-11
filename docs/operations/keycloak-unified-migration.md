@@ -6,8 +6,8 @@
 
 - 新建部署的 [领域配置](../../infra/keycloak-unified/realm-cyber-range.json) 只含一个靶场客户端 `cyber-range`。Keycloak 自带客户端保留。Web 在服务端交换带 PKCE 的授权码；MCP 由靶场网关接受公开客户端注册、处理浏览器同意，再向同一 Keycloak 客户端交换授权码。Codex 的客户端注册存在靶场数据库，不占用 Keycloak 客户端。密钥不放入网页构建变量、MCP 客户端配置或浏览器。
 - Keycloak 通过可选范围 `web-access`、`mcp-access` 分别签发受众为 `cyber-range-web`、`cyber-range-mcp` 的令牌。MCP Agent 拿到的仅是网关凭据；其上游令牌加密保存在数据库。网关核验受众、签名及活动会话后给 API 发短时内部凭据，原始 Keycloak 令牌和 Agent 凭据都不转发。API 在每次请求时重新确认 Keycloak 账号、角色和工作空间，再按[产品权限清单](../product/platform-permissions.md)执行业务检查。
-- 日常维护在 Keycloak 的 `cyber-range` 领域完成：创建账号并设置初始密码，分配同名客户端的 `user` 或 `admin` 角色，再加入一个已映射的工作空间群组。应用配置 `OIDC_WORKSPACE_GROUP_MAP` 将**群组 UUID** 映射到业务工作空间 ID；组名不是授权凭据。未加入有效群组或同时命中多个工作空间时拒绝。已有业务用户必须匹配其原空间；确需换绑的历史账号，先制定显式的数据归属迁移，不通过换组迁移历史。
-- 平台超管必须是原有稳定绑定的超管身份，且在 Keycloak 拥有 `admin` 和 `platform-operator`。一般管理员不会因为增加该角色就自动成为超管。账号停用、角色或群组变更对下一次请求生效；已受理的异步作业不因撤权被重放或自动取消。
+- 日常维护在 Keycloak 的 `cyber-range` 领域完成：创建账号并设置初始密码，分配同名客户端的 `user` 或 `admin` 角色。普通用户再加入一个已映射的工作空间群组；管理员可选择全部工作空间，不依赖群组分配。应用配置 `OIDC_WORKSPACE_GROUP_MAP` 将**群组 UUID** 映射到业务工作空间 ID；组名不是授权凭据。未加入有效群组或同时命中多个工作空间时拒绝。已有业务用户必须匹配其原空间；确需换绑的历史账号，先制定显式的数据归属迁移，不通过换组迁移历史。
+- `cyber-range` 客户端只定义 `user` 和 `admin`。客户端 `admin` 直接拥有平台级管理能力，包括跨空间选择、账号绑定与资源告警；不再需要 `platform-operator` 或存量超管标记。普通用户仍须且只能匹配一个工作空间群组。提升或降级现有用户不重写其内部 ID、原工作空间和资源归属；有效权限每次从 Keycloak 获取。后台巡检也实时核验指定管理员，撤权后不再按旧标记继续扫描；已受理的异步作业不因撤权被重放或自动取消。
 - 靶场数据库保留业务用户及其内部 ID，用经过验证的 `(issuer, subject)` 绑定身份。新用户首次获准进入时创建业务记录，不设本地密码，也不按显示名匹配旧账号。Keycloak 只读服务账号只查用户、角色和组，不再负责创建、密码重置或同步状态。统一模式不注册旧用户管理接口和同步服务，Web 隐藏并拒绝旧页面，MCP 不公开用户管理工具。账单仍用管理员可见的本工作空间只读成员清单。
 
 ## 并行验证、切换与回滚
@@ -15,7 +15,7 @@
 1. **保全现网。** 备份 Keycloak 数据库和靶场数据库，保留当前镜像、Compose 配置、旧客户端及密钥。公网此前只改过 `platform-web`、`platform-admin`、`mcp-gateway`、`smoke-conf`、`mcp-smoke-sa` 的显示名称和说明，`platform-api` 保留原名；这些名称不参与迁移。两个测试客户端只应保留在需要旧链路回归的测试环境。
 2. **增加新客户端与映射。** 在同一领域**新增** `cyber-range`，保留同一 issuer 和现有用户的 subject。用领域 JSON 中的客户端角色、可选范围和只读服务账号作模板；不要对已有领域执行覆盖导入。逐项核对现有业务用户绑定、启停、角色和归属，尤其是禁用账号与超管，不能通过用户名重建映射。无法核验的历史记录保留原归属且不得获得访问。
 3. **并行试运行。** 给 Web 和 MCP 使用独立测试入口，用各自准确的 HTTPS 回调、受众和预览 API。先应用可兼容旧镜像的新增表迁移。由服务端管理 `OIDC_UNIFIED_CLIENT_SECRET`、`OIDC_MCP_DELEGATION_KEY`（独立随机密钥）和 `OIDC_MCP_BROKER_KEY`（独立 32 字节 hex 密钥）；固定 `OIDC_UNIFIED_CLIENT_UUID` 到实际注册 ID。Caddy 把 `/mcp/oauth/*` 和 `/.well-known/oauth-authorization-server` 交给网关，把 `/auth/oidc/token` 交给 Web，原管理端访问限制不变。内部 API 走 Compose 网络，不能把内部凭据记录到日志。公网开放注册前为注册和授权端点设置入口速率限制，监控登录错误率和 OAuth 记录容量。
-4. **验证后再切换。** 同一套 Keycloak 角色和工作空间断言必须通过 Web 和 MCP；用下方测试确认新旧归属、权限、停用及普通用户访问。核验普通用户／管理员／超管的真实代表账号后，才切换入口。已保存旧令牌的 Agent 需在切换后重新授权：`codex mcp logout <名称>`、`codex mcp login <名称>`。新 Codex 只需 MCP 地址。已验证 Codex 的 DCR，其他只支持 CIMD 或不支持发现／动态注册的 Agent 需单独验证；不共享靶场密钥。受控远端回调可列入 `OIDC_MCP_ALLOWED_REDIRECTS`；无允许项时只接受带端口的本机回调。静态外部注册如有保留，必须明确纳入 `OIDC_MCP_EXTERNAL_CLIENTS` 并验证其专用受众，不作为新 Codex 登录的前置条件。
+4. **验证后再切换。** 同一套 Keycloak 角色和工作空间断言必须通过 Web、MCP 和后台巡检；用下方测试确认新旧归属、权限、停用及普通用户访问。核验普通用户和管理员的真实代表账号后，才切换入口。已保存旧令牌的 Agent 需在切换后重新授权：`codex mcp logout <名称>`、`codex mcp login <名称>`。新 Codex 只需 MCP 地址。已验证 Codex 的 DCR，其他只支持 CIMD 或不支持发现／动态注册的 Agent 需单独验证；不共享靶场密钥。受控远端回调可列入 `OIDC_MCP_ALLOWED_REDIRECTS`；无允许项时只接受带端口的本机回调。静态外部注册如有保留，必须明确纳入 `OIDC_MCP_EXTERNAL_CLIENTS` 并验证其专用受众，不作为新 Codex 登录的前置条件。
 5. **可逆观察。** 观察期保留旧镜像、客户端及旧字段。若失败，恢复旧 Web、API、MCP 和代理入口组合；不回滚用户或资源 ID，不删除新增 OAuth 表。窗口内新增业务用户和 Keycloak 角色变更需记录，并在回滚前按稳定身份核对旧角色/状态，防止恢复已撤销的访问。切换或回滚都不能让同一个入口接受不属于自己的受众。
 6. **最终退役（另一次授权）。** 观察期结束、无客户端和运维流程仍依赖旧注册后，先停用、再移除 `platform-web`、`platform-api`、`mcp-gateway`、`platform-admin` 和两个测试注册，清理旧镜像中的回退配置。统一模式不会写入真实本地密码哈希；现有哈希列仅留给回滚，旧链路彻底退役后单独发布删除旧代码及密码列的迁移。在此之前不要擦除旧密码数据。
 

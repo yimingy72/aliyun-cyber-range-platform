@@ -39,7 +39,7 @@ export class SystemConfigController {
 
   @Patch()
   async updateSnapshot(@Req() request: AuthenticatedPlatformRequest, @Body() payload: UpdateSystemCloudConfigDto) {
-    if (!request.adminUser.isPlatformManager) throw new ForbiddenException('仅平台超管可更新云账号配置。');
+    if (!request.adminUser.isPlatformManager) throw new ForbiddenException('仅管理员可更新云账号配置。');
     if (!payload || Array.isArray(payload)
       || (payload.defaultRegion === undefined && payload.defaultZoneId === undefined
         && payload.accessKeyId === undefined && payload.accessKeySecret === undefined

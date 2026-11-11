@@ -29,7 +29,7 @@ export class CloudAccountContextsController {
 
   @Post()
   async save(@Req() request: AuthenticatedPlatformRequest, @Body() payload: SaveCloudAccountContextDto) {
-    if (!request.adminUser.isPlatformManager) throw new ForbiddenException('仅平台超管可绑定或更新云账号。');
+    if (!request.adminUser.isPlatformManager) throw new ForbiddenException('仅管理员可绑定或更新云账号。');
     const metadata = readOperationRequestMetadata(request);
     const execute = () => this.cloudAccountContextsService.saveAccountBinding(payload);
     const toolName = 'cloud_account_bind';

@@ -19,6 +19,37 @@ database('resource patrol PostgreSQL atomicity',()=>{
     });
   });
   afterAll(async()=>{await prisma.$disconnect();});
+  it('uses the current admin role for patrol writes without changing the manager home workspace or stored marker',async()=>{
+    const previousMode=process.env.PLATFORM_AUTH_MODE,previousIssuer=process.env.OIDC_ISSUER;
+    const promoted=`promoted-${randomUUID()}`,issuer='https://fixture.example/realms/cyber-range',subject=randomUUID();
+    const identity={resolve:jest.fn().mockResolvedValue({id:promoted,role:'admin',isPlatformManager:true})};
+    const unifiedStore=new ResourcePatrolRepository(prisma,identity as never);
+    try {
+      await runInSystemCloudWorkspaceScope(()=>prisma.platformUser.create({data:{
+        id:promoted,username:promoted,loginUsername:promoted,passwordHash:'fixture',role:'user',status:'active',
+        cloudWorkspaceId:workspace,isPlatformManager:false,selectedCloudWorkspaceId:workspace,oidcIssuer:issuer,oidcSubject:subject,
+      }}));
+      process.env.PLATFORM_AUTH_MODE='keycloak';process.env.OIDC_ISSUER=issuer;
+      await unifiedStore.setManager(promoted);
+      const token=await unifiedStore.tryLease(new Date());expect(token).toBeTruthy();
+      const input={provider:scope.provider,accountUid:scope.accountUid,regionId:'cn-hangzhou',
+        resource:{type:'ecs' as const,id:`i-admin-merge-${randomUUID()}`},rangeInstanceId:null,
+        status:'unverified' as const,reason:'fixture',evidence:{},now:new Date(),leaseToken:token!};
+      await runInCloudWorkspace(scope,()=>unifiedStore.observe(input));
+      identity.resolve.mockResolvedValue({id:promoted,role:'user',isPlatformManager:false});
+      await runInCloudWorkspace(scope,()=>expect(unifiedStore.observe({...input,resource:{...input.resource,id:'i-denied'}})).rejects.toThrow('管理员不可用'));
+      await runInSystemCloudWorkspaceScope(async()=>{
+        expect(await prisma.platformUser.findUnique({where:{id:promoted}})).toMatchObject({
+          role:'user',cloudWorkspaceId:workspace,isPlatformManager:false,
+        });
+      });
+      await unifiedStore.finish(token!,new Date(),[],null,workspace);
+    } finally {
+      if(previousMode===undefined)delete process.env.PLATFORM_AUTH_MODE;else process.env.PLATFORM_AUTH_MODE=previousMode;
+      if(previousIssuer===undefined)delete process.env.OIDC_ISSUER;else process.env.OIDC_ISSUER=previousIssuer;
+      await store.setManager(manager);
+    }
+  });
   it('backfills only same-provider bound workspace UID without granting old candidates creation proof',async()=>{
     await runInSystemCloudWorkspaceScope(async()=>{
       const unbound='legacy-unbound';

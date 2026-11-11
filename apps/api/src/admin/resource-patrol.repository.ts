@@ -1,10 +1,12 @@
-import { ConflictException, Injectable } from '@nestjs/common';
+import { ConflictException, Injectable, Optional } from '@nestjs/common';
 import { Prisma } from '@aliyun-cyber-range/database/generated/client';
 import { randomUUID } from 'node:crypto';
 import { PrismaService } from '../database/prisma.service';
 import { requireCurrentCloudWorkspaceId, runInSystemCloudWorkspaceScope } from '../auth/cloud-workspace-scope';
 import type { RangeInstanceRecord, RangeResourceSummary } from './admin.repository';
 import type { PatrolSettings, ResourceAlertStatus, ResourceIdentity, StoredResourceAlert } from './resource-alert-types';
+import { usesKeycloakRoles } from '../auth/keycloak-identity.service';
+import { OidcPrincipalResolver } from './oidc-principal-resolver';
 
 export function storedResourceAlert(row: any): StoredResourceAlert {
   const evidence = row.sourceEvidence && typeof row.sourceEvidence === 'object' ? row.sourceEvidence : {};
@@ -21,12 +23,28 @@ export function storedResourceAlert(row: any): StoredResourceAlert {
 
 @Injectable()
 export class ResourcePatrolRepository {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(private readonly prisma: PrismaService, @Optional() private readonly identities?: OidcPrincipalResolver) {}
+
+  private async assertManager(manager: { id: string; isPlatformManager: boolean; status: string; oidcIssuer?: string | null; oidcSubject?: string | null } | null) {
+    if (!manager) throw new ConflictException('指定巡检管理员不可用。');
+    if (usesKeycloakRoles()) {
+      if (!this.identities || !manager.oidcIssuer || manager.oidcIssuer !== process.env.OIDC_ISSUER?.trim() || !manager.oidcSubject) {
+        throw new ConflictException('指定巡检管理员的身份绑定不可用。');
+      }
+      const current = await this.identities.resolve({ issuer: manager.oidcIssuer, subject: manager.oidcSubject });
+      if (current.id !== manager.id || current.role !== 'admin' || !current.isPlatformManager) {
+        throw new ConflictException('指定巡检管理员不可用。');
+      }
+    } else if (!manager.isPlatformManager || manager.status !== 'active') {
+      throw new ConflictException('指定巡检管理员不可用。');
+    }
+  }
 
   async target(managerUserId: string) {
     return runInSystemCloudWorkspaceScope(async () => {
       const manager = await this.prisma.platformUser.findUnique({ where: { id: managerUserId } });
-      if (!manager || !manager.isPlatformManager || manager.status !== 'active') throw new ConflictException('指定巡检管理员不可用。');
+      await this.assertManager(manager);
+      if (!manager) throw new ConflictException('指定巡检管理员不可用。');
       const space = manager.selectedCloudWorkspaceId ? await this.prisma.cloudWorkspace.findUnique({ where: { id: manager.selectedCloudWorkspaceId } }) : null;
       if (!space || space.archivedAt || space.isReadOnly || !space.accountUid || !space.activeCloudAccountContextId) throw new ConflictException('指定管理员尚未选择可执行的默认云账号。');
       return { managerUserId: manager.id, managerUsername: manager.username, cloudWorkspaceId: space.id,
@@ -137,6 +155,11 @@ export class ResourcePatrolRepository {
     const encodedManager=token.slice(37);
     if (!/^[A-Za-z0-9_-]+$/.test(encodedManager) || token[36]!==':') throw new ConflictException('巡检租约无效。');
     const managerUserId=Buffer.from(encodedManager,'base64url').toString('utf8');
+    const unified = usesKeycloakRoles();
+    if (unified) {
+      const manager = await runInSystemCloudWorkspaceScope(() => this.prisma.platformUser.findUnique({ where: { id: managerUserId } }));
+      await this.assertManager(manager);
+    }
     return this.prisma.$transaction(async tx => {
       // Acquire ordinary writer locks before the manager row: account removal uses
       // NOWAIT table locks, so it must fail rather than form manager -> ledger cycles.
@@ -145,7 +168,8 @@ export class ResourcePatrolRepository {
         JOIN "PlatformUser" u ON u.id=s."managerUserId"
         WHERE s.id='default' AND s."leaseToken"=${token} AND s."leaseUntil">CURRENT_TIMESTAMP
           AND s."managerUserId"=${managerUserId}
-          AND u."selectedCloudWorkspaceId"=${workspace} AND u."isPlatformManager"=TRUE AND u.status='active'
+          AND u."selectedCloudWorkspaceId"=${workspace}
+          AND (${unified} OR (u."isPlatformManager"=TRUE AND u.status='active'))
         FOR UPDATE OF s,u`;
       if (held.length !== 1) throw new ConflictException('巡检目标或租约已变化，保留旧告警。');
       return work(tx);

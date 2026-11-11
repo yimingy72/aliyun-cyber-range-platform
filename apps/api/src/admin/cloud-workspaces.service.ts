@@ -74,7 +74,7 @@ export class CloudWorkspacesService {
   }
 
   async removalTarget(user: SessionUserProfile, id: string) {
-    if (!user.isPlatformManager) throw new ForbiddenException('仅平台超管可删除云账号绑定。');
+    if (!user.isPlatformManager) throw new ForbiddenException('仅管理员可删除云账号绑定。');
     if (!id.trim() || id.length > 192) throw new BadRequestException('云账号工作空间标识无效。');
     const scope = getCurrentCloudWorkspaceScope();
     if (scope && !('system' in scope) && scope.cloudWorkspaceId === id) throw new ConflictException('请先切换到其他账号或历史工作空间，再删除当前账号绑定。');

@@ -33,6 +33,16 @@ services:
       OIDC_UNIFIED_CLIENT_UUID: ${OIDC_UNIFIED_CLIENT_UUID:-bc0e793f-4d21-4c8c-8d49-16d664b2ec50}
       OIDC_WORKSPACE_GROUP_MAP: ${OIDC_WORKSPACE_GROUP_MAP:-}
       OIDC_MCP_DELEGATION_KEY: ${OIDC_MCP_DELEGATION_KEY:?set a separate high-entropy delegation key}
+  provisioner-worker:
+    environment:
+      <<: *unified-auth
+      OIDC_UNIFIED_CLIENT_UUID: ${OIDC_UNIFIED_CLIENT_UUID:-bc0e793f-4d21-4c8c-8d49-16d664b2ec50}
+      OIDC_WORKSPACE_GROUP_MAP: ${OIDC_WORKSPACE_GROUP_MAP:-}
+  billing-worker:
+    environment:
+      <<: *unified-auth
+      OIDC_UNIFIED_CLIENT_UUID: ${OIDC_UNIFIED_CLIENT_UUID:-bc0e793f-4d21-4c8c-8d49-16d664b2ec50}
+      OIDC_WORKSPACE_GROUP_MAP: ${OIDC_WORKSPACE_GROUP_MAP:-}
   web:
     build:
       args:
