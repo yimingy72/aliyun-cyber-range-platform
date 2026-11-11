@@ -65,7 +65,10 @@ describe('墨攻镜像收录', () => {
   it('lets an ordinary user collect a matching VM without gaining cloud catalog privileges', async () => {
     const { controller } = setup();
     const user = { adminUser: { ...admin, role: 'user' } } as never;
-    await expect(controller.listMogong(user)).resolves.toMatchObject({ syncAllowed: false });
+    await expect(controller.listMogong(user)).resolves.toMatchObject({
+      syncAllowed: false,
+      items: [{ id: 1, cloudImageAvailable: true }],
+    });
     await expect(controller.collectMogong(user, '1')).resolves.toMatchObject({ visibility: 'platform', ownerUserId: null });
   });
 
@@ -80,13 +83,15 @@ describe('墨攻镜像收录', () => {
   });
 
   it('shows active entries including unmatched VMs and containers in the bound workspace without exposing container references', async () => {
-    const { controller } = setup();
+    const { controller, repo } = setup();
     const previous = process.env.MOGONG_CATALOG_WORKSPACE_ID;
     process.env.MOGONG_CATALOG_WORKSPACE_ID = 'bound-space';
+    repo.listImageSnapshots.mockResolvedValueOnce([{ ...snapshot, isAvailable: false }]);
     jest.mocked(readFile).mockResolvedValueOnce(JSON.stringify({ ...catalog, version: 2, items: catalog.items.map(item => ({ ...item, containerReference: item.type === 'docker' ? 'registry.example/team/private:1' : null })) }) as never);
     try {
       const result = await runInCloudWorkspace({ cloudWorkspaceId: 'bound-space', provider: 'alibaba_cloud', accountUid: '123' }, () => controller.listMogong(request));
       expect(result.items.map((item) => item.id)).toEqual([1, 3, 4]);
+      expect(result.items.map((item) => item.cloudImageAvailable)).toEqual([false, null, null]);
       expect(result.total).toBe(3);
       expect(result.containersCollectable).toBe(true);
       expect(JSON.stringify(result)).not.toContain('registry.example');

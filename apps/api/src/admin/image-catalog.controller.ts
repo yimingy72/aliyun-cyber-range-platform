@@ -32,10 +32,12 @@ export class ImageCatalogController {
   async listMogong(@Req() request: AuthenticatedPlatformRequest) {
     const catalog = await readMogongImageCatalog();
     const { snapshots } = await this.imageCatalogService.listCustom();
-    const imageIds = new Set(snapshots.filter((item) => item.provider === 'alibaba_cloud').map((item) => item.imageId));
+    const availability = new Map(snapshots.filter((item) => item.provider === 'alibaba_cloud')
+      .map((item) => [item.imageId, item.isAvailable && item.status !== 'Missing'] as const));
     const bound = isBoundMogongWorkspace();
-    const items = catalog.items.filter((item) => item.active && (bound || item.imageId && imageIds.has(item.imageId))).map(({ containerReference, ...item }) => ({
+    const items = catalog.items.filter((item) => item.active && (bound || item.imageId && availability.has(item.imageId))).map(({ containerReference, ...item }) => ({
       ...item, containerReferenceStatus: item.type === 'docker' ? containerReferenceStatus(containerReference) : null,
+      cloudImageAvailable: item.type === 'vm' && item.imageId ? availability.get(item.imageId) ?? null : null,
     }));
     return { capturedAt: catalog.capturedAt, total: items.length, containersCollectable: bound && catalog.version === 2, syncAllowed: bound && request.adminUser.role === 'admin', items };
   }
