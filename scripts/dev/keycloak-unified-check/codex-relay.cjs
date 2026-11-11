@@ -9,5 +9,5 @@ function relay(bind, port, host, targetPort) {
     client.pipe(upstream).pipe(client);
   }).listen(port, bind);
 }
-relay('127.0.0.1', 13463, 'mcp', 13463);
+relay('127.0.0.1', 13463, 'gateway', 80);
 relay(address, 13465, '127.0.0.1', 13465);

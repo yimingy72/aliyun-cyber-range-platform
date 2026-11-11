@@ -308,7 +308,7 @@ html[data-platform-theme="data-dense"] :is(.cr-login-subtitle, .cr-form-label) {
 html[data-platform-theme="data-dense"] :is(.cr-login-form, .cr-form-group) { gap: 8px; }
 html[data-platform-theme="data-dense"] .cr-form-input { height: 28px; border-color: #e2e8f0; font-size: 12px; }
 html[data-platform-theme="data-dense"] .cr-login-button { min-height: 28px; background: #2563eb; font-size: 12px; }
-html[data-platform-theme="data-dense"] .cr-login-button:not(:disabled):hover { background: #1d4ed8; }
+html[data-platform-theme="data-dense"] .cr-login-button:not(.cr-oauth-deny):not(:disabled):hover { background: #1d4ed8; }
 html[data-platform-theme="data-dense"] .cr-login-button:disabled { opacity: .65; cursor: wait; }
 html[data-platform-theme="data-dense"] :is(.cr-form-input, .cr-login-button):focus-visible {
   outline: 1px solid #3b82f6;
@@ -332,3 +332,31 @@ html[data-platform-theme="data-dense"] .cr-alert {
   border-radius: 4px;
   font-size: 12px;
 }
+
+.cr-oauth-shell { box-sizing: border-box; }
+.cr-oauth-body { display: grid; gap: 16px; }
+.cr-oauth-body .cr-login-subtitle { overflow-wrap: anywhere; }
+.cr-oauth-actions {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(86px, 24%);
+  gap: 12px;
+  margin: 0;
+}
+.cr-oauth-body .cr-login-button {
+  display: inline-grid;
+  place-items: center;
+  box-sizing: border-box;
+  text-decoration: none;
+}
+.cr-oauth-body .cr-login-button.cr-oauth-deny {
+  border: 1px solid #d7dfe9;
+  background: #fff;
+  color: #22314d;
+}
+.cr-oauth-body .cr-login-button.cr-oauth-deny:hover { background: #f5f7fb; }
+html[data-platform-theme="cel"] .cr-oauth-body .cr-oauth-deny {
+  border: var(--cel-outline);
+  color: var(--cel-ink);
+}
+html[data-platform-theme="data-dense"] .cr-oauth-body { gap: 8px; }
+html[data-platform-theme="data-dense"] .cr-oauth-actions { gap: 8px; }

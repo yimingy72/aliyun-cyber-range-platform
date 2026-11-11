@@ -4,9 +4,10 @@ from urllib.error import HTTPError
 from urllib.parse import parse_qs, urlencode, urljoin, urlsplit
 from urllib.request import build_opener, Request, ProxyHandler, HTTPCookieProcessor, HTTPRedirectHandler
 
-kc = 'http://127.0.0.1:13464'
+kc = 'http://127.0.0.1:13463'
 issuer = kc + '/realms/cyber-range'
-web, api, mcp = ('http://127.0.0.1:' + str(port) for port in (13461,13462,13463))
+web = mcp = kc
+api = kc + '/api'
 password='fixture-only-2026-strong'
 cid='bc0e793f-4d21-4c8c-8d49-16d664b2ec50'
 def verifier(): return secrets.token_urlsafe(48)
@@ -35,7 +36,7 @@ class Approval(HTMLParser):
 def browser(): return build_opener(ProxyHandler({}), HTTPCookieProcessor(http.cookiejar.CookieJar(policy=http.cookiejar.DefaultCookiePolicy(secure_protocols=('https','wss','http')))), NoRedirect())
 
 def req(client,url,method=None,data=None,form=False,headers=None,expect=200):
-    assert urlsplit(url).hostname == '127.0.0.1' and urlsplit(url).port in (13461,13462,13463,13464)
+    assert urlsplit(url).hostname == '127.0.0.1' and urlsplit(url).port == 13463
     headers=dict(headers or {})
     if data is not None:
         headers['Content-Type']='application/x-www-form-urlencoded' if form else 'application/json'
@@ -49,6 +50,8 @@ def req(client,url,method=None,data=None,form=False,headers=None,expect=200):
 
 def login(browser_client, auth_url, username):
     html,_=req(browser_client,auth_url)
+    assert 'data-platform-theme="cel"' in html and '/js/platform-theme.js?v=1' in html
+    assert '/css/styles.css?v=platform-themes-v4' in html
     form=Login(); form.feed(html)
     assert form.action
     _, headers=req(browser_client,form.action,data={**form.fields,'username':username,'password':password},form=True,expect=(302,303))
@@ -61,14 +64,14 @@ def web_token(username):
     params=parse_qs(urlsplit(location).query)
     assert params['state']==['web-test']
     data=dict(grant_type='authorization_code',code=params['code'][0],redirect_uri=cb,code_verifier=v)
-    req(b,web+'/auth/oidc/token',data=data,form=True,headers={'Origin':'http://127.0.0.1:13463'},expect=403)
+    req(b,web+'/auth/oidc/token',data=data,form=True,headers={'Origin':'http://127.0.0.1:13461'},expect=403)
     payload,_=req(b,web+'/auth/oidc/token',data=data,form=True,headers={'Origin':web})
     token=json.loads(payload)['access_token']
     claims=token.split('.')[1]
     assert 'kc-admin-api' not in json.loads(base64.urlsafe_b64decode(claims+'='*(-len(claims)%4))).get('scope','').split()
     return token
 
-def mcp_token(username,scope=None):
+def mcp_token(username,scope=None,decision='yes'):
     b=browser(); v=verifier()
     redirect='http://127.0.0.1:13465/oauth-fixture'
     register,_=req(b,mcp+'/mcp/oauth/register',data={'redirect_uris':[redirect]},expect=201)
@@ -77,13 +80,23 @@ def mcp_token(username,scope=None):
     if scope: query['scope']=scope
     _,headers=req(b,mcp+'/mcp/oauth/authorize?'+urlencode(query),expect=302)
     location=login(b,headers['Location'],username)
-    consent,_=req(b,location)
+    consent,headers=req(b,location)
+    assert 'data-platform-theme="cel"' in consent and '授权工具访问靶场' in consent
+    assert headers['Cache-Control']=='no-store' and "frame-ancestors 'none'" in headers['Content-Security-Policy']
+    assert "form-action 'self'" in headers['Content-Security-Policy']
+    if scope: assert '申请范围：'+scope in consent
     approval=Approval(); approval.feed(consent); assert approval.value
-    complete,_=req(b,mcp+'/mcp/oauth/approve',data={'handle':approval.value,'decision':'yes'},form=True,headers={'Origin':mcp})
+    complete,headers=req(b,mcp+'/mcp/oauth/approve',data={'handle':approval.value,'decision':decision},form=True,headers={'Origin':mcp})
+    assert 'data-platform-theme="cel"' in complete and 'http-equiv="refresh"' in complete
+    assert headers['Cache-Control']=='no-store' and headers['Referrer-Policy']=='no-referrer'
+    assert "form-action 'none'" in headers['Content-Security-Policy']
     destination=Approval(); destination.feed(complete); assert destination.value
     assert destination.value.startswith(redirect+'?')
     params=parse_qs(urlsplit(destination.value).query)
     assert params['state']==['mcp-test']
+    if decision=='no':
+        assert params['error']==['access_denied'] and 'code' not in params
+        return None,client
     data=dict(grant_type='authorization_code',client_id=client,redirect_uri=redirect,code=params['code'][0],code_verifier=v,resource=mcp+'/mcp')
     req(b,mcp+'/mcp/oauth/token',data={**data,'code_verifier':verifier()},form=True,expect=400)
     payload,_=req(b,mcp+'/mcp/oauth/token',data=data,form=True)
@@ -121,6 +134,7 @@ use_api(owner,'/admin/billing/workspace-members',expect=403)
 use_mcp(admin,expect=401)
 
 narrow,client=mcp_token('fixture-member','templates:read')
+assert mcp_token('fixture-member','templates:read',decision='no')[0] is None
 access=narrow['access_token']
 tools=[t['name'] for t in use_mcp(access)['result']['tools']]
 assert 'range_template_list' in tools and 'platform_image_list' not in tools and not any(t.startswith('admin_user_') for t in tools)

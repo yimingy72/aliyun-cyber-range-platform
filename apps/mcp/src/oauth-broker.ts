@@ -3,6 +3,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 import { PrismaClient } from '@aliyun-cyber-range/database/generated/client';
 import type { McpConfig } from './config';
 import { ADMIN_SCOPES } from './auth';
+import { consent, returnToAgent, serveOAuthPageAsset } from './oauth-pages';
 
 const prefix = '/mcp/oauth/';
 const ttl = { registration: 30 * 86400, state: 300, code: 60 };
@@ -108,6 +109,7 @@ export function createOAuthBroker(config: McpConfig) {
   return async function handle(req: IncomingMessage, res: ServerResponse) {
     const url = new URL(req.url!, origin);
     if (url.pathname !== '/.well-known/oauth-authorization-server' && !url.pathname.startsWith(prefix)) return false;
+    if (req.method === 'GET' && serveOAuthPageAsset(res, url.pathname)) return true;
     try {
       const action = url.pathname.slice(prefix.length);
       if ((action === 'register' && req.method === 'POST') || (action === 'authorize' && req.method === 'GET')) {
@@ -284,20 +286,4 @@ function json(res: ServerResponse, status: number, value: unknown) {
 function redirectTo(res: ServerResponse, url: URL) {
   res.writeHead(302, { Location: url.href, 'Cache-Control': 'no-store', 'Referrer-Policy': 'no-referrer' });
   res.end();
-}
-function returnToAgent(res: ServerResponse, url: URL) {
-  // A cross-origin 3xx after the consent form POST is blocked by Chrome's form-action policy.
-  const href = url.href.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;');
-  res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store', 'Referrer-Policy': 'no-referrer',
-    'Content-Security-Policy': "default-src 'none'; form-action 'none'; frame-ancestors 'none'; base-uri 'none'" });
-  res.end('<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta http-equiv="refresh" content="0;url=' +
-    href + '"><title>返回工具</title><main><a rel="noreferrer" href="' + href + '">返回工具</a></main></html>');
-}
-function consent(res: ServerResponse, handle: string, scopes?: string[]) {
-  const description = scopes ? '申请范围：' + scopes.join('、') : '允许工具使用你在靶场角色范围内的功能。';
-  res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store', 'Referrer-Policy': 'same-origin',
-    'Content-Security-Policy': "default-src 'none'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'" });
-  res.end('<!doctype html><html lang="zh-CN"><meta charset="utf-8"><title>授权访问靶场</title><main><h1>授权工具访问靶场</h1><p>' + description +
-    '</p><form method="post" action="/mcp/oauth/approve"><input type="hidden" name="handle" value="' + handle +
-    '"><button name="decision" value="yes">授权</button> <button name="decision" value="no">拒绝</button></form></main></html>');
 }

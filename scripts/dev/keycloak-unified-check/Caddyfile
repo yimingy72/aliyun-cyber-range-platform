@@ -1,0 +1,16 @@
+:80 {
+	handle_path /api/* {
+		reverse_proxy api:3001
+	}
+	@keycloak path /realms/* /resources/* /admin/realms/*
+	handle @keycloak {
+		reverse_proxy keycloak:8080
+	}
+	@mcp path /mcp /mcp/oauth/* /.well-known/oauth-* /healthz
+	handle @mcp {
+		reverse_proxy mcp:13463
+	}
+	handle {
+		reverse_proxy web:3000
+	}
+}

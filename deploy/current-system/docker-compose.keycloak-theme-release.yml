@@ -1,0 +1,6 @@
+# Apply last on the existing Keycloak deployment; the database is already initialized.
+services:
+  keycloak:
+    image: ${KEYCLOAK_THEME_IMAGE:?set the release Keycloak theme image}
+    command: [start-dev]
+    volumes: !reset []
