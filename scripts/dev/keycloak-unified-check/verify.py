@@ -63,7 +63,10 @@ def web_token(username):
     data=dict(grant_type='authorization_code',code=params['code'][0],redirect_uri=cb,code_verifier=v)
     req(b,web+'/auth/oidc/token',data=data,form=True,headers={'Origin':'http://127.0.0.1:13463'},expect=403)
     payload,_=req(b,web+'/auth/oidc/token',data=data,form=True,headers={'Origin':web})
-    return json.loads(payload)['access_token']
+    token=json.loads(payload)['access_token']
+    claims=token.split('.')[1]
+    assert 'kc-admin-api' not in json.loads(base64.urlsafe_b64decode(claims+'='*(-len(claims)%4))).get('scope','').split()
+    return token
 
 def mcp_token(username,scope=None):
     b=browser(); v=verifier()

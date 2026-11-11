@@ -47,7 +47,7 @@ export class KeycloakIdentityService {
 
   private async getServiceToken(config: Configuration) {
     if (this.serviceToken && this.serviceToken.expires > Date.now()) return this.serviceToken.token;
-    const body = await this.post(config, config.tokenUrl, { grant_type: 'client_credentials' });
+    const body = await this.post(config, config.tokenUrl, { grant_type: 'client_credentials', scope: 'kc-admin-api' });
     if (typeof body.access_token !== 'string' || typeof body.expires_in !== 'number') {
       throw new ServiceUnavailableException('Keycloak identity lookup is unavailable');
     }

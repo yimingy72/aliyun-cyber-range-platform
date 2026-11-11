@@ -2,6 +2,16 @@
 
 新链路通过 `PLATFORM_AUTH_MODE=keycloak` 启用。默认仍走现网旧链路；本说明不是公网切换授权。不要覆盖已有领域、不要在并行验证前停用旧客户端，也不要将测试账号导入生产。
 
+## Keycloak 26.8.2
+
+部署清单和独立身份回归固定使用 `quay.io/keycloak/keycloak:26.8.2`。26.8.2 的 Admin REST API 同时检查管理接口 audience 和 `kc-admin-api` scope。对已经存在的统一客户端，在「客户端 → cyber-range → 客户端范围」关联内置 `kc-admin-api`，类型选「可选」。身份查询服务的 client credentials 请求显式申请该 scope，网页仍申请 `openid web-access`，MCP 上游仍申请 `openid mcp-access`。不要将它设为默认范围，也不要关闭新版的 audience 检查。服务账号保留 `view-users`、`query-users`，增加只读 `view-clients` 以读取新版会按角色可见性筛选的客户端角色映射；不分配 `manage-users`、`manage-clients` 或 `realm-admin`。
+
+26.6.2 起令牌 introspection 要求调用方在令牌 audience 中。统一客户端通过 `cyber-range-introspection-audience` mapper 加入 `cyber-range` audience；网页和 MCP 仍分别要求 `cyber-range-web` 和 `cyber-range-mcp`，不能互用令牌。已有客户端也须增加该 mapper；不启用跳过 audience 校验的兼容选项。旧令牌需刷新或重新登录才能得到新的 audience。
+
+跨小版本升级必须先在隔离数据库副本上演练迁移，再停止旧 Keycloak，备份 PostgreSQL、容器配置、主题与角色/群组映射，然后启动新版。已有领域不重新导入。验证管理后台、平台 Web 登录、MCP 授权与刷新、普通用户空间隔离和管理员权限后再完成切换。回退必须同时恢复旧镜像与停止时的数据库备份，不能让旧镜像连接已迁移的数据库。数据库副本含敏感身份数据，备份和临时环境必须限制访问，验证后删除副本容器与卷。
+
+基础清单对旧认证链路仍显式保留 `token-exchange:v1,admin-fine-grained-authz:v1`，避免不带版本的 feature 名称切换到不兼容的 FGAP v2；统一认证不依赖旧令牌交换。此次升级不启用 `cimd` 或 `resource-indicators` 实验功能，MCP 继续使用平台已有的 OAuth broker。
+
 ## 认证和授权
 
 - 新建部署的 [领域配置](../../infra/keycloak-unified/realm-cyber-range.json) 只含一个靶场客户端 `cyber-range`。Keycloak 自带客户端保留。Web 在服务端交换带 PKCE 的授权码；MCP 由靶场网关接受公开客户端注册、处理浏览器同意，再向同一 Keycloak 客户端交换授权码。Codex 的客户端注册存在靶场数据库，不占用 Keycloak 客户端。密钥不放入网页构建变量、MCP 客户端配置或浏览器。

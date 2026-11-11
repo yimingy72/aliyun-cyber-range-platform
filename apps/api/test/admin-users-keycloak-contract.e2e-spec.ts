@@ -10,7 +10,7 @@ const databaseUrl = process.env.USER_AUTH_TEST_DATABASE_URL;
 const isolated = baseUrl === 'http://user-review-keycloak:8080'
   && databaseUrl === 'postgresql://synthetic_user:synthetic_password@user-review-postgres:5432/user_review';
 const contract = isolated ? describe : describe.skip;
-contract('Default Keycloak 26.1.4 user profile and scoped PostgreSQL contract', () => {
+contract('Default Keycloak user profile and scoped PostgreSQL contract', () => {
   const realm = 'synthetic-user-review';
   const workspaceA = { cloudWorkspaceId: 'synthetic-user-alibaba', provider: 'alibaba_cloud' as const, accountUid: 'synthetic-alpha' };
   const workspaceB = { cloudWorkspaceId: 'synthetic-user-tencent', provider: 'tencent_cloud' as const, accountUid: 'synthetic-tencent' };

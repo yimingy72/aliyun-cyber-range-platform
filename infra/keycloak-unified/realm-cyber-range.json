@@ -40,9 +40,21 @@
       "defaultClientScopes": [],
       "optionalClientScopes": [
         "web-access",
-        "mcp-access"
+        "mcp-access",
+        "kc-admin-api"
       ],
       "protocolMappers": [
+        {
+          "name": "cyber-range-introspection-audience",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "config": {
+            "included.client.audience": "cyber-range",
+            "access.token.claim": "true",
+            "id.token.claim": "false",
+            "introspection.token.claim": "true"
+          }
+        },
         {
           "name": "identity-subject",
           "protocol": "openid-connect",
@@ -103,12 +115,34 @@
       "clientRoles": {
         "realm-management": [
           "view-users",
-          "query-users"
+          "query-users",
+          "view-clients"
         ]
       }
     }
   ],
   "clientScopes": [
+    {
+      "name": "kc-admin-api",
+      "description": "Grants access to the Keycloak Admin REST API by adding its required audience to the token",
+      "protocol": "openid-connect",
+      "attributes": {
+        "include.in.token.scope": "true",
+        "display.on.consent.screen": "false"
+      },
+      "protocolMappers": [
+        {
+          "name": "admin-api-audience",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-admin-api-audience-mapper",
+          "config": {
+            "access.token.claim": "true",
+            "introspection.token.claim": "true",
+            "lightweight.claim": "true"
+          }
+        }
+      ]
+    },
     {
       "name": "web-access",
       "protocol": "openid-connect",

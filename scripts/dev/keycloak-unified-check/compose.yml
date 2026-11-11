@@ -21,7 +21,7 @@ services:
       timeout: 2s
       retries: 20
   keycloak:
-    image: quay.io/keycloak/keycloak:26.1.4
+    image: quay.io/keycloak/keycloak:26.8.2
     command: [start-dev, --import-realm, --hostname, 'http://127.0.0.1:13464']
     environment:
       KC_BOOTSTRAP_ADMIN_USERNAME: fixture-admin-root
