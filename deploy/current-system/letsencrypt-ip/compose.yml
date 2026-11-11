@@ -1,0 +1,8 @@
+services:
+  caddy-direct:
+    command: ["caddy", "run", "--config", "/etc/caddy-ip-tls/Caddyfile", "--adapter", "caddyfile"]
+    volumes:
+      - ${RANGE_IP_TLS_DIR:?set RANGE_IP_TLS_DIR}/caddy-config:/etc/caddy-ip-tls:ro
+      - ${RANGE_IP_TLS_DIR:?set RANGE_IP_TLS_DIR}/caddy-data:/data
+      - ${RANGE_IP_TLS_DIR:?set RANGE_IP_TLS_DIR}/webroot:/srv/acme:ro
+      - ${RANGE_IP_TLS_DIR:?set RANGE_IP_TLS_DIR}/letsencrypt:/etc/letsencrypt:ro

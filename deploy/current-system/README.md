@@ -73,6 +73,8 @@ cp .env.example .env
 
 若接受浏览器的自签名证书提示，可使用 `COMPOSE_PROFILES=direct-tls` 与 `CADDY_PUBLIC_HOST=<公网 IP>` 直接暴露 Caddy 的 `80/443` 端口。外部地址统一使用 `https://<公网 IP>`，API 使用 `https://<公网 IP>/api`。同时必须在安全组中放行 TCP `80` 和 `443`。
 
+需要公网客户端直接信任 IP 证书时，使用 [Let’s Encrypt IP 证书部署配置](./letsencrypt-ip/README.md)。
+
 5. 下载并校验宿主机 OpenTofu provider 缓存：
 
 ```bash
