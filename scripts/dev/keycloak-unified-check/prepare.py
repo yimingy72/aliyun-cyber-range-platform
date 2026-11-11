@@ -3,7 +3,6 @@ import json
 from pathlib import Path
 
 realm = json.loads(Path('infra/keycloak-unified/realm-cyber-range.json').read_text())
-realm.pop('loginTheme', None)
 realm['groups'] = [
     {'name': 'fixture-alpha', 'id': 'bc0e793f-4d21-4c8c-8d49-16d664b2ec51'},
     {'name': 'fixture-beta', 'id': 'bc0e793f-4d21-4c8c-8d49-16d664b2ec52'},

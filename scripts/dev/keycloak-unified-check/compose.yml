@@ -33,6 +33,7 @@ services:
     ports: ['127.0.0.1:13464:8080']
     volumes:
       - ./.tmp/unified-auth/realm-cyber-range.json:/opt/keycloak/data/import/realm-cyber-range.json:ro
+      - ./infra/keycloak/themes:/opt/keycloak/themes:ro
   api:
     image: range-keycloak-unified:api
     build:
