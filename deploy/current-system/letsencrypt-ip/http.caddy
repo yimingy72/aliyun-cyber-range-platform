@@ -1,0 +1,10 @@
+http://{$CADDY_PUBLIC_HOST} {
+	handle /.well-known/acme-challenge/* {
+		root * /srv/acme
+		file_server
+	}
+
+	handle {
+		redir https://{$CADDY_PUBLIC_HOST}{uri} 308
+	}
+}

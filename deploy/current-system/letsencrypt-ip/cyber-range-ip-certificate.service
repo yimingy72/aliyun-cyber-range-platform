@@ -1,0 +1,15 @@
+[Unit]
+Description=Renew the public Cyber Range IP certificate and reload Caddy
+After=docker.service network-online.target
+Wants=network-online.target
+Requires=docker.service
+StartLimitIntervalSec=1h
+StartLimitBurst=3
+
+[Service]
+Type=oneshot
+ExecStart=/opt/cyber-range-public-ip-tls/manage-ip-certificate.sh renew
+TimeoutStartSec=15min
+Restart=on-failure
+RestartSec=15min
+UMask=0077
